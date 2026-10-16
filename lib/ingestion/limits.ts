@@ -1,0 +1,6 @@
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+export const MAX_REQUEST_BYTES = MAX_FILE_BYTES + 512 * 1024;
+export const MAX_EXTRACTED_CHARACTERS = 120_000;
+export const MAX_PDF_PAGES = 150;
+export const MAX_DOCX_EXPANDED_BYTES = 20 * 1024 * 1024;
+export const REQUEST_TIMEOUT_MS = 240_000;

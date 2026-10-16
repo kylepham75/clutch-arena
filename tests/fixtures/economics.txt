@@ -1,0 +1,16 @@
+Chapter 4: Price elasticity of demand
+Price elasticity measures responsiveness of quantity demanded to price.
+The absolute elasticity is the absolute percentage change in quantity demanded divided by the absolute percentage change in price.
+If absolute price elasticity exceeds 1, demand is elastic. If it is below 1, demand is inelastic.
+
+Question 1: A cafe raises prices by 10% and quantity demanded falls by 20%. How would you classify demand?
+A. Perfectly inelastic
+B. Elastic
+C. Unit elastic
+D. Inelastic
+Answer: B
+Explanation: The absolute elasticity is 20 / 10 = 2, which is greater than 1.
+
+Chapter 1: Economic choices
+Opportunity cost is the value of the next-best alternative forgone.
+Sunk costs have already been incurred and cannot be recovered. Ignore them when comparing future alternatives.
