@@ -18,6 +18,8 @@ import {
   readLibrary,
   saveStudyItem,
   deleteStudyItem,
+  fetchCloudLibrary,
+  LIBRARY_UPDATED_EVENT,
   type SavedStudyItem,
 } from "@/lib/game/library";
 import {
@@ -53,8 +55,20 @@ export function LibraryDialog({
     if (open) {
       setItems(readLibrary());
       setImportError(null);
+      // Fetch fresh cloud copies if user is signed in
+      void fetchCloudLibrary().then((cloudItems) => {
+        if (Array.isArray(cloudItems)) {
+          setItems(cloudItems);
+        }
+      });
     }
   }, [open]);
+
+  useEffect(() => {
+    const handleUpdate = () => setItems(readLibrary());
+    window.addEventListener(LIBRARY_UPDATED_EVENT, handleUpdate);
+    return () => window.removeEventListener(LIBRARY_UPDATED_EVENT, handleUpdate);
+  }, []);
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

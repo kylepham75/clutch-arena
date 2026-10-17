@@ -56,7 +56,7 @@ import { ArenaManager } from "@/components/arena/arena-manager";
 import { useLanguage } from "@/lib/i18n/context";
 import { LanguageSwitcher } from "@/components/ui/language-switcher";
 import { UserProfileButton } from "@/components/auth/user-profile-button";
-import { readLibrary, saveStudyItem, type SavedStudyItem } from "@/lib/game/library";
+import { readLibrary, saveStudyItem, LIBRARY_UPDATED_EVENT, type SavedStudyItem } from "@/lib/game/library";
 import {
   readShareToken,
   decodeSharedPack,
@@ -100,7 +100,10 @@ export function SoloEngine({
   const [libraryItems, setLibraryItems] = useState<SavedStudyItem[]>([]);
 
   useEffect(() => {
-    setLibraryItems(readLibrary());
+    const update = () => setLibraryItems(readLibrary());
+    update();
+    window.addEventListener(LIBRARY_UPDATED_EVENT, update);
+    return () => window.removeEventListener(LIBRARY_UPDATED_EVENT, update);
   }, [libraryOpen]);
 
   const availablePacks = useMemo(() => {

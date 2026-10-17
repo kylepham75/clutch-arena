@@ -109,19 +109,19 @@ export function AuthDialog() {
               borderRadius: "0.5rem",
               background: "rgba(238, 113, 76, 0.12)",
               border: "1px solid rgba(238, 113, 76, 0.35)",
-              color: "#f3c77b",
+              color: "#c25430",
               fontSize: "0.875rem",
               display: "flex",
               alignItems: "flex-start",
               gap: "0.625rem",
             }}
           >
-            <Zap size={18} style={{ color: "#ee714c", flexShrink: 0, marginTop: "2px" }} />
+            <Zap size={18} style={{ color: "var(--primary, #e96943)", flexShrink: 0, marginTop: "2px" }} />
             <div>
-              <strong style={{ display: "block", color: "#fff", marginBottom: "0.15rem" }}>
+              <strong style={{ display: "block", color: "var(--foreground, #292c28)", marginBottom: "0.15rem" }}>
                 Free Guest Quota Reached ({guestUsageCount}/{guestLimit})
               </strong>
-              <span>
+              <span style={{ color: "var(--foreground, #292c28)", opacity: 0.85 }}>
                 You have used your 2 free anonymous generations. Create a free account to unlock continuous uploads, cloud deck saves, and multiplayer battles!
               </span>
             </div>
@@ -132,15 +132,16 @@ export function AuthDialog() {
         {!isConfigured && (
           <div
             style={{
-              padding: "0.75rem 1rem",
+              padding: "0.875rem 1rem",
               borderRadius: "0.5rem",
-              background: "rgba(255, 255, 255, 0.05)",
-              border: "1px solid rgba(255, 255, 255, 0.1)",
+              background: "var(--muted, #eef0e9)",
+              border: "1px solid var(--border, #e2e5dc)",
               fontSize: "0.8125rem",
-              color: "#a1a1aa",
+              color: "var(--muted-foreground, #666)",
+              lineHeight: 1.5,
             }}
           >
-            <strong style={{ color: "#fff", display: "block", marginBottom: "0.25rem" }}>
+            <strong style={{ color: "var(--foreground, #292c28)", display: "block", marginBottom: "0.25rem", fontSize: "0.875rem" }}>
               🛠️ Local Development Mode
             </strong>
             Supabase Auth credentials are not yet configured in <code>.env.local</code>. Add <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> to enable live cloud authentication.
@@ -157,8 +158,8 @@ export function AuthDialog() {
                 gap: "1rem",
                 padding: "1rem",
                 borderRadius: "0.75rem",
-                background: "rgba(255, 255, 255, 0.04)",
-                border: "1px solid rgba(255, 255, 255, 0.08)",
+                background: "var(--muted, #eef0e9)",
+                border: "1px solid var(--border, #e2e5dc)",
               }}
             >
               <div
@@ -166,11 +167,11 @@ export function AuthDialog() {
                   width: "48px",
                   height: "48px",
                   borderRadius: "50%",
-                  background: "linear-gradient(135deg, #ee714c, #f3c77b)",
+                  background: "linear-gradient(135deg, var(--primary, #e96943), #f3c77b)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  color: "#000",
+                  color: "#fff",
                   fontWeight: 700,
                   fontSize: "1.25rem",
                 }}
@@ -179,13 +180,13 @@ export function AuthDialog() {
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <strong style={{ color: "#fff", fontSize: "0.9375rem" }}>
+                  <strong style={{ color: "var(--foreground, #292c28)", fontSize: "0.9375rem" }}>
                     {user.email}
                   </strong>
                   <span
                     style={{
-                      background: "rgba(238, 113, 76, 0.2)",
-                      color: "#ee714c",
+                      background: "rgba(233, 105, 67, 0.15)",
+                      color: "var(--primary, #e96943)",
                       fontSize: "0.6875rem",
                       fontWeight: 700,
                       padding: "0.15rem 0.5rem",
@@ -196,7 +197,7 @@ export function AuthDialog() {
                     {tier}
                   </span>
                 </div>
-                <small style={{ color: "#a1a1aa", fontSize: "0.75rem" }}>
+                <small style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>
                   User ID: {user.id.slice(0, 12)}...
                 </small>
               </div>
@@ -213,23 +214,23 @@ export function AuthDialog() {
                 style={{
                   padding: "0.75rem",
                   borderRadius: "0.5rem",
-                  background: "rgba(255, 255, 255, 0.02)",
-                  border: "1px solid rgba(255, 255, 255, 0.06)",
+                  background: "var(--muted, #eef0e9)",
+                  border: "1px solid var(--border, #e2e5dc)",
                 }}
               >
-                <div style={{ color: "#a1a1aa", fontSize: "0.75rem" }}>Cloud Sync</div>
-                <strong style={{ color: "#66876a", fontSize: "0.875rem" }}>Active ✓</strong>
+                <div style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>Cloud Sync</div>
+                <strong style={{ color: "#2e7d32", fontSize: "0.875rem" }}>Active ✓</strong>
               </div>
               <div
                 style={{
                   padding: "0.75rem",
                   borderRadius: "0.5rem",
-                  background: "rgba(255, 255, 255, 0.02)",
-                  border: "1px solid rgba(255, 255, 255, 0.06)",
+                  background: "var(--muted, #eef0e9)",
+                  border: "1px solid var(--border, #e2e5dc)",
                 }}
               >
-                <div style={{ color: "#a1a1aa", fontSize: "0.75rem" }}>Plan Tier</div>
-                <strong style={{ color: "#f3c77b", fontSize: "0.875rem" }}>Clutch Free</strong>
+                <div style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>Plan Tier</div>
+                <strong style={{ color: "var(--primary, #e96943)", fontSize: "0.875rem" }}>Clutch Free</strong>
               </div>
             </div>
 
@@ -242,8 +243,8 @@ export function AuthDialog() {
                 justifyContent: "center",
                 gap: "0.5rem",
                 marginTop: "0.5rem",
-                color: "#ff7b72",
-                borderColor: "rgba(255, 123, 114, 0.3)",
+                color: "#d32f2f",
+                borderColor: "rgba(211, 47, 47, 0.35)",
               }}
             >
               <LogOut size={16} />
@@ -257,10 +258,10 @@ export function AuthDialog() {
             <div
               style={{
                 display: "flex",
-                background: "rgba(255, 255, 255, 0.04)",
+                background: "var(--muted, #eef0e9)",
                 padding: "0.25rem",
                 borderRadius: "0.5rem",
-                border: "1px solid rgba(255, 255, 255, 0.08)",
+                border: "1px solid var(--border, #e2e5dc)",
               }}
             >
               <button
@@ -274,8 +275,8 @@ export function AuthDialog() {
                   padding: "0.5rem",
                   borderRadius: "0.375rem",
                   border: "none",
-                  background: tab === "signin" ? "#ee714c" : "transparent",
-                  color: tab === "signin" ? "#fff" : "#a1a1aa",
+                  background: tab === "signin" ? "var(--primary, #e96943)" : "transparent",
+                  color: tab === "signin" ? "#fff" : "var(--muted-foreground, #666)",
                   fontWeight: 600,
                   fontSize: "0.8125rem",
                   cursor: "pointer",
@@ -295,8 +296,8 @@ export function AuthDialog() {
                   padding: "0.5rem",
                   borderRadius: "0.375rem",
                   border: "none",
-                  background: tab === "signup" ? "#ee714c" : "transparent",
-                  color: tab === "signup" ? "#fff" : "#a1a1aa",
+                  background: tab === "signup" ? "var(--primary, #e96943)" : "transparent",
+                  color: tab === "signup" ? "#fff" : "var(--muted-foreground, #666)",
                   fontWeight: 600,
                   fontSize: "0.8125rem",
                   cursor: "pointer",
@@ -312,9 +313,9 @@ export function AuthDialog() {
                 style={{
                   padding: "0.625rem 0.875rem",
                   borderRadius: "0.375rem",
-                  background: "rgba(255, 100, 100, 0.12)",
-                  border: "1px solid rgba(255, 100, 100, 0.3)",
-                  color: "#ff7b72",
+                  background: "rgba(211, 47, 47, 0.1)",
+                  border: "1px solid rgba(211, 47, 47, 0.3)",
+                  color: "#d32f2f",
                   fontSize: "0.8125rem",
                   display: "flex",
                   alignItems: "center",
@@ -331,9 +332,9 @@ export function AuthDialog() {
                 style={{
                   padding: "0.625rem 0.875rem",
                   borderRadius: "0.375rem",
-                  background: "rgba(102, 135, 106, 0.15)",
-                  border: "1px solid rgba(102, 135, 106, 0.4)",
-                  color: "#66876a",
+                  background: "rgba(46, 125, 50, 0.1)",
+                  border: "1px solid rgba(46, 125, 50, 0.3)",
+                  color: "#2e7d32",
                   fontSize: "0.8125rem",
                   display: "flex",
                   alignItems: "center",
@@ -358,6 +359,9 @@ export function AuthDialog() {
                   justifyContent: "center",
                   gap: "0.625rem",
                   width: "100%",
+                  color: "var(--foreground, #292c28)",
+                  borderColor: "var(--border, #e2e5dc)",
+                  background: "var(--background, #fff)",
                 }}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24">
@@ -387,14 +391,14 @@ export function AuthDialog() {
                 display: "flex",
                 alignItems: "center",
                 gap: "0.75rem",
-                color: "#71717a",
+                color: "var(--muted-foreground, #81857b)",
                 fontSize: "0.75rem",
                 textTransform: "uppercase",
               }}
             >
-              <span style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.08)" }} />
+              <span style={{ flex: 1, height: "1px", background: "var(--border, #e2e5dc)" }} />
               <span>Or with email</span>
-              <span style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.08)" }} />
+              <span style={{ flex: 1, height: "1px", background: "var(--border, #e2e5dc)" }} />
             </div>
 
             {/* Email Form */}
@@ -405,7 +409,7 @@ export function AuthDialog() {
                     display: "block",
                     fontSize: "0.75rem",
                     fontWeight: 600,
-                    color: "#a1a1aa",
+                    color: "var(--foreground, #292c28)",
                     marginBottom: "0.375rem",
                   }}
                 >
@@ -419,7 +423,7 @@ export function AuthDialog() {
                       left: "0.75rem",
                       top: "50%",
                       transform: "translateY(-50%)",
-                      color: "#71717a",
+                      color: "var(--muted-foreground, #81857b)",
                     }}
                   />
                   <input
@@ -432,9 +436,9 @@ export function AuthDialog() {
                       width: "100%",
                       padding: "0.5rem 0.75rem 0.5rem 2.25rem",
                       borderRadius: "0.375rem",
-                      background: "rgba(255, 255, 255, 0.05)",
-                      border: "1px solid rgba(255, 255, 255, 0.12)",
-                      color: "#fff",
+                      background: "var(--background, #fff)",
+                      border: "1px solid var(--border, #e2e5dc)",
+                      color: "var(--foreground, #292c28)",
                       fontSize: "0.875rem",
                       outline: "none",
                     }}
@@ -448,7 +452,7 @@ export function AuthDialog() {
                     display: "block",
                     fontSize: "0.75rem",
                     fontWeight: 600,
-                    color: "#a1a1aa",
+                    color: "var(--foreground, #292c28)",
                     marginBottom: "0.375rem",
                   }}
                 >
@@ -462,7 +466,7 @@ export function AuthDialog() {
                       left: "0.75rem",
                       top: "50%",
                       transform: "translateY(-50%)",
-                      color: "#71717a",
+                      color: "var(--muted-foreground, #81857b)",
                     }}
                   />
                   <input
@@ -476,9 +480,9 @@ export function AuthDialog() {
                       width: "100%",
                       padding: "0.5rem 0.75rem 0.5rem 2.25rem",
                       borderRadius: "0.375rem",
-                      background: "rgba(255, 255, 255, 0.05)",
-                      border: "1px solid rgba(255, 255, 255, 0.12)",
-                      color: "#fff",
+                      background: "var(--background, #fff)",
+                      border: "1px solid var(--border, #e2e5dc)",
+                      color: "var(--foreground, #292c28)",
                       fontSize: "0.875rem",
                       outline: "none",
                     }}
@@ -491,7 +495,7 @@ export function AuthDialog() {
                 disabled={loading || !isConfigured}
                 style={{
                   marginTop: "0.5rem",
-                  background: "#ee714c",
+                  background: "var(--primary, #e96943)",
                   color: "#fff",
                   fontWeight: 600,
                   display: "flex",

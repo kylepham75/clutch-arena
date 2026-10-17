@@ -10,6 +10,11 @@ import {
 } from "react";
 import type { User, Session } from "@supabase/supabase-js";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  fetchCloudLibrary,
+  migrateGuestLibraryToUser,
+  clearSessionLibrary,
+} from "@/lib/game/library";
 
 export type AccountTier = "guest" | "free" | "pro";
 
@@ -60,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Listen to Supabase Auth State
+  // Listen to Supabase Auth State and sync user library
   useEffect(() => {
     if (!isConfigured) {
       setLoading(false);
@@ -73,13 +78,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    // Handles smart deck migration vs existing account cloud sync
+    const handleAuthLibrarySync = async (currentUser: User | null) => {
+      if (!currentUser) {
+        clearSessionLibrary();
+        return;
+      }
+
+      // Check if this is a newly created account vs an existing account
+      let isNewAccount = false;
+      try {
+        const flag = sessionStorage.getItem("clutch:just_signed_up");
+        if (flag === "true") {
+          isNewAccount = true;
+          sessionStorage.removeItem("clutch:just_signed_up");
+        }
+      } catch {
+        // sessionStorage unavailable
+      }
+
+      // If user was created within the last 60 seconds (e.g. fresh OAuth or Email sign up)
+      if (!isNewAccount && currentUser.created_at) {
+        const createdAtMs = new Date(currentUser.created_at).getTime();
+        if (!isNaN(createdAtMs) && Date.now() - createdAtMs < 60_000) {
+          isNewAccount = true;
+        }
+      }
+
+      if (isNewAccount) {
+        // Integrate guest decks created during anonymous trial into their new account
+        await migrateGuestLibraryToUser(currentUser.id);
+      } else {
+        // Existing account: Load ONLY this account's cloud decks.
+        // Overwrites local storage so anonymous/guest decks do NOT pollute this account.
+        await fetchCloudLibrary();
+      }
+    };
+
     // Get initial session
     supabase.auth
       .getSession()
-      .then(({ data: { session } }) => {
+      .then(async ({ data: { session } }) => {
         setSession(session);
-        setUser(session?.user ?? null);
+        const currentUser = session?.user ?? null;
+        setUser(currentUser);
         setLoading(false);
+        if (currentUser) {
+          await handleAuthLibrarySync(currentUser);
+        }
       })
       .catch(() => {
         setLoading(false);
@@ -88,10 +134,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Listen to changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
       setSession(session);
-      setUser(session?.user ?? null);
+      const currentUser = session?.user ?? null;
+      setUser(currentUser);
       setLoading(false);
+
+      if (event === "SIGNED_IN" && currentUser) {
+        await handleAuthLibrarySync(currentUser);
+      } else if (event === "SIGNED_OUT") {
+        clearSessionLibrary();
+      }
     });
 
     return () => {
@@ -141,6 +194,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!supabase) {
         return { error: new Error("Authentication is not configured.") };
       }
+      try {
+        sessionStorage.setItem("clutch:just_signed_up", "true");
+      } catch {
+        // sessionStorage unavailable
+      }
       const { error } = await supabase.auth.signUp({
         email,
         password,
@@ -172,6 +230,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (supabase) {
       await supabase.auth.signOut();
     }
+    clearSessionLibrary();
     setUser(null);
     setSession(null);
   }, []);

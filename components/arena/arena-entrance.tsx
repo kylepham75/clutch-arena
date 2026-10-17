@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { AVATAR_OPTIONS, type ArenaRoomState } from "@/lib/schemas/multiplayer";
 import type { StudyPack } from "@/lib/schemas/question";
-import { readLibrary, type SavedStudyItem } from "@/lib/game/library";
+import { readLibrary, LIBRARY_UPDATED_EVENT, type SavedStudyItem } from "@/lib/game/library";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/lib/i18n/context";
@@ -53,7 +53,10 @@ export function ArenaEntrance({
 
   useEffect(() => {
     // Hide the library copy of the preset pack so it isn't listed twice.
-    setLibraryItems(readLibrary().filter((i) => i.id !== presetPack?.id));
+    const update = () => setLibraryItems(readLibrary().filter((i) => i.id !== presetPack?.id));
+    update();
+    window.addEventListener(LIBRARY_UPDATED_EVENT, update);
+    return () => window.removeEventListener(LIBRARY_UPDATED_EVENT, update);
   }, [presetPack?.id]);
 
   useEffect(() => {

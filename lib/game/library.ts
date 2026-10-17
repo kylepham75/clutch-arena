@@ -17,6 +17,18 @@ export type SavedStudyItem = {
 const KEY = "clutch:library:v1";
 const MAX_LIBRARY_ITEMS = 25;
 
+export const LIBRARY_UPDATED_EVENT = "clutch:library-updated";
+
+export function notifyLibraryUpdated(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    try {
+      window.dispatchEvent(new CustomEvent(LIBRARY_UPDATED_EVENT));
+    } catch {
+      // In non-browser or test runners where CustomEvent is unavailable
+    }
+  }
+}
+
 export function readLibrary(): SavedStudyItem[] {
   if (typeof window === "undefined") return [];
   try {
@@ -41,11 +53,14 @@ export function saveStudyItem(item: SavedStudyItem): SavedStudyItem[] {
     try {
       const trimmed = updated.slice(0, Math.max(1, Math.floor(updated.length / 2)));
       localStorage.setItem(KEY, JSON.stringify(trimmed));
+      notifyLibraryUpdated();
+      void syncStudyItemToCloud(item);
       return trimmed;
     } catch {
       /* Storage full or blocked */
     }
   }
+  notifyLibraryUpdated();
   void syncStudyItemToCloud(item);
   return updated;
 }
@@ -58,6 +73,27 @@ export function deleteStudyItem(id: string): SavedStudyItem[] {
   } catch {
     /* Storage blocked */
   }
+  notifyLibraryUpdated();
+
+  // Delete from cloud if user is signed in
+  void (async () => {
+    try {
+      const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+      const supabase = getSupabaseBrowserClient();
+      if (!supabase) return;
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        await supabase
+          .from("user_study_packs")
+          .delete()
+          .eq("id", id)
+          .eq("user_id", user.id);
+      }
+    } catch {
+      // ignore
+    }
+  })();
+
   return updated;
 }
 
@@ -65,6 +101,9 @@ export function getStudyItem(id: string): SavedStudyItem | undefined {
   return readLibrary().find((i) => i.id === id);
 }
 
+/**
+ * Saves or updates a single study item in Supabase user_study_packs table
+ */
 export async function syncStudyItemToCloud(item: SavedStudyItem): Promise<boolean> {
   if (typeof window === "undefined") return false;
   try {
@@ -92,3 +131,102 @@ export async function syncStudyItemToCloud(item: SavedStudyItem): Promise<boolea
     return false;
   }
 }
+
+/**
+ * Fetches all study packs belonging to the logged-in user from Supabase.
+ * Loads only this account's study packs into the active session.
+ */
+export async function fetchCloudLibrary(): Promise<SavedStudyItem[]> {
+  if (typeof window === "undefined") return [];
+  try {
+    const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return readLibrary();
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return readLibrary();
+
+    const { data, error } = await supabase
+      .from("user_study_packs")
+      .select("id, title, question_count, pack, document, created_at")
+      .order("created_at", { ascending: false });
+
+    if (error || !data) return readLibrary();
+
+    const cloudItems: SavedStudyItem[] = data.map((row) => ({
+      id: row.id,
+      title: row.title,
+      createdAt: row.created_at,
+      questionCount: row.question_count,
+      format: (row.document?.format as any) || "txt",
+      fileName: (row.document?.fileName as string) || `${row.title}.clutch.json`,
+      pack: row.pack,
+      document: row.document,
+    }));
+
+    // Cache locally for this user session
+    localStorage.setItem(KEY, JSON.stringify(cloudItems));
+    localStorage.setItem(`clutch:library:${user.id}`, JSON.stringify(cloudItems));
+    notifyLibraryUpdated();
+
+    return cloudItems;
+  } catch {
+    return readLibrary();
+  }
+}
+
+/**
+ * Migrates temporary anonymous guest study packs into a brand-new user account.
+ * Only called when a fresh user signs up.
+ */
+export async function migrateGuestLibraryToUser(userId: string): Promise<SavedStudyItem[]> {
+  if (typeof window === "undefined") return [];
+  try {
+    const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return [];
+
+    const guestItems = readLibrary();
+    if (guestItems.length > 0) {
+      const rows = guestItems.map((item) => ({
+        id: item.id,
+        user_id: userId,
+        title: item.title,
+        question_count: item.questionCount,
+        pack: item.pack,
+        document: item.document,
+        created_at: item.createdAt || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }));
+
+      await supabase.from("user_study_packs").upsert(rows);
+    }
+
+    // Reset guest usage counter now that they have created an account
+    localStorage.removeItem("clutch:guest_usage:v1");
+
+    const cloudDecks = await fetchCloudLibrary();
+    notifyLibraryUpdated();
+    return cloudDecks;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resets the local session library when a user signs out so an account's decks
+ * do not leak onto the public/shared computer for another guest.
+ */
+export function clearSessionLibrary(): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(KEY, "[]");
+    localStorage.removeItem("clutch:guest_usage:v1");
+  } catch {
+    // ignore
+  }
+  notifyLibraryUpdated();
+}
+
