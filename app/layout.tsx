@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Space_Grotesk, Be_Vietnam_Pro, JetBrains_Mono } from "next/font/google";
 import { LanguageProvider } from "@/lib/i18n/context";
+import { AuthProvider } from "@/lib/auth/context";
+import { AuthDialog } from "@/components/auth/auth-dialog";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 
@@ -40,7 +42,12 @@ export default function RootLayout({
       className={`${spaceGrotesk.variable} ${beVietnamPro.variable} ${jetbrainsMono.variable}`}
     >
       <body>
-        <LanguageProvider>{children}</LanguageProvider>
+        <LanguageProvider>
+          <AuthProvider>
+            {children}
+            <AuthDialog />
+          </AuthProvider>
+        </LanguageProvider>
       </body>
     </html>
   );

@@ -8,6 +8,7 @@ import { readUpload } from "./read-upload";
 import { validateFile } from "./validate-file";
 import { REQUEST_TIMEOUT_MS } from "./limits";
 import { isAllowedOrigin } from "@/lib/utils";
+import { verifyAuthToken } from "@/lib/auth/server-guard";
 
 export function createIngestionHandler(
   dependencies: {
@@ -62,6 +63,7 @@ export function createIngestionHandler(
           "Upload from this application’s origin.",
           403,
         );
+      const auth = await verifyAuthToken(request);
       const { file, options } = await readUpload(request, signal);
       validateFile(file);
       // Fail fast without parsing when generation cannot be configured.
@@ -75,6 +77,7 @@ export function createIngestionHandler(
         ok: true,
         requestId,
         operation: "generate",
+        authenticated: auth.authenticated,
         document,
         ...result,
       });

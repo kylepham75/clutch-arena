@@ -23,6 +23,7 @@ import type {
 import type { StudyPack } from "@/lib/schemas/question";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/lib/i18n/context";
+import { useAuth } from "@/lib/auth/context";
 import { formatRejectionError } from "@/lib/utils/format-upload-error";
 
 export function UploadPanel({
@@ -41,6 +42,7 @@ export function UploadPanel({
   onHostArena?: (pack: StudyPack) => void;
 }) {
   const { language: siteLang, t } = useLanguage();
+  const { session, user, canGenerate, openAuthModal, incrementGuestUsage } = useAuth();
   const [files, setFiles] = useState<File[]>([]);
   const [operation, setOperation] = useState<"generate" | "preview">("generate");
   const [questionCount, setQuestionCount] = useState(5);
@@ -137,6 +139,16 @@ export function UploadPanel({
     }
 
     const op = overrideOperation || operation;
+
+    if (op === "generate" && !canGenerate) {
+      openAuthModal("guest_limit_reached");
+      setError({
+        code: "AUTH_REQUIRED",
+        message: "Free guest limit reached (2/2). Please sign in or create an account to generate custom study packs.",
+      });
+      return;
+    }
+
     setLoading(true);
     setError(null);
     const startTime = Date.now();
@@ -196,8 +208,14 @@ export function UploadPanel({
 
       const endpoint = files.length > 1 ? "/api/ingest/multi" : "/api/ingest";
 
+      const headers: Record<string, string> = {};
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+      }
+
       const res = await fetch(endpoint, {
         method: "POST",
+        headers,
         body: formData,
         signal: controller.signal,
       });
@@ -214,10 +232,16 @@ export function UploadPanel({
         setPreviewResult(data.document);
         onDocumentPreviewed(data.document);
       } else {
+        if (!user) {
+          incrementGuestUsage();
+        }
         setGeneratedResult(data);
         onPackGenerated(data.pack, data.document, data.references);
       }
     } catch (err: any) {
+      if (err.code === "AUTH_REQUIRED") {
+        openAuthModal("auth_required");
+      }
       if (err.name === "AbortError") {
         setError({ code: "CANCELLED", message: "Upload was cancelled." });
       } else {

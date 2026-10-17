@@ -46,6 +46,7 @@ export function saveStudyItem(item: SavedStudyItem): SavedStudyItem[] {
       /* Storage full or blocked */
     }
   }
+  void syncStudyItemToCloud(item);
   return updated;
 }
 
@@ -62,4 +63,32 @@ export function deleteStudyItem(id: string): SavedStudyItem[] {
 
 export function getStudyItem(id: string): SavedStudyItem | undefined {
   return readLibrary().find((i) => i.id === id);
+}
+
+export async function syncStudyItemToCloud(item: SavedStudyItem): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return false;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return false;
+
+    const { error } = await supabase.from("user_study_packs").upsert({
+      id: item.id,
+      user_id: user.id,
+      title: item.title,
+      question_count: item.questionCount,
+      pack: item.pack,
+      document: item.document,
+      updated_at: new Date().toISOString(),
+    });
+
+    return !error;
+  } catch {
+    return false;
+  }
 }

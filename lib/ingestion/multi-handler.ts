@@ -7,6 +7,7 @@ import { parseMultiDocuments } from "./parse-multi-documents";
 import { readMultiUpload } from "./read-multi-upload";
 import { REQUEST_TIMEOUT_MS } from "./limits";
 import { isAllowedOrigin } from "@/lib/utils";
+import { verifyAuthToken } from "@/lib/auth/server-guard";
 
 export function createMultiIngestionHandler(
   dependencies: {
@@ -67,6 +68,7 @@ export function createMultiIngestionHandler(
         );
       }
 
+      const auth = await verifyAuthToken(request);
       const { files, options } = await readMultiUpload(request, signal);
 
       if (options.operation === "generate") {
@@ -92,6 +94,7 @@ export function createMultiIngestionHandler(
         ok: true,
         requestId,
         operation: "generate",
+        authenticated: auth.authenticated,
         document: compositeDocument,
         documents,
         ...result,

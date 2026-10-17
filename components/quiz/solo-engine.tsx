@@ -55,6 +55,7 @@ import { FlashcardReview } from "@/components/quiz/flashcard-review";
 import { ArenaManager } from "@/components/arena/arena-manager";
 import { useLanguage } from "@/lib/i18n/context";
 import { LanguageSwitcher } from "@/components/ui/language-switcher";
+import { UserProfileButton } from "@/components/auth/user-profile-button";
 import { readLibrary, saveStudyItem, type SavedStudyItem } from "@/lib/game/library";
 import {
   readShareToken,
@@ -569,16 +570,7 @@ export function SoloEngine({
               </p>
               <span className="note-line" />
             </div>
-            <div className="local-profile">
-              <div className="profile-avatar">Y</div>
-              <div>
-                <strong>{t.sidebar.youGotThis}</strong>
-                <small>
-                  <span />
-                  {t.sidebar.localPractice}
-                </small>
-              </div>
-            </div>
+            <UserProfileButton variant="sidebar" />
           </div>
         </aside>
 
@@ -667,7 +659,7 @@ export function SoloEngine({
               >
                 <CircleHelp size={19} />
               </Button>
-              <div className="top-avatar">Y</div>
+              <UserProfileButton variant="topbar" />
             </div>
           </header>
 
