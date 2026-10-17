@@ -12,13 +12,17 @@ import {
 import { IngestionError } from "@/lib/ingestion/errors";
 import { isAllowedOrigin } from "@/lib/utils";
 import { budgetSourceBlocks } from "@/lib/ai/budget-sources";
+import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
 export function createCoachHandler(
   dependencies: {
     getModel?: typeof getGenerationModel;
+    rateLimiter?: typeof checkRateLimit;
   } = {},
 ) {
   const getModel = dependencies.getModel ?? getGenerationModel;
+  const rateLimiter = dependencies.rateLimiter ?? checkRateLimit;
 
   return async function POST(request: Request) {
     const origin = request.headers.get("origin");
@@ -47,6 +51,32 @@ export function createCoachHandler(
         },
         { status: 413, headers: { "Cache-Control": "no-store" } },
       );
+    }
+
+    const auth = await verifyAuthToken(request);
+    const clientIp = getClientIp(request);
+    const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
+    const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
+    if (!isTestBypass) {
+      const rateResult = await rateLimiter(rateLimitKey, "coach");
+      if (!rateResult.allowed) {
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "RATE_LIMIT_EXCEEDED",
+              message: `AI Coach rate limit reached. Please wait ${rateResult.retryAfter} seconds before asking again.`,
+            },
+          },
+          {
+            status: 429,
+            headers: {
+              "Cache-Control": "no-store",
+              "Retry-After": rateResult.retryAfter.toString(),
+            },
+          },
+        );
+      }
     }
 
     let raw: unknown;

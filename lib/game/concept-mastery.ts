@@ -43,6 +43,7 @@ export function saveMasteryStore(store: Record<string, ConceptStats>): void {
   } catch {
     /* Storage unavailable or full */
   }
+  void syncMasteryStoreToCloud(store);
 }
 
 export function normalizeTopicKey(topic: string): string {
@@ -212,4 +213,126 @@ export function createWeakSpotSprintPack(
     questions: selectedQuestions,
     metadata: newMetadata,
   };
+}
+
+/**
+ * Syncs the entire mastery store to Supabase under auth.uid()
+ */
+export async function syncMasteryStoreToCloud(
+  store: Record<string, ConceptStats>,
+): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return false;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return false;
+
+    const entries = Object.values(store);
+    if (entries.length === 0) return true;
+
+    const rows = entries.map((entry) => ({
+      user_id: user.id,
+      topic: entry.topic,
+      total_attempts: entry.totalAttempts,
+      correct_attempts: entry.correctAttempts,
+      consecutive_correct: entry.consecutiveCorrect,
+      last_attempted_at: entry.lastAttemptedAt,
+      history: entry.history,
+    }));
+
+    const { error } = await supabase.from("user_concept_mastery").upsert(rows);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fetches mastery statistics from Supabase for the authenticated user
+ * and merges into local storage.
+ */
+export async function fetchCloudMastery(): Promise<Record<string, ConceptStats>> {
+  if (typeof window === "undefined") return readMasteryStore();
+  try {
+    const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return readMasteryStore();
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return readMasteryStore();
+
+    const { data, error } = await supabase
+      .from("user_concept_mastery")
+      .select("topic, total_attempts, correct_attempts, consecutive_correct, last_attempted_at, history");
+
+    if (error || !data) return readMasteryStore();
+
+    const store: Record<string, ConceptStats> = {};
+    for (const row of data) {
+      const key = normalizeTopicKey(row.topic);
+      store[key] = {
+        topic: row.topic,
+        totalAttempts: row.total_attempts,
+        correctAttempts: row.correct_attempts,
+        consecutiveCorrect: row.consecutive_correct,
+        lastAttemptedAt: row.last_attempted_at,
+        history: Array.isArray(row.history) ? row.history : [],
+      };
+    }
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    return store;
+  } catch {
+    return readMasteryStore();
+  }
+}
+
+/**
+ * Migrates local guest mastery to Supabase when a user registers.
+ */
+export async function migrateGuestMasteryToUser(
+  userId: string,
+): Promise<Record<string, ConceptStats>> {
+  if (typeof window === "undefined") return {};
+  try {
+    const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return {};
+
+    const localStore = readMasteryStore();
+    const entries = Object.values(localStore);
+    if (entries.length > 0) {
+      const rows = entries.map((entry) => ({
+        user_id: userId,
+        topic: entry.topic,
+        total_attempts: entry.totalAttempts,
+        correct_attempts: entry.correctAttempts,
+        consecutive_correct: entry.consecutiveCorrect,
+        last_attempted_at: entry.lastAttemptedAt,
+        history: entry.history,
+      }));
+
+      await supabase.from("user_concept_mastery").upsert(rows);
+    }
+
+    return await fetchCloudMastery();
+  } catch {
+    return {};
+  }
+}
+
+export function clearSessionMastery(): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(STORAGE_KEY, "{}");
+  } catch {
+    // ignore
+  }
 }

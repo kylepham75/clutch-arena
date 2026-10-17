@@ -15,6 +15,16 @@ import {
   migrateGuestLibraryToUser,
   clearSessionLibrary,
 } from "@/lib/game/library";
+import {
+  fetchCloudHistory,
+  migrateGuestRunsToUser,
+  clearSessionHistory,
+} from "@/lib/game/history";
+import {
+  fetchCloudMastery,
+  migrateGuestMasteryToUser,
+  clearSessionMastery,
+} from "@/lib/game/concept-mastery";
 
 export type AccountTier = "guest" | "free" | "pro";
 
@@ -106,12 +116,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       if (isNewAccount) {
-        // Integrate guest decks created during anonymous trial into their new account
-        await migrateGuestLibraryToUser(currentUser.id);
+        // Integrate guest decks, run history, and mastery created during anonymous trial into their new account
+        await Promise.allSettled([
+          migrateGuestLibraryToUser(currentUser.id),
+          migrateGuestRunsToUser(currentUser.id),
+          migrateGuestMasteryToUser(currentUser.id),
+        ]);
       } else {
-        // Existing account: Load ONLY this account's cloud decks.
+        // Existing account: Load ONLY this account's cloud decks, run history, and mastery.
         // Overwrites local storage so anonymous/guest decks do NOT pollute this account.
-        await fetchCloudLibrary();
+        await Promise.allSettled([
+          fetchCloudLibrary(),
+          fetchCloudHistory(),
+          fetchCloudMastery(),
+        ]);
       }
     };
 
@@ -144,6 +162,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await handleAuthLibrarySync(currentUser);
       } else if (event === "SIGNED_OUT") {
         clearSessionLibrary();
+        clearSessionHistory();
+        clearSessionMastery();
       }
     });
 
@@ -231,6 +251,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await supabase.auth.signOut();
     }
     clearSessionLibrary();
+    clearSessionHistory();
+    clearSessionMastery();
     setUser(null);
     setSession(null);
   }, []);

@@ -9,11 +9,13 @@ import { validateFile } from "./validate-file";
 import { REQUEST_TIMEOUT_MS } from "./limits";
 import { isAllowedOrigin } from "@/lib/utils";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
 export function createIngestionHandler(
   dependencies: {
     generate?: typeof generateQuestions;
     checkConfiguration?: () => void;
+    rateLimiter?: typeof checkRateLimit;
   } = {},
 ) {
   const generate = dependencies.generate ?? generateQuestions;
@@ -22,6 +24,7 @@ export function createIngestionHandler(
     (() => {
       getGenerationModel();
     });
+  const rateLimiter = dependencies.rateLimiter ?? checkRateLimit;
   let active = 0;
   return async function POST(request: Request) {
     const requestId = randomUUID();
@@ -66,8 +69,29 @@ export function createIngestionHandler(
       const auth = await verifyAuthToken(request);
       const { file, options } = await readUpload(request, signal);
       validateFile(file);
-      // Fail fast without parsing when generation cannot be configured.
-      if (options.operation === "generate") checkConfiguration();
+      // Fail fast without parsing when generation cannot be configured or rate limit is reached.
+      if (options.operation === "generate") {
+        const clientIp = getClientIp(request);
+        const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
+        const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
+        if (!isTestBypass) {
+          const rateResult = await rateLimiter(rateLimitKey, "ingest");
+          if (!rateResult.allowed) {
+            return json(
+              {
+                ok: false,
+                requestId,
+                error: {
+                  code: "RATE_LIMIT_EXCEEDED",
+                  message: `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow or sign in.`,
+                },
+              },
+              429,
+            );
+          }
+        }
+        checkConfiguration();
+      }
       const document = await parseDocument(file, signal);
       if (options.operation === "preview")
         return json({ ok: true, requestId, operation: "preview", document });

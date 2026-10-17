@@ -8,11 +8,13 @@ import { readMultiUpload } from "./read-multi-upload";
 import { REQUEST_TIMEOUT_MS } from "./limits";
 import { isAllowedOrigin } from "@/lib/utils";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
 export function createMultiIngestionHandler(
   dependencies: {
     generate?: typeof generateQuestions;
     checkConfiguration?: () => void;
+    rateLimiter?: typeof checkRateLimit;
   } = {},
 ) {
   const generate = dependencies.generate ?? generateQuestions;
@@ -21,6 +23,7 @@ export function createMultiIngestionHandler(
     (() => {
       getGenerationModel();
     });
+  const rateLimiter = dependencies.rateLimiter ?? checkRateLimit;
   let active = 0;
 
   return async function POST(request: Request) {
@@ -72,6 +75,25 @@ export function createMultiIngestionHandler(
       const { files, options } = await readMultiUpload(request, signal);
 
       if (options.operation === "generate") {
+        const clientIp = getClientIp(request);
+        const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
+        const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
+        if (!isTestBypass) {
+          const rateResult = await rateLimiter(rateLimitKey, "ingest");
+          if (!rateResult.allowed) {
+            return json(
+              {
+                ok: false,
+                requestId,
+                error: {
+                  code: "RATE_LIMIT_EXCEEDED",
+                  message: `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow or sign in.`,
+                },
+              },
+              429,
+            );
+          }
+        }
         checkConfiguration();
       }
 
