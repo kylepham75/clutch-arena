@@ -819,7 +819,7 @@ export function SoloEngine({
                               <span className="tag tag-amber">Getting Started</span>
                             </div>
 
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 my-4">
+                            <div className="welcome-actions-grid">
                               <div
                                 role="button"
                                 tabIndex={0}
@@ -827,13 +827,13 @@ export function SoloEngine({
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter" || e.key === " ") setTutorialOpen(true);
                                 }}
-                                className="p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/70 hover:border-amber-400 dark:hover:border-amber-600 transition-all cursor-pointer"
+                                className="welcome-action-card"
                               >
-                                <div className="p-2 w-9 h-9 rounded-lg bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 flex items-center justify-center mb-2.5">
+                                <div className="welcome-card-icon amber">
                                   <Compass size={18} />
                                 </div>
-                                <strong className="text-xs font-semibold block mb-1">Interactive Tutorial</strong>
-                                <span className="text-xs text-stone-500 block">Take a 1-minute guided tour of active recall and live arenas.</span>
+                                <strong>Interactive Tutorial</strong>
+                                <span>Take a 1-minute guided tour of active recall and live arenas.</span>
                               </div>
 
                               <div
@@ -843,13 +843,13 @@ export function SoloEngine({
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter" || e.key === " ") setActiveTab("ingest");
                                 }}
-                                className="p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/70 hover:border-emerald-400 dark:hover:border-emerald-600 transition-all cursor-pointer"
+                                className="welcome-action-card"
                               >
-                                <div className="p-2 w-9 h-9 rounded-lg bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 flex items-center justify-center mb-2.5">
+                                <div className="welcome-card-icon emerald">
                                   <Upload size={18} />
                                 </div>
-                                <strong className="text-xs font-semibold block mb-1">Upload Study Notes</strong>
-                                <span className="text-xs text-stone-500 block">Drop your lecture PDFs, DOCX, or PPTX to generate study questions.</span>
+                                <strong>Upload Study Notes</strong>
+                                <span>Drop your lecture PDFs, DOCX, or PPTX to generate study questions.</span>
                               </div>
 
                               <div
@@ -859,13 +859,13 @@ export function SoloEngine({
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter" || e.key === " ") handleLoadSamplePack();
                                 }}
-                                className="p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/70 hover:border-blue-400 dark:hover:border-blue-600 transition-all cursor-pointer"
+                                className="welcome-action-card"
                               >
-                                <div className="p-2 w-9 h-9 rounded-lg bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 flex items-center justify-center mb-2.5">
+                                <div className="welcome-card-icon blue">
                                   <Play size={18} fill="currentColor" />
                                 </div>
-                                <strong className="text-xs font-semibold block mb-1">Load Example Deck</strong>
-                                <span className="text-xs text-stone-500 block">Try 15 questions from Microeconomics Ch 1–5 with citations.</span>
+                                <strong>Load Example Deck</strong>
+                                <span>Try 15 questions from Microeconomics Ch 1–5 with citations.</span>
                               </div>
                             </div>
                           </section>

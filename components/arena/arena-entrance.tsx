@@ -227,8 +227,8 @@ export function ArenaEntrance({
                 </label>
               )}
               {!presetPack && libraryItems.length === 0 && (
-                <div className="p-4 rounded-xl border border-dashed border-stone-300 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-900/60 text-center text-xs text-stone-500 my-2">
-                  <p className="font-semibold text-stone-700 dark:text-stone-300 mb-1">No Study Packs Found</p>
+                <div className="p-4 rounded-xl border border-dashed border-stone-300 bg-stone-50 text-center text-xs text-stone-600 my-2">
+                  <p className="font-semibold text-stone-800 mb-1">No Study Packs Found</p>
                   <p>Upload lecture notes in the Ingest tab to generate a custom study pack to host here.</p>
                 </div>
               )}

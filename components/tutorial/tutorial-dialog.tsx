@@ -99,8 +99,8 @@ export function TutorialDialog({
         <DialogPrimitive.Content className="dialog-content tutorial-dialog-content">
           <div className="tutorial-header flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <span className="tutorial-badge flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-900 dark:bg-amber-950/60 dark:text-amber-300">
-                <Sparkles size={13} className="text-amber-600 dark:text-amber-400" />
+              <span className="tutorial-badge">
+                <Sparkles size={13} className="text-amber-700" />
                 Quick Tour · Step {step + 1} of 6
               </span>
             </div>
@@ -109,14 +109,14 @@ export function TutorialDialog({
                 variant="ghost"
                 size="sm"
                 onClick={handleSkipOrComplete}
-                className="text-stone-500 hover:text-stone-800 dark:text-stone-400 dark:hover:text-stone-200 text-xs h-8 px-2"
+                className="text-stone-600 hover:text-stone-900 text-xs h-8 px-2 font-medium"
               >
                 Skip Tutorial
               </Button>
               <DialogPrimitive.Close asChild>
                 <button
                   onClick={handleSkipOrComplete}
-                  className="dialog-close-btn p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+                  className="dialog-close-btn p-1.5 rounded-lg text-stone-500 hover:text-stone-900"
                   aria-label="Close tutorial"
                 >
                   <X size={18} />
@@ -128,57 +128,45 @@ export function TutorialDialog({
           <div className="tutorial-body">
             {step === 0 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-wrapper mb-3 p-3 w-12 h-12 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center">
-                  <Sparkles size={26} />
+                <div className="tutorial-icon-box amber">
+                  <Sparkles size={24} />
                 </div>
-                <h3 className="text-xl font-bold tracking-tight text-stone-900 dark:text-stone-100 mb-2">
+                <h3 className="tutorial-title">
                   Welcome to Clutch Arena
                 </h3>
-                <p className="text-stone-600 dark:text-stone-300 text-sm leading-relaxed mb-4">
+                <p className="tutorial-desc">
                   Clutch Arena transforms your static lecture slides, PDFs, notes, and testbanks into
                   high-yield active recall quizzes and real-time multiplayer arenas.
                 </p>
 
-                <div className="tutorial-feature-list space-y-2.5 my-4">
-                  <div className="feature-item p-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-900/50 flex items-start gap-3">
-                    <span className="feature-icon p-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 mt-0.5">
+                <div className="space-y-2.5 my-4">
+                  <div className="tutorial-feature-card">
+                    <span className="tutorial-feature-icon emerald">
                       <FileText size={16} />
                     </span>
-                    <div>
-                      <strong className="text-xs font-semibold text-stone-900 dark:text-stone-100 block">
-                        Drop Any Course Notes
-                      </strong>
-                      <span className="text-xs text-stone-600 dark:text-stone-400">
-                        AI analyzes your documents and generates multi-choice questions with verified citations.
-                      </span>
+                    <div className="tutorial-feature-content">
+                      <strong>Drop Any Course Notes</strong>
+                      <span>AI analyzes your documents and generates multi-choice questions with verified citations.</span>
                     </div>
                   </div>
 
-                  <div className="feature-item p-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-900/50 flex items-start gap-3">
-                    <span className="feature-icon p-1.5 rounded-lg bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 mt-0.5">
+                  <div className="tutorial-feature-card">
+                    <span className="tutorial-feature-icon amber">
                       <Zap size={16} />
                     </span>
-                    <div>
-                      <strong className="text-xs font-semibold text-stone-900 dark:text-stone-100 block">
-                        Solo Clutch Run
-                      </strong>
-                      <span className="text-xs text-stone-600 dark:text-stone-400">
-                        15-second pressure clock, combo multipliers, flashcard mode, and targeted weak-spot sprints.
-                      </span>
+                    <div className="tutorial-feature-content">
+                      <strong>Solo Clutch Run</strong>
+                      <span>15-second pressure clock, combo multipliers, flashcard mode, and targeted weak-spot sprints.</span>
                     </div>
                   </div>
 
-                  <div className="feature-item p-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-900/50 flex items-start gap-3">
-                    <span className="feature-icon p-1.5 rounded-lg bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400 mt-0.5">
+                  <div className="tutorial-feature-card">
+                    <span className="tutorial-feature-icon blue">
                       <Users size={16} />
                     </span>
-                    <div>
-                      <strong className="text-xs font-semibold text-stone-900 dark:text-stone-100 block">
-                        Live Study Arena
-                      </strong>
-                      <span className="text-xs text-stone-600 dark:text-stone-400">
-                        Real-time buzzer showdowns with classmates or adaptive bots using edge WebSockets.
-                      </span>
+                    <div className="tutorial-feature-content">
+                      <strong>Live Study Arena</strong>
+                      <span>Real-time buzzer showdowns with classmates or adaptive bots using edge WebSockets.</span>
                     </div>
                   </div>
                 </div>
@@ -187,27 +175,27 @@ export function TutorialDialog({
 
             {step === 1 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-wrapper mb-3 p-3 w-12 h-12 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
-                  <Upload size={26} />
+                <div className="tutorial-icon-box emerald">
+                  <Upload size={24} />
                 </div>
-                <h3 className="text-xl font-bold tracking-tight text-stone-900 dark:text-stone-100 mb-2">
+                <h3 className="tutorial-title">
                   1. Upload Notes & AI Question Ingestion
                 </h3>
-                <p className="text-stone-600 dark:text-stone-300 text-sm leading-relaxed mb-4">
+                <p className="tutorial-desc">
                   Never waste hours manually typing flashcards. Just upload your study documents in the Ingest tab.
                 </p>
 
-                <div className="tutorial-preview-box p-4 rounded-xl border border-dashed border-stone-300 dark:border-stone-700 bg-stone-100/60 dark:bg-stone-900/60 text-center mb-4">
-                  <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 shadow-sm text-xs font-medium text-stone-800 dark:text-stone-200 mb-2">
+                <div className="tutorial-preview-box">
+                  <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-stone-200 shadow-sm text-xs font-semibold text-stone-800 mb-2">
                     <FileText size={15} className="text-amber-600" />
                     Lecture_Slides_Week_1_5.pdf
                   </div>
-                  <div className="text-xs text-stone-500 dark:text-stone-400 mt-1">
+                  <div className="text-xs text-stone-600 mt-1">
                     Supports <strong>PDF</strong>, <strong>DOCX</strong>, <strong>PPTX</strong>, and <strong>TXT</strong> files.
                   </div>
                 </div>
 
-                <div className="space-y-2 text-xs text-stone-600 dark:text-stone-300">
+                <div className="space-y-2 text-xs text-stone-700">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
                     <span>Extracts key definitions, laws, and quantitative formulas</span>
@@ -226,41 +214,41 @@ export function TutorialDialog({
 
             {step === 2 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-wrapper mb-3 p-3 w-12 h-12 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center">
-                  <Zap size={26} />
+                <div className="tutorial-icon-box amber">
+                  <Zap size={24} />
                 </div>
-                <h3 className="text-xl font-bold tracking-tight text-stone-900 dark:text-stone-100 mb-2">
+                <h3 className="tutorial-title">
                   2. Solo Clutch Run (Example: Microeconomics)
                 </h3>
-                <p className="text-stone-600 dark:text-stone-300 text-sm leading-relaxed mb-4">
+                <p className="tutorial-desc">
                   Questions are backed by <strong>zero-hallucination source citations</strong>. Here is how a question looks in our Microeconomics example deck:
                 </p>
 
                 {/* Microeconomics Sample Question Preview */}
-                <div className="sample-card p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-sm mb-4">
-                  <div className="flex items-center justify-between text-xs text-stone-500 mb-2">
-                    <span className="font-semibold text-amber-700 dark:text-amber-400">Microeconomics Ch 5</span>
-                    <span className="bg-stone-100 dark:bg-stone-800 px-2 py-0.5 rounded text-[11px] font-mono">15s Clock</span>
+                <div className="tutorial-sample-card">
+                  <div className="tutorial-sample-header">
+                    <span className="tutorial-sample-badge">Microeconomics Ch 5</span>
+                    <span className="tutorial-sample-clock">15s Clock</span>
                   </div>
-                  <p className="text-xs font-semibold text-stone-900 dark:text-stone-100 mb-3">
+                  <p className="tutorial-sample-question">
                     A competitive firm observes that Marginal Revenue ($50) exceeds Marginal Cost ($45). To maximize profit, the firm should:
                   </p>
-                  <div className="space-y-1.5 text-xs">
-                    <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 flex items-center justify-between font-medium text-emerald-900 dark:text-emerald-300">
+                  <div>
+                    <div className="tutorial-sample-option-correct">
                       <span>A. Expand output until MR = MC</span>
-                      <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-400" />
+                      <CheckCircle2 size={15} className="text-emerald-700" />
                     </div>
-                    <div className="p-2 rounded-lg bg-stone-50 dark:bg-stone-800/50 border border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400">
+                    <div className="tutorial-sample-option-other">
                       B. Decrease output immediately
                     </div>
                   </div>
-                  <div className="mt-3 pt-2.5 border-t border-stone-100 dark:border-stone-800 flex items-center gap-1.5 text-[11px] text-amber-800 dark:text-amber-300 font-medium">
+                  <div className="tutorial-sample-citation">
                     <BookOpen size={13} />
                     <span>Citation: Chapter 5 · Marginal Profit Condition (Page 142)</span>
                   </div>
                 </div>
 
-                <p className="text-xs text-stone-500 dark:text-stone-400">
+                <p className="text-xs text-stone-600">
                   Clicking citations opens the document viewer directly to the verbatim line in your lecture notes.
                 </p>
               </div>
@@ -268,35 +256,39 @@ export function TutorialDialog({
 
             {step === 3 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-wrapper mb-3 p-3 w-12 h-12 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center">
-                  <Compass size={26} />
+                <div className="tutorial-icon-box purple">
+                  <Compass size={24} />
                 </div>
-                <h3 className="text-xl font-bold tracking-tight text-stone-900 dark:text-stone-100 mb-2">
+                <h3 className="tutorial-title">
                   3. AI Coach & Weak Spot Sprints
                 </h3>
-                <p className="text-stone-600 dark:text-stone-300 text-sm leading-relaxed mb-4">
+                <p className="tutorial-desc">
                   Clutch Arena tracks your errors and builds customized drills so you don&apos;t repeat the same mistakes on test day.
                 </p>
 
-                <div className="coach-preview-box p-3.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/70 space-y-2.5 mb-4">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-stone-800 dark:text-stone-200">Consumer Surplus & Equilibrium</span>
-                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold">100% Mastery</span>
-                  </div>
-                  <div className="w-full bg-stone-200 dark:bg-stone-700 h-1.5 rounded-full overflow-hidden">
-                    <div className="bg-emerald-500 h-full w-full" />
+                <div className="tutorial-coach-box space-y-3">
+                  <div>
+                    <div className="flex items-center justify-between text-xs font-semibold">
+                      <span className="text-stone-800">Consumer Surplus & Equilibrium</span>
+                      <span className="text-emerald-700">100% Mastery</span>
+                    </div>
+                    <div className="tutorial-meter-track">
+                      <div className="bg-emerald-500 h-full w-full" />
+                    </div>
                   </div>
 
-                  <div className="flex items-center justify-between text-xs pt-1">
-                    <span className="font-medium text-stone-800 dark:text-stone-200">Price Elasticity Calculations</span>
-                    <span className="text-rose-600 dark:text-rose-400 font-semibold">40% Mastery (Weak Spot)</span>
-                  </div>
-                  <div className="w-full bg-stone-200 dark:bg-stone-700 h-1.5 rounded-full overflow-hidden">
-                    <div className="bg-rose-500 h-full w-2/5" />
+                  <div>
+                    <div className="flex items-center justify-between text-xs font-semibold">
+                      <span className="text-stone-800">Price Elasticity Calculations</span>
+                      <span className="text-rose-600">40% Mastery (Weak Spot)</span>
+                    </div>
+                    <div className="tutorial-meter-track">
+                      <div className="bg-rose-500 h-full w-2/5" />
+                    </div>
                   </div>
                 </div>
 
-                <p className="text-xs text-stone-600 dark:text-stone-400 leading-normal">
+                <p className="text-xs text-stone-600 leading-normal">
                   The AI Coach creates a <strong>5-question sprint</strong> focusing exclusively on your weak topics until you achieve mastery.
                 </p>
               </div>
@@ -304,17 +296,17 @@ export function TutorialDialog({
 
             {step === 4 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-wrapper mb-3 p-3 w-12 h-12 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center">
-                  <Users size={26} />
+                <div className="tutorial-icon-box blue">
+                  <Users size={24} />
                 </div>
-                <h3 className="text-xl font-bold tracking-tight text-stone-900 dark:text-stone-100 mb-2">
+                <h3 className="tutorial-title">
                   4. Live Study Arena (Multiplayer)
                 </h3>
-                <p className="text-stone-600 dark:text-stone-300 text-sm leading-relaxed mb-4">
+                <p className="tutorial-desc">
                   Turn study sessions into fast-paced live buzzer showdowns with your classmates or study groups.
                 </p>
 
-                <div className="arena-preview-card p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-900 text-stone-100 mb-4">
+                <div className="tutorial-arena-box">
                   <div className="flex items-center justify-between text-xs mb-3">
                     <span className="font-semibold text-amber-400">ROOM: #ECON42</span>
                     <span className="bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-mono text-[11px]">
@@ -335,7 +327,7 @@ export function TutorialDialog({
                   </div>
                 </div>
 
-                <div className="text-xs text-stone-600 dark:text-stone-400 space-y-1">
+                <div className="text-xs text-stone-600 space-y-1">
                   <div>⚡ <strong>Speed points</strong>: The fastest correct buzzer wins extra bonus XP.</div>
                   <div>🤖 <strong>Adaptive Bots</strong>: Fill empty spots with bots if practicing solo at night.</div>
                 </div>
@@ -344,13 +336,13 @@ export function TutorialDialog({
 
             {step === 5 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-wrapper mb-3 p-3 w-12 h-12 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center">
-                  <Trophy size={26} />
+                <div className="tutorial-icon-box amber">
+                  <Trophy size={24} />
                 </div>
-                <h3 className="text-xl font-bold tracking-tight text-stone-900 dark:text-stone-100 mb-2">
+                <h3 className="tutorial-title">
                   Ready to Clutch Your Exam?
                 </h3>
-                <p className="text-stone-600 dark:text-stone-300 text-sm leading-relaxed mb-4">
+                <p className="tutorial-desc">
                   Choose how you want to begin: practice right now using the <strong>Microeconomics sample pack</strong>, or upload your own lecture notes!
                 </p>
 
@@ -365,7 +357,7 @@ export function TutorialDialog({
 
                   <Button
                     variant="outline"
-                    className="w-full justify-center py-5 text-sm font-semibold border-stone-300 dark:border-stone-700"
+                    className="w-full justify-center py-5 text-sm font-semibold border-stone-300 hover:bg-stone-50"
                     onClick={handleUploadNotes}
                   >
                     <Upload size={16} className="mr-2" />
@@ -376,17 +368,13 @@ export function TutorialDialog({
             )}
           </div>
 
-          <div className="tutorial-footer mt-6 pt-4 border-t border-stone-200 dark:border-stone-800 flex items-center justify-between">
-            <div className="tutorial-dots flex items-center gap-1.5">
+          <div className="tutorial-footer mt-6 pt-4 border-t border-stone-200 flex items-center justify-between">
+            <div className="tutorial-dots">
               {[0, 1, 2, 3, 4, 5].map((idx) => (
                 <button
                   key={idx}
                   onClick={() => setStep(idx)}
-                  className={`w-2.5 h-2.5 rounded-full transition-all ${
-                    step === idx
-                      ? "bg-amber-600 w-5"
-                      : "bg-stone-300 dark:bg-stone-700 hover:bg-stone-400"
-                  }`}
+                  className={`tutorial-dot ${step === idx ? "active" : ""}`}
                   aria-label={`Go to step ${idx + 1}`}
                 />
               ))}
@@ -419,7 +407,7 @@ export function TutorialDialog({
                   size="sm"
                   variant="ghost"
                   onClick={handleSkipOrComplete}
-                  className="text-xs h-9 px-3 text-stone-500"
+                  className="text-xs h-9 px-3 text-stone-600 font-medium"
                 >
                   Close & Explore
                 </Button>
