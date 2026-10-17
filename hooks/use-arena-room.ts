@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import type { ArenaPlayer, ArenaRoomState, RoomAction } from "@/lib/schemas/multiplayer";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { getPartyHost } from "@/lib/multiplayer/party-config";
+import PartySocket from "partysocket";
 import { useGameAudio } from "./use-game-audio";
 
 export function useArenaRoom(
@@ -17,6 +19,7 @@ export function useArenaRoom(
   const audio = useGameAudio();
   const prevStatusRef = useRef<string | null>(null);
   const prevQuestionIndexRef = useRef<number>(-1);
+  const partySocketRef = useRef<PartySocket | null>(null);
 
   // Sound effects on state transitions
   useEffect(() => {
@@ -61,16 +64,37 @@ export function useArenaRoom(
       return;
     }
 
+    const code = roomCode;
     let isMounted = true;
 
     async function fetchInitial() {
       try {
-        const res = await fetch(`/api/arena/rooms/${roomCode}`);
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error?.message || "Failed to load arena room.");
+        const partyHost = getPartyHost();
+        let data: any = null;
+        if (partyHost) {
+          try {
+            const res = await PartySocket.fetch({
+              host: partyHost,
+              party: "arena",
+              room: code,
+            });
+            if (res.ok) {
+              data = await res.json();
+            }
+          } catch {
+            // fallback
+          }
         }
-        if (isMounted) {
+
+        if (!data) {
+          const res = await fetch(`/api/arena/rooms/${roomCode}`);
+          data = await res.json();
+          if (!res.ok || !data.ok) {
+            throw new Error(data.error?.message || "Failed to load arena room.");
+          }
+        }
+
+        if (isMounted && data.room) {
           setRoom(data.room);
           setLoading(false);
         }
@@ -89,15 +113,51 @@ export function useArenaRoom(
     };
   }, [roomCode]);
 
-  // Realtime subscription (Supabase Realtime + SSE Fallback)
+  // Realtime subscription: PartyKit WebSockets (Primary) + Supabase/SSE (Fallback)
   useEffect(() => {
     if (!roomCode) return;
 
     let isMounted = true;
+    const partyHost = getPartyHost();
+
+    // 1. Primary: PartyKit WebSockets (< 30ms latency, native timers & state)
+    if (partyHost) {
+      const socket = new PartySocket({
+        host: partyHost,
+        party: "arena",
+        room: roomCode.toUpperCase(),
+      });
+      partySocketRef.current = socket;
+
+      socket.addEventListener("open", () => {
+        if (isMounted) setConnected(true);
+      });
+
+      socket.addEventListener("message", (event) => {
+        if (!isMounted || !event.data) return;
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "room_state" && message.payload) {
+            setRoom(message.payload);
+            setConnected(true);
+            setLoading(false);
+          }
+        } catch {
+          // ignore parsing error
+        }
+      });
+
+      return () => {
+        isMounted = false;
+        socket.close();
+        partySocketRef.current = null;
+      };
+    }
+
+    // 2. Fallback: Supabase Realtime + SSE (For local offline dev without partykit)
     let sse: EventSource | null = null;
     let supabaseChannel: any = null;
 
-    // 1. Try Supabase Realtime if configured
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
       supabaseChannel = supabase
@@ -115,7 +175,6 @@ export function useArenaRoom(
         });
     }
 
-    // 2. Setup Server-Sent Events stream (always works seamlessly)
     try {
       sse = new EventSource(`/api/arena/rooms/${roomCode}/stream`);
 
@@ -132,10 +191,6 @@ export function useArenaRoom(
         } catch {
           // ignore keepalive pings
         }
-      };
-
-      sse.onerror = () => {
-        // SSE will reconnect automatically
       };
     } catch {
       // SSE unsupported or network error
@@ -154,15 +209,50 @@ export function useArenaRoom(
     async (action: RoomAction) => {
       if (!roomCode || !player) return false;
 
-      try {
-        const res = await fetch(`/api/arena/rooms/${roomCode}/action`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+      // 1. Send over PartyKit WebSocket for instant dispatch
+      const partySocket = partySocketRef.current;
+      if (partySocket && partySocket.readyState === WebSocket.OPEN) {
+        partySocket.send(
+          JSON.stringify({
+            type: "ACTION",
             playerId: player.id,
             action,
           }),
-        });
+        );
+        return true;
+      }
+
+      // 2. Fallback to HTTP action route
+      try {
+        const partyHost = getPartyHost();
+        let res: Response;
+        if (partyHost) {
+          res = await PartySocket.fetch(
+            {
+              host: partyHost,
+              party: "arena",
+              room: roomCode.toUpperCase(),
+              path: "/action",
+            },
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                playerId: player.id,
+                action,
+              }),
+            },
+          );
+        } else {
+          res = await fetch(`/api/arena/rooms/${roomCode}/action`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              playerId: player.id,
+              action,
+            }),
+          });
+        }
 
         const data = await res.json();
         if (data.ok && data.room) {

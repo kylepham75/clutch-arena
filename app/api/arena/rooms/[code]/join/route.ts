@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getRoom, joinRoom } from "@/lib/multiplayer/room-manager";
 import { joinRoomSchema } from "@/lib/schemas/multiplayer";
+import { getPartyHost } from "@/lib/multiplayer/party-config";
+import PartySocket from "partysocket";
 
 export async function POST(
   req: Request,
@@ -8,6 +10,41 @@ export async function POST(
 ) {
   try {
     const { code } = await props.params;
+    const json = await req.json();
+    const parsed = joinRoomSchema.safeParse(json);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { ok: false, error: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+
+    const partyHost = getPartyHost();
+    if (partyHost) {
+      try {
+        const partyRes = await PartySocket.fetch(
+          {
+            host: partyHost,
+            party: "arena",
+            room: code.toUpperCase(),
+            path: "/join",
+          },
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed.data),
+          },
+        );
+
+        if (partyRes.ok) {
+          const partyData = await partyRes.json();
+          return NextResponse.json(partyData, { status: 200 });
+        }
+      } catch (partyErr) {
+        console.error("PartyKit join fallback to local:", partyErr);
+      }
+    }
+
     const room = getRoom(code);
     if (!room) {
       return NextResponse.json(
@@ -19,15 +56,6 @@ export async function POST(
     if (room.status !== "lobby") {
       return NextResponse.json(
         { ok: false, error: { message: "This arena match has already started." } },
-        { status: 400 },
-      );
-    }
-
-    const json = await req.json();
-    const parsed = joinRoomSchema.safeParse(json);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { ok: false, error: parsed.error.flatten() },
         { status: 400 },
       );
     }

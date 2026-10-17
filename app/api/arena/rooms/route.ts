@@ -1,8 +1,27 @@
 import { NextResponse } from "next/server";
-import { createRoom, getAllRooms } from "@/lib/multiplayer/room-manager";
+import { createRoom, getAllRooms, generateRoomCode } from "@/lib/multiplayer/room-manager";
 import { createRoomSchema } from "@/lib/schemas/multiplayer";
+import { getPartyHost } from "@/lib/multiplayer/party-config";
+import PartySocket from "partysocket";
 
 export async function GET() {
+  const partyHost = getPartyHost();
+  if (partyHost) {
+    try {
+      const res = await PartySocket.fetch({
+        host: partyHost,
+        party: "arena",
+        room: "__lobby__",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return NextResponse.json(data, { status: 200 });
+      }
+    } catch {
+      // fallback to in-memory
+    }
+  }
+
   const rooms = getAllRooms().filter((r) => r.status === "lobby");
   return NextResponse.json({ ok: true, rooms }, { status: 200 });
 }
@@ -16,6 +35,33 @@ export async function POST(req: Request) {
         { ok: false, error: parsed.error.flatten() },
         { status: 400 },
       );
+    }
+
+    const partyHost = getPartyHost();
+    if (partyHost) {
+      const code = generateRoomCode();
+      try {
+        const partyRes = await PartySocket.fetch(
+          {
+            host: partyHost,
+            party: "arena",
+            room: code,
+            path: "/init",
+          },
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed.data),
+          },
+        );
+
+        if (partyRes.ok) {
+          const partyData = await partyRes.json();
+          return NextResponse.json(partyData, { status: 201 });
+        }
+      } catch (partyErr) {
+        console.error("PartyKit room initialization fallback to local:", partyErr);
+      }
     }
 
     const { room, hostPlayer } = createRoom(parsed.data);

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://www.partykit.io/schema.json",
+  "name": "clutch-arena",
+  "main": "party/arena.ts",
+  "parties": {
+    "arena": "party/arena.ts"
+  },
+  "compatibilityDate": "2024-04-03"
+}
