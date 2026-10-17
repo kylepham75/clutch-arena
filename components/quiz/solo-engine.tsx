@@ -32,6 +32,8 @@ import {
   Zap,
   Share2,
   FolderSync,
+  Compass,
+  Upload,
 } from "lucide-react";
 import type { StudyPack } from "@/lib/schemas/question";
 import { activeQuestion } from "@/lib/game/reducer";
@@ -72,6 +74,7 @@ import {
   type ConceptStats,
 } from "@/lib/game/concept-mastery";
 import { mockMicroeconomicsDoc, mockMicroeconomics } from "@/data/mock-microeconomics";
+import { TutorialDialog, isTutorialCompleted } from "@/components/tutorial/tutorial-dialog";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
 import type { CoachFocus } from "@/lib/schemas/coach";
 
@@ -85,10 +88,17 @@ export function SoloEngine({
   initialDoc?: ParsedDocument;
 } = {}) {
   const { language, t } = useLanguage();
-  const [pack, setPack] = useState<StudyPack>(initialPack || mockMicroeconomics);
-  const [document, setDocument] = useState<ParsedDocument | null>(
-    initialDoc || mockMicroeconomicsDoc,
-  );
+  const [libraryItems, setLibraryItems] = useState<SavedStudyItem[]>([]);
+  const [pack, setPack] = useState<StudyPack | null>(() => {
+    if (initialPack) return initialPack;
+    const items = readLibrary();
+    return items.length > 0 && items[0].pack ? items[0].pack : null;
+  });
+  const [document, setDocument] = useState<ParsedDocument | null>(() => {
+    if (initialDoc) return initialDoc;
+    const items = readLibrary();
+    return items.length > 0 && items[0].document ? items[0].document : null;
+  });
   const [activeTab, setActiveTab] = useState<"play" | "ingest" | "coach" | "arena">("play");
   const [showDocViewer, setShowDocViewer] = useState(false);
   const [highlightedSourceId, setHighlightedSourceId] = useState<string | null>(null);
@@ -97,7 +107,14 @@ export function SoloEngine({
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [showFlashcards, setShowFlashcards] = useState(false);
-  const [libraryItems, setLibraryItems] = useState<SavedStudyItem[]>([]);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
+
+  // Prompt tutorial for first-time visitors / new accounts
+  useEffect(() => {
+    if (!isTutorialCompleted()) {
+      setTutorialOpen(true);
+    }
+  }, []);
 
   useEffect(() => {
     const update = () => setLibraryItems(readLibrary());
@@ -106,6 +123,16 @@ export function SoloEngine({
     return () => window.removeEventListener(LIBRARY_UPDATED_EVENT, update);
   }, [libraryOpen]);
 
+  // If no pack is active and library items exist, automatically select the first
+  useEffect(() => {
+    if (!pack && libraryItems.length > 0 && libraryItems[0].pack) {
+      setPack(libraryItems[0].pack);
+      if (libraryItems[0].document) {
+        setDocument(libraryItems[0].document);
+      }
+    }
+  }, [libraryItems, pack]);
+
   const availablePacks = useMemo(() => {
     const list: Array<{
       id: string;
@@ -113,17 +140,10 @@ export function SoloEngine({
       questionCount: number;
       pack: StudyPack;
       document?: ParsedDocument;
-    }> = [
-      {
-        id: mockMicroeconomics.id,
-        title: mockMicroeconomics.title,
-        questionCount: mockMicroeconomics.questions.length,
-        pack: mockMicroeconomics,
-        document: mockMicroeconomicsDoc,
-      },
-    ];
+    }> = [];
+
     for (const item of libraryItems) {
-      if (item.pack && item.pack.id !== mockMicroeconomics.id) {
+      if (item.pack) {
         list.push({
           id: item.pack.id,
           title: item.title || item.pack.title,
@@ -133,7 +153,8 @@ export function SoloEngine({
         });
       }
     }
-    if (!list.some((p) => p.id === pack.id)) {
+
+    if (pack && !list.some((p) => p.id === pack.id)) {
       list.push({
         id: pack.id,
         title: pack.title,
@@ -142,6 +163,7 @@ export function SoloEngine({
         document: document || undefined,
       });
     }
+
     return list;
   }, [libraryItems, pack, document]);
 
@@ -176,18 +198,18 @@ export function SoloEngine({
       });
   }, []);
 
-  const { state, dispatch, answer, next } = useSoloGame(pack.questions);
+  const { state, dispatch, answer, next } = useSoloGame(pack ? pack.questions : []);
   const audio = useGameAudio();
   const reducedMotion = useReducedMotion();
   const [mode, setMode] = useState<"exact" | "variants">("exact");
   const [panel, setPanel] = useState<Panel>(null);
   const [history, setHistory] = useState<SavedRun[]>([]);
   const [masteryStore, setMasteryStore] = useState<Record<string, ConceptStats>>({});
-  const basePackRef = useRef<StudyPack>(pack);
+  const basePackRef = useRef<StudyPack | null>(pack);
   const [progressTab, setProgressTab] = useState<"runs" | "mastery">("runs");
 
   useEffect(() => {
-    if (!pack.id.endsWith("-weak-spots")) {
+    if (pack && !pack.id.endsWith("-weak-spots")) {
       basePackRef.current = pack;
     }
   }, [pack]);
@@ -197,24 +219,32 @@ export function SoloEngine({
     if (initialPack && initialPack.id !== prevInitialPackId.current) {
       prevInitialPackId.current = initialPack.id;
       setPack(initialPack);
+      if (initialDoc) setDocument(initialDoc);
     }
-  }, [initialPack]);
+  }, [initialPack, initialDoc]);
 
   const pendingSprintStart = useRef(false);
   useEffect(() => {
-    dispatch({ type: "LOAD_PACK", questions: pack.questions });
-    soundAttempt.current = 0;
-    saved.current = false;
-    if (pendingSprintStart.current) {
-      pendingSprintStart.current = false;
-      void audio.unlock();
-      audio.play("start");
-      runId.current = crypto.randomUUID();
-      dispatch({ type: "START", mode: "exact", now: Date.now() });
-      window.scrollTo(0, 0);
+    if (pack) {
+      dispatch({ type: "LOAD_PACK", questions: pack.questions });
+      soundAttempt.current = 0;
+      saved.current = false;
+      if (pendingSprintStart.current) {
+        pendingSprintStart.current = false;
+        void audio.unlock();
+        audio.play("start");
+        runId.current = crypto.randomUUID();
+        dispatch({ type: "START", mode: "exact", now: Date.now() });
+        window.scrollTo(0, 0);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pack, dispatch]);
+
+  const handleLoadSamplePack = useCallback(() => {
+    setPack(mockMicroeconomics);
+    setDocument(mockMicroeconomicsDoc);
+  }, []);
   const soundAttempt = useRef(0);
   const saved = useRef(false);
   const runId = useRef("");
@@ -253,8 +283,10 @@ export function SoloEngine({
         bestStreak: state.bestStreak,
       }),
     );
-    const updated = recordRunMastery(pack, state.attempts);
-    setMasteryStore(updated);
+    if (pack) {
+      const updated = recordRunMastery(pack, state.attempts);
+      setMasteryStore(updated);
+    }
     audio.play("finish");
     if (state.lives > 0 && !reducedMotion) {
       void import("canvas-confetti")
@@ -269,7 +301,7 @@ export function SoloEngine({
         )
         .catch(() => {});
     }
-  }, [state, reducedMotion, audio.play]);
+  }, [state, pack, reducedMotion, audio.play]);
   useEffect(() => {
     if (!inRun) return;
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -305,6 +337,7 @@ export function SoloEngine({
     window.scrollTo(0, 0);
   }, [dispatch]);
   const start = () => {
+    if (!pack || !pack.questions.length) return;
     void audio.unlock();
     audio.play("start");
     runId.current = crypto.randomUUID();
@@ -313,6 +346,7 @@ export function SoloEngine({
   };
 
   const handleLaunchWeakSpotSprint = useCallback(() => {
+    if (!basePackRef.current) return;
     const sprintPack = createWeakSpotSprintPack(basePackRef.current, 5, masteryStore);
     pendingSprintStart.current = true;
     setPack(sprintPack);
@@ -320,8 +354,10 @@ export function SoloEngine({
   }, [masteryStore]);
 
   const handleRestoreBasePack = useCallback(() => {
-    setPack(basePackRef.current);
-    reset();
+    if (basePackRef.current) {
+      setPack(basePackRef.current);
+      reset();
+    }
   }, [reset]);
 
   useGameKeyboard({ enabled: !panel && activeTab === "play", phase: state.phase, answer, next });
@@ -351,7 +387,7 @@ export function SoloEngine({
   );
 
   const handleExplainMissWithCoach = useCallback(() => {
-    if (!current || !attempt) return;
+    if (!current || !attempt || !pack) return;
     const meta = pack.metadata[current.id];
     const sourceBlock =
       document?.sources.find(
@@ -372,9 +408,10 @@ export function SoloEngine({
       sourceId: sourceBlock?.id,
       excerpt: meta?.citation || (sourceBlock ? sourceBlock.text.slice(0, 300) : undefined),
     });
-  }, [current, attempt, pack.metadata, document, handleAskCoach]);
+  }, [current, attempt, pack, document, handleAskCoach]);
 
   const handleDebriefCoach = useCallback(() => {
+    if (!pack) return;
     const correctCount = state.attempts.filter((a) => a.correct).length;
     const concepts = pack.questions.map((q) => {
       const meta = pack.metadata[q.id];
@@ -469,12 +506,14 @@ export function SoloEngine({
 
   const completedOriginals = Math.min(
     state.attempts.filter((_, index) => !state.queue[index]?.review).length,
-    pack.questions.length,
+    pack ? pack.questions.length : 0,
   );
-  const topics = pack.questions.map((q) => ({
-    id: q.id,
-    ...pack.metadata[q.id],
-  }));
+  const topics = pack
+    ? pack.questions.map((q) => ({
+        id: q.id,
+        ...pack.metadata[q.id],
+      }))
+    : [];
 
   return (
     <MotionConfig reducedMotion="user">
@@ -546,8 +585,8 @@ export function SoloEngine({
               <Trophy size={19} />
               <span>{t.nav.myProgress}</span>
             </button>
-            <button className="nav-item" onClick={() => openPanel("help")}>
-              <BookOpen size={19} />
+            <button className="nav-item" onClick={() => setTutorialOpen(true)}>
+              <Compass size={19} />
               <span>{t.nav.howToPlay}</span>
             </button>
           </nav>
@@ -658,7 +697,7 @@ export function SoloEngine({
                 variant="ghost"
                 size="icon"
                 aria-label={t.topbar.howToPlay}
-                onClick={() => openPanel("help")}
+                onClick={() => setTutorialOpen(true)}
               >
                 <CircleHelp size={19} />
               </Button>
@@ -766,7 +805,72 @@ export function SoloEngine({
                 ) : (
                   <>
                     {state.phase === "ready" ? (
-                      showFlashcards ? (
+                      !pack ? (
+                        <div className="setup-grid">
+                          <section className="setup-card surface empty-study-card">
+                            <div className="section-top mb-3">
+                              <div className="section-icon">
+                                <Sparkles size={20} className="text-amber-600" />
+                              </div>
+                              <div>
+                                <h2>Welcome to Clutch Arena</h2>
+                                <p>No study deck loaded yet. Take the quick tour to see how it works, upload your course notes, or try our example deck.</p>
+                              </div>
+                              <span className="tag tag-amber">Getting Started</span>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 my-4">
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => setTutorialOpen(true)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") setTutorialOpen(true);
+                                }}
+                                className="p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/70 hover:border-amber-400 dark:hover:border-amber-600 transition-all cursor-pointer"
+                              >
+                                <div className="p-2 w-9 h-9 rounded-lg bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 flex items-center justify-center mb-2.5">
+                                  <Compass size={18} />
+                                </div>
+                                <strong className="text-xs font-semibold block mb-1">Interactive Tutorial</strong>
+                                <span className="text-xs text-stone-500 block">Take a 1-minute guided tour of active recall and live arenas.</span>
+                              </div>
+
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => setActiveTab("ingest")}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") setActiveTab("ingest");
+                                }}
+                                className="p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/70 hover:border-emerald-400 dark:hover:border-emerald-600 transition-all cursor-pointer"
+                              >
+                                <div className="p-2 w-9 h-9 rounded-lg bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 flex items-center justify-center mb-2.5">
+                                  <Upload size={18} />
+                                </div>
+                                <strong className="text-xs font-semibold block mb-1">Upload Study Notes</strong>
+                                <span className="text-xs text-stone-500 block">Drop your lecture PDFs, DOCX, or PPTX to generate study questions.</span>
+                              </div>
+
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={handleLoadSamplePack}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") handleLoadSamplePack();
+                                }}
+                                className="p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/70 hover:border-blue-400 dark:hover:border-blue-600 transition-all cursor-pointer"
+                              >
+                                <div className="p-2 w-9 h-9 rounded-lg bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 flex items-center justify-center mb-2.5">
+                                  <Play size={18} fill="currentColor" />
+                                </div>
+                                <strong className="text-xs font-semibold block mb-1">Load Example Deck</strong>
+                                <span className="text-xs text-stone-500 block">Try 15 questions from Microeconomics Ch 1–5 with citations.</span>
+                              </div>
+                            </div>
+                          </section>
+                        </div>
+                      ) : showFlashcards ? (
                         <FlashcardReview
                           pack={pack}
                           mode={mode}
@@ -1072,7 +1176,7 @@ export function SoloEngine({
           ) : state.phase === "finished" ? (
               <RunSummary
                 state={state}
-                pack={pack}
+                pack={pack!}
                 onRestart={reset}
                 onChangeDeck={openLibrary}
                 onDebriefCoach={handleDebriefCoach}
@@ -1087,7 +1191,7 @@ export function SoloEngine({
                       <span className="run-pack-icon">
                         <BookOpen size={17} />
                       </span>
-                      <strong>{pack.title}</strong>
+                      <strong>{pack ? pack.title : "Clutch Run"}</strong>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <Button
@@ -1122,7 +1226,7 @@ export function SoloEngine({
                         <QuestionCard
                           key={state.index}
                           question={current}
-                          metadata={pack.metadata[current.id]}
+                          metadata={pack ? pack.metadata[current.id] : undefined}
                           attempt={attempt}
                           number={state.index + 1}
                           disabled={state.phase !== "answering"}
@@ -1137,7 +1241,7 @@ export function SoloEngine({
                         key={`feedback-${state.index}`}
                         attempt={attempt}
                         explanation={current.explanation}
-                        metadata={pack.metadata[current.id]}
+                        metadata={pack ? pack.metadata[current.id] : undefined}
                         unlockAt={state.unlockAt}
                         last={
                           state.lives === 0 ||
@@ -1167,13 +1271,13 @@ export function SoloEngine({
                     <div className="session-progress-title">
                       <h3>One concept at a time.</h3>
                       <span>
-                        {completedOriginals}/{pack.questions.length}
+                        {completedOriginals}/{pack ? pack.questions.length : 0}
                       </span>
                     </div>
                     <div className="session-progress">
                       <div
                         style={{
-                          width: `${(completedOriginals / pack.questions.length) * 100}%`,
+                          width: `${pack ? (completedOriginals / pack.questions.length) * 100 : 0}%`,
                         }}
                       />
                     </div>
@@ -1253,65 +1357,17 @@ export function SoloEngine({
           </main>
         </div>
 
-        <Dialog
-          open={panel === "help"}
-          onOpenChange={closePanel}
-          title={t.help.title}
-          description={t.help.subtitle}
-        >
-          <div className="help-rows">
-            <div>
-              <Clock3 />
-              <span>
-                <strong>15 seconds to choose</strong>
-                <p>
-                  Select an answer with A–D, 1–4, or a click. The clock stops as
-                  soon as you submit. A timeout costs one life.
-                </p>
-              </span>
-            </div>
-            <div>
-              <Flame />
-              <span>
-                <strong>Build your streak</strong>
-                <p>
-                  100 XP per answer. From 3 correct: 150 XP. From 5 correct: 200
-                  XP. At 7, you’re ON FIRE. A miss resets the streak.
-                </p>
-              </span>
-            </div>
-            <div>
-              <RotateCcw />
-              <span>
-                <strong>Make every miss count</strong>
-                <p>
-                  Read the rule and explanation for four seconds. The concept
-                  returns in another form until you answer it correctly twice in
-                  a row.
-                </p>
-              </span>
-            </div>
-            <div>
-              <Keyboard />
-              <span>
-                <strong>Keep it moving</strong>
-                <p>
-                  Press Enter or Space to continue after feedback. Take a
-                  breather pauses the clock. Keyboard shortcuts are disabled in
-                  dialogs.
-                </p>
-              </span>
-            </div>
-          </div>
-          <div className="demo-note">
-            This pack contains authored demo questions and illustrative
-            study-note references. Uploaded slide citations arrive with the
-            ingestion module.
-          </div>
-          <Button onClick={() => closePanel(false)}>
-            Got it. Let’s clutch. <ArrowRight size={16} />
-          </Button>
-        </Dialog>
+        <TutorialDialog
+          open={tutorialOpen || panel === "help"}
+          onOpenChange={(open) => {
+            setTutorialOpen(open);
+            if (!open && panel === "help") {
+              closePanel(false);
+            }
+          }}
+          onSelectSamplePack={handleLoadSamplePack}
+          onGoToUpload={() => setActiveTab("ingest")}
+        />
         <Dialog
           open={panel === "progress"}
           onOpenChange={closePanel}
@@ -1388,7 +1444,7 @@ export function SoloEngine({
           ) : (
             Object.keys(masteryStore).length ? (
               <div className="mastery-tab-content">
-                {getWeakSpotsForPack(pack, masteryStore).length > 0 && (
+                {pack && getWeakSpotsForPack(pack, masteryStore).length > 0 && (
                   <Button
                     size="sm"
                     variant="dark"
@@ -1477,12 +1533,14 @@ export function SoloEngine({
           onSelectPack={handleSelectPackFromLibrary}
           onHostArena={handleHostArena}
         />
-        <PackShareDialog
-          open={shareOpen}
-          onOpenChange={setShareOpen}
-          pack={pack}
-          missedIds={state.missed}
-        />
+        {pack && (
+          <PackShareDialog
+            open={shareOpen}
+            onOpenChange={setShareOpen}
+            pack={pack}
+            missedIds={state.missed}
+          />
+        )}
       </div>
     </MotionConfig>
   );

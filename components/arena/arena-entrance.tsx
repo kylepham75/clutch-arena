@@ -16,7 +16,6 @@ import {
 import { AVATAR_OPTIONS, type ArenaRoomState } from "@/lib/schemas/multiplayer";
 import type { StudyPack } from "@/lib/schemas/question";
 import { readLibrary, LIBRARY_UPDATED_EVENT, type SavedStudyItem } from "@/lib/game/library";
-import { mockMicroeconomics } from "@/data/mock-microeconomics";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/lib/i18n/context";
 
@@ -38,29 +37,35 @@ export function ArenaEntrance({
   presetPack?: StudyPack | null;
 }) {
   const { t } = useLanguage();
-  // The sample pack already has its own row.
-  const presetPack =
-    presetPackProp && presetPackProp.id !== mockMicroeconomics.id ? presetPackProp : null;
+  const presetPack = presetPackProp;
   const [tab, setTab] = useState<"join" | "create">("create");
   const [nickname, setNickname] = useState("ClutchStudent");
   const [avatar, setAvatar] = useState("⚡");
   const [roomCode, setRoomCode] = useState("");
   const [mode, setMode] = useState<"exact" | "variants">("exact");
-  const [selectedPackId, setSelectedPackId] = useState(presetPack ? "preset" : "mock");
+  const [libraryItems, setLibraryItems] = useState<SavedStudyItem[]>([]);
+  const [selectedPackId, setSelectedPackId] = useState<string>(() => {
+    if (presetPack) return "preset";
+    const items = readLibrary();
+    return items.length > 0 ? items[0].id : "";
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [libraryItems, setLibraryItems] = useState<SavedStudyItem[]>([]);
 
   useEffect(() => {
     // Hide the library copy of the preset pack so it isn't listed twice.
-    const update = () => setLibraryItems(readLibrary().filter((i) => i.id !== presetPack?.id));
+    const update = () => {
+      const items = readLibrary().filter((i) => i.id !== presetPack?.id);
+      setLibraryItems(items);
+      setSelectedPackId((prev) => {
+        if (presetPack) return "preset";
+        if (prev && items.some((i) => i.id === prev)) return prev;
+        return items.length > 0 ? items[0].id : "";
+      });
+    };
     update();
     window.addEventListener(LIBRARY_UPDATED_EVENT, update);
     return () => window.removeEventListener(LIBRARY_UPDATED_EVENT, update);
-  }, [presetPack?.id]);
-
-  useEffect(() => {
-    if (presetPack) setSelectedPackId("preset");
   }, [presetPack]);
 
   const handleJoin = async (codeToJoin?: string) => {
@@ -92,12 +97,18 @@ export function ArenaEntrance({
     setError(null);
     setSubmitting(true);
 
-    let chosenPack: StudyPack = mockMicroeconomics;
+    let chosenPack: StudyPack | null = null;
     if (selectedPackId === "preset" && presetPack) {
       chosenPack = presetPack;
-    } else if (selectedPackId !== "mock") {
+    } else {
       const saved = libraryItems.find((i) => i.id === selectedPackId);
       if (saved) chosenPack = saved.pack;
+    }
+
+    if (!chosenPack) {
+      setError("Please select or upload a study pack before creating an arena room.");
+      setSubmitting(false);
+      return;
     }
 
     const code = await onCreateRoom({
@@ -215,26 +226,12 @@ export function ArenaEntrance({
                   </div>
                 </label>
               )}
-              <label
-                className={`pack-select-item ${selectedPackId === "mock" ? "selected" : ""}`}
-              >
-                <input
-                  type="radio"
-                  name="pack"
-                  value="mock"
-                  checked={selectedPackId === "mock"}
-                  onChange={() => setSelectedPackId("mock")}
-                />
-                <span className="pack-select-icon">
-                  <Zap size={16} />
-                </span>
-                <div>
-                  <strong>{mockMicroeconomics.title}</strong>
-                  <small>
-                    {mockMicroeconomics.questions.length} {t.library.questionsCount} · {t.arena.samplePack}
-                  </small>
+              {!presetPack && libraryItems.length === 0 && (
+                <div className="p-4 rounded-xl border border-dashed border-stone-300 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-900/60 text-center text-xs text-stone-500 my-2">
+                  <p className="font-semibold text-stone-700 dark:text-stone-300 mb-1">No Study Packs Found</p>
+                  <p>Upload lecture notes in the Ingest tab to generate a custom study pack to host here.</p>
                 </div>
-              </label>
+              )}
 
               {libraryItems.map((item) => (
                 <label

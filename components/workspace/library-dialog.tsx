@@ -29,7 +29,6 @@ import {
 import { PackShareDialog } from "./pack-share-dialog";
 import type { StudyPack } from "@/lib/schemas/question";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
-import { mockMicroeconomics, mockMicroeconomicsDoc } from "@/data/mock-microeconomics";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/lib/i18n/context";
@@ -108,11 +107,6 @@ export function LibraryDialog({
     onOpenChange(false);
   };
 
-  const handleSelectSample = () => {
-    onSelectPack(mockMicroeconomics, mockMicroeconomicsDoc);
-    onOpenChange(false);
-  };
-
   return (
     <Dialog
       open={open}
@@ -121,74 +115,10 @@ export function LibraryDialog({
       description={t.library.subtitle}
     >
       <div className="library-dialog-content">
-        {/* Sample Pack Row */}
-        <div className="library-section">
-          <span className="field-label">SAMPLE PACK</span>
-          <div
-            className="library-item library-sample-item"
-            onClick={(e) => {
-              if ((e.target as HTMLElement).closest(".library-item-actions")) return;
-              handleSelectSample();
-            }}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") handleSelectSample();
-            }}
-          >
-            <div className="library-item-icon">
-              <BookOpen size={20} />
-            </div>
-            <div className="library-item-details">
-              <strong>{mockMicroeconomics.title}</strong>
-              <small>
-                {mockMicroeconomics.questions.length} questions · Economics Ch 1, 3, 4 & 5
-              </small>
-            </div>
-            <div className="library-item-actions flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleSelectSample();
-                }}
-              >
-                <Play size={13} fill="currentColor" />
-                Play
-              </Button>
-              {onHostArena && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  data-testid="library-host-arena"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onHostArena(mockMicroeconomics);
-                    onOpenChange(false);
-                  }}
-                  title="Host in Arena"
-                >
-                  <Users size={13} />
-                  Arena
-                </Button>
-              )}
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setSharingPack(mockMicroeconomics)}
-                title="Share & Export"
-              >
-                <Share2 size={13} />
-              </Button>
-            </div>
-          </div>
-        </div>
-
         {/* User Saved Packs */}
-        <div className="library-section mt-4">
+        <div className="library-section">
           <div className="flex items-center justify-between mb-2">
-            <span className="field-label mb-0">YOUR GENERATED PACKS ({items.length})</span>
+            <span className="field-label mb-0">SAVED STUDY PACKS ({items.length})</span>
             <div>
               <input
                 ref={fileInputRef}
