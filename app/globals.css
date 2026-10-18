@@ -5880,5 +5880,36 @@ svg {
   }
 }
 
+/* Pricing & Tier Modal Dialog Styling */
+.pricing-dialog-content {
+  max-width: 1140px !important;
+  width: min(1140px, calc(100vw - 32px)) !important;
+  max-height: 92vh !important;
+  padding: 24px 28px !important;
+  background: #fafbf8;
+  color: #1c1917;
+  border: 1px solid #e7e5e4;
+  border-radius: 20px;
+  box-shadow: 0 25px 80px -15px rgba(0, 0, 0, 0.25);
+  overflow-y: auto;
+}
+
+.dark .pricing-dialog-content {
+  background: #161514;
+  border-color: #292524;
+  color: #f5f5f4;
+  box-shadow: 0 25px 80px -15px rgba(0, 0, 0, 0.65);
+}
+
+@media (max-width: 768px) {
+  .pricing-dialog-content {
+    padding: 16px 14px !important;
+    width: calc(100vw - 20px) !important;
+    max-height: 94vh !important;
+    border-radius: 16px;
+  }
+}
+
+
 
 

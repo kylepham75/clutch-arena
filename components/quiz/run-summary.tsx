@@ -10,6 +10,7 @@ import {
   Sparkles,
   Download,
   FolderSync,
+  FileText,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import type { GameState } from "@/lib/game/reducer";
@@ -26,6 +27,7 @@ export function RunSummary({
   onDebriefCoach,
   onExport,
   onSprintMissed,
+  onExportCheatSheet,
 }: {
   state: GameState;
   pack: StudyPack;
@@ -34,6 +36,7 @@ export function RunSummary({
   onDebriefCoach?: () => void;
   onExport?: () => void;
   onSprintMissed?: () => void;
+  onExportCheatSheet?: () => void;
 }) {
   const { t } = useLanguage();
   const correct = state.attempts.filter((a) => a.correct).length;
@@ -132,6 +135,12 @@ export function RunSummary({
           <Button variant="dark" onClick={onSprintMissed} type="button">
             <Zap size={17} />
             {t.run.weakSpotSprint} ({state.missed.length})
+          </Button>
+        )}
+        {onExportCheatSheet && (
+          <Button variant="outline" onClick={onExportCheatSheet} type="button" className="cheat-sheet-btn">
+            <FileText size={17} className="text-amber-600" />
+            <span>1-Click PDF Cheat Sheet</span>
           </Button>
         )}
         {onExport && (

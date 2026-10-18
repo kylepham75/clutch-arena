@@ -251,6 +251,18 @@ export function PackShareDialog({
             The whole pack lives inside the link itself. Nothing is uploaded, so anyone with
             the link can study these questions on any device.
           </small>
+          <div className="mt-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200">
+            <strong className="flex items-center gap-1 font-bold text-amber-900 dark:text-amber-100">
+              <Zap size={13} className="text-amber-600" />
+              $0 AI Token Cost · Zero-CAC Distribution
+            </strong>
+            <p className="mt-1 text-stone-600 dark:text-stone-300">
+              Importing and playing this shared link uses $0 in LLM tokens because all questions and citations are pre-computed inside the token. Free users can import and study in Classic mode forever!
+            </p>
+            <p className="mt-1 font-semibold text-emerald-700 dark:text-emerald-400">
+              🎁 Earn-Your-Pass: When 3 classmates import your pack link, you automatically unlock 3 free Concept Remix runs!
+            </p>
+          </div>
         </section>
       </div>
     </Dialog>

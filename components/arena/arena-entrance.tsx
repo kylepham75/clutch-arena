@@ -18,6 +18,8 @@ import type { StudyPack } from "@/lib/schemas/question";
 import { readLibrary, LIBRARY_UPDATED_EVENT, type SavedStudyItem } from "@/lib/game/library";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/lib/i18n/context";
+import { useUserTier } from "@/hooks/use-user-tier";
+import { PricingModal } from "@/components/pricing/pricing-modal";
 
 export function ArenaEntrance({
   onJoinRoom,
@@ -32,11 +34,16 @@ export function ArenaEntrance({
     mode: "exact" | "variants";
     title?: string;
     pack?: any;
+    maxPlayers?: number;
   }) => Promise<string | null>;
   openRooms?: ArenaRoomState[];
   presetPack?: StudyPack | null;
 }) {
   const { t } = useLanguage();
+  const { tier, limits, unlockedRemixRuns, consumeRemixRun } = useUserTier();
+  const [pricingOpen, setPricingOpen] = useState(false);
+  const [pricingReason, setPricingReason] = useState<string | null>(null);
+
   const presetPack = presetPackProp;
   const [tab, setTab] = useState<"join" | "create">("create");
   const [nickname, setNickname] = useState("ClutchStudent");
@@ -111,12 +118,26 @@ export function ArenaEntrance({
       return;
     }
 
+    if (mode === "variants" && !limits.canHostArenaRemix) {
+      if (unlockedRemixRuns > 0) {
+        consumeRemixRun();
+      } else {
+        setPricingReason(
+          "Host Privileges: Hosting custom Concept Remix arena rooms requires a 7-Day Cram Pass or Clutch Pro. Friends can join and play for free!",
+        );
+        setPricingOpen(true);
+        setSubmitting(false);
+        return;
+      }
+    }
+
     const code = await onCreateRoom({
       nickname: nickname.trim(),
       avatar,
       mode,
       title: `${chosenPack.title} Arena`.slice(0, 100),
       pack: chosenPack,
+      maxPlayers: limits.maxArenaPlayers,
     });
     setSubmitting(false);
     if (!code) {
@@ -135,6 +156,22 @@ export function ArenaEntrance({
         <p>
           {t.arena.heroDesc}
         </p>
+        <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-amber-600">⚡ Host-Pays, Friends-Play-Free:</span>
+            <span>Anyone can join friend lobbies for 100% free ($0 AI cost). Only room host needs a Cram Pass or Pro to launch custom 30Q remix packs.</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setPricingReason(null);
+              setPricingOpen(true);
+            }}
+            className="text-xs font-bold underline shrink-0 hover:text-amber-600 cursor-pointer"
+          >
+            View Tiers & Passes
+          </button>
+        </div>
       </div>
 
       <div className="arena-card surface">
@@ -271,10 +308,26 @@ export function ArenaEntrance({
               <button
                 type="button"
                 className={`mode-btn ${mode === "variants" ? "active" : ""}`}
-                onClick={() => setMode("variants")}
+                onClick={() => {
+                  if (!limits.canHostArenaRemix && unlockedRemixRuns === 0) {
+                    setPricingReason(
+                      "Host Privileges: Hosting Concept Remix arena rooms requires a 7-Day Cram Pass or Clutch Pro. Friends can join and play for free!",
+                    );
+                    setPricingOpen(true);
+                    return;
+                  }
+                  setMode("variants");
+                }}
               >
-                <Sparkles size={14} />
-                <strong>{t.arena.conceptRemix}</strong>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <Sparkles size={14} />
+                  <strong>{t.arena.conceptRemix}</strong>
+                  {!limits.canHostArenaRemix && (
+                    <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-amber-500 text-stone-950 ml-auto">
+                      {unlockedRemixRuns > 0 ? `${unlockedRemixRuns} Pass` : "Pro"}
+                    </span>
+                  )}
+                </div>
                 <span>{t.arena.conceptRemixDesc}</span>
               </button>
             </div>
@@ -366,6 +419,12 @@ export function ArenaEntrance({
           </span>
         </div>
       </div>
+
+      <PricingModal
+        open={pricingOpen}
+        onClose={() => setPricingOpen(false)}
+        initialReason={pricingReason}
+      />
     </div>
   );
 }

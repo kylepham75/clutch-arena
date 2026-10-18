@@ -63,6 +63,7 @@ import {
   readShareToken,
   decodeSharedPack,
   documentFromPack,
+  printStudyGuide,
 } from "@/lib/game/pack-transfer";
 import {
   readMasteryStore,
@@ -75,6 +76,8 @@ import {
 } from "@/lib/game/concept-mastery";
 import { mockMicroeconomicsDoc, mockMicroeconomics } from "@/data/mock-microeconomics";
 import { TutorialDialog, isTutorialCompleted } from "@/components/tutorial/tutorial-dialog";
+import { useUserTier } from "@/hooks/use-user-tier";
+import { PricingModal } from "@/components/pricing/pricing-modal";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
 import type { CoachFocus } from "@/lib/schemas/coach";
 
@@ -88,6 +91,10 @@ export function SoloEngine({
   initialDoc?: ParsedDocument;
 } = {}) {
   const { language, t } = useLanguage();
+  const { tier, limits, unlockedRemixRuns, consumeRemixRun } = useUserTier();
+  const [pricingOpen, setPricingOpen] = useState(false);
+  const [pricingReason, setPricingReason] = useState<string | null>(null);
+  const [questionCount, setQuestionCount] = useState<number>(10);
   const [libraryItems, setLibraryItems] = useState<SavedStudyItem[]>([]);
   const [pack, setPack] = useState<StudyPack | null>(() => {
     if (initialPack) return initialPack;
@@ -338,12 +345,47 @@ export function SoloEngine({
   }, [dispatch]);
   const start = () => {
     if (!pack || !pack.questions.length) return;
+
+    if (mode === "variants" && !limits.canUseConceptRemix) {
+      if (unlockedRemixRuns > 0) {
+        consumeRemixRun();
+      } else {
+        setPricingReason(
+          language === "vi"
+            ? "Chế độ Biến thể Concept Remix yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc Clutch Pro."
+            : "Concept Remix mode requires a 7-Day Cram Pass or Clutch Pro, or unlock free runs with Referrals!",
+        );
+        setPricingOpen(true);
+        return;
+      }
+    }
+
+    const cappedCount = Math.min(questionCount, limits.maxQuestionsPerRun, pack.questions.length);
+    if (cappedCount < pack.questions.length) {
+      dispatch({ type: "LOAD_PACK", questions: pack.questions.slice(0, cappedCount) });
+    }
+
     void audio.unlock();
     audio.play("start");
     runId.current = crypto.randomUUID();
     dispatch({ type: "START", mode, now: Date.now() });
     window.scrollTo(0, 0);
   };
+
+  const handleExportCheatSheet = useCallback(() => {
+    if (!limits.canExportCheatSheet) {
+      setPricingReason(
+        language === "vi"
+          ? "Xuất cẩm nang Cheat Sheet PDF kèm trích dẫn nguyên văn yêu cầu Vé Ôn Thi Cấp Tốc hoặc Clutch Pro."
+          : "1-Click PDF Cheat Sheet export of missed questions and verbatim citations requires a 7-Day Cram Pass or Clutch Pro.",
+      );
+      setPricingOpen(true);
+      return;
+    }
+    if (pack) {
+      printStudyGuide(pack, state.missed.length > 0 ? state.missed : undefined);
+    }
+  }, [limits.canExportCheatSheet, pack, state.missed, language]);
 
   const handleLaunchWeakSpotSprint = useCallback(() => {
     if (!basePackRef.current) return;
@@ -675,6 +717,26 @@ export function SoloEngine({
               <LanguageSwitcher />
               <button
                 type="button"
+                onClick={() => {
+                  setPricingReason(null);
+                  setPricingOpen(true);
+                }}
+                className="flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300 transition-colors cursor-pointer"
+                title="View student passes and pricing"
+              >
+                <Flame size={14} className="text-amber-600" />
+                <span>
+                  {tier === "contender"
+                    ? language === "vi" ? "Gói Ôn Thi" : "Cram Pass"
+                    : tier === "cram_pass"
+                      ? "Cram Pass"
+                      : tier === "pro"
+                        ? "Pro"
+                        : "Tutor"}
+                </span>
+              </button>
+              <button
+                type="button"
                 className={`toggle-viewer-btn ${showDocViewer ? "active" : ""}`}
                 onClick={() => setShowDocViewer(!showDocViewer)}
                 title={showDocViewer ? "Hide Document Viewer" : "Show Document Viewer"}
@@ -1003,6 +1065,51 @@ export function SoloEngine({
                          </div>
                        </div>
                      )}
+                     <div className="field-label flex items-center justify-between">
+                       <span>{language === "vi" ? "Số lượng câu hỏi" : "Session Length"}</span>
+                       {tier === "contender" && (
+                         <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                           Contender (Max 10Q)
+                         </span>
+                       )}
+                     </div>
+                     <div className="flex items-center gap-2 mb-4" role="group" aria-label="Question count selection">
+                       {[10, 20, 30].map((count) => {
+                         const isLocked = count > limits.maxQuestionsPerRun;
+                         const isSelected = questionCount === count;
+                         return (
+                           <button
+                             key={count}
+                             type="button"
+                             onClick={() => {
+                               if (isLocked) {
+                                 setPricingReason(
+                                   language === "vi"
+                                     ? `Chế độ ${count} câu hỏi yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc Clutch Pro.`
+                                     : `Full ${count}-question runs require a 7-Day Cram Pass or Clutch Pro.`,
+                                 );
+                                 setPricingOpen(true);
+                                 return;
+                               }
+                               setQuestionCount(count);
+                             }}
+                             className={`flex-1 p-2.5 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                               isSelected
+                                 ? "border-amber-600 bg-amber-50 text-amber-900 dark:bg-amber-950/40 dark:border-amber-500 dark:text-amber-200 shadow-xs"
+                                 : "border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 text-stone-600 dark:text-stone-300 hover:border-stone-300"
+                             }`}
+                           >
+                             <span>{count} {language === "vi" ? "câu" : "Questions"}</span>
+                             {isLocked && (
+                               <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500 text-stone-950">
+                                 Pro
+                                </span>
+                             )}
+                           </button>
+                         );
+                       })}
+                     </div>
+
                      <div className="field-label">
                        {t.run.howPractice}
                      </div>
@@ -1028,11 +1135,29 @@ export function SoloEngine({
                        <button
                          aria-pressed={mode === "variants"}
                          className={`mode-option ${mode === "variants" ? "selected" : ""}`}
-                         onClick={() => setMode("variants")}
+                         onClick={() => {
+                           if (!limits.canUseConceptRemix && unlockedRemixRuns === 0) {
+                             setPricingReason(
+                               language === "vi"
+                                 ? "Chế độ Biến thể Concept Remix yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc mở khóa bằng cách mời bạn bè!"
+                                 : "Concept Remix mode requires a 7-Day Cram Pass or Clutch Pro, or unlock free runs with Referrals!",
+                             );
+                             setPricingOpen(true);
+                             return;
+                           }
+                           setMode("variants");
+                         }}
                        >
                          <Sparkles size={20} />
                          <div>
-                           <strong>{t.run.conceptRemix}</strong>
+                           <div className="flex items-center gap-1.5 flex-wrap">
+                             <strong>{t.run.conceptRemix}</strong>
+                             {!limits.canUseConceptRemix && (
+                               <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500 text-stone-950">
+                                 {unlockedRemixRuns > 0 ? `${unlockedRemixRuns} Pass` : "Pro"}
+                               </span>
+                             )}
+                           </div>
                            <span>{t.run.conceptRemixDesc}</span>
                          </div>
                          <span className="radio">
@@ -1182,6 +1307,7 @@ export function SoloEngine({
                 onDebriefCoach={handleDebriefCoach}
                 onExport={() => setShareOpen(true)}
                 onSprintMissed={handleLaunchWeakSpotSprint}
+                onExportCheatSheet={handleExportCheatSheet}
               />
             ) : (
               <div className="play-grid">
@@ -1541,6 +1667,11 @@ export function SoloEngine({
             missedIds={state.missed}
           />
         )}
+        <PricingModal
+          open={pricingOpen}
+          onClose={() => setPricingOpen(false)}
+          initialReason={pricingReason}
+        />
       </div>
     </MotionConfig>
   );

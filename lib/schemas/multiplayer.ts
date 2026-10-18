@@ -78,6 +78,7 @@ export type ArenaRoomState = {
   currentQuestion: MultiplayerQuestion | null;
   revealedFeedback: RevealedFeedback | null;
   createdAt: string;
+  maxPlayers?: number;
   mode: "exact" | "variants";
   packId: string;
   podium: {
@@ -97,6 +98,7 @@ export const createRoomSchema = z
     title: z.string().trim().max(100).optional(),
     mode: z.enum(["exact", "variants"]).default("exact"),
     pack: studyPackSchema.optional(),
+    maxPlayers: z.number().int().min(2).max(100).optional(),
   })
   .refine((data) => !!(data.hostNickname || data.nickname), {
     message: "Nickname is required.",
@@ -107,6 +109,7 @@ export const createRoomSchema = z
     title: data.title,
     mode: data.mode,
     pack: data.pack,
+    maxPlayers: data.maxPlayers,
   }));
 
 export type CreateRoomInput = z.infer<typeof createRoomSchema>;

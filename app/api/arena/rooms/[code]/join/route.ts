@@ -60,6 +60,13 @@ export async function POST(
       );
     }
 
+    if (Object.keys(room.players).length >= (room.maxPlayers || 8)) {
+      return NextResponse.json(
+        { ok: false, error: { message: `Arena room "${code}" is full (maximum ${room.maxPlayers || 8} players).` } },
+        { status: 403 },
+      );
+    }
+
     const player = joinRoom(code, parsed.data);
     if (!player) {
       return NextResponse.json(

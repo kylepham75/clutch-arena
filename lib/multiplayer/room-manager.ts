@@ -15,6 +15,8 @@ import type {
 } from "@/lib/schemas/multiplayer";
 import type { QuestionItem, StudyPack } from "@/lib/schemas/question";
 
+export const IDLE_ROOM_TIMEOUT_MS = 90_000; // Auto-close idle rooms after 90 seconds
+
 export type ServerRoom = {
   code: string;
   title: string;
@@ -32,8 +34,11 @@ export type ServerRoom = {
   roundTimeout: NodeJS.Timeout | null;
   feedbackTimeout: NodeJS.Timeout | null;
   countdownTimeout: NodeJS.Timeout | null;
+  idleTimeout: NodeJS.Timeout | null;
   subscribers: Set<(state: ArenaRoomState) => void>;
   createdAt: string;
+  maxPlayers: number;
+  lastActiveAt: number;
   podium: ArenaRoomState["podium"];
 };
 
@@ -44,6 +49,23 @@ declare global {
 
 const rooms = global.__arenaRooms ?? new Map<string, ServerRoom>();
 global.__arenaRooms = rooms;
+
+export function deleteRoom(code: string): boolean {
+  const room = rooms.get(code.toUpperCase());
+  if (!room) return false;
+  clearTimers(room);
+  if (room.idleTimeout) clearTimeout(room.idleTimeout);
+  rooms.delete(code.toUpperCase());
+  return true;
+}
+
+export function resetRoomIdleTimeout(room: ServerRoom) {
+  room.lastActiveAt = Date.now();
+  if (room.idleTimeout) clearTimeout(room.idleTimeout);
+  room.idleTimeout = setTimeout(() => {
+    deleteRoom(room.code);
+  }, IDLE_ROOM_TIMEOUT_MS);
+}
 
 export function generateRoomCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -147,6 +169,7 @@ export function getClientState(
     currentQuestion,
     revealedFeedback,
     createdAt: room.createdAt,
+    maxPlayers: room.maxPlayers,
     mode: room.mode,
     packId: room.pack.id,
     podium: room.podium,
@@ -159,6 +182,7 @@ export function createRoom(params: {
   title?: string;
   mode?: "exact" | "variants";
   pack?: StudyPack;
+  maxPlayers?: number;
 }): { room: ServerRoom; hostPlayer: ArenaPlayer } {
   let code = generateRoomCode();
   while (rooms.has(code)) {
@@ -200,11 +224,15 @@ export function createRoom(params: {
     roundTimeout: null,
     feedbackTimeout: null,
     countdownTimeout: null,
+    idleTimeout: null,
     subscribers: new Set(),
     createdAt: new Date().toISOString(),
+    maxPlayers: params.maxPlayers || 8,
+    lastActiveAt: Date.now(),
     podium: null,
   };
 
+  resetRoomIdleTimeout(room);
   rooms.set(code, room);
   return { room, hostPlayer };
 }
@@ -216,6 +244,11 @@ export function joinRoom(
   const room = getRoom(code);
   if (!room) return null;
   if (room.status !== "lobby") return null;
+
+  // Realtime concurrency cap: max 8 for Contender, up to 32 for Tutor
+  if (Object.keys(room.players).length >= (room.maxPlayers || 8)) {
+    return null;
+  }
 
   const player: ArenaPlayer = {
     id: `player_${crypto.randomUUID().slice(0, 8)}`,
@@ -233,6 +266,7 @@ export function joinRoom(
   };
 
   room.players[player.id] = player;
+  resetRoomIdleTimeout(room);
   broadcastRoom(room);
   return player;
 }
@@ -240,6 +274,10 @@ export function joinRoom(
 export function addBotToRoom(code: string, botType?: BotProfile["type"]): ArenaPlayer | null {
   const room = getRoom(code);
   if (!room || room.status !== "lobby") return null;
+
+  if (Object.keys(room.players).length >= (room.maxPlayers || 8)) {
+    return null;
+  }
 
   const existingBotNames = new Set(
     Object.values(room.players)
@@ -484,6 +522,7 @@ export function endMatch(room: ServerRoom) {
   };
 
   broadcastRoom(room);
+  resetRoomIdleTimeout(room);
 }
 
 export function rematch(code: string, hostId: string): boolean {
@@ -509,6 +548,7 @@ export function rematch(code: string, hostId: string): boolean {
     p.isReady = p.isHost || p.isBot;
   });
 
+  resetRoomIdleTimeout(room);
   broadcastRoom(room);
   return true;
 }

@@ -24,6 +24,8 @@ import type { StudyPack } from "@/lib/schemas/question";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/lib/i18n/context";
 import { useAuth } from "@/lib/auth/context";
+import { useUserTier } from "@/hooks/use-user-tier";
+import { PricingModal } from "@/components/pricing/pricing-modal";
 import { formatRejectionError } from "@/lib/utils/format-upload-error";
 
 export function UploadPanel({
@@ -43,6 +45,9 @@ export function UploadPanel({
 }) {
   const { language: siteLang, t } = useLanguage();
   const { session, user, canGenerate, openAuthModal, incrementGuestUsage } = useAuth();
+  const { tier, limits } = useUserTier();
+  const [pricingOpen, setPricingOpen] = useState(false);
+  const [pricingReason, setPricingReason] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [operation, setOperation] = useState<"generate" | "preview">("generate");
   const [questionCount, setQuestionCount] = useState(5);
@@ -135,6 +140,16 @@ export function UploadPanel({
         code: "TOO_LARGE",
         message: "Combined files exceed 25 MB limit. Please select fewer or smaller files.",
       });
+      return;
+    }
+
+    if (files.length > limits.maxFilesPerUpload) {
+      setPricingReason(
+        siteLang === "vi"
+          ? "Tổng hợp đa tài liệu cùng lúc (tối đa 10 tệp / 25MB) yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc Clutch Pro. Gói Contender miễn phí hỗ trợ 1 tệp mỗi lần tải."
+          : "Multi-document synthesis (up to 10 files / 25MB) requires a 7-Day Cram Pass or Clutch Pro. Free Contender includes 1 file per upload.",
+      );
+      setPricingOpen(true);
       return;
     }
 
@@ -260,14 +275,26 @@ export function UploadPanel({
 
   return (
     <div className="upload-panel surface" aria-label="Document ingestion">
-      <div className="section-top">
-        <div className="section-icon">
-          <UploadCloud size={20} />
+      <div className="section-top flex items-start justify-between flex-wrap gap-2">
+        <div className="flex items-start gap-3">
+          <div className="section-icon">
+            <UploadCloud size={20} />
+          </div>
+          <div>
+            <h2>{t.upload.title}</h2>
+            <p>{t.upload.desc}</p>
+          </div>
         </div>
-        <div>
-          <h2>{t.upload.title}</h2>
-          <p>{t.upload.desc}</p>
-        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setPricingReason(null);
+            setPricingOpen(true);
+          }}
+          className="text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-700 flex items-center gap-1 cursor-pointer"
+        >
+          <span>{tier === "contender" ? "Contender: 2 uploads/wk (1 file)" : `${tier.toUpperCase()}: Unlimited (10 files)`}</span>
+        </button>
       </div>
 
       {/* Dropzone */}
@@ -581,6 +608,12 @@ export function UploadPanel({
           </div>
         </div>
       )}
+
+      <PricingModal
+        open={pricingOpen}
+        onClose={() => setPricingOpen(false)}
+        initialReason={pricingReason}
+      />
     </div>
   );
 }
