@@ -8,13 +8,19 @@ import {
   TIER_LIMITS,
   getStoredUserTier,
   setStoredUserTier,
+  getStoredTierExpires,
+  clearStoredUserTier,
+  fetchCloudUserTier,
   getStoredReferralState,
   awardReferralPass,
   consumeUnlockedRemixRun,
 } from "@/lib/pricing/tiers";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export interface UserTierHook {
   tier: UserTier;
+  tierExpiresAt: string | null;
+  daysRemaining: number | null;
   limits: TierLimits;
   isPaidTier: boolean;
   isCramPassOrAbove: boolean;
@@ -22,13 +28,15 @@ export interface UserTierHook {
   isTutor: boolean;
   referrals: ReferralState;
   unlockedRemixRuns: number;
-  setTier: (tier: UserTier) => void;
+  setTier: (tier: UserTier, expiresAt?: string | null) => void;
   awardReferral: (reason: "arena_4_player" | "pack_imports_3") => void;
   consumeRemixRun: () => boolean;
+  refreshTier: () => Promise<void>;
 }
 
 export function useUserTier(): UserTierHook {
   const [tier, setTierState] = useState<UserTier>("contender");
+  const [tierExpiresAt, setTierExpiresAt] = useState<string | null>(null);
   const [referrals, setReferralsState] = useState<ReferralState>({
     unlockedRemixRuns: 0,
     friendsInvited: 0,
@@ -36,14 +44,26 @@ export function useUserTier(): UserTierHook {
     packsImportedByClassmates: 0,
   });
 
+  // Sync state from cloud and storage
+  const syncFromCloud = useCallback(async () => {
+    const cloud = await fetchCloudUserTier();
+    setTierState(cloud.tier);
+    setTierExpiresAt(cloud.expiresAt);
+  }, []);
+
   useEffect(() => {
     setTierState(getStoredUserTier());
+    setTierExpiresAt(getStoredTierExpires());
     setReferralsState(getStoredReferralState());
 
+    // Fetch initial cloud tier if user is authenticated
+    void syncFromCloud();
+
     const handleTierUpdated = (e: Event) => {
-      const custom = e as CustomEvent<{ tier: UserTier }>;
+      const custom = e as CustomEvent<{ tier: UserTier; expiresAt?: string | null }>;
       if (custom.detail?.tier) {
         setTierState(custom.detail.tier);
+        setTierExpiresAt(custom.detail.expiresAt ?? getStoredTierExpires());
       }
     };
 
@@ -57,15 +77,36 @@ export function useUserTier(): UserTierHook {
     window.addEventListener("clutch:tier_updated", handleTierUpdated);
     window.addEventListener("clutch:referrals_updated", handleReferralsUpdated);
 
+    // Listen to Supabase auth events (e.g. mobile login after laptop purchase)
+    const supabase = getSupabaseBrowserClient();
+    let authUnsubscribe: (() => void) | null = null;
+
+    if (supabase) {
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === "SIGNED_IN" && session?.user) {
+          await syncFromCloud();
+        } else if (event === "SIGNED_OUT") {
+          clearStoredUserTier();
+          setTierState("contender");
+          setTierExpiresAt(null);
+        }
+      });
+      authUnsubscribe = () => subscription.unsubscribe();
+    }
+
     return () => {
       window.removeEventListener("clutch:tier_updated", handleTierUpdated);
       window.removeEventListener("clutch:referrals_updated", handleReferralsUpdated);
+      if (authUnsubscribe) authUnsubscribe();
     };
-  }, []);
+  }, [syncFromCloud]);
 
-  const setTier = useCallback((newTier: UserTier) => {
-    setStoredUserTier(newTier);
+  const setTier = useCallback((newTier: UserTier, expiresAt?: string | null) => {
+    setStoredUserTier(newTier, expiresAt);
     setTierState(newTier);
+    setTierExpiresAt(expiresAt !== undefined ? expiresAt : getStoredTierExpires());
   }, []);
 
   const awardReferral = useCallback((reason: "arena_4_player" | "pack_imports_3") => {
@@ -81,6 +122,10 @@ export function useUserTier(): UserTierHook {
     return success;
   }, []);
 
+  const daysRemaining = tierExpiresAt
+    ? Math.max(0, Math.ceil((new Date(tierExpiresAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
+    : null;
+
   const limits = TIER_LIMITS[tier] || TIER_LIMITS.contender;
   const isPaidTier = tier !== "contender";
   const isCramPassOrAbove = isPaidTier;
@@ -89,6 +134,8 @@ export function useUserTier(): UserTierHook {
 
   return {
     tier,
+    tierExpiresAt,
+    daysRemaining,
     limits,
     isPaidTier,
     isCramPassOrAbove,
@@ -99,5 +146,6 @@ export function useUserTier(): UserTierHook {
     setTier,
     awardReferral,
     consumeRemixRun,
+    refreshTier: syncFromCloud,
   };
 }

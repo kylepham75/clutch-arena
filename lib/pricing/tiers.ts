@@ -208,6 +208,7 @@ export const PRICING_PLANS: PlanPricing[] = [
 
 export const REFERRAL_STORAGE_KEY = "clutch:referrals:v1";
 export const USER_TIER_STORAGE_KEY = "clutch:user_tier:v1";
+export const USER_TIER_EXPIRES_KEY = "clutch:user_tier_expires:v1";
 
 export interface ReferralState {
   unlockedRemixRuns: number;
@@ -216,10 +217,52 @@ export interface ReferralState {
   packsImportedByClassmates: number;
 }
 
+/**
+ * Calculates default expiration ISO timestamp based on tier cycle.
+ * - cram_pass: 7 days
+ * - pro: 120 days (4-month semester)
+ * - tutor: 30 days (1 month)
+ * - contender: null (permanent free)
+ */
+export function calculateTierExpiration(tier: UserTier): string | null {
+  const now = Date.now();
+  if (tier === "cram_pass") {
+    return new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString();
+  }
+  if (tier === "pro") {
+    return new Date(now + 120 * 24 * 60 * 60 * 1000).toISOString();
+  }
+  if (tier === "tutor") {
+    return new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString();
+  }
+  return null;
+}
+
+export function getStoredTierExpires(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return localStorage.getItem(USER_TIER_EXPIRES_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function getStoredUserTier(): UserTier {
   if (typeof window === "undefined") return "contender";
   try {
     const raw = localStorage.getItem(USER_TIER_STORAGE_KEY);
+    const expiresRaw = localStorage.getItem(USER_TIER_EXPIRES_KEY);
+
+    // If an expiration timestamp exists and has elapsed, revert to contender
+    if (expiresRaw) {
+      const expiresMs = new Date(expiresRaw).getTime();
+      if (!isNaN(expiresMs) && expiresMs <= Date.now()) {
+        localStorage.setItem(USER_TIER_STORAGE_KEY, "contender");
+        localStorage.removeItem(USER_TIER_EXPIRES_KEY);
+        return "contender";
+      }
+    }
+
     if (raw && (raw === "contender" || raw === "cram_pass" || raw === "pro" || raw === "tutor")) {
       return raw;
     }
@@ -229,13 +272,208 @@ export function getStoredUserTier(): UserTier {
   return "contender";
 }
 
-export function setStoredUserTier(tier: UserTier): void {
+export function setStoredUserTier(tier: UserTier, expiresAt?: string | null): void {
   if (typeof window === "undefined") return;
   try {
+    const calculatedExpires =
+      expiresAt !== undefined ? expiresAt : calculateTierExpiration(tier);
+
     localStorage.setItem(USER_TIER_STORAGE_KEY, tier);
-    window.dispatchEvent(new CustomEvent("clutch:tier_updated", { detail: { tier } }));
+    if (calculatedExpires) {
+      localStorage.setItem(USER_TIER_EXPIRES_KEY, calculatedExpires);
+    } else {
+      localStorage.removeItem(USER_TIER_EXPIRES_KEY);
+    }
+
+    window.dispatchEvent(
+      new CustomEvent("clutch:tier_updated", {
+        detail: { tier, expiresAt: calculatedExpires },
+      }),
+    );
+
+    // Sync to Supabase in the background if the user is authenticated
+    void syncUserTierToCloud(tier, calculatedExpires);
   } catch {
     // ignore
+  }
+}
+
+export function clearStoredUserTier(): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(USER_TIER_STORAGE_KEY, "contender");
+    localStorage.removeItem(USER_TIER_EXPIRES_KEY);
+    window.dispatchEvent(
+      new CustomEvent("clutch:tier_updated", {
+        detail: { tier: "contender", expiresAt: null },
+      }),
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Syncs the user tier & expiration timestamp to Supabase `profiles` & `user_profiles`.
+ */
+export async function syncUserTierToCloud(
+  tier: UserTier,
+  expiresAt?: string | null,
+): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+
+  try {
+    const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return false;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return false;
+
+    const now = new Date().toISOString();
+    const payload = {
+      id: user.id,
+      email: user.email,
+      tier,
+      tier_expires_at: expiresAt ?? null,
+      updated_at: now,
+    };
+
+    // Upsert into `profiles` table
+    try {
+      await supabase.from("profiles").upsert(payload);
+    } catch {
+      // profiles table might be pending migration
+    }
+
+    // Also update `user_profiles` for backwards compatibility
+    try {
+      await supabase.from("user_profiles").upsert(payload);
+    } catch {
+      // ignore
+    }
+
+    // Record subscription event for paid plans
+    if (tier !== "contender") {
+      try {
+        await supabase.from("user_subscriptions").insert({
+          user_id: user.id,
+          tier,
+          cycle: tier === "cram_pass" ? "one_time" : tier === "pro" ? "semester" : "monthly",
+          amount: tier === "cram_pass" ? 69000 : tier === "pro" ? 299000 : 399000,
+          currency: "VND",
+          payment_method: "vietqr",
+          status: "active",
+          starts_at: now,
+          expires_at: expiresAt ?? null,
+        });
+      } catch {
+        // subscription history table optional
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fetches the user tier & expiration timestamp from Supabase and syncs to localStorage.
+ * Used when a user logs in on a new device (e.g. mobile after purchasing on laptop).
+ */
+export async function fetchCloudUserTier(): Promise<{
+  tier: UserTier;
+  expiresAt: string | null;
+  isExpired: boolean;
+}> {
+  const defaultResult = {
+    tier: getStoredUserTier(),
+    expiresAt: getStoredTierExpires(),
+    isExpired: false,
+  };
+
+  if (typeof window === "undefined") return defaultResult;
+
+  try {
+    const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return defaultResult;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return defaultResult;
+
+    let cloudTier: string | null = null;
+    let cloudExpiresAt: string | null = null;
+
+    // Check `profiles` table first
+    const { data: profileData, error: profileErr } = await supabase
+      .from("profiles")
+      .select("tier, tier_expires_at")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (!profileErr && profileData) {
+      cloudTier = profileData.tier;
+      cloudExpiresAt = profileData.tier_expires_at;
+    } else {
+      // Fallback to `user_profiles` table
+      const { data: userProfileData, error: userProfileErr } = await supabase
+        .from("user_profiles")
+        .select("tier, tier_expires_at")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (!userProfileErr && userProfileData) {
+        cloudTier = userProfileData.tier;
+        cloudExpiresAt = userProfileData.tier_expires_at;
+      }
+    }
+
+    if (!cloudTier) return defaultResult;
+
+    let normalizedTier: UserTier = "contender";
+    if (cloudTier === "cram_pass" || cloudTier === "pro" || cloudTier === "tutor") {
+      normalizedTier = cloudTier;
+    }
+
+    // Check if the cloud subscription has expired
+    if (cloudExpiresAt) {
+      const expiresMs = new Date(cloudExpiresAt).getTime();
+      if (!isNaN(expiresMs) && expiresMs <= Date.now()) {
+        // Expired! Downgrade local and cloud state to contender
+        setStoredUserTier("contender", null);
+        void syncUserTierToCloud("contender", null);
+        return { tier: "contender", expiresAt: null, isExpired: true };
+      }
+    }
+
+    // Update local storage with cloud source of truth
+    if (normalizedTier !== getStoredUserTier() || cloudExpiresAt !== getStoredTierExpires()) {
+      localStorage.setItem(USER_TIER_STORAGE_KEY, normalizedTier);
+      if (cloudExpiresAt) {
+        localStorage.setItem(USER_TIER_EXPIRES_KEY, cloudExpiresAt);
+      } else {
+        localStorage.removeItem(USER_TIER_EXPIRES_KEY);
+      }
+      window.dispatchEvent(
+        new CustomEvent("clutch:tier_updated", {
+          detail: { tier: normalizedTier, expiresAt: cloudExpiresAt },
+        }),
+      );
+    }
+
+    return {
+      tier: normalizedTier,
+      expiresAt: cloudExpiresAt,
+      isExpired: false,
+    };
+  } catch {
+    return defaultResult;
   }
 }
 

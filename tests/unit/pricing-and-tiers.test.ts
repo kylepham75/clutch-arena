@@ -4,6 +4,10 @@ import {
   TIER_LIMITS,
   getStoredUserTier,
   setStoredUserTier,
+  getStoredTierExpires,
+  calculateTierExpiration,
+  syncUserTierToCloud,
+  fetchCloudUserTier,
   getStoredReferralState,
   awardReferralPass,
   consumeUnlockedRemixRun,
@@ -82,6 +86,59 @@ describe("PPP Tier Architecture & Limits", () => {
 
     setStoredUserTier("pro");
     expect(getStoredUserTier()).toBe("pro");
+  });
+
+  it("calculates default expiration periods per tier cycle", () => {
+    expect(calculateTierExpiration("contender")).toBeNull();
+
+    const cramExpires = calculateTierExpiration("cram_pass");
+    expect(cramExpires).not.toBeNull();
+    const cramDiffDays = Math.round(
+      (new Date(cramExpires!).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+    );
+    expect(cramDiffDays).toBe(7);
+
+    const proExpires = calculateTierExpiration("pro");
+    expect(proExpires).not.toBeNull();
+    const proDiffDays = Math.round(
+      (new Date(proExpires!).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+    );
+    expect(proDiffDays).toBe(120);
+
+    const tutorExpires = calculateTierExpiration("tutor");
+    expect(tutorExpires).not.toBeNull();
+    const tutorDiffDays = Math.round(
+      (new Date(tutorExpires!).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+    );
+    expect(tutorDiffDays).toBe(30);
+  });
+
+  it("automatically downgrades to contender if tier_expires_at has elapsed", () => {
+    // Set a pass that expired yesterday
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    setStoredUserTier("cram_pass", yesterday);
+
+    // Should detect expiration and return contender
+    expect(getStoredUserTier()).toBe("contender");
+    expect(getStoredTierExpires()).toBeNull();
+  });
+
+  it("preserves active tier if expiration is in the future", () => {
+    // Set a pass that expires in 5 days
+    const in5Days = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    setStoredUserTier("cram_pass", in5Days);
+
+    expect(getStoredUserTier()).toBe("cram_pass");
+    expect(getStoredTierExpires()).toBe(in5Days);
+  });
+
+  it("handles unconfigured cloud sync gracefully without throwing", async () => {
+    const success = await syncUserTierToCloud("cram_pass");
+    expect(typeof success).toBe("boolean");
+
+    const cloudTier = await fetchCloudUserTier();
+    expect(cloudTier).toHaveProperty("tier");
+    expect(cloudTier).toHaveProperty("expiresAt");
   });
 });
 

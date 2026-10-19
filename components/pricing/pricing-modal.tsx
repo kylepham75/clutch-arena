@@ -39,7 +39,7 @@ export function PricingModal({
   initialReason?: string | null;
 }) {
   const { language } = useLanguage();
-  const { tier, setTier, referrals, awardReferral } = useUserTier();
+  const { tier, setTier, referrals, awardReferral, daysRemaining } = useUserTier();
 
   const [currency, setCurrency] = useState<"vnd" | "usd">(() =>
     language === "vi" ? "vnd" : "usd",
@@ -129,7 +129,9 @@ export function PricingModal({
               </span>
               {tier !== "contender" && (
                 <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                  {isVi ? `Gói hiện tại: ${tier.toUpperCase()}` : `Active: ${tier.toUpperCase()}`}
+                  {isVi
+                    ? `Gói hiện tại: ${tier.toUpperCase()}${daysRemaining !== null ? ` (Còn ${daysRemaining} ngày)` : ""}`
+                    : `Active: ${tier.toUpperCase()}${daysRemaining !== null ? ` (${daysRemaining}d left)` : ""}`}
                 </span>
               )}
             </div>

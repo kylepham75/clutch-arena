@@ -25,6 +25,10 @@ import {
   migrateGuestMasteryToUser,
   clearSessionMastery,
 } from "@/lib/game/concept-mastery";
+import {
+  fetchCloudUserTier,
+  clearStoredUserTier,
+} from "@/lib/pricing/tiers";
 
 export type AccountTier = "guest" | "free" | "pro";
 
@@ -121,14 +125,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           migrateGuestLibraryToUser(currentUser.id),
           migrateGuestRunsToUser(currentUser.id),
           migrateGuestMasteryToUser(currentUser.id),
+          fetchCloudUserTier(),
         ]);
       } else {
-        // Existing account: Load ONLY this account's cloud decks, run history, and mastery.
+        // Existing account: Load ONLY this account's cloud decks, run history, mastery, and user tier.
         // Overwrites local storage so anonymous/guest decks do NOT pollute this account.
         await Promise.allSettled([
           fetchCloudLibrary(),
           fetchCloudHistory(),
           fetchCloudMastery(),
+          fetchCloudUserTier(),
         ]);
       }
     };
@@ -164,6 +170,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         clearSessionLibrary();
         clearSessionHistory();
         clearSessionMastery();
+        clearStoredUserTier();
       }
     });
 
