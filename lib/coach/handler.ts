@@ -170,6 +170,10 @@ export function createCoachHandler(
         headers: {
           "Cache-Control": "no-store",
         },
+        onError: (err: any) =>
+          err?.data?.error?.message ||
+          err?.message ||
+          "AI Coach encountered an error. Please try again.",
       });
     } catch (error) {
       if (request.signal.aborted) {

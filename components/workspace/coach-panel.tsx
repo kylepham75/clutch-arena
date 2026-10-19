@@ -282,6 +282,9 @@ export function CoachPanel({
                   const parsed = JSON.parse(error.message);
                   return parsed.error?.message || error.message;
                 } catch {
+                  if (error.message === "An error occurred.") {
+                    return "AI Coach encountered an issue connecting to the model. Please verify your GEMINI_API_KEY or GROQ_API_KEY and try again.";
+                  }
                   return error.message || "Failed to get coach response. Check API configuration or try again.";
                 }
               })()}

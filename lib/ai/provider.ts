@@ -12,7 +12,7 @@ export function getGeminiModel(modelOverride?: string) {
     googleApiKey !== "your-gemini-key-here" &&
     googleApiKey !== "your-api-key-here"
   ) {
-    const defaultModel = "gemini-2.5-flash-lite";
+    const defaultModel = "gemini-3.5-flash-lite";
     const modelId = modelOverride || process.env.GEMINI_MODEL?.trim() || defaultModel;
     return createGoogleGenerativeAI({ apiKey: googleApiKey })(modelId);
   }
@@ -54,7 +54,9 @@ export function getGenerationModel(tier: string = "contender") {
     if (local) return local;
   }
   if (provider === "gemini") {
-    const gemini = getGeminiModel(isPriority ? "gemini-2.5-flash" : "gemini-2.5-flash-lite");
+    const envModel = process.env.GEMINI_MODEL?.trim();
+    const defaultGemini = isPriority ? "gemini-3.8-flash" : "gemini-3.5-flash-lite";
+    const gemini = getGeminiModel(envModel || defaultGemini);
     if (gemini) return gemini;
   }
   if (provider === "groq") {
@@ -65,20 +67,20 @@ export function getGenerationModel(tier: string = "contender") {
   // Smart Model Routing:
   // For Cram Pass and Pro/Tutor users, route to priority high-context models
   if (isPriority) {
-    const geminiPro = getGeminiModel("gemini-2.5-flash");
+    const geminiPro = getGeminiModel(process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash");
     if (geminiPro) return geminiPro;
   }
 
-  // Lowest-cost default: Groq (ultra-fast, zero-cost) or Gemini 2.5 Flash-Lite
+  // Lowest-cost default: Groq (ultra-fast, zero-cost) or Gemini 3.5 Flash-Lite
   const groq = getGroqModel();
   if (groq) return groq;
 
-  const gemini = getGeminiModel("gemini-2.5-flash-lite");
+  const gemini = getGeminiModel(process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash-lite");
   if (gemini) return gemini;
 
   throw new IngestionError(
     "AI_NOT_CONFIGURED",
-    "Question generation is not configured. Add GROQ_API_KEY or GEMINI_API_KEY to .env.local and restart the server. Preview mode works without a key.",
+    "AI service is not configured. Add GROQ_API_KEY or GEMINI_API_KEY to your environment variables.",
     503,
   );
 }
