@@ -5,6 +5,7 @@ import {
   renderKatexSafe,
   isLikelyInlineMath,
   splitMathBlocks,
+  repairCorruptedLatex,
 } from "@/lib/math/latex";
 
 describe("currency and prose protection", () => {
@@ -172,3 +173,70 @@ Where:
     expect(html).not.toContain("katex-fallback");
   });
 });
+
+describe("LaTeX escape repair and CAPM formula rendering", () => {
+  it("repairs corrupted beta and times from ASCII control characters", () => {
+    const corruptedWithControlChars = "r = r_f + \x08eta \x09imes (E[R_{Mkt}] - r_f)";
+    const repaired = repairCorruptedLatex(corruptedWithControlChars);
+
+    expect(repaired).toContain("\\beta");
+    expect(repaired).toContain("\\times");
+    expect(repaired).not.toContain("\x08");
+    expect(repaired).not.toContain("\x09");
+  });
+
+  it("repairs corrupted beta and times with whitespace collapse (as seen in LLM JSON output)", () => {
+    const corruptedRule = "$r = r_f +  eta imes (E[R_{Mkt}] - r_f)$";
+    const repaired = repairCorruptedLatex(corruptedRule);
+
+    expect(repaired).toBe("$r = r_f + \\beta \\times (E[R_{Mkt}] - r_f)$");
+  });
+
+  it("moves trailing sentence punctuation outside inline math delimiters", () => {
+    const textWithTrailingPeriod =
+      "Calculated as $r = r_f +  eta imes (E[R_{Mkt}] - r_f) = 3% + 1.29 imes (8% - 3%) = 9.45%.$";
+    const repaired = repairCorruptedLatex(textWithTrailingPeriod);
+
+    expect(repaired).toContain("= 9.45%$.");
+    expect(repaired).toContain("\\beta");
+    expect(repaired).toContain("\\times");
+  });
+
+  it("tokenizes and renders the exact user formula into KaTeX inline math", () => {
+    const rawRule = "$r = r_f +  eta imes (E[R_{Mkt}] - r_f)$";
+    const tokens = tokenizeMath(rawRule);
+
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0].type).toBe("inline-math");
+    expect(tokens[0].value).toContain("\\beta");
+    expect(tokens[0].value).toContain("\\times");
+
+    const html = renderKatexSafe(tokens[0].value, false);
+    expect(html).toContain("katex");
+    expect(html).not.toContain("katex-fallback");
+    expect(html).toContain("β"); // Greek beta
+  });
+
+  it("tokenizes and renders the exact user explanation into text and KaTeX math", () => {
+    const rawExplanation =
+      "Calculated as $r = r_f +  eta imes (E[R_{Mkt}] - r_f) = 3% + 1.29 imes (8% - 3%) = 9.45%.$";
+    const normalized = normalizeMathFormulas(rawExplanation);
+    const tokens = tokenizeMath(normalized);
+
+    expect(tokens.length).toBeGreaterThanOrEqual(2);
+    const mathToken = tokens.find((t) => t.type === "inline-math");
+    expect(mathToken).toBeDefined();
+    expect(mathToken?.value).toContain("\\beta");
+    expect(mathToken?.value).toContain("\\times");
+
+    const html = renderKatexSafe(mathToken!.value, false);
+    expect(html).toContain("katex");
+    expect(html).not.toContain("katex-fallback");
+  });
+
+  it("recognizes long equations without backslashes as valid inline math", () => {
+    const formula = "r = r_f + beta * (Rm - r_f) = 3% + 1.29 * (8% - 3%) = 9.45%";
+    expect(isLikelyInlineMath(formula)).toBe(true);
+  });
+});
+

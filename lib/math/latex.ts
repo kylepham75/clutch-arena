@@ -13,12 +13,71 @@ export function escapeHtml(text: string): string {
 }
 
 /**
+ * Repairs LaTeX strings that were corrupted by JSON escape sequence parsing or LLM output
+ * (e.g. \beta -> \b (0x08) + eta -> " eta", \times -> \t (0x09) + imes -> " imes").
+ */
+export function repairCorruptedLatex(text: string): string {
+  if (!text) return "";
+
+  let s = text;
+
+  // 1. Repair explicit ASCII control characters from JSON string parsing
+  // \b = 0x08 (backspace), \t = 0x09 (tab), \f = 0x0c (form feed), \r = 0x0d (carriage return)
+  s = s.replace(/[\x08\b]eta\b/g, "\\beta ");
+  s = s.replace(/[\x08\b]ar\{/g, "\\bar{");
+  s = s.replace(/[\x08\b]egin\{/g, "\\begin{");
+  s = s.replace(/[\x08\b]inom\{/g, "\\binom{");
+  s = s.replace(/[\x08\b]ullet\b/g, "\\bullet ");
+
+  s = s.replace(/[\x09\t]imes\b/g, "\\times ");
+  s = s.replace(/[\x09\t]ext\{/g, "\\text{");
+  s = s.replace(/[\x09\t]extbf\{/g, "\\textbf{");
+  s = s.replace(/[\x09\t]extit\{/g, "\\textit{");
+  s = s.replace(/[\x09\t]heta\b/g, "\\theta ");
+  s = s.replace(/[\x09\t]au\b/g, "\\tau ");
+  s = s.replace(/[\x09\t]o\b/g, "\\to ");
+
+  s = s.replace(/[\x0c\f]rac\{/g, "\\frac{");
+  s = s.replace(/[\x0c\f]orall\b/g, "\\forall ");
+
+  s = s.replace(/[\x0d\r]ho\b/g, "\\rho ");
+  s = s.replace(/[\x0d\r]ight([)\]}|.])/g, "\\right$1");
+
+  // In math context, \neq and \nabla from \n
+  s = s.replace(/(\$[^$\n]*?)[\x0a\n]eq\b/g, "$1\\neq ");
+  s = s.replace(/(\$[^$\n]*?)[\x0a\n]abla\b/g, "$1\\nabla ");
+
+  // 2. Repair corrupted tokens where control characters collapsed into spaces or were stripped
+  // "imes" is never a standalone English word -> convert to \times
+  s = s.replace(/\bimes\b/g, "\\times");
+
+  // "rac{" -> \frac{
+  s = s.replace(/(?:^|\s)rac\{/g, " \\frac{");
+
+  // "beta" corrupted to "eta" in math / operator context (e.g. "+  eta", "= eta", "eta \times", "eta imes")
+  s = s.replace(/([+\-=*\/]\s*)eta\b/g, "$1\\beta");
+  s = s.replace(/(^|[\s$])eta\s*(?=\\times|imes\b|[*_^(+\-=]|\b[a-zA-Z]\b)/g, "$1\\beta");
+
+  // Clean up formatting and spacing around \times and \beta
+  s = s.replace(/\s*\\times\s*/g, " \\times ");
+  s = s.replace(/([+\-=*\/])\s*\\beta\b/g, "$1 \\beta");
+  s = s.replace(/\\beta\s*\\times/g, "\\beta \\times");
+
+  // 3. Move trailing sentence punctuation outside inline math delimiters:
+  // e.g. "$... = 9.45%.$" -> "$... = 9.45%$."
+  s = s.replace(/(\$[^$\n]+?)([.,;:])\$/g, "$1$$$2");
+
+  return s;
+}
+
+/**
  * Safely renders LaTeX via KaTeX without throwing exceptions.
  */
 export function renderKatexSafe(tex: string, displayMode: boolean): string {
   try {
+    const repaired = repairCorruptedLatex(tex);
     // Sanitize unescaped % signs to \% so KaTeX doesn't treat them as comments
-    const sanitized = tex
+    const sanitized = repaired
       .trim()
       .replace(/(^|[^\\])%/g, "$1\\%")
       .replace(/[\u0394Δ]/g, "\\Delta ")
@@ -89,15 +148,20 @@ export function isLikelyInlineMath(content: string): boolean {
   // Sentences with full stops and capitalized words are prose, not math
   if (/[.!?]\s+[A-Za-z]/.test(content)) return false;
 
-  // Multi-word prose strings (> 4 words) without LaTeX commands are not math
-  const words = content.split(/\s+/);
-  if (words.length > 4 && !content.includes("\\")) return false;
+  // Check if content is an equation or calculation (contains = with math operators, variables, or brackets)
+  const isEquation =
+    content.includes("=") &&
+    (/[+\-*/^_{}()\[\]0-9%]/.test(content) || /\\times|\\div|\\approx/.test(content));
 
-  // Genuine inline math must contain math symbols or be a short variable name
-  const hasMathSymbols = /[\\_^{}=<>|±÷×+\-*/]/.test(content);
+  // Multi-word prose strings (> 4 words) without LaTeX commands or equations are not math
+  const words = content.split(/\s+/);
+  if (words.length > 4 && !content.includes("\\") && !isEquation) return false;
+
+  // Genuine inline math must contain math symbols, be an equation, or be a short variable name
+  const hasMathSymbols = /[\\_^{}=<>|±÷×+\-*/%]/.test(content);
   const isShortVariable = /^[a-zA-Z]{1,3}$/.test(content);
 
-  return hasMathSymbols || isShortVariable;
+  return hasMathSymbols || isEquation || isShortVariable;
 }
 
 /**
@@ -165,12 +229,13 @@ export function convertAsciiMathSegment(segment: string): string {
 export function normalizeMathFormulas(raw: string): string {
   if (!raw) return "";
 
-  // If already formatted with LaTeX display markers, preserve it
-  if (raw.includes("$$") || raw.includes("\\[") || raw.includes("\\(")) {
-    return raw;
-  }
+  // Always repair corrupted LaTeX escape sequences first
+  let text = repairCorruptedLatex(raw);
 
-  let text = raw;
+  // If already formatted with LaTeX display markers, preserve it (with repairs applied)
+  if (text.includes("$$") || text.includes("\\[") || text.includes("\\(")) {
+    return text;
+  }
 
   // Pattern 1: Cross-price elasticity: Exy = %ΔQx ÷ %ΔPy. Positive = substitutes; negative = complements
   if (/E(xy)?\s*=\s*%\s*[Δ\u0394]Qx\s*[÷\/]\s*%\s*[Δ\u0394]Py/i.test(text)) {
@@ -188,9 +253,9 @@ export function normalizeMathFormulas(raw: string): string {
     );
   }
 
-  // Pattern 3: Standalone formula equation (e.g. in metadata.rule or explanation)
-  // Example: "PB = PV(coupons) + PV(face)" or "FV = PV * (1 + r)^n"
-  if (/^[A-Za-z0-9_().\s]+\s*=\s*[A-Za-z0-9_().\s+\-*\/^$≈]+$/.test(text.trim()) && /[+\-*\/^()]/.test(text)) {
+  // Pattern 3: Standalone formula equation without math markers (e.g. in metadata.rule or explanation)
+  // Example: "PB = PV(coupons) + PV(face)" or "FV = PV * (1 + r)^n" or "r = r_f + \beta \times (E[R_{Mkt}] - r_f)"
+  if (!text.includes("$") && /^[A-Za-z0-9_().\s\\\[\]{}]+=\s*[A-Za-z0-9_().\s+\-*\/^$≈\\\[\]{}]+$/.test(text.trim()) && /[+\-*\/^()\\\[\]]/.test(text)) {
     let formula = text.trim();
     formula = formula.replace(/\b([A-Z]{1,4})\(([a-zA-Z]+)\)/g, "$1(\\text{$2})");
     formula = formula.replace(/(\d+|\))\s*\*\s*([\[\(\d])/g, "$1 \\times $2");
@@ -266,6 +331,7 @@ export type MathToken =
  */
 export function tokenizeMath(input: string): MathToken[] {
   if (!input) return [];
+  const text = repairCorruptedLatex(input);
   const tokens: MathToken[] = [];
   let i = 0;
   let textBuffer = "";
@@ -277,15 +343,15 @@ export function tokenizeMath(input: string): MathToken[] {
     }
   }
 
-  while (i < input.length) {
+  while (i < text.length) {
     // 1. Display math: $$...$$
-    if (input.startsWith("$$", i)) {
-      const closeIdx = input.indexOf("$$", i + 2);
+    if (text.startsWith("$$", i)) {
+      const closeIdx = text.indexOf("$$", i + 2);
       if (closeIdx !== -1) {
         flushText();
         tokens.push({
           type: "display-math",
-          value: input.slice(i + 2, closeIdx),
+          value: text.slice(i + 2, closeIdx),
         });
         i = closeIdx + 2;
         continue;
@@ -293,13 +359,13 @@ export function tokenizeMath(input: string): MathToken[] {
     }
 
     // 2. LaTeX display math: \[...\]
-    if (input.startsWith("\\[", i)) {
-      const closeIdx = input.indexOf("\\]", i + 2);
+    if (text.startsWith("\\[", i)) {
+      const closeIdx = text.indexOf("\\]", i + 2);
       if (closeIdx !== -1) {
         flushText();
         tokens.push({
           type: "display-math",
-          value: input.slice(i + 2, closeIdx),
+          value: text.slice(i + 2, closeIdx),
         });
         i = closeIdx + 2;
         continue;
@@ -307,13 +373,13 @@ export function tokenizeMath(input: string): MathToken[] {
     }
 
     // 3. LaTeX inline math: \(...\)
-    if (input.startsWith("\\(", i)) {
-      const closeIdx = input.indexOf("\\)", i + 2);
+    if (text.startsWith("\\(", i)) {
+      const closeIdx = text.indexOf("\\)", i + 2);
       if (closeIdx !== -1) {
         flushText();
         tokens.push({
           type: "inline-math",
-          value: input.slice(i + 2, closeIdx),
+          value: text.slice(i + 2, closeIdx),
         });
         i = closeIdx + 2;
         continue;
@@ -321,8 +387,8 @@ export function tokenizeMath(input: string): MathToken[] {
     }
 
     // 4. Inline math: $...$
-    if (input[i] === "$") {
-      const nextChar = input[i + 1];
+    if (text[i] === "$") {
+      const nextChar = text[i + 1];
       // If $ is followed by a digit or space or end of string, it is currency or punctuation (e.g. $5,000)
       if (!nextChar || /\d|\s/.test(nextChar)) {
         textBuffer += "$";
@@ -332,13 +398,13 @@ export function tokenizeMath(input: string): MathToken[] {
 
       // Look for closing $ on the same line
       let closeIdx = -1;
-      for (let j = i + 1; j < input.length; j++) {
-        if (input[j] === "\n") break; // inline math cannot span multiple lines
-        if (input[j] === "$") {
+      for (let j = i + 1; j < text.length; j++) {
+        if (text[j] === "\n") break; // inline math cannot span multiple lines
+        if (text[j] === "$") {
           // Check if escaped with odd number of backslashes (e.g. \$)
           let backslashes = 0;
           let k = j - 1;
-          while (k >= 0 && input[k] === "\\") {
+          while (k >= 0 && text[k] === "\\") {
             backslashes++;
             k--;
           }
@@ -346,11 +412,11 @@ export function tokenizeMath(input: string): MathToken[] {
             continue; // Escaped dollar sign inside math, do not close
           }
 
-          if (input[j + 1] === "$") {
+          if (text[j + 1] === "$") {
             j++;
             continue;
           }
-          if (input[j - 1] !== " ") {
+          if (text[j - 1] !== " ") {
             closeIdx = j;
             break;
           }
@@ -358,7 +424,7 @@ export function tokenizeMath(input: string): MathToken[] {
       }
 
       if (closeIdx !== -1) {
-        const candidate = input.slice(i + 1, closeIdx);
+        const candidate = text.slice(i + 1, closeIdx);
         if (isLikelyInlineMath(candidate)) {
           flushText();
           tokens.push({
@@ -371,7 +437,7 @@ export function tokenizeMath(input: string): MathToken[] {
       }
     }
 
-    textBuffer += input[i];
+    textBuffer += text[i];
     i++;
   }
 

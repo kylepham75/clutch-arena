@@ -19,6 +19,7 @@ import { IngestionError } from "@/lib/ingestion/errors";
 import { getGenerationModel, getGroqModel } from "./provider";
 import { buildIngestionPrompt, ingestionSystemPrompt } from "./prompts";
 import { budgetSourceBlocks } from "./budget-sources";
+import { repairCorruptedLatex } from "@/lib/math/latex";
 
 // Providers accept homogeneous JSON arrays. Convert to the strict tuple contract
 // only after generation, without weakening the game's QuestionItem schema.
@@ -343,11 +344,17 @@ export function validateGeneratedStudy(
     // Own the IDs instead of using model-provided object keys in the game state.
     const safeId = `q-${Object.keys(metadata).length + 1}`;
     question.id = safeId;
+    question.explanation = repairCorruptedLatex(question.explanation);
+    if (question.conceptVariant) {
+      question.conceptVariant.explanation = repairCorruptedLatex(
+        question.conceptVariant.explanation,
+      );
+    }
     metadata[safeId] = {
       topic: annotation.topic,
       chapter: annotation.chapter,
       citation: `${document.fileName} · ${source.label}`,
-      rule: annotation.rule,
+      rule: repairCorruptedLatex(annotation.rule),
     };
     references[safeId] = {
       sourceId: source.id,
