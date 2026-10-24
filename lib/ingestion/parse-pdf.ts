@@ -1,4 +1,4 @@
-import "@/lib/polyfills/pdf-node-polyfills";
+import { initPdfWorker } from "@/lib/polyfills/pdf-node-polyfills";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 import { IngestionError } from "./errors";
 import { MAX_PDF_PAGES, MAX_EXTRACTED_CHARACTERS } from "./limits";
@@ -9,6 +9,7 @@ export async function parsePdf(bytes: Buffer, signal: AbortSignal) {
       "This file does not contain a valid PDF header.",
       422,
     );
+  await initPdfWorker();
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({
     data: new Uint8Array(bytes),

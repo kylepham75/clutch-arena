@@ -288,5 +288,32 @@ export function ensurePdfPolyfills(): void {
   }
 }
 
-// Auto-run on import
+/**
+ * Pre-binds WorkerMessageHandler onto globalThis.pdfjsWorker.
+ * When present, PDF.js's fake worker immediately uses this in-memory handler
+ * and never attempts to load `/var/task/node_modules/pdfjs-dist/.../pdf.worker.mjs`
+ * from the serverless file system.
+ */
+export async function initPdfWorker(): Promise<void> {
+  ensurePdfPolyfills();
+  const g = globalThis as any;
+  if (!g.pdfjsWorker?.WorkerMessageHandler) {
+    try {
+      // @ts-ignore
+      const worker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+      const handler =
+        worker.WorkerMessageHandler || (worker as any).default?.WorkerMessageHandler;
+      if (handler) {
+        g.pdfjsWorker = {
+          WorkerMessageHandler: handler,
+        };
+      }
+    } catch (err) {
+      console.warn("[pdf-node-polyfills] In-memory worker bind notice:", err);
+    }
+  }
+}
+
+// Auto-run polyfills immediately on import
 ensurePdfPolyfills();
+void initPdfWorker();

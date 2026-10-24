@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import "@/lib/polyfills/pdf-node-polyfills";
+import { initPdfWorker } from "@/lib/polyfills/pdf-node-polyfills";
 
 describe("PDF Node.js Polyfills (DOMMatrix & Path2D)", () => {
   it("defines globalThis.DOMMatrix in Node.js runtime", () => {
@@ -35,5 +35,12 @@ describe("PDF Node.js Polyfills (DOMMatrix & Path2D)", () => {
     expect(typeof p.closePath).toBe("function");
     expect(typeof p.moveTo).toBe("function");
     expect(typeof p.lineTo).toBe("function");
+  });
+
+  it("pre-binds in-memory WorkerMessageHandler to prevent serverless file lookups", async () => {
+    await initPdfWorker();
+    const g = globalThis as any;
+    expect(g.pdfjsWorker).toBeDefined();
+    expect(g.pdfjsWorker.WorkerMessageHandler).toBeDefined();
   });
 });
