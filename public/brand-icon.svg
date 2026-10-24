@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- Pure White Squircle Background -->
+  <rect width="512" height="512" rx="112" fill="#FFFFFF" stroke="#E4E4E7" stroke-width="4"/>
+  
+  <!-- Hexagonal 'C' Frame (Clutch Orange) -->
+  <path d="M292 116H196L140 212L196 308H264L246 348H172L96 212L172 76H312L292 116Z" fill="#E85D2A"/>
+  
+  <!-- Sharp Geometric Lightning Bolt (Clutch Orange) -->
+  <path d="M356 96L260 220H328L252 364L396 204H324L356 96Z" fill="#E85D2A"/>
+  
+  <!-- Minimalist Open Book / Academic Core (Deep Obsidian Ink) -->
+  <path d="M216 184L252 204L288 184V236L252 256L216 236V184Z" fill="#18181B"/>
+  
+  <!-- Flat Minimalist Wordmark -->
+  <text x="256" y="436" text-anchor="middle" font-family="Inter, Plus Jakarta Sans, sans-serif" font-weight="800" font-size="48" letter-spacing="-1.5">
+    <tspan fill="#18181B">clutch </tspan>
+    <tspan fill="#E85D2A">arena</tspan>
+  </text>
+</svg>
