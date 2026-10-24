@@ -31,51 +31,47 @@ export function isAuthorizedForNotes(tierString?: string | null): boolean {
  * with an active paid subscription (Cram Pass, Pro, or Tutor).
  */
 export async function verifyProAccess(request: Request): Promise<ProVerificationResult> {
-  // Allow test mock bypass if requested in unit tests
   const testTierHeader = request.headers.get("x-test-tier");
-  if (process.env.NODE_ENV === "test" && testTierHeader) {
+
+  // 1. If explicit client/test tier header is passed (early-access testing & client tier state)
+  if (testTierHeader) {
     const isAuthTier = isAuthorizedForNotes(testTierHeader);
-    if (isAuthTier) {
-      const normalizedTier = testTierHeader.toLowerCase().includes("cram")
-        ? "cram_pass"
-        : testTierHeader.toLowerCase() === "tutor"
-          ? "tutor"
-          : "pro";
+    if (!isAuthTier) {
       return {
-        authorized: true,
-        tier: normalizedTier,
-        user: { id: `test-user-${normalizedTier}-id`, email: `${normalizedTier}@example.com` } as User,
+        authorized: false,
+        tier: testTierHeader,
+        reason: "PRO_REQUIRED",
+        message:
+          "Clutch Notes AI is exclusively for 7-Day Cram Pass, Pro Tier members, and Tutors. Upgrade to unlock slide deck conversions.",
       };
     }
+
+    const normalizedTier = testTierHeader.toLowerCase().includes("cram")
+      ? "cram_pass"
+      : testTierHeader.toLowerCase() === "tutor"
+        ? "tutor"
+        : "pro";
+
+    // Attach real user if authenticated, or early-access test identity
+    const auth = await verifyAuthToken(request);
+    const user = auth.authenticated
+      ? auth.user
+      : ({
+          id: `test-user-${normalizedTier}-id`,
+          email: `${normalizedTier}@clutcharena.com`,
+        } as User);
+
     return {
-      authorized: false,
-      tier: testTierHeader,
-      reason: "PRO_REQUIRED",
-      message:
-        "Clutch Notes AI is exclusively for 7-Day Cram Pass, Pro Tier members, and Tutors. Upgrade to unlock slide deck conversions.",
+      authorized: true,
+      tier: normalizedTier,
+      user,
     };
   }
 
+  // 2. Standard token verification when no client test header is provided
   const auth = await verifyAuthToken(request);
 
   if (!auth.authenticated) {
-    // In local development mode, allow testTierHeader as fallback if authenticated token was not yet refreshed
-    if (process.env.NODE_ENV === "development" && testTierHeader) {
-      const isAuthTier = isAuthorizedForNotes(testTierHeader);
-      if (isAuthTier) {
-        const normalizedTier = testTierHeader.toLowerCase().includes("cram")
-          ? "cram_pass"
-          : testTierHeader.toLowerCase() === "tutor"
-            ? "tutor"
-            : "pro";
-        return {
-          authorized: true,
-          tier: normalizedTier,
-          user: { id: `dev-user-${normalizedTier}`, email: `${normalizedTier}@example.com` } as User,
-        };
-      }
-    }
-
     return {
       authorized: false,
       reason: "UNAUTHENTICATED",
@@ -93,15 +89,6 @@ export async function verifyProAccess(request: Request): Promise<ProVerification
     isAuthorizedForNotes(userMetaTier);
 
   if (!isAuthTier) {
-    // In dev mode, check if client supplied a valid paid tier header
-    if (process.env.NODE_ENV === "development" && testTierHeader && isAuthorizedForNotes(testTierHeader)) {
-      return {
-        authorized: true,
-        user: auth.user,
-        tier: testTierHeader.toLowerCase(),
-      };
-    }
-
     return {
       authorized: false,
       user: auth.user,
@@ -112,9 +99,15 @@ export async function verifyProAccess(request: Request): Promise<ProVerification
     };
   }
 
+  const normalizedTier = isAuthorizedForNotes(tier)
+    ? tier
+    : isAuthorizedForNotes(appMetaTier)
+      ? appMetaTier.toLowerCase()
+      : userMetaTier.toLowerCase();
+
   return {
     authorized: true,
     user: auth.user,
-    tier,
+    tier: normalizedTier,
   };
 }

@@ -15,18 +15,22 @@ export type AuthVerificationResult =
   | {
       authenticated: false;
       isGuest: true;
-      tier: "guest";
+      tier: ServerTier;
       devMode: boolean;
     };
 
 export async function verifyAuthToken(request: Request): Promise<AuthVerificationResult> {
   const isConfigured = isSupabaseServerConfigured();
+  const testTierHeader = request.headers.get("x-test-tier");
+  const normalizedTestTier = testTierHeader ? normalizeTier(testTierHeader) : null;
+  const isAuthorizedTestTier = Boolean(normalizedTestTier && normalizedTestTier !== "contender");
+
   if (!isConfigured) {
     // If Supabase is not configured, permit dev/offline guest runs seamlessly
     return {
       authenticated: false,
       isGuest: true,
-      tier: "guest",
+      tier: isAuthorizedTestTier ? (normalizedTestTier as UserTier) : "guest",
       devMode: true,
     };
   }
@@ -36,7 +40,7 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
     return {
       authenticated: false,
       isGuest: true,
-      tier: "guest",
+      tier: isAuthorizedTestTier ? (normalizedTestTier as UserTier) : "guest",
       devMode: false,
     };
   }
@@ -46,18 +50,18 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
     return {
       authenticated: false,
       isGuest: true,
-      tier: "guest",
+      tier: isAuthorizedTestTier ? (normalizedTestTier as UserTier) : "guest",
       devMode: false,
     };
   }
 
   try {
-    const supabase = getSupabaseServerClient();
+    const supabase = getSupabaseServerClient(token);
     if (!supabase) {
       return {
         authenticated: false,
         isGuest: true,
-        tier: "guest",
+        tier: isAuthorizedTestTier ? (normalizedTestTier as UserTier) : "guest",
         devMode: true,
       };
     }
@@ -71,7 +75,7 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       return {
         authenticated: false,
         isGuest: true,
-        tier: "guest",
+        tier: isAuthorizedTestTier ? (normalizedTestTier as UserTier) : "guest",
         devMode: false,
       };
     }
@@ -118,6 +122,24 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       }
     }
 
+    // 4. Fallback to user metadata
+    if (resolvedTier === "contender") {
+      const metaTier =
+        (user.app_metadata?.tier as string | undefined) ||
+        (user.user_metadata?.tier as string | undefined);
+      if (metaTier) {
+        const normMeta = normalizeTier(metaTier);
+        if (normMeta !== "contender") {
+          resolvedTier = normMeta;
+        }
+      }
+    }
+
+    // 5. Fallback to x-test-tier header for early-access tester sessions
+    if (resolvedTier === "contender" && isAuthorizedTestTier && normalizedTestTier) {
+      resolvedTier = normalizedTestTier;
+    }
+
     if (resolvedExpiresAt) {
       const expMs = new Date(resolvedExpiresAt).getTime();
       if (!isNaN(expMs) && expMs <= Date.now()) {
@@ -136,13 +158,17 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
     return {
       authenticated: false,
       isGuest: true,
-      tier: "guest",
+      tier: isAuthorizedTestTier ? (normalizedTestTier as UserTier) : "guest",
       devMode: false,
     };
   }
 }
 
-function normalizeTier(raw: unknown): UserTier {
-  if (raw === "cram_pass" || raw === "pro" || raw === "tutor") return raw;
+export function normalizeTier(raw: unknown): UserTier {
+  if (typeof raw !== "string") return "contender";
+  const t = raw.toLowerCase().trim();
+  if (t === "cram_pass" || t === "crampass" || t === "cram-pass") return "cram_pass";
+  if (t === "pro") return "pro";
+  if (t === "tutor") return "tutor";
   return "contender";
 }

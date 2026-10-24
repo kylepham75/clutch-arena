@@ -127,7 +127,7 @@ export function ClutchNotesPanel() {
         setProgressStep("Synthesizing bilingual conceptual structure & standardizing LaTeX formulas...");
       }, 2400);
 
-      const effectiveTier = tier && tier !== "contender" ? tier : "pro";
+      const effectiveTier = tier && tier !== "contender" ? tier : "contender";
       const headers: Record<string, string> = {
         "x-test-tier": effectiveTier,
       };

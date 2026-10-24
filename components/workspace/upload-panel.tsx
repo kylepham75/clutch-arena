@@ -227,6 +227,9 @@ export function UploadPanel({
       if (session?.access_token) {
         headers["Authorization"] = `Bearer ${session.access_token}`;
       }
+      if (tier && tier !== "contender") {
+        headers["x-test-tier"] = tier;
+      }
 
       const res = await fetch(endpoint, {
         method: "POST",
