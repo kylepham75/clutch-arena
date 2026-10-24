@@ -165,7 +165,7 @@ export function ClutchNotesPanel() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => {
         controller.abort();
-      }, 95_000); // 1 minute 35 seconds (covering 1 min 30 sec)
+      }, 120_000); // 2 minutes matching serverless maxDuration
 
       try {
         const res = await fetch("/api/notes/generate", {

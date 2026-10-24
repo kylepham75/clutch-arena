@@ -54,10 +54,10 @@ export function getGenerationModel(tier: string = "contender") {
     if (local) return local;
   }
 
-  // High-retention synthesis routing for Clutch Notes
+  // High-retention synthesis routing for Clutch Notes (strictly fast gemini-3.6-flash or Groq)
   if (tier === "notes") {
-    const envModel = process.env.GEMINI_MODEL?.trim();
-    const gemini = getGeminiModel(envModel || "gemini-3.6-flash");
+    const noteModel = process.env.NOTES_AI_MODEL?.trim() || "gemini-3.6-flash";
+    const gemini = getGeminiModel(noteModel);
     if (gemini) return gemini;
     const groq = getGroqModel();
     if (groq) return groq;
