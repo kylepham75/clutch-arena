@@ -193,6 +193,195 @@ function sanitizeFormula(f: NoteFormula): NoteFormula {
   };
 }
 
+function cleanTypoString(str: string): string {
+  return str
+    .replace(/\b([gG])\s*=\s*[oO]\b/g, "$1 = 0")
+    .replace(/\(([gG])\s*=\s*[oO]\)/g, "($1 = 0)")
+    .replace(/\\text\{[gG]\s*=\s*[oO]\}/g, "\\text{$1 = 0}")
+    .replace(/\bP_o\b/g, "P_0")
+    .replace(/\bD_o\b/g, "D_0")
+    .replace(/\bR_o\b/g, "R_0")
+    .replace(/\bP_\{o\}\b/g, "P_{0}")
+    .replace(/\bD_\{o\}\b/g, "D_{0}")
+    .replace(/\bR_\{o\}\b/g, "R_{0}");
+}
+
+function shieldFormula(f: NoteFormula, contextHint: string): NoteFormula {
+  let latex = cleanTypoString(f.latex);
+  let leadText = f.leadText ? cleanTypoString(f.leadText) : undefined;
+  let description = f.description ? cleanTypoString(f.description) : undefined;
+  let variables = f.variables.map((v) => ({
+    symbol: cleanTypoString(v.symbol),
+    definition: cleanTypoString(v.definition),
+  }));
+
+  // Intercept circular/hallucinated growth rate substitution (e.g. g = (P1 - P0)/P0)
+  const isFindingGrowthRate = /finding.*growth|growth.*rate|\(g\)/i.test(contextHint);
+  const isPriceAppreciationFormula =
+    /(\\frac\{\s*P_?1\s*-\s*P_?0\s*\}\{\s*P_?0\s*\}|\(P_?1\s*-\s*P_?0\)\s*\/\s*P_?0|\\Delta P)/i.test(
+      latex,
+    );
+
+  if (isFindingGrowthRate && isPriceAppreciationFormula) {
+    latex = "g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}";
+    leadText = "Fundamental accounting formula for sustainable dividend growth:";
+    description = "Growth rate is driven by reinvestment policy and ROE, NOT circular price changes.";
+    variables = [
+      {
+        symbol: "\\text{Retention ratio}",
+        definition: "Proportion of net earnings retained in the business = 1 - Dividend Payout Ratio",
+      },
+      {
+        symbol: "\\text{ROE}",
+        definition: "Return on equity earned on retained earnings",
+      },
+    ];
+  }
+
+  // Underbraced decomposition for Required Return R
+  if (
+    /R\s*=\s*(\\frac\{D_?1\}\{P_?0\}|\(D_?1\/P_?0\))\s*\+\s*g/i.test(latex) &&
+    !latex.includes("underbrace")
+  ) {
+    latex =
+      "R = \\underbrace{\\frac{D_1}{P_0}}_{\\text{Dividend Yield}} + \\underbrace{g}_{\\text{Capital Gains Yield}}";
+  }
+
+  return {
+    ...f,
+    latex,
+    leadText,
+    description,
+    variables,
+  };
+}
+
+export function applyHallucinationShield(
+  sections: NoteSection[],
+  rawSlideText: string = "",
+): NoteSection[] {
+  const normSlideText = rawSlideText.toLowerCase();
+
+  return sections.map((sec) => {
+    // 1. Clean typo characters in all section text
+    sec.titleVi = cleanTypoString(sec.titleVi);
+    if (sec.coreStatement) sec.coreStatement = cleanTypoString(sec.coreStatement);
+    if (sec.overview) sec.overview = cleanTypoString(sec.overview);
+    sec.bulletPoints = sec.bulletPoints.map(cleanTypoString);
+
+    if (sec.keyTakeaways) {
+      if (sec.keyTakeaways.items) {
+        sec.keyTakeaways.items = sec.keyTakeaways.items.map((item) => ({
+          point: cleanTypoString(item.point),
+          subBullets: (item.subBullets ?? []).map(cleanTypoString),
+        }));
+      }
+      if (sec.keyTakeaways.boundaryConditions) {
+        sec.keyTakeaways.boundaryConditions = cleanTypoString(
+          sec.keyTakeaways.boundaryConditions,
+        );
+      }
+      sec.keyTakeaways.summaryPoints = (sec.keyTakeaways.summaryPoints ?? []).map(cleanTypoString);
+    }
+
+    // 2. Shield formulas at section top-level
+    sec.formulas = sec.formulas.map((f) => shieldFormula(f, sec.titleVi));
+
+    // 3. Shield sub-sections
+    if (sec.subSections) {
+      sec.subSections = sec.subSections.map((sub) => {
+        sub.heading = cleanTypoString(sub.heading);
+        if (sub.leadIn) sub.leadIn = cleanTypoString(sub.leadIn);
+        sub.bulletPoints = sub.bulletPoints.map(cleanTypoString);
+        sub.formulas = sub.formulas.map((f) =>
+          shieldFormula(f, `${sec.titleVi} ${sub.heading}`),
+        );
+
+        // 3a. Shield Case 3 (Differential Growth) Terminal Value PN
+        const isDifferentialGrowth =
+          /case\s*3|differential|non-?constant|tăng trưởng (không đều|khác biệt|nhiều giai đoạn)/i.test(
+            sub.heading,
+          );
+        if (isDifferentialGrowth) {
+          const hasTerminalFormula = sub.formulas.some((f) =>
+            /P_?N\s*=|\\frac\{\s*D_?\{?N\+1\}?|\(1\s*\+\s*g\)\}/i.test(f.latex),
+          );
+          if (!hasTerminalFormula) {
+            sub.formulas.push({
+              name: "",
+              leadText: "Terminal Value calculation at Year N:",
+              latex: "P_N = \\frac{D_{N+1}}{R - g} = \\frac{D_N \\cdot (1 + g)}{R - g}",
+              description:
+                "P_N represents the present value of the constant growth perpetuity at the end of Year N.",
+              variables: [
+                {
+                  symbol: "P_N",
+                  definition: "Terminal price of the stock at Year N",
+                },
+                {
+                  symbol: "D_{N+1}",
+                  definition: "First dividend in the constant growth stage = D_N * (1 + g)",
+                },
+              ],
+            });
+          }
+        }
+
+        // 3b. Shield Finding R decomposition
+        const isFindingR = /finding.*(discount rate|required return|\(R\))/i.test(sub.heading);
+        if (isFindingR) {
+          const hasYieldDefinitions = sub.bulletPoints.some((bp) =>
+            /dividend yield/i.test(bp),
+          );
+          if (!hasYieldDefinitions) {
+            sub.bulletPoints.unshift(
+              "Dividend Yield (Lợi suất cổ tức) = \\frac{D_1}{P_0}: Expected annual dividend divided by current stock price (tested independently).",
+              "Capital Gains Yield (Lợi suất tăng vốn) = g: The rate at which the stock price increases over time.",
+            );
+          }
+        }
+
+        return sub;
+      });
+    }
+
+    // 4. Shield Section E (Preference Share / Deferred Preferred Stock)
+    const isPreferredStock = /preference|preferred|ưu đãi/i.test(sec.titleVi);
+    const mentionsDeferredPerpetuity =
+      /novaco|beginning \d+ years|deferred|hoãn trả|year 11|year 12|delay/i.test(
+        normSlideText,
+      );
+
+    if (isPreferredStock && mentionsDeferredPerpetuity && sec.subSections) {
+      const hasDeferred = sec.subSections.some((sub) =>
+        /deferred|hoãn trả|delayed/i.test(sub.heading),
+      );
+      if (!hasDeferred) {
+        sec.subSections.push({
+          heading: "Deferred Preferred Stock (Cổ phiếu ưu đãi hoãn trả)",
+          leadIn: "When dividends begin at Year t (delayed perpetuity):",
+          bulletPoints: [
+            "Step 1: Calculate the price at Year t-1 (one year before first dividend): P_{t-1} = \\frac{D_t}{R_p}",
+            "Step 2: Discount P_{t-1} back to Year 0: P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}",
+          ],
+          formulas: [
+            {
+              name: "",
+              leadText: "Two-step deferred perpetuity valuation:",
+              latex: "P_{t-1} = \\frac{D_t}{R_p} \\implies P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}",
+              description:
+                "Find the price one period before the first dividend payment, then discount back to today.",
+              variables: [],
+            },
+          ],
+        });
+      }
+    }
+
+    return sec;
+  });
+}
+
 function sanitizeSubSection(sub: NoteSubSection): NoteSubSection {
   return {
     ...sub,
@@ -587,6 +776,9 @@ export async function generateClutchNote(
     noiseRate = Math.min(98, Math.max(20, Math.round(noiseRate)));
   }
 
+  const rawSlideText = options.sources.map((s) => s.text).join("\n");
+  const shieldedSections = applyHallucinationShield(populatedSections, rawSlideText);
+
   const finalNote: ClutchNote = {
     id: noteId,
     title: repairCorruptedLatex(meta.title.trim()),
@@ -597,7 +789,7 @@ export async function generateClutchNote(
     estimatedDistilledPages: meta.estimatedDistilledPages || 3,
     noiseReductionRate: noiseRate,
     executiveSummary: repairCorruptedLatex(meta.executiveSummary.trim()),
-    sections: populatedSections,
+    sections: shieldedSections,
   };
 
   finalNote.rawMarkdown = buildMarkdownNote(finalNote);

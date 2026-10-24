@@ -71,9 +71,9 @@ export const SAMPLE_CLUTCH_NOTE: ClutchNote = {
       ],
       subSections: [
         {
-          heading: "CASE 1: Zero Growth Model (Không tăng trưởng)",
+          heading: "CASE 1: Zero Growth Model (Không tăng trưởng, g = 0)",
           bulletPoints: [
-            "Dividends remain the same forever",
+            "Dividends remain the same forever (g = 0)",
             "This is a perpetuity model",
           ],
           formulas: [
@@ -89,21 +89,52 @@ export const SAMPLE_CLUTCH_NOTE: ClutchNote = {
           heading: "CASE 2: Constant Growth Model (Tăng trưởng đều)",
           bulletPoints: [
             "Dividends grow at a constant rate g forever",
+            "Requires R > g (otherwise the model is invalid)",
             "Used when the company is stable and mature",
           ],
           formulas: [
             {
               name: "",
               latex:
-                "P_0 = \\frac{D_1}{(1 + R)} + \\frac{D_1 \\cdot (1 + g)}{(1 + R)^2} + \\frac{D_1 \\cdot (1 + g)^2}{(1 + R)^3} + \\frac{D_1 \\cdot (1 + g)^3}{(1 + R)^4} + \\dots = \\frac{D_1}{R - g}",
+                "P_0 = \\frac{D_1}{(1 + R)} + \\frac{D_1 \\cdot (1 + g)}{(1 + R)^2} + \\dots = \\frac{D_1}{R - g}",
               variables: [],
             },
           ],
         },
         {
-          heading: "CASE 3: Differential Growth Model (Tăng trưởng khác biệt)",
-          bulletPoints: ["Used when dividends grow at different rates over time"],
-          formulas: [],
+          heading: "CASE 3: Differential Growth Model (Tăng trưởng nhiều giai đoạn)",
+          bulletPoints: [
+            "Used when dividends grow at non-constant rates initially before settling into constant growth",
+            "Calculate early dividends year-by-year during the non-constant period",
+            "Find the Terminal Value (P_N) at the start of constant growth, then discount everything to Year 0",
+          ],
+          formulas: [
+            {
+              name: "",
+              leadText: "General multi-stage valuation equation:",
+              latex:
+                "P_0 = \\sum_{t=1}^{N} \\frac{D_t}{(1 + R)^t} + \\frac{P_N}{(1 + R)^N}",
+              variables: [
+                {
+                  symbol: "P_N",
+                  definition: "Terminal Value (stock price at the end of the non-constant period Year N)",
+                },
+              ],
+            },
+            {
+              name: "",
+              leadText: "Terminal Value calculation at Year N:",
+              latex:
+                "P_N = \\frac{D_{N+1}}{R - g} = \\frac{D_N \\cdot (1 + g)}{R - g}",
+              description: "P_N values the infinite constant-growth perpetuity starting after Year N.",
+              variables: [
+                {
+                  symbol: "D_{N+1}",
+                  definition: "First dividend in the constant growth stage",
+                },
+              ],
+            },
+          ],
         },
       ],
       keyTakeaways: {
@@ -116,9 +147,9 @@ export const SAMPLE_CLUTCH_NOTE: ClutchNote = {
           {
             point: "Use different models depending on dividend behavior:",
             subBullets: [
-              "Zero growth → Perpetuity",
+              "Zero growth (g = 0) → Perpetuity formula",
               "Constant growth → Gordon model",
-              "Differential growth → Multi-stage valuation",
+              "Differential growth → Multi-stage valuation with Terminal Value (P_N)",
             ],
           },
           {
@@ -126,19 +157,19 @@ export const SAMPLE_CLUTCH_NOTE: ClutchNote = {
             subBullets: [],
           },
           {
-            point: "Make sure $g < r$, otherwise the model breaks down",
+            point: "Make sure g < R in constant growth, otherwise the model breaks down",
             subBullets: [],
           },
         ],
-        boundaryConditions: "Make sure g < r, otherwise the model breaks down",
+        boundaryConditions: "Make sure g < R, otherwise the model breaks down",
         summaryPoints: [
           "Stock value = present value of expected future dividends",
-          "Use different models depending on dividend behavior: Zero growth → Perpetuity, Constant growth → Gordon model, Differential growth → Multi-stage valuation",
+          "Use different models depending on dividend behavior: Zero growth (g = 0) → Perpetuity, Constant growth → Gordon model, Differential growth → Multi-stage valuation",
           "Only use DDM if company pays dividends regularly",
-          "Make sure g < r, otherwise the model breaks down",
+          "Make sure g < R, otherwise the model breaks down",
         ],
       },
-      sourceSlides: [5, 6, 7, 8, 9],
+      sourceSlides: [5, 6, 7, 8, 9, 23, 24, 25, 26],
     },
     {
       id: "section-d",
@@ -150,46 +181,55 @@ export const SAMPLE_CLUTCH_NOTE: ClutchNote = {
       formulas: [],
       subSections: [
         {
-          heading: "Finding the growth rate (g)",
-          bulletPoints: [],
+          heading: "1. Finding the growth rate (g)",
+          leadIn: "Fundamental accounting formula for sustainable dividend growth:",
+          bulletPoints: [
+            "g is determined by the firm's reinvestment policy and return on equity, NOT circular price changes.",
+          ],
           formulas: [
             {
               name: "",
               latex: "g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}",
-              variables: [],
+              variables: [
+                {
+                  symbol: "\\text{Retention ratio}",
+                  definition: "Proportion of net earnings retained in the business = 1 - Dividend Payout Ratio",
+                },
+                {
+                  symbol: "\\text{ROE}",
+                  definition: "Return on equity earned on retained earnings",
+                },
+              ],
             },
           ],
         },
         {
-          heading: "Finding the discount rate (R)",
-          leadIn: "The discount rate can be broken into two parts:",
-          bulletPoints: ["The dividend yield.", "The growth rate (in dividends)"],
+          heading: "2. Finding the discount rate (R) with DGM",
+          leadIn: "The required return is decomposed into two distinct economic components:",
+          bulletPoints: [
+            "Dividend Yield = \\frac{D_1}{P_0}: Expected annual cash dividend as a percentage of current stock price (frequently tested independently).",
+            "Capital Gains Yield = g: The rate at which the stock price increases over time.",
+          ],
           formulas: [
             {
               name: "",
-              leadText:
-                "In practice, there is a great deal of estimation error involved in estimating R. Let's start with the DGM:",
-              latex: "P_0 = \\frac{D_0(1 + g)}{R - g} = \\frac{D_1}{R - g}",
-              variables: [],
-            },
-            {
-              name: "",
-              leadText: "Rearranging the equation to solve for R, we get:",
-              latex: "R = \\frac{D_0(1 + g)}{P_0} + g = \\frac{D_1}{P_0} + g",
+              leadText: "Decomposition of required return R:",
+              latex:
+                "R = \\underbrace{\\frac{D_1}{P_0}}_{\\text{Dividend Yield}} + \\underbrace{g}_{\\text{Capital Gains Yield}}",
               variables: [],
             },
           ],
         },
       ],
       keyTakeaways: null,
-      sourceSlides: [14],
+      sourceSlides: [14, 15, 16, 17],
     },
     {
       id: "section-e",
       letter: "E",
       titleVi: "E. VALUE OF PREFERENCE SHARE",
       titleEn: "",
-      overview: "Some key features:",
+      overview: "Key characteristics of preferred stock:",
       bulletPoints: [
         "Pays fixed dividends (like bonds) but has no maturity date.",
         "Dividends paid before common stockholders.",
@@ -199,7 +239,7 @@ export const SAMPLE_CLUTCH_NOTE: ClutchNote = {
       formulas: [
         {
           name: "",
-          leadText: "The equation:",
+          leadText: "Standard preferred stock (immediate perpetuity):",
           latex: "P_p = \\frac{D_p}{R_p}",
           variables: [
             { symbol: "P_p", definition: "Price of the preferred stock" },
@@ -208,9 +248,27 @@ export const SAMPLE_CLUTCH_NOTE: ClutchNote = {
           ],
         },
       ],
-      subSections: [],
+      subSections: [
+        {
+          heading: "Deferred Preferred Stock (Cổ phiếu ưu đãi hoãn trả)",
+          leadIn: "When dividends begin at Year t (delayed perpetuity):",
+          bulletPoints: [
+            "Step 1: Calculate the price at Year t-1 (one year before first dividend): P_{t-1} = \\frac{D_t}{R_p}",
+            "Step 2: Discount P_{t-1} back to Year 0: P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}",
+          ],
+          formulas: [
+            {
+              name: "",
+              leadText: "Two-step deferred perpetuity valuation:",
+              latex: "P_{t-1} = \\frac{D_t}{R_p} \\implies P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}",
+              description: "Find the price one period before the first dividend payment, then discount back to today.",
+              variables: [],
+            },
+          ],
+        },
+      ],
       keyTakeaways: null,
-      sourceSlides: [18, 19],
+      sourceSlides: [18, 19, 20, 21, 22],
     },
   ],
   rawMarkdown: `# CHAPTER 9: STOCK VALUATION
@@ -244,57 +302,78 @@ We classify stock valuation models based on how dividends grow:
 - Constant Growth.
 - Differential Growth.
 
-### CASE 1: Zero Growth Model (Không tăng trưởng)
-- Dividends remain the same forever
+### CASE 1: Zero Growth Model (Không tăng trưởng, g = 0)
+- Dividends remain the same forever (g = 0)
 - This is a perpetuity model
 
 $$P_0 = \\frac{D}{(1 + R)} + \\frac{D}{(1 + R)^2} + \\frac{D}{(1 + R)^3} + \\frac{D}{(1 + R)^4} + \\dots = \\frac{D}{R}$$
 
 ### CASE 2: Constant Growth Model (Tăng trưởng đều)
 - Dividends grow at a constant rate g forever
+- Requires R > g (otherwise the model is invalid)
 - Used when the company is stable and mature
 
 $$P_0 = \\frac{D_1}{(1 + R)} + \\frac{D_1 \\cdot (1 + g)}{(1 + R)^2} + \\dots = \\frac{D_1}{R - g}$$
 
-### CASE 3: Differential Growth Model (Tăng trưởng khác biệt)
-- Used when dividends grow at different rates over time
+### CASE 3: Differential Growth Model (Tăng trưởng nhiều giai đoạn)
+- Used when dividends grow at non-constant rates initially before settling into constant growth
+- Calculate early dividends year-by-year during the non-constant period
+- Find the Terminal Value (P_N) at the start of constant growth, then discount everything to Year 0
+
+General multi-stage valuation equation:
+$$P_0 = \\sum_{t=1}^{N} \\frac{D_t}{(1 + R)^t} + \\frac{P_N}{(1 + R)^N}$$
+
+Terminal Value calculation at Year N:
+$$P_N = \\frac{D_{N+1}}{R - g} = \\frac{D_N \\cdot (1 + g)}{R - g}$$
 
 > **KEY TAKEAWAYS**
 > 1. Stock value = present value of expected future dividends
 > 2. Use different models depending on dividend behavior:
->    - Zero growth → Perpetuity
+>    - Zero growth (g = 0) → Perpetuity formula
 >    - Constant growth → Gordon model
->    - Differential growth → Multi-stage valuation
+>    - Differential growth → Multi-stage valuation with Terminal Value (P_N)
 > 3. Only use DDM if company pays dividends regularly
-> 4. Make sure $g < r$, otherwise the model breaks down
+> 4. Make sure g < R in constant growth, otherwise the model breaks down
 
 ## D. PARAMETERS IN DIVIDEND DISCOUNT MODEL
-### Finding the growth rate (g)
+### 1. Finding the growth rate (g)
+Fundamental accounting formula for sustainable dividend growth:
+- g is determined by the firm's reinvestment policy and return on equity, NOT circular price changes.
+
 $$g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}$$
 
-### Finding the discount rate (R)
-The discount rate can be broken into two parts:
-- The dividend yield.
-- The growth rate (in dividends)
+**Trong đó:**
+- $\\text{Retention ratio}$: Proportion of net earnings retained in the business = 1 - Dividend Payout Ratio
+- $\\text{ROE}$: Return on equity earned on retained earnings
 
-In practice, there is a great deal of estimation error involved in estimating R. Let's start with the DGM:
-$$P_0 = \\frac{D_0(1 + g)}{R - g} = \\frac{D_1}{R - g}$$
+### 2. Finding the discount rate (R) with DGM
+The required return is decomposed into two distinct economic components:
+- Dividend Yield = \\frac{D_1}{P_0}: Expected annual cash dividend as a percentage of current stock price (frequently tested independently).
+- Capital Gains Yield = g: The rate at which the stock price increases over time.
 
-Rearranging the equation to solve for R, we get:
-$$R = \\frac{D_0(1 + g)}{P_0} + g = \\frac{D_1}{P_0} + g$$
+Decomposition of required return R:
+$$R = \\underbrace{\\frac{D_1}{P_0}}_{\\text{Dividend Yield}} + \\underbrace{g}_{\\text{Capital Gains Yield}}$$
 
 ## E. VALUE OF PREFERENCE SHARE
-Some key features:
+Key characteristics of preferred stock:
 - Pays fixed dividends (like bonds) but has no maturity date.
 - Dividends paid before common stockholders.
 - Usually no voting rights.
 - Valued as perpetuity.
 
-The equation:
+Standard preferred stock (immediate perpetuity):
 $$P_p = \\frac{D_p}{R_p}$$
 
 **Trong đó:**
 - $P_p$: Price of the preferred stock
 - $D_p$: Annual dividend of the preferred stock
-- $R_p$: Required rate of return`,
+- $R_p$: Required rate of return
+
+### Deferred Preferred Stock (Cổ phiếu ưu đãi hoãn trả)
+When dividends begin at Year t (delayed perpetuity):
+- Step 1: Calculate the price at Year t-1 (one year before first dividend): P_{t-1} = \\frac{D_t}{R_p}
+- Step 2: Discount P_{t-1} back to Year 0: P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}
+
+Two-step deferred perpetuity valuation:
+$$P_{t-1} = \\frac{D_t}{R_p} \\implies P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}$$`,
 };

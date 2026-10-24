@@ -413,14 +413,20 @@ gantt
 ## 10. Engineering Progress & Production Changelog (October 2026)
 
 > **Current Build & Test Health (Verified Oct 24, 2026):**
-> - **Automated Test Suite:** `221 / 221` unit & integration tests passing across `28` Vitest test files (`npm test`).
+> - **Automated Test Suite:** `222 / 222` unit & integration tests passing across `28` Vitest test files (`npm test`).
 > - **Static Type Safety:** `0` TypeScript compiler errors (`npm run typecheck`).
 > - **Production Build:** `15 / 15` Next.js 15.5.27 App Router pages & serverless API routes compiling cleanly (`npm run build`).
 
-### 10.1 Clutch Notes AI v2 — Gold-Standard Concise Single-Sheet Handout & Strict Gemini Schema (`eacef0e` + Schema Fix)
-- **Problem Identified:** V1 generated notes were overly wordy, fragmented across single-section tabs, repeated formula variable legends (`P_0, D_1, R`) under every equation, and echoed raw slide numerical exercises. Additionally, Zod `.default()`/`.optional()` fields on `clutchNoteSchema` were omitted from `required` keys in Gemini's OpenAPI `responseSchema`, causing `gemini-3.5-flash-lite` structured decoding to emit bare section headers with empty body arrays.
+### 10.1 Clutch Notes AI v2 — Gold-Standard Concise Single-Sheet Handout & Strict Academic Hallucination Shield
+- **Problem Identified:** V1 generated notes were overly wordy, fragmented across single-section tabs, and had a schema issue where non-required fields were skipped by lightweight models. In addition, prompt ambiguity caused a factual hallucination substituting circular price appreciation $g = \frac{P_1 - P_0}{P_0}$ for the true accounting growth rate, a typo `(g = o)` using letter "o", and omissions of $R$ decomposition (Dividend Yield vs Capital Gains Yield), Terminal Value $P_N$, and Deferred Preferred Stock ($P_{t-1} = D_t / R \implies P_0 = P_{t-1} / (1+R)^{t-1}$).
 - **Benchmark Analysis:** Benchmarked side-by-side against a 27-slide university *Corporate Finance (Stock Valuation)* lecture deck condensed into a 3-page gold-standard academic handout (`CHAPTER 9: STOCK VALUATION`).
 - **What Shipped:**
+  - **Strict Academic Hallucination Shield (`applyHallucinationShield` in `lib/ai/generate-notes.ts` & `lib/ai/prompts-notes.ts`):**
+    1. *Fundamental Growth Rate ($g$):* Strictly grounded in $g = \text{Retention ratio} \times \text{Return on retained earnings (ROE)}$; intercepts and rejects circular price change definitions.
+    2. *Required Return ($R$) Decomposition:* Automatically underbraces $R = \underbrace{\frac{D_1}{P_0}}_{\text{Dividend Yield}} + \underbrace{g}_{\text{Capital Gains Yield}}$ and defines both components independently.
+    3. *Multi-Stage Terminal Value ($P_N$):* Enforces explicit Terminal Value formula $P_N = \frac{D_{N+1}}{R - g} = \frac{D_N(1 + g)}{R - g}$ in non-constant growth models.
+    4. *Deferred Preferred Stock:* Injects 2-step deferred perpetuity valuation $P_{t-1} = \frac{D_t}{R_p} \implies P_0 = \frac{P_{t-1}}{(1 + R_p)^{t-1}}$ when slides cover delayed preferred dividends.
+    5. *Typographical Integrity:* Automatically sanitizes `(g = o)` or `P_o` $\to$ `(g = 0)` and `P_0` numeric digits.
   - **Strict Required LLM Schema (`generatedClutchNoteSchema` in `lib/ai/generate-notes.ts`):** Separated the strict 100%-required LLM generation schema (zero `.optional()` / zero `.default()`) from the runtime `clutchNoteSchema`, added `maxOutputTokens: 8192`, added substantive section-content validation + automatic Groq failover, and locked it with a recursive JSON Schema unit test.
   - **Hierarchical Handout Schema (`lib/schemas/notes.ts`):** Added section `coreStatement`, nested `subSections` (`1.`, `2.`, `3.` with `heading`, `leadIn`, `bulletPoints`, `formulas`), `formula.leadText`, non-redundant `variables`, and structured `keyTakeaways.items` (`point` + `→` `subBullets`).
   - **6-Rule Synthesis Prompt (`lib/ai/prompts-notes.ts`):**
