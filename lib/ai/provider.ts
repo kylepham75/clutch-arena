@@ -53,6 +53,16 @@ export function getGenerationModel(tier: string = "contender") {
     const local = getLocalModel();
     if (local) return local;
   }
+
+  // High-retention synthesis routing for Clutch Notes
+  if (tier === "notes") {
+    const envModel = process.env.GEMINI_MODEL?.trim();
+    const gemini = getGeminiModel(envModel || "gemini-3.5-flash");
+    if (gemini) return gemini;
+    const groq = getGroqModel();
+    if (groq) return groq;
+  }
+
   if (provider === "gemini") {
     const envModel = process.env.GEMINI_MODEL?.trim();
     const defaultGemini = isPriority ? "gemini-3.5-flash" : "gemini-3.5-flash-lite";
@@ -62,14 +72,6 @@ export function getGenerationModel(tier: string = "contender") {
   if (provider === "groq") {
     const groq = getGroqModel();
     if (groq) return groq;
-  }
-
-  // Ultra-fast synthesis routing for Clutch Notes and latency-sensitive serverless routes
-  if (tier === "notes") {
-    const groq = getGroqModel();
-    if (groq) return groq;
-    const geminiLite = getGeminiModel(process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash-lite");
-    if (geminiLite) return geminiLite;
   }
 
   // Smart Model Routing:

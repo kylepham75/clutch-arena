@@ -11,7 +11,7 @@ import { MAX_FILE_BYTES } from "@/lib/ingestion/limits";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 export async function POST(request: NextRequest) {
   const requestId = randomUUID();

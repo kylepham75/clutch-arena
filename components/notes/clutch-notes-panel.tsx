@@ -121,13 +121,23 @@ export function ClutchNotesPanel() {
         formData.append("focus", focus.trim());
       }
 
-      setTimeout(() => {
-        setProgressStep("Stripping attendance QR codes, cover slides & repetitive noise...");
-      }, 1200);
-
-      setTimeout(() => {
-        setProgressStep("Synthesizing bilingual conceptual structure & standardizing LaTeX formulas...");
-      }, 2400);
+      const progressTimers = [
+        setTimeout(() => {
+          setProgressStep("Stripping attendance QR codes, cover slides & repetitive noise...");
+        }, 1200),
+        setTimeout(() => {
+          setProgressStep("Extracting mathematical notation and bilingual conceptual structure...");
+        }, 6000),
+        setTimeout(() => {
+          setProgressStep("Analyzing valuation models, accounting formulas & economic principles...");
+        }, 22_000),
+        setTimeout(() => {
+          setProgressStep("Standardizing LaTeX equations and compiling 'Trong đó:' variable list...");
+        }, 45_000),
+        setTimeout(() => {
+          setProgressStep("Synthesizing exam-ready Key Takeaways & boundary condition rules...");
+        }, 68_000),
+      ];
 
       const effectiveTier = tier && tier !== "contender" ? tier : "contender";
       const headers: Record<string, string> = {
@@ -155,7 +165,7 @@ export function ClutchNotesPanel() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => {
         controller.abort();
-      }, 52_000);
+      }, 95_000); // 1 minute 35 seconds (covering 1 min 30 sec)
 
       try {
         const res = await fetch("/api/notes/generate", {
@@ -182,7 +192,7 @@ export function ClutchNotesPanel() {
           }
           if (res.status === 504) {
             throw new Error(
-              "The note synthesis timed out on the server (60s limit). Please try converting fewer slides or specify a focused chapter topic.",
+              "The note synthesis timed out on the server (120s limit). Please try converting fewer slides or specify a focused chapter topic.",
             );
           }
           if (res.status === 403) {
@@ -209,11 +219,12 @@ export function ClutchNotesPanel() {
         setSelectedFile(null);
       } finally {
         clearTimeout(timeoutId);
+        progressTimers.forEach(clearTimeout);
       }
     } catch (err: any) {
       if (err.name === "AbortError") {
         setError(
-          "Synthesis timed out after 52 seconds. The slide deck may be too dense or complex. Try compressing the PDF or uploading single chapter slides.",
+          "Synthesis timed out after 1 minute 30 seconds. The slide deck may be too dense or complex. Try compressing the PDF or uploading single chapter slides.",
         );
       } else if (
         err.message?.includes("Failed to fetch") ||

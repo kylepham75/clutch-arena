@@ -1123,7 +1123,7 @@ export async function generateClutchNote(
     populatedSections = await synthesizeWithModel(
       model,
       primaryMaxTokens,
-      hasDistinctFallback ? 18_000 : 25_000,
+      hasDistinctFallback ? 55_000 : 80_000,
     );
   } catch (primaryErr) {
     if (hasDistinctFallback && fallback) {
@@ -1131,7 +1131,7 @@ export async function generateClutchNote(
         "[generateClutchNote] Primary model failed or returned empty sections; failing over to Groq...",
         primaryErr,
       );
-      populatedSections = await synthesizeWithModel(fallback, 4_096);
+      populatedSections = await synthesizeWithModel(fallback, 4_096, 30_000);
     } else {
       throw primaryErr;
     }
