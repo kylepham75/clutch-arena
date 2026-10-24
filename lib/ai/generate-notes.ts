@@ -1027,7 +1027,7 @@ export async function generateClutchNote(
   let model: LanguageModel;
 
   try {
-    model = options.modelOverride ?? getGenerationModel("pro");
+    model = options.modelOverride ?? getGenerationModel("notes");
   } catch (err) {
     // If running in an unconfigured environment or tests without API keys, fallback to sample note
     console.warn("[generateClutchNote] AI model not configured, using fallback synthesis.", err);
@@ -1123,7 +1123,7 @@ export async function generateClutchNote(
     populatedSections = await synthesizeWithModel(
       model,
       primaryMaxTokens,
-      hasDistinctFallback ? 35_000 : undefined,
+      hasDistinctFallback ? 18_000 : 25_000,
     );
   } catch (primaryErr) {
     if (hasDistinctFallback && fallback) {

@@ -80,8 +80,10 @@ export function ClutchNotesPanel() {
         return;
       }
 
-      if (file.size > 25 * 1024 * 1024) {
-        setError(`File size exceeds 25MB limit (${(file.size / (1024 * 1024)).toFixed(1)}MB).`);
+      if (file.size > 4.5 * 1024 * 1024) {
+        setError(
+          `File size is ${(file.size / (1024 * 1024)).toFixed(1)}MB. Vercel serverless functions have a 4.5MB upload limit. Please compress the PDF/PPTX or upload a smaller chapter deck.`,
+        );
         return;
       }
 
@@ -150,32 +152,80 @@ export function ClutchNotesPanel() {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const res = await fetch("/api/notes/generate", {
-        method: "POST",
-        headers,
-        body: formData,
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, 52_000);
 
-      const data = await res.json();
+      try {
+        const res = await fetch("/api/notes/generate", {
+          method: "POST",
+          headers,
+          body: formData,
+          signal: controller.signal,
+        });
 
-      if (!res.ok || !data.ok) {
-        if (res.status === 403) {
-          setBeforeAfterOpen(true);
-          throw new Error(data.error?.message || "Paid subscription required (Cram Pass, Pro, or Tutor).");
+        let data: any = null;
+        let rawText = "";
+        try {
+          rawText = await res.text();
+          data = JSON.parse(rawText);
+        } catch {
+          // Response is not JSON (e.g. Vercel 504 / 413 proxy page)
         }
-        if (res.status === 429) {
-          throw new Error(
-            data.error?.message || "Daily limit reached: up to 30 deck conversions per day.",
-          );
+
+        if (!res.ok || !data || !data.ok) {
+          if (res.status === 413) {
+            throw new Error(
+              "Slide deck exceeds Vercel serverless upload limit (4.5MB). Please compress the PDF/PPTX or upload specific chapters.",
+            );
+          }
+          if (res.status === 504) {
+            throw new Error(
+              "The note synthesis timed out on the server (60s limit). Please try converting fewer slides or specify a focused chapter topic.",
+            );
+          }
+          if (res.status === 403) {
+            setBeforeAfterOpen(true);
+            throw new Error(
+              data?.error?.message || "Paid subscription required (Cram Pass, Pro, or Tutor).",
+            );
+          }
+          if (res.status === 429) {
+            throw new Error(
+              data?.error?.message || "Daily limit reached: up to 30 deck conversions per day.",
+            );
+          }
+          const serverMsg =
+            data?.error?.message ||
+            (res.statusText
+              ? `Server error (${res.status}): ${res.statusText}`
+              : "Failed to synthesize study notes. Please try again.");
+          throw new Error(serverMsg);
         }
-        throw new Error(data.error?.message || "Failed to synthesize study notes.");
+
+        setNote(data.note);
+        setDailyUsage((prev) => prev + 1);
+        setSelectedFile(null);
+      } finally {
+        clearTimeout(timeoutId);
       }
-
-      setNote(data.note);
-      setDailyUsage((prev) => prev + 1);
-      setSelectedFile(null);
     } catch (err: any) {
-      setError(err.message || "An unexpected error occurred during note synthesis.");
+      if (err.name === "AbortError") {
+        setError(
+          "Synthesis timed out after 52 seconds. The slide deck may be too dense or complex. Try compressing the PDF or uploading single chapter slides.",
+        );
+      } else if (
+        err.message?.includes("Failed to fetch") ||
+        err.message?.includes("NetworkError") ||
+        err.name === "TypeError"
+      ) {
+        setError(
+          "Network connection interrupted or serverless gateway timed out. If your slide file is large, please compress the PDF/PPTX or upload fewer slides.",
+        );
+      } else {
+        setError(err.message || "An unexpected error occurred during note synthesis.");
+      }
     } finally {
       setLoading(false);
       setProgressStep(null);
@@ -256,7 +306,7 @@ export function ClutchNotesPanel() {
             </div>
             <span>Upload Lecturer Slide Deck</span>
           </div>
-          <span className="text-xs text-[#7e8777] font-medium">PDF or PPTX up to 25MB</span>
+          <span className="text-xs text-[#7e8777] font-medium">PDF or PPTX up to 4.5MB</span>
         </div>
 
         {/* Dropzone with PRO badge */}
@@ -297,7 +347,7 @@ export function ClutchNotesPanel() {
               <p className="text-xs text-[#788270] leading-relaxed">
                 Accepts <strong className="text-[#3c4636]">.pdf</strong> and{" "}
                 <strong className="text-[#3c4636]">.pptx</strong> files from university courses
-                (Finance, Economics, Engineering, STEM). Max 25MB.
+                (Finance, Economics, Engineering, STEM). Max 4.5MB per deck.
               </p>
             </div>
           )}

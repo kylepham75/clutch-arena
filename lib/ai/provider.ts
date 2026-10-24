@@ -55,7 +55,7 @@ export function getGenerationModel(tier: string = "contender") {
   }
   if (provider === "gemini") {
     const envModel = process.env.GEMINI_MODEL?.trim();
-    const defaultGemini = isPriority ? "gemini-3.8-flash" : "gemini-3.5-flash-lite";
+    const defaultGemini = isPriority ? "gemini-3.5-flash" : "gemini-3.5-flash-lite";
     const gemini = getGeminiModel(envModel || defaultGemini);
     if (gemini) return gemini;
   }
@@ -64,10 +64,18 @@ export function getGenerationModel(tier: string = "contender") {
     if (groq) return groq;
   }
 
+  // Ultra-fast synthesis routing for Clutch Notes and latency-sensitive serverless routes
+  if (tier === "notes") {
+    const groq = getGroqModel();
+    if (groq) return groq;
+    const geminiLite = getGeminiModel(process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash-lite");
+    if (geminiLite) return geminiLite;
+  }
+
   // Smart Model Routing:
   // For Cram Pass and Pro/Tutor users, route to priority high-context models
   if (isPriority) {
-    const geminiPro = getGeminiModel(process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash");
+    const geminiPro = getGeminiModel(process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash");
     if (geminiPro) return geminiPro;
   }
 
