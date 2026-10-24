@@ -1,3 +1,4 @@
+import "@/lib/polyfills/pdf-node-polyfills";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 import { IngestionError } from "./errors";
 import { MAX_PDF_PAGES, MAX_EXTRACTED_CHARACTERS } from "./limits";

@@ -1,3 +1,4 @@
+import "@/lib/polyfills/pdf-node-polyfills";
 import { createIngestionHandler } from "@/lib/ingestion/handler";
 
 export const runtime = "nodejs";

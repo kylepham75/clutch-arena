@@ -1,3 +1,4 @@
+import "@/lib/polyfills/pdf-node-polyfills";
 import { NextRequest } from "next/server";
 import { randomUUID } from "node:crypto";
 import { verifyProAccess } from "@/lib/auth/notes-guard";

@@ -1,3 +1,4 @@
+import "@/lib/polyfills/pdf-node-polyfills";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { MAX_FILE_BYTES, MAX_EXTRACTED_CHARACTERS } from "@/lib/ingestion/limits";
 import { parsePdf } from "@/lib/ingestion/parse-pdf";
