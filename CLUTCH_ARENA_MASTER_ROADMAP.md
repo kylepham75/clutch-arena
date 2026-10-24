@@ -192,6 +192,14 @@ The platform is live in production on Vercel with **201 passing automated unit/i
   - **Bilingual Cognitive Anchoring (EN/VI):** Pairs technical concepts naturally on first mention (`English Concept (Thuật ngữ Tiếng Việt)`) using plain, scannable student language.
   - **Non-Redundant Formula Boxes:** Centered black-bordered KaTeX equation cards paired with `"Trong đó:"` variable lists that define each symbol **strictly once on first introduction** (eliminating repetitive $P_0, D_1, R$ definitions across subsequent equations).
   - **Structured `KEY TAKEAWAYS` Box:** Concludes the sheet with crisp bordered conceptual rules and `→` implication sub-bullets (e.g., model selection boundaries such as $g < R$ or negative cash flow edge cases).
+- **Strict Academic Hallucination Shield v2.1 (`lib/ai/prompts-notes.ts` & `lib/ai/generate-notes.ts`):**
+  - **Formula Invariants:** Enforces textbook accounting identities (e.g. $g = \text{Retention ratio} \times \text{ROE}$ rather than circular price change), return decomposition ($R = \frac{D_1}{P_0} + g$), deferred preferred stock discounting ($P_{t-1} = \frac{D_t}{R_p} \implies P_0 = \frac{P_{t-1}}{(1+R)^{t-1}}$), and multi-stage terminal value mechanics ($P_n = \frac{D_{n+1}}{R-g}$).
+  - **Header Sanitization:** Regex-based sanitization that removes bizarre machine translation hallucinations (e.g. *"CHỌN MÔ HÌNH GIÁO DỤC"*, *"CỨU TRỢ CHỨNG KHOÁN"*) and prevents duplicate section pasting.
+- **Vercel Serverless Hardening & Resilience (`vercel.json`, `lib/ai/provider.ts`, `components/notes/clutch-notes-panel.tsx`):**
+  - **Function Quotas:** Dedicated `vercel.json` allocating 60s execution duration and 1024MB RAM for all `/api/**/*` routes.
+  - **4.5MB Payload Guard:** Dropzone and route guards enforcing Vercel's 4.5MB body limit with clear user guidance before network dispatch.
+  - **High-Throughput Model Routing:** Fast-path `"notes"` tier routing utilizing Groq Llama 3.3 / `gemini-3.5-flash-lite` (3–6s latency) backed by an 18s failover fallback, preventing 504 timeouts.
+  - **Client AbortController & Proxy Resilience:** 52s timeout abort controller and safe non-JSON parser handling that intercepts Vercel 504/413 proxy responses with friendly, actionable diagnostic guidance.
 - **Continuous Serif Study Sheet UI & Print Engine (`components/notes/note-renderer.tsx` & `lib/notes/export-pdf.ts`):**
   - Renders a single continuous Georgia/Times serif A4 academic handout with a sticky `A · B · C · D · E` quick-jump bar (replacing fragmented single-tab cards).
   - One-click watermarked PDF print/export matching the exact 3-page serif handout typography with `page-break-inside: avoid` equation boxes.
