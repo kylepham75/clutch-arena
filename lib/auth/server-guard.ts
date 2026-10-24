@@ -1,16 +1,21 @@
 import "server-only";
 import { getSupabaseServerClient, isSupabaseServerConfigured } from "@/lib/supabase/server";
 import type { User } from "@supabase/supabase-js";
+import type { UserTier } from "@/lib/pricing/tiers";
+
+export type ServerTier = "guest" | UserTier;
 
 export type AuthVerificationResult =
   | {
       authenticated: true;
       user: User;
-      tier: "free" | "pro";
+      tier: UserTier;
+      tierExpiresAt: string | null;
     }
   | {
       authenticated: false;
       isGuest: true;
+      tier: "guest";
       devMode: boolean;
     };
 
@@ -21,6 +26,7 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
     return {
       authenticated: false,
       isGuest: true,
+      tier: "guest",
       devMode: true,
     };
   }
@@ -30,6 +36,7 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
     return {
       authenticated: false,
       isGuest: true,
+      tier: "guest",
       devMode: false,
     };
   }
@@ -39,6 +46,7 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
     return {
       authenticated: false,
       isGuest: true,
+      tier: "guest",
       devMode: false,
     };
   }
@@ -49,6 +57,7 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       return {
         authenticated: false,
         isGuest: true,
+        tier: "guest",
         devMode: true,
       };
     }
@@ -62,23 +71,78 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       return {
         authenticated: false,
         isGuest: true,
+        tier: "guest",
         devMode: false,
       };
     }
 
-    // Default authenticated tier is "free" (can be upgraded based on user metadata or stripe subscription)
-    const tier = (user.user_metadata?.tier as "free" | "pro") || "free";
+    let resolvedTier: UserTier = "contender";
+    let resolvedExpiresAt: string | null = null;
+
+    // 1. Check active subscriptions table
+    const { data: subData } = await supabase
+      .from("user_subscriptions")
+      .select("tier, expires_at, status")
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (subData?.tier) {
+      resolvedTier = normalizeTier(subData.tier);
+      resolvedExpiresAt = subData.expires_at ?? null;
+    } else {
+      // 2. Fallback to profiles table
+      const { data: profileData } = await supabase
+        .from("profiles")
+        .select("tier, tier_expires_at")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (profileData?.tier) {
+        resolvedTier = normalizeTier(profileData.tier);
+        resolvedExpiresAt = profileData.tier_expires_at ?? null;
+      } else {
+        // 3. Fallback to user_profiles table
+        const { data: userProfileData } = await supabase
+          .from("user_profiles")
+          .select("tier, tier_expires_at")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (userProfileData?.tier) {
+          resolvedTier = normalizeTier(userProfileData.tier);
+          resolvedExpiresAt = userProfileData.tier_expires_at ?? null;
+        }
+      }
+    }
+
+    if (resolvedExpiresAt) {
+      const expMs = new Date(resolvedExpiresAt).getTime();
+      if (!isNaN(expMs) && expMs <= Date.now()) {
+        resolvedTier = "contender";
+        resolvedExpiresAt = null;
+      }
+    }
 
     return {
       authenticated: true,
       user,
-      tier,
+      tier: resolvedTier,
+      tierExpiresAt: resolvedExpiresAt,
     };
   } catch {
     return {
       authenticated: false,
       isGuest: true,
+      tier: "guest",
       devMode: false,
     };
   }
+}
+
+function normalizeTier(raw: unknown): UserTier {
+  if (raw === "cram_pass" || raw === "pro" || raw === "tutor") return raw;
+  return "contender";
 }

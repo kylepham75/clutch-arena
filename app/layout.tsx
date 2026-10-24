@@ -31,6 +31,15 @@ export const metadata: Metadata = {
   title: "ClutchArena — Make every minute count",
   description:
     "Your last-minute study session, upgraded. Turn notes into knowledge with active recall, clutch runs, and study battles.",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "32x32" },
+      { url: "/brand-icon.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [
+      { url: "/apple-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
 };
 
 export default function RootLayout({

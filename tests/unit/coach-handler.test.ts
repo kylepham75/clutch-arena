@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
-import { createCoachHandler } from "@/lib/coach/handler";
+import {
+  createCoachHandler,
+  selectCoachContextSources,
+} from "@/lib/coach/handler";
+import { buildCoachMessages } from "@/lib/ai/coach-prompt";
+import { MAX_COACH_CONTEXT_CHARS, MAX_COACH_HISTORY } from "@/lib/schemas/coach";
 import { cleanCoachMathArtifacts } from "@/lib/math/latex";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
 import { studyText } from "../helpers/documents";
@@ -50,7 +55,7 @@ describe("coach HTTP handler", () => {
     const res = await handler(
       coachRequest({
         messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "   " }] }],
-        document: doc,
+        document: { fileName: doc.fileName, sources: doc.sources },
       }),
     );
     expect(res.status).toBe(400);
@@ -64,7 +69,7 @@ describe("coach HTTP handler", () => {
     const res = await handler(
       coachRequest({
         messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Explain price elasticity" }] }],
-        document: doc,
+        document: { fileName: doc.fileName, sources: doc.sources },
       }),
     );
     expect(res.status).toBe(503);
@@ -91,11 +96,52 @@ describe("coach HTTP handler", () => {
     const res = await handler(
       coachRequest({
         messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Explain price elasticity" }] }],
-        document: doc,
+        document: { fileName: doc.fileName, sources: doc.sources },
       }),
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("caps coach source context to matched citation block + surrounding neighbors (~1,500 tokens) and trims history to last 6 messages", () => {
+    expect(MAX_COACH_HISTORY).toBe(6);
+    expect(MAX_COACH_CONTEXT_CHARS).toBe(6_000);
+
+    const manySources = Array.from({ length: 20 }, (_, i) => ({
+      id: `page-${i + 1}`,
+      label: `Page ${i + 1}`,
+      text: `Content for page ${i + 1}. `.repeat(120), // ~2,400 chars per block (48,000 chars total)
+    }));
+
+    const selected = selectCoachContextSources(
+      manySources,
+      {
+        type: "explain",
+        question: "What is on page 10?",
+        options: ["A", "B", "C", "D"],
+        correctIndex: 0,
+        selected: 1,
+        explanation: "See page 10",
+        topic: "Topic 10",
+        rule: "Rule 10",
+        sourceId: "page-10",
+      },
+      "Why did I miss this?",
+    );
+
+    const totalSelectedChars = selected.reduce((sum, s) => sum + s.text.length, 0);
+    expect(totalSelectedChars).toBeLessThanOrEqual(MAX_COACH_CONTEXT_CHARS);
+    expect(selected.some((s) => s.id === "page-10")).toBe(true);
+    expect(selected.every((s) => ["page-9", "page-10", "page-11"].includes(s.id))).toBe(true);
+
+    const tenMessages = Array.from({ length: 10 }, (_, i) => ({
+      id: `msg-${i + 1}`,
+      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      parts: [{ type: "text", text: `Turn ${i + 1}` }],
+    }));
+    const modelMessages = buildCoachMessages(tenMessages);
+    expect(modelMessages.length).toBeLessThanOrEqual(6);
+    expect(modelMessages[0]).toEqual({ role: "user", content: "Turn 5" });
   });
 
   it("unwraps numbers and percentages wrapped in dollar signs or escaped %", () => {

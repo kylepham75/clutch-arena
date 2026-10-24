@@ -226,6 +226,18 @@ svg {
   border-radius: 10px;
   flex-shrink: 0;
 }
+.brand-icon.brand-icon-logo {
+  background: transparent !important;
+  transform: none !important;
+  border-radius: 0 !important;
+  width: 36px !important;
+  height: 36px !important;
+}
+.brand-logo-img {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+}
 .brand-light {
   font-weight: 500;
 }
@@ -5907,6 +5919,29 @@ svg {
     width: calc(100vw - 20px) !important;
     max-height: 94vh !important;
     border-radius: 16px;
+  }
+}
+
+/* Before / After Showcase Modal */
+.before-after-dialog-content {
+  max-width: 920px !important;
+  width: min(920px, calc(100vw - 32px)) !important;
+  max-height: 90vh !important;
+  padding: 28px 32px !important;
+  background: #fafbf8 !important;
+  color: #1c1917 !important;
+  border: 1px solid #e2e6db !important;
+  border-radius: 20px !important;
+  box-shadow: 0 25px 80px -15px rgba(0, 0, 0, 0.2) !important;
+  overflow-y: auto !important;
+}
+
+@media (max-width: 768px) {
+  .before-after-dialog-content {
+    padding: 20px 16px !important;
+    width: calc(100vw - 20px) !important;
+    max-height: 94vh !important;
+    border-radius: 16px !important;
   }
 }
 

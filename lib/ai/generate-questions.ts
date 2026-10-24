@@ -381,6 +381,84 @@ export function validateGeneratedStudy(
   };
 }
 
+const MAX_QUESTIONS_PER_BATCH = 10;
+
+export function splitIntoBatchCounts(totalQuestions: number): number[] {
+  if (totalQuestions <= MAX_QUESTIONS_PER_BATCH) return [totalQuestions];
+  const batchCount = Math.ceil(totalQuestions / MAX_QUESTIONS_PER_BATCH);
+  const base = Math.floor(totalQuestions / batchCount);
+  const remainder = totalQuestions % batchCount;
+  return Array.from({ length: batchCount }, (_, i) =>
+    i < remainder ? base + 1 : base,
+  );
+}
+
+export function partitionSourcesAcrossBatches(
+  sources: SourceBlock[],
+  batchCount: number,
+): SourceBlock[][] {
+  if (batchCount <= 1 || sources.length <= 1) {
+    return Array.from({ length: batchCount }, () => sources);
+  }
+  return Array.from({ length: batchCount }, (_, batchIndex) => {
+    const start = Math.floor((batchIndex * sources.length) / batchCount);
+    const end = Math.max(
+      start + 1,
+      Math.floor(((batchIndex + 1) * sources.length) / batchCount),
+    );
+    const slice = sources.slice(start, end);
+    return slice.length > 0 ? slice : sources;
+  });
+}
+
+type GeneratedStudyObject = z.infer<typeof generatedStudySchema>;
+
+export function mergeAndDeduplicateBatches(
+  batches: GeneratedStudyObject[],
+  maxQuestions: number,
+): GeneratedStudyObject {
+  const first = batches[0];
+  const seenQuestions = new Set<string>();
+  const mergedQuestions: GeneratedStudyObject["questions"] = [];
+  const mergedAnnotations: GeneratedStudyObject["annotations"] = [];
+  const warningSet = new Set<string>();
+
+  batches.forEach((batch, batchIdx) => {
+    for (const w of batch.warnings) {
+      if (warningSet.size < 10) warningSet.add(w);
+    }
+    const annotationMap = new Map(
+      batch.annotations.map((a) => [a.questionId, a]),
+    );
+    for (const q of batch.questions) {
+      if (mergedQuestions.length >= maxQuestions) break;
+      const normQuestion = stripPunctuation(q.question);
+      if (!normQuestion || seenQuestions.has(normQuestion)) continue;
+      const ann = annotationMap.get(q.id);
+      if (!ann) continue;
+
+      seenQuestions.add(normQuestion);
+      const uniqueId = `b${batchIdx + 1}_${q.id}`;
+      mergedQuestions.push({
+        ...q,
+        id: uniqueId,
+      });
+      mergedAnnotations.push({
+        ...ann,
+        questionId: uniqueId,
+      });
+    }
+  });
+
+  return {
+    title: first?.title || "Study Pack",
+    sourceKind: first?.sourceKind || "mixed",
+    questions: mergedQuestions,
+    annotations: mergedAnnotations,
+    warnings: Array.from(warningSet).slice(0, 10),
+  };
+}
+
 export async function generateQuestions(
   document: ParsedDocument,
   options: IngestionOptions,
@@ -391,30 +469,39 @@ export async function generateQuestions(
 
   // Budget source blocks so the prompt stays safely within AI rate limits (e.g. Groq 8k TPM)
   const budget = budgetSourceBlocks(document.sources, 14_000, options.focus);
-  const promptDocument: ParsedDocument = {
-    ...document,
-    sources: budget.sources,
-  };
 
   // Give full 8,192 token output capacity for Gemini (preventing finishReason: 'length' truncation),
   // while capping at 1,000 only when strictly on Groq free tier.
   const isGroq = Boolean(process.env.GROQ_API_KEY && process.env.AI_PROVIDER === "groq");
   const maxOutputTokens = isGroq ? 1_000 : 8_192;
 
-  const runWithModel = async (activeModel: LanguageModel) => {
-    return generateObject({
-      model: activeModel,
-      schema: generatedStudySchema,
-      system: ingestionSystemPrompt,
-      prompt: buildIngestionPrompt(promptDocument, options),
-      abortSignal: signal,
-      maxRetries: 0,
-      maxOutputTokens,
-    });
-  };
+  const runBatch = async (
+    batchSources: SourceBlock[],
+    batchQuestionCount: number,
+    batchIndex: number,
+    totalBatches: number,
+  ) => {
+    const batchDoc: ParsedDocument = {
+      ...document,
+      sources: batchSources,
+    };
+    const batchFocus =
+      totalBatches > 1
+        ? [
+            options.focus,
+            `Section batch ${batchIndex + 1} of ${totalBatches}: focus on distinct concepts from these source blocks.`,
+          ]
+            .filter(Boolean)
+            .join(" — ")
+            .slice(0, 300)
+        : options.focus;
+    const batchOptions: IngestionOptions = {
+      ...options,
+      questionCount: batchQuestionCount,
+      focus: batchFocus,
+    };
+    const batchPrompt = buildIngestionPrompt(batchDoc, batchOptions);
 
-  try {
-    let result;
     const fallback = getGroqModel();
     const canFallback = Boolean(fallback && resolvedModel !== fallback);
 
@@ -431,11 +518,11 @@ export async function generateQuestions(
         );
         const primarySignal = AbortSignal.any([signal, primaryTimeout.signal]);
         try {
-          result = await generateObject({
+          return await generateObject({
             model: resolvedModel,
             schema: generatedStudySchema,
             system: ingestionSystemPrompt,
-            prompt: buildIngestionPrompt(promptDocument, options),
+            prompt: batchPrompt,
             abortSignal: primarySignal,
             maxRetries: 0,
             maxOutputTokens,
@@ -443,40 +530,85 @@ export async function generateQuestions(
         } finally {
           clearTimeout(timer);
         }
-      } else {
-        result = await runWithModel(resolvedModel);
       }
+
+      return await generateObject({
+        model: resolvedModel,
+        schema: generatedStudySchema,
+        system: ingestionSystemPrompt,
+        prompt: batchPrompt,
+        abortSignal: signal,
+        maxRetries: 0,
+        maxOutputTokens,
+      });
     } catch (primaryErr: any) {
       if (canFallback && fallback) {
         console.warn(
           `[generateQuestions] Primary AI model failed (${primaryErr?.message || primaryErr}). Instant auto-failover to Groq LPU...`,
         );
-        result = await generateObject({
+        return await generateObject({
           model: fallback,
           schema: generatedStudySchema,
           system: ingestionSystemPrompt,
-          prompt: buildIngestionPrompt(promptDocument, options),
+          prompt: batchPrompt,
           abortSignal: signal,
           maxRetries: 0,
           maxOutputTokens: 1_000,
         });
-      } else {
-        throw primaryErr;
       }
+      throw primaryErr;
     }
+  };
 
-    const validated = validateGeneratedStudy(result.object, document, options);
+  try {
+    const batchCounts = splitIntoBatchCounts(options.questionCount);
+    const sourcePartitions = partitionSourcesAcrossBatches(
+      budget.sources,
+      batchCounts.length,
+    );
+
+    const batchResults = await Promise.all(
+      batchCounts.map((count, idx) =>
+        runBatch(sourcePartitions[idx], count, idx, batchCounts.length),
+      ),
+    );
+
+    const rawObject =
+      batchResults.length === 1
+        ? batchResults[0].object
+        : mergeAndDeduplicateBatches(
+            batchResults.map((r) => r.object),
+            options.questionCount,
+          );
+
+    const validated = validateGeneratedStudy(rawObject, document, options);
     if (budget.wasBudgeted) {
       validated.warnings.push(
         "Document was large; questions were synthesized from key conceptual sections to fit AI rate limits.",
       );
     }
+
+    const sumTokens = (
+      selector: (u: (typeof batchResults)[number]["usage"]) => number | undefined,
+    ) => {
+      let sum = 0;
+      let hasAny = false;
+      for (const res of batchResults) {
+        const val = selector(res.usage);
+        if (typeof val === "number") {
+          sum += val;
+          hasAny = true;
+        }
+      }
+      return hasAny ? sum : null;
+    };
+
     return {
       ...validated,
       usage: {
-        inputTokens: result.usage.inputTokens ?? null,
-        outputTokens: result.usage.outputTokens ?? null,
-        totalTokens: result.usage.totalTokens ?? null,
+        inputTokens: sumTokens((u) => u.inputTokens),
+        outputTokens: sumTokens((u) => u.outputTokens),
+        totalTokens: sumTokens((u) => u.totalTokens),
       },
     };
   } catch (error: any) {

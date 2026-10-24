@@ -12,8 +12,9 @@ export default async function ArenaPage(props: {
     <div className="arena-page-shell">
       <header className="arena-page-header">
         <Link href="/" className="brand">
-          <span className="brand-icon">
-            <Zap size={23} fill="currentColor" />
+          <span className="brand-icon brand-icon-logo">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/brand-icon.png" alt="Clutch Arena" className="brand-logo-img" />
           </span>
           <span>
             clutch<span className="brand-light">arena</span>

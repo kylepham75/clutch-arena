@@ -17,6 +17,7 @@ export interface TranslationDict {
     multiplayer: string;
     studyArena: string;
     live: string;
+    clutchNotes?: string;
   };
   sidebar: {
     smallSessions: string;
@@ -44,10 +45,12 @@ export interface TranslationDict {
     uploadTitle: string;
     coachTitle: string;
     arenaTitle: string;
+    notesTitle?: string;
     eyebrow: string;
     arenaDesc: string;
     ingestDesc: string;
     coachDesc: string;
+    notesDesc?: string;
     playDesc: string;
   };
   run: {
@@ -119,6 +122,7 @@ export interface TranslationDict {
     statusIngest: string;
     statusCoach: string;
     statusSolo: string;
+    statusNotes?: string;
     masteryUntested: string;
     masteryMastered: string;
     masteryNeedsReview: string;
@@ -274,6 +278,7 @@ export const translations: Record<Language, TranslationDict> = {
       multiplayer: "MULTIPLAYER",
       studyArena: "Study Arena",
       live: "Live",
+      clutchNotes: "Clutch Notes AI",
     },
     sidebar: {
       smallSessions: "Small sessions.",
@@ -301,10 +306,12 @@ export const translations: Record<Language, TranslationDict> = {
       uploadTitle: "Upload & Process Notes",
       coachTitle: "Your Grounded AI Coach",
       arenaTitle: "Study Arena — Multiplayer",
+      notesTitle: "Slide-to-Summary Note Generator",
       eyebrow: "YOUR NEXT COMEBACK STARTS HERE",
       arenaDesc: "Compete in live, synchronized quiz battles with classmates or practice bots.",
       ingestDesc: "Drop your syllabus, slides, or textbook excerpts to generate high-yield active-recall packs in seconds.",
       coachDesc: "Ask any question about your uploaded materials. Verified against exact citations with zero hallucinations.",
+      notesDesc: "Transform raw lecture slides into high-retention bilingual notes with LaTeX math and watermarked PDF export.",
       playDesc: "Simulate high-pressure exam conditions with timed questions and concept variants.",
     },
     run: {
@@ -375,6 +382,7 @@ export const translations: Record<Language, TranslationDict> = {
       statusArena: "ARENA LIVE",
       statusIngest: "INGESTION",
       statusCoach: "COACH ACTIVE",
+      statusNotes: "NOTES SYNTHESIS",
       statusSolo: "SOLO PRACTICE",
       masteryUntested: "New",
       masteryMastered: "Mastered",
@@ -529,6 +537,7 @@ export const translations: Record<Language, TranslationDict> = {
       multiplayer: "ĐỐI KHÁNG TRỰC TIẾP",
       studyArena: "Đấu trường Arena",
       live: "Trực tiếp",
+      clutchNotes: "Clutch Notes AI",
     },
     sidebar: {
       smallSessions: "Học tập ngắn gọn.",
@@ -556,10 +565,12 @@ export const translations: Record<Language, TranslationDict> = {
       uploadTitle: "Tải lên & Xử lý tài liệu",
       coachTitle: "Gia sư AI bám sát tài liệu",
       arenaTitle: "Đấu trường học tập — Nhiều người chơi",
+      notesTitle: "Tóm tắt Slide Bài giảng AI",
       eyebrow: "CƠ HỘI BỨT PHÁ BẮT ĐẦU TẠI ĐÂY",
       arenaDesc: "Thi đấu trắc nghiệm trực tiếp, đồng bộ thời gian thực cùng bạn học hoặc bot luyện tập.",
       ingestDesc: "Kéo thả giáo trình, bài giảng slide hoặc sách để tạo ngay bộ câu hỏi chủ động chất lượng cao.",
       coachDesc: "Hỏi đáp mọi thắc mắc về tài liệu đã tải lên. Trích dẫn chính xác, chống bịa đặt 100%.",
+      notesDesc: "Chuyển đổi slide bài giảng thành tài liệu ôn thi song ngữ cô đọng với công thức LaTeX và xuất PDF có dấu nước.",
       playDesc: "Mô phỏng áp lực phòng thi với câu hỏi giới hạn thời gian và biến thể kiểm tra bản chất.",
     },
     run: {
@@ -630,6 +641,7 @@ export const translations: Record<Language, TranslationDict> = {
       statusArena: "ĐẤU TRƯỜNG TRỰC TIẾP",
       statusIngest: "NẠP TÀI LIỆU",
       statusCoach: "GIA SƯ ĐANG HOẠT ĐỘNG",
+      statusNotes: "TỔNG HỢP SLIDE PRO",
       statusSolo: "LUYỆN TẬP CÁ NHÂN",
       masteryUntested: "Mới",
       masteryMastered: "Thành thạo",

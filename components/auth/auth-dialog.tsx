@@ -14,13 +14,13 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth/context";
+import { useUserTier } from "@/hooks/use-user-tier";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
 export function AuthDialog() {
   const {
     user,
-    tier,
     guestUsageCount,
     guestLimit,
     authModalOpen,
@@ -32,6 +32,7 @@ export function AuthDialog() {
     signInWithOAuth,
     signOut,
   } = useAuth();
+  const { tier: userTier, daysRemaining } = useUserTier();
 
   const [tab, setTab] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
@@ -185,8 +186,18 @@ export function AuthDialog() {
                   </strong>
                   <span
                     style={{
-                      background: "rgba(233, 105, 67, 0.15)",
-                      color: "var(--primary, #e96943)",
+                      background:
+                        userTier === "tutor" || userTier === "pro"
+                          ? "rgba(233, 105, 67, 0.18)"
+                          : userTier === "cram_pass"
+                            ? "rgba(245, 158, 11, 0.18)"
+                            : "rgba(100, 116, 139, 0.15)",
+                      color:
+                        userTier === "tutor" || userTier === "pro"
+                          ? "var(--primary, #e96943)"
+                          : userTier === "cram_pass"
+                            ? "#d97706"
+                            : "#64748b",
                       fontSize: "0.6875rem",
                       fontWeight: 700,
                       padding: "0.15rem 0.5rem",
@@ -194,7 +205,7 @@ export function AuthDialog() {
                       textTransform: "uppercase",
                     }}
                   >
-                    {tier}
+                    {userTier === "contender" ? "Free" : userTier.toUpperCase()}
                   </span>
                 </div>
                 <small style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>
@@ -230,7 +241,16 @@ export function AuthDialog() {
                 }}
               >
                 <div style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>Plan Tier</div>
-                <strong style={{ color: "var(--primary, #e96943)", fontSize: "0.875rem" }}>Clutch Free</strong>
+                <strong style={{ color: "var(--primary, #e96943)", fontSize: "0.875rem" }}>
+                  {userTier === "contender"
+                    ? "Clutch Free"
+                    : userTier === "cram_pass"
+                      ? "7-Day Cram Pass"
+                      : userTier === "pro"
+                        ? "Đấu Sĩ Pro (Học Kỳ)"
+                        : "Giảng Viên & Nhóm Học (Tutor)"}
+                  {daysRemaining !== null && ` (${daysRemaining}d left)`}
+                </strong>
               </div>
             </div>
 

@@ -2,7 +2,8 @@ import { z } from "zod";
 import { MAX_EXTRACTED_CHARACTERS } from "@/lib/ingestion/limits";
 
 export const MAX_COACH_BODY_BYTES = 5 * 1024 * 1024;
-export const MAX_COACH_HISTORY = 24;
+export const MAX_COACH_HISTORY = 6;
+export const MAX_COACH_CONTEXT_CHARS = 6_000; // ~1,500 tokens max for citation block + surrounding context
 export const MAX_COACH_MESSAGE_CHARACTERS = 12_000;
 export const MAX_COACH_INPUT_CHARACTERS = 2_000;
 export const MAX_COACH_EXTRACTED_CHARACTERS = 600_000;

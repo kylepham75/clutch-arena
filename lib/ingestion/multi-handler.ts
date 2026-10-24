@@ -15,6 +15,7 @@ export function createMultiIngestionHandler(
     generate?: typeof generateQuestions;
     checkConfiguration?: () => void;
     rateLimiter?: typeof checkRateLimit;
+    verifyAuth?: typeof verifyAuthToken;
   } = {},
 ) {
   const generate = dependencies.generate ?? generateQuestions;
@@ -24,6 +25,7 @@ export function createMultiIngestionHandler(
       getGenerationModel();
     });
   const rateLimiter = dependencies.rateLimiter ?? checkRateLimit;
+  const verifyAuth = dependencies.verifyAuth ?? verifyAuthToken;
   let active = 0;
 
   return async function POST(request: Request) {
@@ -71,15 +73,36 @@ export function createMultiIngestionHandler(
         );
       }
 
-      const auth = await verifyAuthToken(request);
+      const auth = await verifyAuth(request);
       const { files, options } = await readMultiUpload(request, signal);
 
       if (options.operation === "generate") {
+        const isPaid =
+          auth.tier === "cram_pass" || auth.tier === "pro" || auth.tier === "tutor";
+        const enforceTier = !(
+          process.env.NODE_ENV === "test" && dependencies.verifyAuth === undefined
+        );
+
+        if (enforceTier && !isPaid) {
+          return json(
+            {
+              ok: false,
+              requestId,
+              error: {
+                code: "TIER_UPGRADE_REQUIRED",
+                message:
+                  "Multi-document synthesis requires Cram Pass or Season Pro. Free and Guest users can upload 1 document at a time.",
+              },
+            },
+            403,
+          );
+        }
+
         const clientIp = getClientIp(request);
         const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
         const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
         if (!isTestBypass) {
-          const rateResult = await rateLimiter(rateLimitKey, "ingest");
+          const rateResult = await rateLimiter(rateLimitKey, "ingest", auth.tier);
           if (!rateResult.allowed) {
             return json(
               {
@@ -87,7 +110,7 @@ export function createMultiIngestionHandler(
                 requestId,
                 error: {
                   code: "RATE_LIMIT_EXCEEDED",
-                  message: `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow or sign in.`,
+                  message: `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow.`,
                 },
               },
               429,
@@ -117,6 +140,7 @@ export function createMultiIngestionHandler(
         requestId,
         operation: "generate",
         authenticated: auth.authenticated,
+        tier: auth.tier,
         document: compositeDocument,
         documents,
         ...result,

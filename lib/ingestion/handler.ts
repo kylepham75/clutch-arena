@@ -16,6 +16,7 @@ export function createIngestionHandler(
     generate?: typeof generateQuestions;
     checkConfiguration?: () => void;
     rateLimiter?: typeof checkRateLimit;
+    verifyAuth?: typeof verifyAuthToken;
   } = {},
 ) {
   const generate = dependencies.generate ?? generateQuestions;
@@ -25,6 +26,7 @@ export function createIngestionHandler(
       getGenerationModel();
     });
   const rateLimiter = dependencies.rateLimiter ?? checkRateLimit;
+  const verifyAuth = dependencies.verifyAuth ?? verifyAuthToken;
   let active = 0;
   return async function POST(request: Request) {
     const requestId = randomUUID();
@@ -66,16 +68,34 @@ export function createIngestionHandler(
           "Upload from this application’s origin.",
           403,
         );
-      const auth = await verifyAuthToken(request);
+      const auth = await verifyAuth(request);
       const { file, options } = await readUpload(request, signal);
       validateFile(file);
       // Fail fast without parsing when generation cannot be configured or rate limit is reached.
       if (options.operation === "generate") {
+        const isPaid =
+          auth.tier === "cram_pass" || auth.tier === "pro" || auth.tier === "tutor";
+
+        if (!isPaid && options.questionCount > 10) {
+          return json(
+            {
+              ok: false,
+              requestId,
+              error: {
+                code: "TIER_UPGRADE_REQUIRED",
+                message:
+                  "Free and Guest tiers support up to 10 questions per run. Upgrade to Cram Pass or Pro for up to 30 questions.",
+              },
+            },
+            403,
+          );
+        }
+
         const clientIp = getClientIp(request);
         const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
         const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
         if (!isTestBypass) {
-          const rateResult = await rateLimiter(rateLimitKey, "ingest");
+          const rateResult = await rateLimiter(rateLimitKey, "ingest", auth.tier);
           if (!rateResult.allowed) {
             return json(
               {
@@ -83,7 +103,9 @@ export function createIngestionHandler(
                 requestId,
                 error: {
                   code: "RATE_LIMIT_EXCEEDED",
-                  message: `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow or sign in.`,
+                  message: isPaid
+                    ? `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow.`
+                    : `Upload limit reached (max ${rateResult.limit} uploads per week on ${auth.tier === "guest" ? "Guest" : "Contender"} tier). Upgrade to Cram Pass or Pro for more uploads.`,
                 },
               },
               429,
@@ -102,6 +124,7 @@ export function createIngestionHandler(
         requestId,
         operation: "generate",
         authenticated: auth.authenticated,
+        tier: auth.tier,
         document,
         ...result,
       });

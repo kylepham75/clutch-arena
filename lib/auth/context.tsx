@@ -28,9 +28,11 @@ import {
 import {
   fetchCloudUserTier,
   clearStoredUserTier,
+  getStoredUserTier,
+  type UserTier,
 } from "@/lib/pricing/tiers";
 
-export type AccountTier = "guest" | "free" | "pro";
+export type AccountTier = "guest" | "free" | "pro" | UserTier;
 
 export interface AuthContextType {
   user: User | null;
@@ -62,8 +64,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [guestUsageCount, setGuestUsageCount] = useState<number>(0);
+  const [syncedTier, setSyncedTier] = useState<UserTier>(() => getStoredUserTier());
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalReason, setAuthModalReason] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleTierUpdated = (e: Event) => {
+      const custom = e as CustomEvent<{ tier: UserTier }>;
+      if (custom.detail?.tier) {
+        setSyncedTier(custom.detail.tier);
+      }
+    };
+    window.addEventListener("clutch:tier_updated", handleTierUpdated);
+    return () => window.removeEventListener("clutch:tier_updated", handleTierUpdated);
+  }, []);
 
   const isConfigured = isSupabaseConfigured();
 
@@ -265,7 +279,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Determine user tier
-  const tier: AccountTier = user ? "free" : "guest";
+  const tier: AccountTier = user ? (syncedTier === "contender" ? "free" : syncedTier) : "guest";
 
   // Guest users can generate up to GUEST_LIMIT packs without signing in
   const canGenerate = Boolean(user) || guestUsageCount < GUEST_LIMIT;

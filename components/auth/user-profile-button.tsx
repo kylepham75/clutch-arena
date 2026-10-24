@@ -2,6 +2,7 @@
 
 import { User, LogIn, Sparkles, Zap } from "lucide-react";
 import { useAuth } from "@/lib/auth/context";
+import { useUserTier } from "@/hooks/use-user-tier";
 import { Button } from "@/components/ui/button";
 
 export function UserProfileButton({
@@ -9,7 +10,10 @@ export function UserProfileButton({
 }: {
   variant?: "topbar" | "sidebar" | "default";
 }) {
-  const { user, tier, guestUsageCount, guestLimit, openAuthModal } = useAuth();
+  const { user, guestUsageCount, guestLimit, openAuthModal } = useAuth();
+  const { tier: userTier } = useUserTier();
+
+  const displayTier = user ? (userTier === "contender" ? "Free" : userTier.toUpperCase()) : "Guest";
 
   if (variant === "sidebar") {
     return (
@@ -41,7 +45,7 @@ export function UserProfileButton({
           </strong>
           <small style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
             <span />
-            {user ? `${tier.toUpperCase()} Account` : `Guest (${guestUsageCount}/${guestLimit} used)`}
+            {user ? `${displayTier} Account` : `Guest (${guestUsageCount}/${guestLimit} used)`}
           </small>
         </div>
       </button>
@@ -100,7 +104,7 @@ export function UserProfileButton({
               textTransform: "uppercase",
             }}
           >
-            {tier}
+            {displayTier}
           </span>
         </>
       ) : (

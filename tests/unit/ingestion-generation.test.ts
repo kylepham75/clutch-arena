@@ -4,6 +4,8 @@ import { APICallError, type LanguageModel } from "ai";
 import {
   generateQuestions,
   validateGeneratedStudy,
+  splitIntoBatchCounts,
+  partitionSourcesAcrossBatches,
 } from "@/lib/ai/generate-questions";
 import { getGenerationModel } from "@/lib/ai/provider";
 import {
@@ -73,6 +75,97 @@ describe("structured generation", () => {
     expect(result.references["q-1"].excerpt).toContain("Demand is elastic");
     expect(result.usage.totalTokens).toBe(300);
     expect(model.doGenerate.mock.calls[0][0].responseFormat?.type).toBe("json");
+  });
+  it("splits >10 question requests into parallel batches of <=10, deduplicates questions, and merges usage before citation matching", async () => {
+    expect(splitIntoBatchCounts(10)).toEqual([10]);
+    expect(splitIntoBatchCounts(25)).toEqual([9, 8, 8]);
+    expect(splitIntoBatchCounts(30)).toEqual([10, 10, 10]);
+
+    const multiSectionDoc: ParsedDocument = {
+      fileName: "notes.txt",
+      format: "txt",
+      sources: [
+        { id: "sec-1", label: "Section 1", text: studyText },
+        { id: "sec-2", label: "Section 2", text: studyText },
+        { id: "sec-3", label: "Section 3", text: studyText },
+      ],
+      characterCount: studyText.length * 3,
+      pageCount: 3,
+      warnings: [],
+    };
+
+    const partitions = partitionSourcesAcrossBatches(multiSectionDoc.sources, 3);
+    expect(partitions).toHaveLength(3);
+    expect(partitions[0][0].id).toBe("sec-1");
+    expect(partitions[1][0].id).toBe("sec-2");
+    expect(partitions[2][0].id).toBe("sec-3");
+
+    let callIdx = 0;
+    const batchModel: TestModel = {
+      specificationVersion: "v2" as const,
+      provider: "test",
+      modelId: "fixture",
+      supportedUrls: {},
+      doGenerate: vi.fn<TestModel["doGenerate"]>(async () => {
+        callIdx++;
+        const qBase = structuredClone(mockMicroeconomics.questions[0]);
+        const qUnique = structuredClone(mockMicroeconomics.questions[0]);
+        qUnique.id = `unique-${callIdx}`;
+        qUnique.question = `Batch ${callIdx} distinct question: What happens when absolute price elasticity exceeds one?`;
+
+        // Include a duplicate question across batches to verify deduplication
+        const batchPayload = {
+          title: "Price elasticity",
+          sourceKind: "lecture",
+          questions: [qBase, qUnique],
+          annotations: [
+            {
+              questionId: qBase.id,
+              sourceId: `sec-${callIdx}`,
+              excerpt:
+                "Demand is elastic when the absolute price elasticity exceeds one.",
+              topic: "Elasticity",
+              chapter: "Chapter 4",
+              rule: "Absolute elasticity > 1 means elastic demand.",
+            },
+            {
+              questionId: qUnique.id,
+              sourceId: `sec-${callIdx}`,
+              excerpt:
+                "Demand is elastic when the absolute price elasticity exceeds one.",
+              topic: "Elasticity",
+              chapter: "Chapter 4",
+              rule: "Absolute elasticity > 1 means elastic demand.",
+            },
+          ],
+          warnings: [],
+        };
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(batchPayload) }],
+          finishReason: "stop",
+          usage: { inputTokens: 100, outputTokens: 200, totalTokens: 300 },
+          warnings: [],
+        };
+      }),
+      doStream: async () => {
+        throw new Error("Streaming is not used by ingestion");
+      },
+    };
+
+    const batchOptions = ingestionOptionsSchema.parse({ questionCount: 25 });
+    const res = await generateQuestions(
+      multiSectionDoc,
+      batchOptions,
+      new AbortController().signal,
+      batchModel,
+    );
+
+    // 25 questions -> 3 parallel batch calls
+    expect(batchModel.doGenerate).toHaveBeenCalledTimes(3);
+    // 1 shared duplicate + 3 unique = 4 deduplicated questions
+    expect(res.pack.questions).toHaveLength(4);
+    expect(res.usage.totalTokens).toBe(900);
   });
   it.each([
     "missing-source",

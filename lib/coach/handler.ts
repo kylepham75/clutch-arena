@@ -4,6 +4,11 @@ import { getGenerationModel } from "@/lib/ai/provider";
 import {
   coachRequestSchema,
   MAX_COACH_BODY_BYTES,
+  MAX_COACH_CONTEXT_CHARS,
+  MAX_COACH_HISTORY,
+  messageText,
+  type CoachFocus,
+  type CoachRequest,
 } from "@/lib/schemas/coach";
 import {
   buildCoachMessages,
@@ -15,14 +20,76 @@ import { budgetSourceBlocks } from "@/lib/ai/budget-sources";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
+export function selectCoachContextSources(
+  sources: CoachRequest["document"]["sources"],
+  activeFocus: CoachFocus | undefined,
+  lastUserText: string,
+  maxChars = MAX_COACH_CONTEXT_CHARS,
+) {
+  if (sources.length === 0) return [];
+
+  const targetIds = new Set<string>();
+  if (activeFocus?.type === "explain" && activeFocus.sourceId) {
+    targetIds.add(activeFocus.sourceId);
+  } else if (activeFocus?.type === "debrief") {
+    for (const c of activeFocus.concepts) {
+      if (c.sourceId) targetIds.add(c.sourceId);
+    }
+  }
+
+  if (targetIds.size > 0) {
+    const selectedIndices = new Set<number>();
+    sources.forEach((s, idx) => {
+      if (
+        targetIds.has(s.id) ||
+        [...targetIds].some(
+          (id) => s.id === `doc0_${id}` || s.id.endsWith(`_${id}`),
+        )
+      ) {
+        selectedIndices.add(idx);
+        if (idx > 0) selectedIndices.add(idx - 1);
+        if (idx < sources.length - 1) selectedIndices.add(idx + 1);
+      }
+    });
+
+    if (selectedIndices.size > 0) {
+      const ordered = [...selectedIndices]
+        .sort((a, b) => a - b)
+        .map((i) => sources[i]);
+      return budgetSourceBlocks(
+        ordered,
+        maxChars,
+        activeFocus?.type === "explain"
+          ? [activeFocus.sourceId, activeFocus.topic, activeFocus.rule, lastUserText]
+              .filter(Boolean)
+              .join(" ")
+          : lastUserText,
+      ).sources;
+    }
+  }
+
+  const focusKeywords = [
+    activeFocus?.type === "explain" ? activeFocus.sourceId : undefined,
+    activeFocus?.type === "explain" ? activeFocus.topic : undefined,
+    activeFocus?.type === "explain" ? activeFocus.rule : undefined,
+    lastUserText,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return budgetSourceBlocks(sources, maxChars, focusKeywords).sources;
+}
+
 export function createCoachHandler(
   dependencies: {
     getModel?: typeof getGenerationModel;
     rateLimiter?: typeof checkRateLimit;
+    verifyAuth?: typeof verifyAuthToken;
   } = {},
 ) {
   const getModel = dependencies.getModel ?? getGenerationModel;
   const rateLimiter = dependencies.rateLimiter ?? checkRateLimit;
+  const verifyAuth = dependencies.verifyAuth ?? verifyAuthToken;
 
   return async function POST(request: Request) {
     const origin = request.headers.get("origin");
@@ -53,12 +120,12 @@ export function createCoachHandler(
       );
     }
 
-    const auth = await verifyAuthToken(request);
+    const auth = await verifyAuth(request);
     const clientIp = getClientIp(request);
     const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
     const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
     if (!isTestBypass) {
-      const rateResult = await rateLimiter(rateLimitKey, "coach");
+      const rateResult = await rateLimiter(rateLimitKey, "coach", auth.tier);
       if (!rateResult.allowed) {
         return Response.json(
           {
@@ -139,24 +206,37 @@ export function createCoachHandler(
     }
 
     try {
-      const lastMessage = messages.at(-1);
-      const focus = lastMessage?.metadata?.focus;
-      const focusKeywords = [
-        focus?.type === "explain" ? focus.sourceId : undefined,
-        focus?.type === "explain" ? focus.topic : undefined,
-        focus?.type === "explain" ? focus.rule : undefined,
-      ]
-        .filter(Boolean)
-        .join(" ");
+      const recentMessages = messages.slice(-MAX_COACH_HISTORY);
+      const lastMessage = recentMessages.at(-1);
+      const lastUserText = lastMessage ? messageText(lastMessage) : "";
 
-      const budgeted = budgetSourceBlocks(document.sources, 36_000, focusKeywords);
+      let activeFocus: CoachFocus | undefined;
+      for (let i = recentMessages.length - 1; i >= 0; i--) {
+        if (recentMessages[i].metadata?.focus) {
+          activeFocus = recentMessages[i].metadata?.focus;
+          break;
+        }
+      }
+
+      const selectedSources = selectCoachContextSources(
+        document.sources,
+        activeFocus,
+        lastUserText,
+        MAX_COACH_CONTEXT_CHARS,
+      );
+
       const coachDoc = {
         ...document,
-        sources: budgeted.sources,
+        sources: selectedSources,
       };
 
-      const system = buildCoachSystemPrompt(coachDoc, language);
-      const modelMessages = buildCoachMessages(messages);
+      const focusOnLastTurn = Boolean(lastMessage?.metadata?.focus);
+      const system = buildCoachSystemPrompt(
+        coachDoc,
+        language,
+        focusOnLastTurn ? undefined : activeFocus,
+      );
+      const modelMessages = buildCoachMessages(recentMessages);
 
       const result = streamText({
         model,

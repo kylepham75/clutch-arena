@@ -1,0 +1,32 @@
+name: Deploy PartyKit Edge Multiplayer
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "party/**"
+      - "partykit.json"
+      - ".github/workflows/deploy-partykit.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to PartyKit Edge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy to PartyKit
+        env:
+          PARTYKIT_TOKEN: ${{ secrets.PARTYKIT_TOKEN }}
+        run: npx partykit deploy

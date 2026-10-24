@@ -13,6 +13,8 @@ export interface TierLimits {
   canHostArenaRemix: boolean;
   maxArenaPlayers: number;
   hasCohortAnalytics: boolean;
+  canUseClutchNotes: boolean;
+  maxNotesPerDay: number;
 }
 
 export const TIER_LIMITS: Record<UserTier, TierLimits> = {
@@ -27,6 +29,8 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     canHostArenaRemix: false,
     maxArenaPlayers: 8,
     hasCohortAnalytics: false,
+    canUseClutchNotes: false,
+    maxNotesPerDay: 0,
   },
   cram_pass: {
     tier: "cram_pass",
@@ -39,6 +43,8 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     canHostArenaRemix: true,
     maxArenaPlayers: 16,
     hasCohortAnalytics: false,
+    canUseClutchNotes: true,
+    maxNotesPerDay: 30,
   },
   pro: {
     tier: "pro",
@@ -51,6 +57,8 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     canHostArenaRemix: true,
     maxArenaPlayers: 16,
     hasCohortAnalytics: false,
+    canUseClutchNotes: true,
+    maxNotesPerDay: 30,
   },
   tutor: {
     tier: "tutor",
@@ -63,6 +71,8 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     canHostArenaRemix: true,
     maxArenaPlayers: 32,
     hasCohortAnalytics: true,
+    canUseClutchNotes: true,
+    maxNotesPerDay: 30,
   },
 };
 
@@ -82,6 +92,7 @@ export interface PlanPricing {
   featuresEn: string[];
   featuresVi: string[];
   recommended?: boolean;
+  comingSoon?: boolean;
 }
 
 export const PRICING_PLANS: PlanPricing[] = [
@@ -127,6 +138,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsdFormatted: "$3.99",
     featuresEn: [
       "7 days full Pro access (one-time purchase)",
+      "Clutch Notes AI: Slide-to-summary lecture notes generator",
       "Multi-document synthesis (up to 10 files / 25MB)",
       "Full 30-question runs & Concept Remix mode",
       "Unlimited AI Coach deep debriefs",
@@ -135,6 +147,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     ],
     featuresVi: [
       "7 ngày toàn quyền Pro (mua 1 lần, không trừ tiền tự động)",
+      "Clutch Notes AI: Tóm tắt slide bài giảng PDF/PPTX thành tài liệu ôn thi",
       "Tổng hợp đa tài liệu cùng lúc (tối đa 10 tệp / 25MB)",
       "Đầy đủ 30 câu hỏi / lượt & chế độ Biến thể Concept Remix",
       "Gia sư AI phản hồi và hướng dẫn chi tiết không giới hạn",
@@ -157,6 +170,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsdFormatted: "$29",
     featuresEn: [
       "Full access for entire 4-month semester",
+      "Clutch Notes AI: Slide-to-summary lecture notes generator (30 decks/day)",
       "Host Privileges: host 30Q remix rooms (friends play free!)",
       "Multi-document synthesis up to 10 files",
       "1-Click PDF Cheat Sheet with verbatim citations",
@@ -165,6 +179,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     ],
     featuresVi: [
       "Toàn quyền suốt 4 tháng học kỳ (tương đương 74.000đ/tháng)",
+      "Clutch Notes AI: Tóm tắt slide bài giảng PDF/PPTX thành tài liệu ôn thi",
       "Đặc quyền Chủ phòng: mở phòng 30 câu Remix cho bạn bè chơi miễn phí",
       "Tổng hợp đa tài liệu cùng lúc lên đến 10 tệp",
       "Xuất cẩm nang Cheat Sheet PDF kèm trích dẫn gốc",
@@ -179,13 +194,15 @@ export const PRICING_PLANS: PlanPricing[] = [
     nameVi: "Giảng Viên & Nhóm Học",
     taglineEn: "For university TAs, IELTS/SAT tutors & study guilds",
     taglineVi: "Dành cho trợ giảng đại học, gia sư IELTS/SAT & câu lạc bộ học tập",
-    badgeEn: "Educator Tier",
-    badgeVi: "Dành cho Giảng viên",
+    badgeEn: "Coming Soon",
+    badgeVi: "Sắp ra mắt",
+    comingSoon: true,
     priceVnd: 399_000,
     priceVndFormatted: "399.000đ",
     priceUsd: 19.99,
     priceUsdFormatted: "$19.99",
     featuresEn: [
+      "Clutch Notes AI: Slide-to-summary lecture notes generator",
       "32+ player /arena lobbies for live classroom reviews",
       "Custom branded Base64 pack links (your name & logo)",
       "Cohort accuracy & missed-concept analytics",
@@ -193,6 +210,7 @@ export const PRICING_PLANS: PlanPricing[] = [
       "Priority API queue for high-concurrency match starts",
     ],
     featuresVi: [
+      "Clutch Notes AI: Tóm tắt slide bài giảng PDF/PPTX thành tài liệu ôn thi",
       "Phòng đấu /arena lên đến 32+ người cho lớp học trực tiếp",
       "Mã chia sẻ Base64 gắn thương hiệu & logo riêng của bạn",
       "Bảng phân tích độ chính xác & lỗ hổng kiến thức chung của lớp",
@@ -291,8 +309,10 @@ export function setStoredUserTier(tier: UserTier, expiresAt?: string | null): vo
       }),
     );
 
-    // Sync to Supabase in the background if the user is authenticated
-    void syncUserTierToCloud(tier, calculatedExpires);
+    // Never allow client-side code to self-upgrade paid tiers in Supabase.
+    if (tier === "contender") {
+      void syncUserTierToCloud("contender", null);
+    }
   } catch {
     // ignore
   }
@@ -314,13 +334,16 @@ export function clearStoredUserTier(): void {
 }
 
 /**
- * Syncs the user tier & expiration timestamp to Supabase `profiles` & `user_profiles`.
+ * Syncs downgrade-to-free state to Supabase when an entitlement expires.
+ * Paid tier upgrades must only be written server-side via payment webhooks.
  */
 export async function syncUserTierToCloud(
   tier: UserTier,
   expiresAt?: string | null,
 ): Promise<boolean> {
   if (typeof window === "undefined") return false;
+  // Security guard: prevent client from writing paid tiers to Supabase
+  if (tier !== "contender") return false;
 
   try {
     const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
@@ -355,25 +378,6 @@ export async function syncUserTierToCloud(
       // ignore
     }
 
-    // Record subscription event for paid plans
-    if (tier !== "contender") {
-      try {
-        await supabase.from("user_subscriptions").insert({
-          user_id: user.id,
-          tier,
-          cycle: tier === "cram_pass" ? "one_time" : tier === "pro" ? "semester" : "monthly",
-          amount: tier === "cram_pass" ? 69000 : tier === "pro" ? 299000 : 399000,
-          currency: "VND",
-          payment_method: "vietqr",
-          status: "active",
-          starts_at: now,
-          expires_at: expiresAt ?? null,
-        });
-      } catch {
-        // subscription history table optional
-      }
-    }
-
     return true;
   } catch {
     return false;
@@ -381,8 +385,8 @@ export async function syncUserTierToCloud(
 }
 
 /**
- * Fetches the user tier & expiration timestamp from Supabase and syncs to localStorage.
- * Used when a user logs in on a new device (e.g. mobile after purchasing on laptop).
+ * Fetches the authoritative user tier & expiration timestamp from Supabase
+ * (`user_subscriptions` and `profiles`) and overwrites any spoofed local state.
  */
 export async function fetchCloudUserTier(): Promise<{
   tier: UserTier;
@@ -390,8 +394,8 @@ export async function fetchCloudUserTier(): Promise<{
   isExpired: boolean;
 }> {
   const defaultResult = {
-    tier: getStoredUserTier(),
-    expiresAt: getStoredTierExpires(),
+    tier: "contender" as UserTier,
+    expiresAt: null,
     isExpired: false,
   };
 
@@ -405,36 +409,57 @@ export async function fetchCloudUserTier(): Promise<{
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    if (!user) return defaultResult;
+    if (!user) {
+      clearStoredUserTier();
+      return defaultResult;
+    }
 
     let cloudTier: string | null = null;
     let cloudExpiresAt: string | null = null;
 
-    // Check `profiles` table first
-    const { data: profileData, error: profileErr } = await supabase
-      .from("profiles")
-      .select("tier, tier_expires_at")
-      .eq("id", user.id)
+    // 1. Check active `user_subscriptions` first
+    const { data: subData, error: subErr } = await supabase
+      .from("user_subscriptions")
+      .select("tier, expires_at, status")
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
-    if (!profileErr && profileData) {
-      cloudTier = profileData.tier;
-      cloudExpiresAt = profileData.tier_expires_at;
+    if (!subErr && subData?.tier) {
+      cloudTier = subData.tier;
+      cloudExpiresAt = subData.expires_at;
     } else {
-      // Fallback to `user_profiles` table
-      const { data: userProfileData, error: userProfileErr } = await supabase
-        .from("user_profiles")
+      // 2. Fallback to `profiles` table
+      const { data: profileData, error: profileErr } = await supabase
+        .from("profiles")
         .select("tier, tier_expires_at")
         .eq("id", user.id)
         .maybeSingle();
 
-      if (!userProfileErr && userProfileData) {
-        cloudTier = userProfileData.tier;
-        cloudExpiresAt = userProfileData.tier_expires_at;
+      if (!profileErr && profileData) {
+        cloudTier = profileData.tier;
+        cloudExpiresAt = profileData.tier_expires_at;
+      } else {
+        // 3. Fallback to `user_profiles` table
+        const { data: userProfileData, error: userProfileErr } = await supabase
+          .from("user_profiles")
+          .select("tier, tier_expires_at")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (!userProfileErr && userProfileData) {
+          cloudTier = userProfileData.tier;
+          cloudExpiresAt = userProfileData.tier_expires_at;
+        }
       }
     }
 
-    if (!cloudTier) return defaultResult;
+    if (!cloudTier) {
+      clearStoredUserTier();
+      return defaultResult;
+    }
 
     let normalizedTier: UserTier = "contender";
     if (cloudTier === "cram_pass" || cloudTier === "pro" || cloudTier === "tutor") {

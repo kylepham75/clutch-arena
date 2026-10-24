@@ -74,6 +74,8 @@ describe("PPP Tier Architecture & Limits", () => {
     const tutor = PRICING_PLANS.find((p) => p.id === "tutor")!;
     expect(tutor.priceVndFormatted).toBe("399.000đ");
     expect(tutor.priceUsdFormatted).toBe("$19.99");
+    expect(tutor.comingSoon).toBe(true);
+    expect(tutor.badgeEn).toBe("Coming Soon");
     expect(TIER_LIMITS.tutor.maxArenaPlayers).toBe(32);
     expect(TIER_LIMITS.tutor.hasCohortAnalytics).toBe(true);
   });
@@ -132,9 +134,9 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(getStoredTierExpires()).toBe(in5Days);
   });
 
-  it("handles unconfigured cloud sync gracefully without throwing", async () => {
+  it("blocks client-side paid tier writes and handles unconfigured cloud sync gracefully", async () => {
     const success = await syncUserTierToCloud("cram_pass");
-    expect(typeof success).toBe("boolean");
+    expect(success).toBe(false);
 
     const cloudTier = await fetchCloudUserTier();
     expect(cloudTier).toHaveProperty("tier");

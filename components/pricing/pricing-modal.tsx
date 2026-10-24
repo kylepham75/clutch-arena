@@ -39,7 +39,7 @@ export function PricingModal({
   initialReason?: string | null;
 }) {
   const { language } = useLanguage();
-  const { tier, setTier, referrals, awardReferral, daysRemaining } = useUserTier();
+  const { tier, setTier, referrals, daysRemaining, refreshTier } = useUserTier();
 
   const [currency, setCurrency] = useState<"vnd" | "usd">(() =>
     language === "vi" ? "vnd" : "usd",
@@ -48,10 +48,12 @@ export function PricingModal({
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [simulating, setSimulating] = useState(false);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
 
   const isVi = language === "vi" || currency === "vnd";
 
   const handleSelectPlan = (plan: PlanPricing) => {
+    if (plan.comingSoon || plan.id === "tutor") return;
     if (plan.id === "contender") {
       setTier("contender");
       onClose();
@@ -59,6 +61,7 @@ export function PricingModal({
     }
     setSelectedPlan(plan);
     setPaymentSuccess(false);
+    setVerificationError(null);
   };
 
   const handleCopy = (text: string, field: string) => {
@@ -69,23 +72,29 @@ export function PricingModal({
     }
   };
 
-  const handleSimulatePayment = () => {
+  const handleVerifyPayment = async () => {
     if (!selectedPlan) return;
     setSimulating(true);
-    setTimeout(() => {
+    setVerificationError(null);
+    try {
+      const updated = await refreshTier();
+      if (updated === selectedPlan.id || updated === "pro" || updated === "cram_pass") {
+        setPaymentSuccess(true);
+        setTimeout(() => {
+          onClose();
+          setSelectedPlan(null);
+          setPaymentSuccess(false);
+        }, 2000);
+      } else {
+        setVerificationError(
+          isVi
+            ? "Hệ thống chưa ghi nhận giao dịch của bạn. Vui lòng đăng nhập và hoàn tất chuyển khoản đúng nội dung, hoặc liên hệ hỗ trợ."
+            : "Payment not yet confirmed by the server. Please ensure you are signed in and have completed checkout.",
+        );
+      }
+    } finally {
       setSimulating(false);
-      setTier(selectedPlan.id);
-      setPaymentSuccess(true);
-      setTimeout(() => {
-        onClose();
-        setSelectedPlan(null);
-        setPaymentSuccess(false);
-      }, 2000);
-    }, 1200);
-  };
-
-  const handleEarnReferralTest = () => {
-    awardReferral("pack_imports_3");
+    }
   };
 
   const transferNote = selectedPlan
@@ -291,15 +300,21 @@ export function PricingModal({
                     </div>
                   </div>
 
+                  {verificationError && (
+                    <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300">
+                      {verificationError}
+                    </div>
+                  )}
+
                   <Button
-                    onClick={handleSimulatePayment}
+                    onClick={handleVerifyPayment}
                     disabled={simulating}
                     className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl shadow-sm"
                   >
-                    {simulating ? "Đang xác thực giao dịch..." : "Tôi đã chuyển khoản xong (Kích hoạt ngay)"}
+                    {simulating ? "Đang kiểm tra xác thực giao dịch..." : "Kiểm tra trạng thái thanh toán"}
                   </Button>
                   <p className="text-[11px] text-center text-stone-500">
-                    Bảo mật 100% · Kích hoạt ngay lập tức mà không cần nhập thẻ Visa/MasterCard.
+                    Bảo mật 100% · Hệ thống tự động kích hoạt sau khi ngân hàng xác nhận giao dịch.
                   </p>
                 </div>
               </div>
@@ -331,12 +346,18 @@ export function PricingModal({
                   <span>Apple Pay · Google Pay · Credit & Debit Cards</span>
                 </div>
 
+                {verificationError && (
+                  <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300">
+                    {verificationError}
+                  </div>
+                )}
+
                 <Button
-                  onClick={handleSimulatePayment}
+                  onClick={handleVerifyPayment}
                   disabled={simulating}
                   className="w-full bg-stone-900 dark:bg-amber-500 dark:text-stone-950 text-white hover:bg-stone-800 font-bold py-3 rounded-xl shadow-sm flex items-center justify-center gap-2"
                 >
-                  {simulating ? "Connecting to LemonSqueezy / Polar..." : "Pay with Card / Digital Wallet"}
+                  {simulating ? "Verifying payment status..." : "Verify Payment / Check Status"}
                   <ExternalLink size={15} />
                 </Button>
 
@@ -434,7 +455,7 @@ export function PricingModal({
 
                   <Button
                     onClick={() => handleSelectPlan(plan)}
-                    disabled={isCurrent}
+                    disabled={isCurrent || Boolean(plan.comingSoon)}
                     variant={isRecommended ? "dark" : "outline"}
                     className={`w-full text-xs font-bold py-2.5 rounded-xl mt-2 transition-all shadow-xs ${
                       isRecommended
@@ -442,11 +463,13 @@ export function PricingModal({
                         : ""
                     }`}
                   >
-                    {isCurrent
-                      ? isVi ? "Đang sử dụng" : "Current Tier"
-                      : plan.id === "contender"
-                        ? isVi ? "Sử dụng miễn phí" : "Start Free"
-                        : isVi ? "Mở khóa ngay" : "Unlock Now"}
+                    {plan.comingSoon
+                      ? isVi ? "Sắp ra mắt" : "Coming Soon"
+                      : isCurrent
+                        ? isVi ? "Đang sử dụng" : "Current Tier"
+                        : plan.id === "contender"
+                          ? isVi ? "Sử dụng miễn phí" : "Start Free"
+                          : isVi ? "Mở khóa ngay" : "Unlock Now"}
                   </Button>
                 </div>
               );
@@ -477,19 +500,6 @@ export function PricingModal({
                   : "Host a 4-player /arena match or have 3 classmates import your shared pack to unlock 3 free Concept Remix runs instantly."}
               </p>
             </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleEarnReferralTest}
-              className="text-xs border-amber-300 hover:bg-amber-100 text-amber-800 dark:text-amber-300 dark:border-amber-700"
-              title="Test the viral referral unlock mechanism"
-            >
-              <Sparkles size={13} className="mr-1" />
-              {isVi ? "+3 Lượt thưởng (Thử nghiệm)" : "+3 Free Runs (Test Unlock)"}
-            </Button>
           </div>
         </div>
 

@@ -11,6 +11,7 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  FileSpreadsheet,
   FileText,
   Flame,
   Heart,
@@ -51,6 +52,7 @@ import { RunSummary } from "./run-summary";
 import { DocumentViewer } from "@/components/workspace/document-viewer";
 import { UploadPanel } from "@/components/workspace/upload-panel";
 import { CoachPanel } from "@/components/workspace/coach-panel";
+import { ClutchNotesPanel } from "@/components/notes/clutch-notes-panel";
 import { LibraryDialog } from "@/components/workspace/library-dialog";
 import { PackShareDialog } from "@/components/workspace/pack-share-dialog";
 import { FlashcardReview } from "@/components/quiz/flashcard-review";
@@ -96,17 +98,9 @@ export function SoloEngine({
   const [pricingReason, setPricingReason] = useState<string | null>(null);
   const [questionCount, setQuestionCount] = useState<number>(10);
   const [libraryItems, setLibraryItems] = useState<SavedStudyItem[]>([]);
-  const [pack, setPack] = useState<StudyPack | null>(() => {
-    if (initialPack) return initialPack;
-    const items = readLibrary();
-    return items.length > 0 && items[0].pack ? items[0].pack : null;
-  });
-  const [document, setDocument] = useState<ParsedDocument | null>(() => {
-    if (initialDoc) return initialDoc;
-    const items = readLibrary();
-    return items.length > 0 && items[0].document ? items[0].document : null;
-  });
-  const [activeTab, setActiveTab] = useState<"play" | "ingest" | "coach" | "arena">("play");
+  const [pack, setPack] = useState<StudyPack | null>(() => initialPack ?? null);
+  const [document, setDocument] = useState<ParsedDocument | null>(() => initialDoc ?? null);
+  const [activeTab, setActiveTab] = useState<"play" | "ingest" | "coach" | "arena" | "notes">("play");
   const [showDocViewer, setShowDocViewer] = useState(false);
   const [highlightedSourceId, setHighlightedSourceId] = useState<string | null>(null);
   const [highlightedExcerpt, setHighlightedExcerpt] = useState<string | null>(null);
@@ -571,8 +565,9 @@ export function SoloEngine({
               }
             }}
           >
-            <span className="brand-icon">
-              <Zap size={23} fill="currentColor" />
+            <span className="brand-icon brand-icon-logo">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/brand-icon.png" alt="Clutch Arena" className="brand-logo-img" />
             </span>
             <span>
               clutch<span className="brand-light">arena</span>
@@ -610,6 +605,15 @@ export function SoloEngine({
               <FileText size={19} />
               <span>{t.nav.uploadNotes}</span>
               {activeTab === "ingest" && <span className="nav-dot" />}
+            </button>
+            <button
+              className={`nav-item ${activeTab === "notes" ? "active" : ""}`}
+              onClick={() => setActiveTab("notes")}
+            >
+              <FileSpreadsheet size={19} />
+              <span>{t.nav.clutchNotes || "Clutch Notes AI"}</span>
+              <span className="live-pill" style={{ background: "#e96b44", color: "#ffffff", fontWeight: 800, padding: "1px 6px", fontSize: "10px" }}>PRO</span>
+              {activeTab === "notes" && <span className="nav-dot" />}
             </button>
             <button
               className={`nav-item ${activeTab === "coach" ? "active" : ""}`}
@@ -725,7 +729,7 @@ export function SoloEngine({
                 title="View student passes and pricing"
               >
                 <Flame size={14} className="text-amber-600" />
-                <span>
+                <span suppressHydrationWarning>
                   {tier === "contender"
                     ? language === "vi" ? "Gói Ôn Thi" : "Cram Pass"
                     : tier === "cram_pass"
@@ -779,22 +783,26 @@ export function SoloEngine({
                       ? t.headings.arenaTitle
                       : activeTab === "ingest"
                         ? t.headings.uploadTitle
-                        : activeTab === "coach"
-                          ? t.headings.coachTitle
-                          : state.phase === "ready"
-                            ? t.headings.clutchRunReady
-                            : state.phase === "finished"
-                              ? t.headings.clutchRunFinished
-                              : t.headings.clutchRunInRun}
+                        : activeTab === "notes"
+                          ? (t.headings.notesTitle || "Slide-to-Summary Note Generator")
+                          : activeTab === "coach"
+                            ? t.headings.coachTitle
+                            : state.phase === "ready"
+                              ? t.headings.clutchRunReady
+                              : state.phase === "finished"
+                                ? t.headings.clutchRunFinished
+                                : t.headings.clutchRunInRun}
                   </h1>
                   <p>
                     {activeTab === "arena"
                       ? t.headings.arenaDesc
                       : activeTab === "ingest"
                         ? t.headings.ingestDesc
-                        : activeTab === "coach"
-                          ? t.headings.coachDesc
-                          : t.headings.playDesc}
+                        : activeTab === "notes"
+                          ? (t.headings.notesDesc || "Transform lecture slides into exam-ready bilingual notes.")
+                          : activeTab === "coach"
+                            ? t.headings.coachDesc
+                            : t.headings.playDesc}
                   </p>
                 </div>
                 <div className="session-pill">
@@ -804,9 +812,11 @@ export function SoloEngine({
                       ? t.run.statusArena
                       : activeTab === "ingest"
                         ? t.run.statusIngest
-                        : activeTab === "coach"
-                          ? t.run.statusCoach
-                          : t.run.statusSolo}
+                        : activeTab === "notes"
+                          ? (t.run.statusNotes || "NOTES ENGINE PRO")
+                          : activeTab === "coach"
+                            ? t.run.statusCoach
+                            : t.run.statusSolo}
                   </span>
                 </div>
               </div>
@@ -856,6 +866,8 @@ export function SoloEngine({
                     onPlayPack={handlePlayPack}
                     onHostArena={handleHostArena}
                   />
+                ) : activeTab === "notes" ? (
+                  <ClutchNotesPanel />
                 ) : activeTab === "coach" ? (
                   <CoachPanel
                     document={document}
@@ -896,6 +908,25 @@ export function SoloEngine({
                                 </div>
                                 <strong>Interactive Tutorial</strong>
                                 <span>Take a 1-minute guided tour of active recall and live arenas.</span>
+                              </div>
+
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => setActiveTab("notes")}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") setActiveTab("notes");
+                                }}
+                                className="welcome-action-card"
+                              >
+                                <div className="welcome-card-icon amber">
+                                  <FileSpreadsheet size={18} />
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <strong>Clutch Notes AI</strong>
+                                  <span style={{ fontSize: "10px", fontWeight: 800, background: "#e96b44", color: "#fff", padding: "1px 5px", borderRadius: "4px" }}>PRO</span>
+                                </div>
+                                <span>Turn 27-slide lecture decks into 3-page bilingual revision notes with LaTeX &amp; PDF export.</span>
                               </div>
 
                               <div
@@ -1068,7 +1099,10 @@ export function SoloEngine({
                      <div className="field-label flex items-center justify-between">
                        <span>{language === "vi" ? "Số lượng câu hỏi" : "Session Length"}</span>
                        {tier === "contender" && (
-                         <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                         <span
+                           suppressHydrationWarning
+                           className="text-[11px] font-semibold text-amber-700 dark:text-amber-400"
+                         >
                            Contender (Max 10Q)
                          </span>
                        )}

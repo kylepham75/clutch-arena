@@ -1,6 +1,7 @@
 import "server-only";
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+import type { ServerTier } from "@/lib/auth/server-guard";
 
 // Check if Upstash Redis credentials are present in the environment
 const hasUpstashConfig = Boolean(
@@ -19,23 +20,54 @@ if (hasUpstashConfig) {
   }
 }
 
-// Ingest limiter: max 3 uploads per day for free/guest users
-const ingestLimiter = redis
+// Tier-specific Upstash limiters
+// Guest & Free (Contender): max 2 uploads per 7 days
+const freeIngestLimiter = redis
   ? new Ratelimit({
       redis,
-      limiter: Ratelimit.slidingWindow(3, "1 d"),
+      limiter: Ratelimit.slidingWindow(2, "7 d"),
       analytics: true,
-      prefix: "clutch:ratelimit:ingest",
+      prefix: "clutch:ratelimit:ingest:free",
     })
   : null;
 
-// Coach limiter: max 20 coach interactions per 10 minutes
-const coachLimiter = redis
+// Paid (Cram Pass / Pro / Tutor): up to 50 uploads per day
+const paidIngestLimiter = redis
+  ? new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(50, "1 d"),
+      analytics: true,
+      prefix: "clutch:ratelimit:ingest:paid",
+    })
+  : null;
+
+// Coach limiter for Guest & Free: max 20 coach interactions per 10 minutes
+const freeCoachLimiter = redis
   ? new Ratelimit({
       redis,
       limiter: Ratelimit.slidingWindow(20, "10 m"),
       analytics: true,
-      prefix: "clutch:ratelimit:coach",
+      prefix: "clutch:ratelimit:coach:free",
+    })
+  : null;
+
+// Coach limiter for Paid: max 60 coach interactions per 10 minutes
+const paidCoachLimiter = redis
+  ? new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(60, "10 m"),
+      analytics: true,
+      prefix: "clutch:ratelimit:coach:paid",
+    })
+  : null;
+
+// Notes limiter for Pro users: max 30 slide deck conversions per day
+const proNotesLimiter = redis
+  ? new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(30, "1 d"),
+      analytics: true,
+      prefix: "clutch:ratelimit:notes:pro",
     })
   : null;
 
@@ -80,7 +112,7 @@ function checkInMemoryRateLimit(
   };
 }
 
-export type RateLimitType = "ingest" | "coach";
+export type RateLimitType = "ingest" | "coach" | "notes";
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -97,16 +129,41 @@ export interface RateLimitResult {
 export async function checkRateLimit(
   identifier: string,
   type: RateLimitType,
+  tier: ServerTier = "guest",
 ): Promise<RateLimitResult> {
+  const isNotes = type === "notes";
   const isIngest = type === "ingest";
-  const limit = isIngest ? 3 : 20;
-  const windowMs = isIngest ? 24 * 60 * 60 * 1000 : 10 * 60 * 1000;
+  const isPaid = tier === "cram_pass" || tier === "pro" || tier === "tutor";
+  const isPro = tier === "pro" || tier === "tutor";
+
+  let limit: number;
+  let windowMs: number;
+
+  if (isNotes) {
+    limit = isPaid ? 30 : 0;
+    windowMs = 24 * 60 * 60 * 1000; // 24 hours
+  } else if (isIngest) {
+    limit = isPaid ? 50 : 2;
+    windowMs = isPaid ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+  } else {
+    // coach
+    limit = isPaid ? 60 : 20;
+    windowMs = 10 * 60 * 1000;
+  }
 
   // 1. Try Upstash Redis if available
-  const limiter = isIngest ? ingestLimiter : coachLimiter;
+  const limiter = isNotes
+    ? proNotesLimiter
+    : isIngest
+      ? isPaid
+        ? paidIngestLimiter
+        : freeIngestLimiter
+      : isPaid
+        ? paidCoachLimiter
+        : freeCoachLimiter;
   if (limiter) {
     try {
-      const result = await limiter.limit(identifier);
+      const result = await limiter.limit(`${tier}:${identifier}`);
       const retryAfter = Math.max(
         1,
         Math.ceil((result.reset - Date.now()) / 1000),
@@ -125,7 +182,7 @@ export async function checkRateLimit(
 
   // 2. In-memory sliding window fallback
   const memResult = checkInMemoryRateLimit(
-    `${type}:${identifier}`,
+    `${type}:${tier}:${identifier}`,
     limit,
     windowMs,
   );

@@ -31,10 +31,11 @@ export interface UserTierHook {
   setTier: (tier: UserTier, expiresAt?: string | null) => void;
   awardReferral: (reason: "arena_4_player" | "pack_imports_3") => void;
   consumeRemixRun: () => boolean;
-  refreshTier: () => Promise<void>;
+  refreshTier: () => Promise<UserTier>;
 }
 
 export function useUserTier(): UserTierHook {
+  // Default to contender initially to ensure SSR and initial client hydration match identically
   const [tier, setTierState] = useState<UserTier>("contender");
   const [tierExpiresAt, setTierExpiresAt] = useState<string | null>(null);
   const [referrals, setReferralsState] = useState<ReferralState>({
@@ -44,19 +45,21 @@ export function useUserTier(): UserTierHook {
     packsImportedByClassmates: 0,
   });
 
-  // Sync state from cloud and storage
-  const syncFromCloud = useCallback(async () => {
+  // Sync state from authoritative cloud database
+  const syncFromCloud = useCallback(async (): Promise<UserTier> => {
     const cloud = await fetchCloudUserTier();
     setTierState(cloud.tier);
     setTierExpiresAt(cloud.expiresAt);
+    return cloud.tier;
   }, []);
 
   useEffect(() => {
+    // Synchronize client storage after hydration
     setTierState(getStoredUserTier());
     setTierExpiresAt(getStoredTierExpires());
     setReferralsState(getStoredReferralState());
 
-    // Fetch initial cloud tier if user is authenticated
+    // Fetch authoritative tier from Supabase (defaults to contender when unauthenticated)
     void syncFromCloud();
 
     const handleTierUpdated = (e: Event) => {
