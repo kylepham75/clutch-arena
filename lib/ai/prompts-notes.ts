@@ -9,6 +9,8 @@ Follow these exact transformation rules:
    - NEVER cross-contaminate or copy formulas from an unrelated chapter (e.g., NEVER force Stock Valuation / DDM onto a Cost of Capital / WACC deck, or vice versa).
    - If the slides cover Chapter 13 (Cost of Capital & WACC / Chi phí sử dụng vốn), synthesize strictly Chapter 13 formulas and concepts.
    - If the slides cover Chapter 9 (Stock Valuation / Định giá cổ phiếu), synthesize strictly Chapter 9 formulas and concepts.
+   - If the slides cover Chapter 10 (Historical Risk & Return / Lợi suất & Rủi ro lịch sử), synthesize strictly Chapter 10 historical formulas and concepts.
+   - If the slides cover Chapter 11 (Expected Return & Portfolio Theory / Lợi suất kỳ vọng, Rủi ro danh mục & Mô hình CAPM), synthesize strictly Chapter 11 portfolio and CAPM formulas and concepts.
 
 1. STRIP ALL NOISE (BUT PRESERVE ALL CORE MECHANICS):
    - Completely remove cover slides, instructor/captain names, attendance QR codes, agenda/outline slides, thank-you/feedback slides, and repetitive arithmetic drill numbers (e.g., specific company examples like "Five Star Corporation pays $3.04").
@@ -48,6 +50,38 @@ Follow these exact transformation rules:
      * DEFERRED PREFERRED STOCK: If the slides cover preferred stock or perpetuities delayed to Year t (e.g. dividends starting in Year 12), you MUST include the 2-step deferred valuation formula:
        1. Find price at Year t-1 (one year before first dividend): P_{t-1} = \\frac{D_t}{R_p}
        2. Discount back to Year 0: P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}
+   - TOPIC-SPECIFIC FORMULA FIDELITY (Historical Risk & Return vs Portfolio Risk & CAPM - Chapters 10 & 11):
+     * CHAPTER 10 HISTORICAL RISK & RETURN (Phương sai & Độ lệch chuẩn mẫu lịch sử):
+       - Uses sample observations t = 1 ... T and sample arithmetic mean:
+         \\bar{R} = \\frac{1}{T} \\sum_{t=1}^T R_t
+       - Historical Sample Variance & Standard Deviation:
+         s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2, \\quad s = \\sqrt{s^2}
+       - CRITICAL STATISTICAL IDENTITY: Denominator is STRICTLY T - 1 (unbiased sample degrees of freedom). NEVER divide by T, NEVER use scenario probabilities P_i.
+       - Historical Total Return:
+         R_{t+1} = \\frac{D_{t+1} + P_{t+1} - P_t}{P_t} = \\frac{D_{t+1}}{P_t} + \\frac{P_{t+1} - P_t}{P_t} = \\text{Dividend Yield} + \\text{Capital Gains Yield}
+       - Average Returns Comparison:
+         \\bar{R}_{\\text{geom}} = \\left[\\prod_{t=1}^T (1 + R_t)\\right]^{1/T} - 1, \\quad \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t
+         Geometric average measures compound return per period; arithmetic average measures typical single-period return. \\bar{R}_{\\text{geom}} \\le \\bar{R}_{\\text{arith}}.
+     * CHAPTER 11 EXPECTED RETURN, PORTFOLIO RISK & CAPM (Kịch bản xác suất & Lý thuyết danh mục):
+       - Uses economic scenarios i = 1 ... n with probabilities P_i (where \\sum P_i = 1):
+         E[R] = \\sum_{i=1}^n P_i R_i
+       - Scenario Variance & Standard Deviation:
+         \\sigma^2 = \\sum_{i=1}^n P_i (R_i - E[R])^2, \\quad \\sigma = \\sqrt{\\sigma^2}
+       - CRITICAL DISTINCTION: Weighted STRICTLY by scenario probabilities P_i. There is NO T - 1 denominator.
+       - 4 CORE CALCULATION PROBLEM TYPES (MANDATORY BOXED FORMULAS):
+         1. Portfolio Expected Return & Portfolio Risk (2 assets):
+            E[R_p] = w_A E[R_A] + w_B E[R_B]
+            \\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B) = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\sigma_A \\sigma_B \\rho_{AB}
+            \\sigma_p = \\sqrt{\\sigma_p^2}
+         2. Covariance & Correlation Coefficient:
+            \\text{Cov}(R_A, R_B) = \\sum_{i=1}^n P_i (R_{A,i} - E[R_A])(R_{B,i} - E[R_B])
+            \\rho_{AB} = \\text{Corr}(R_A, R_B) = \\frac{\\text{Cov}(R_A, R_B)}{\\sigma_A \\sigma_B} \\quad \\implies \\quad \\text{Cov}(R_A, R_B) = \\rho_{AB} \\sigma_A \\sigma_B
+         3. CAPM / SML & Beta:
+            E[R_i] = R_f + \\beta_i (E[R_M] - R_f)
+            \\beta_p = \\sum_{j=1}^m w_j \\beta_j = w_A \\beta_A + w_B \\beta_B, \\quad \\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2} = \\frac{\\rho_{i,M}\\sigma_i}{\\sigma_M}
+         4. Historical Total Return & Averages:
+            R_{t+1} = \\frac{D_{t+1} + P_{t+1} - P_t}{P_t} = \\text{Dividend Yield} + \\text{Capital Gains Yield}
+            \\bar{R}_{\\text{geom}} = \\left[\\prod_{t=1}^T (1 + R_t)\\right]^{1/T} - 1, \\quad \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t
    - STRICT TYPOGRAPHICAL INTEGRITY:
      * Always use the numeric digit 0 for zero-growth conditions (g = 0) and time-zero subscripts (P_0, D_0). NEVER write "g = o" or "P_o" with the letter "o".
 
@@ -66,6 +100,17 @@ Follow these exact transformation rules:
        - Section C: "C. DDM (DIVIDEND DISCOUNT MODEL)" (General infinite summation, Cases 1, 2, 3 in subSections)
        - Section D: "D. PARAMETERS IN DIVIDEND DISCOUNT MODEL" (Finding g & Finding R in subSections)
        - Section E: "E. VALUE OF PREFERENCE SHARE" (Preferred features, Deferred Preferred in subSections)
+     * Example for Chapter 10 (Historical Risk & Return):
+       - Section A: "A. TỔNG QUAN LỢI SUẤT & LỢI SUẤT LỊCH SỬ" (Dollar & Percentage Returns, Holding Period Return)
+       - Section B: "B. TRUNG BÌNH SỐ HỌC VÀ HÌNH HỌC" (Arithmetic vs Geometric Average Returns)
+       - Section C: "C. PHƯƠNG SAI VÀ ĐỘ LỆCH CHUẨN LỊCH SỬ" (Historical Variance & Standard Deviation with T-1)
+       - Section D: "D. THỊ TRƯỜNG HIỆU QUẢ (EFFICIENT CAPITAL MARKETS)" (EMH Forms: Weak, Semi-strong, Strong)
+     * Example for Chapter 11 (Expected Return, Portfolio Theory & CAPM):
+       - Section A: "A. TỶ SUẤT SINH LỜI KỲ VỌNG VÀ PHƯƠNG SAI KỊCH BẢN" (Expected Return & Scenario Variance via Pi)
+       - Section B: "B. DANH MỤC ĐẦU TƯ VÀ RỦI RO DANH MỤC" (Portfolio Return & Portfolio Variance for 2 assets)
+       - Section C: "C. HIỆP PHƯƠNG SAI VÀ HỆ SỐ TƯƠNG QUAN" (Covariance & Correlation Coefficient)
+       - Section D: "D. ĐA DẠNG HÓA VÀ RỦI RO HỆ THỐNG" (Systematic vs Unsystematic Risk, Diversification)
+       - Section E: "E. ĐƯỜNG THỊ TRƯỜNG CHỨNG KHOÁN (SML) VÀ MÔ HÌNH CAPM" (CAPM Formula, Beta Portfolio & SML)
    - ZERO DUPLICATION / ZERO DOUBLE-PASTING:
      * If a model case or parameter derivation is inside \`subSections\`, DO NOT duplicate its formula or explanation in the top-level \`formulas\` or \`bulletPoints\` of that section. Stacking the same formula at both top-level and subSection level is strictly forbidden.
      * CRITICAL: Every section MUST contain substantive body content in \`bulletPoints\`, \`formulas\`, or \`subSections\`. NEVER output a bare section heading with empty content arrays.
@@ -136,6 +181,19 @@ Strict Output Checklist & Hallucination Shield:
     - R decomposed into Dividend Yield and Capital Gains Yield
     - Multi-Stage terminal value P_N = D_{N+1} / (R - g)
     - Deferred Preferred Stock P_{t-1} = D_t / R_p discounted to P_0
+  * If the slides teach Historical Risk & Return (Chapter 10):
+    - Historical variance uses denominator T - 1: s^2 = (1 / (T - 1)) * sum(R_t - R_bar)^2; s = sqrt(s^2). NEVER divide by T, NEVER use P_i.
+    - Historical Total Return: R_{t+1} = (D_{t+1} + P_{t+1} - P_t) / P_t = Dividend Yield + Capital Gains Yield
+    - Arithmetic Average: R_bar_arith = (1 / T) * sum(R_t)
+    - Geometric Average: R_bar_geom = [prod(1 + R_t)]^(1/T) - 1
+  * If the slides teach Expected Return & Portfolio Risk (Chapter 11):
+    - Expected return via scenario probabilities: E[R] = sum(P_i * R_i)
+    - Scenario variance: sigma^2 = sum(P_i * (R_i - E[R])^2); sigma = sqrt(sigma^2) (NO T - 1 denominator)
+    - 4 Core Calculation Types:
+      1. Portfolio Return & Risk (2 assets): E[R_p] = w_A*E[R_A] + w_B*E[R_B]; sigma_p^2 = w_A^2*sigma_A^2 + w_B^2*sigma_B^2 + 2*w_A*w_B*Cov(R_A, R_B); sigma_p = sqrt(sigma_p^2)
+      2. Covariance & Correlation: Cov(R_A, R_B) = sum(P_i * (R_A,i - E[R_A]) * (R_B,i - E[R_B])); rho_AB = Cov(R_A, R_B) / (sigma_A * sigma_B)
+      3. CAPM & Beta: E[R_i] = R_f + beta_i * (E[R_M] - R_f); beta_p = sum(w_j * beta_j); beta_i = Cov(R_i, R_M) / sigma_M^2 = rho_{i,M} * sigma_i / sigma_M
+      4. Total Return & Averages: Dividend Yield + Capital Gains Yield; Geometric vs Arithmetic average
 - Typo Check: Use numeric digit 0 (never letter 'o') for g = 0 and P_0.
 - Zero Double-Pasting: If a formula is inside subSections, DO NOT duplicate it at the section top-level.
 - Strip 100% of cover/agenda/QR/thank-you slides AND strip all multi-slide numerical practice exercises/word problems.

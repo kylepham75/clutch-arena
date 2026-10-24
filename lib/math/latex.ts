@@ -22,9 +22,11 @@ export function repairCorruptedLatex(text: string): string {
   let s = text;
 
   // 1. Repair explicit ASCII control characters from JSON string parsing
-  // \b = 0x08 (backspace), \t = 0x09 (tab), \f = 0x0c (form feed), \r = 0x0d (carriage return)
+  // \a = 0x07 (bell), \b = 0x08 (backspace), \t = 0x09 (tab), \f = 0x0c (form feed), \r = 0x0d (carriage return)
+  s = s.replace(/[\x07]lpha\b/g, "\\alpha ");
   s = s.replace(/[\x08\b]eta\b/g, "\\beta ");
   s = s.replace(/[\x08\b]ar\{/g, "\\bar{");
+  s = s.replace(/[\x08\b]ar(?=[{_\s]|\b)/g, "\\bar ");
   s = s.replace(/[\x08\b]egin\{/g, "\\begin{");
   s = s.replace(/[\x08\b]inom\{/g, "\\binom{");
   s = s.replace(/[\x08\b]ullet\b/g, "\\bullet ");
@@ -51,17 +53,55 @@ export function repairCorruptedLatex(text: string): string {
   // "imes" is never a standalone English word -> convert to \times
   s = s.replace(/\bimes\b/g, "\\times");
 
-  // "rac{" -> \frac{
+  // "rac{" -> \frac{, "qrt{" -> \sqrt{
   s = s.replace(/(?:^|\s)rac\{/g, " \\frac{");
+  s = s.replace(/(?:^|\s)qrt\{/g, " \\sqrt{");
+
+  // Repair corrupted text{Cov}, text{Corr}, text{Var}
+  s = s.replace(/[\x09\t]ext\{(Cov|Corr|Var)\}/g, "\\text{$1}");
+  s = s.replace(/(?:^|[\s$+\-=*/(])ext\{(Cov|Corr|Var)\}/g, (match, fn) =>
+    match.replace(`ext{${fn}}`, `\\text{${fn}}`),
+  );
+  s = s.replace(/\\text\{\s*(?:cov|Cov)\s*\}/g, "\\text{Cov}");
+  s = s.replace(/\\text\{\s*(?:corr|Corr)\s*\}/g, "\\text{Corr}");
+  s = s.replace(/\\text\{\s*(?:var|Var)\s*\}/g, "\\text{Var}");
+  s = s.replace(/(^|[\s$+\-=*/(])(?:Cov|cov)\s*\(/g, "$1\\text{Cov}(");
+  s = s.replace(/(^|[\s$+\-=*/(])(?:Corr|corr)\s*\(/g, "$1\\text{Corr}(");
+  s = s.replace(/(^|[\s$+\-=*/(])(?:Var|var)\s*\(/g, "$1\\text{Var}(");
 
   // "beta" corrupted to "eta" in math / operator context (e.g. "+  eta", "= eta", "eta \times", "eta imes")
   s = s.replace(/([+\-=*\/]\s*)eta\b/g, "$1\\beta");
   s = s.replace(/(^|[\s$])eta\s*(?=\\times|imes\b|[*_^(+\-=]|\b[a-zA-Z]\b)/g, "$1\\beta");
 
+  // "rho" corrupted to "ho" after operators or in math context
+  s = s.replace(/([+\-=*\/]\s*)ho\b/g, "$1\\rho");
+  s = s.replace(/(^|[\s$])ho\s*(?=\\times|imes\b|[*_^(+\-=]|\b[a-zA-Z0-9]\b)/g, "$1\\rho");
+
+  // Bare Greek / math function names in math / equation context
+  s = s.replace(/(^|[\s$+\-=*/(,])sigma(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\sigma");
+  s = s.replace(/(^|[\s$+\-=*/(,])beta(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\beta");
+  s = s.replace(/(^|[\s$+\-=*/(,])rho(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\rho");
+  s = s.replace(/(^|[\s$+\-=*/(,])alpha(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\alpha");
+  s = s.replace(/(^|[\s$+\-=*/(,])mu(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\mu");
+  s = s.replace(/(^|[\s$+\-=*/(,])sum(?=\s*[_^({]|\s*[a-zA-Z0-9])/g, "$1\\sum");
+  s = s.replace(/(^|[\s$+\-=*/(,])sqrt(?=\s*\{)/g, "$1\\sqrt");
+  s = s.replace(/(^|[\s$+\-=*/(,])bar\{/g, "$1\\bar{");
+
+  // Clean up duplicate backslashes if any: \\\sigma -> \sigma
+  s = s.replace(/\\\\(sigma|beta|rho|alpha|mu|sum|sqrt|bar|text|times|frac|Delta)/g, "\\$1");
+
   // Clean up formatting and spacing around \times and \beta
   s = s.replace(/\s*\\times\s*/g, " \\times ");
   s = s.replace(/([+\-=*\/])\s*\\beta\b/g, "$1 \\beta");
   s = s.replace(/\\beta\s*\\times/g, "\\beta \\times");
+
+  // Normalize whitespace right after opening $ or before closing $
+  s = s.replace(/\$([ \t]+)([^$\n]+?)\$/g, (m, _sp, inner) =>
+    isLikelyInlineMath(inner) ? `$${inner.trim()}$` : m,
+  );
+  s = s.replace(/\$([^$\n]+?)([ \t]+)\$/g, (m, inner, _sp) =>
+    isLikelyInlineMath(inner) ? `$${inner.trim()}$` : m,
+  );
 
   // 3. Move trailing sentence punctuation outside inline math delimiters:
   // e.g. "$... = 9.45%.$" -> "$... = 9.45%$."
@@ -136,11 +176,10 @@ export function splitMathBlocks(text: string): MathContentBlock[] {
  * Checks whether content between single $ delimiters is genuine LaTeX inline math
  * rather than currency amounts ($5,000, $30) or ordinary prose.
  */
-export function isLikelyInlineMath(content: string): boolean {
+export function isLikelyInlineMath(rawContent: string): boolean {
+  if (!rawContent) return false;
+  const content = rawContent.trim();
   if (!content) return false;
-
-  // Cannot start or end with whitespace
-  if (/^\s|\s$/.test(content)) return false;
 
   // Cannot start with a digit (e.g. currency amounts like $50 or $5,000)
   if (/^\d/.test(content)) return false;
@@ -223,6 +262,118 @@ export function convertAsciiMathSegment(segment: string): string {
 }
 
 /**
+ * Ensures bare LaTeX expressions and math formulas in prose strings (without existing $ delimiters)
+ * are wrapped in $...$ inline math delimiters so they render cleanly via KaTeX in MathText.
+ * Preserves already delimited math ($...$, $$...$$, \[...\], \(...\)).
+ */
+export function ensureInlineMathDelimiters(text: string): string {
+  if (!text || typeof text !== "string") return text;
+  if (!text.includes("\\")) return text;
+
+  // Split string into segments preserving already delimited math
+  const tokens = tokenizeMath(text);
+  if (tokens.length === 0) return text;
+
+  const parts: string[] = [];
+
+  for (const token of tokens) {
+    if (token.type === "display-math") {
+      parts.push(`$$${token.value}$$`);
+    } else if (token.type === "inline-math") {
+      parts.push(`$${token.value}$`);
+    } else {
+      let segments: Array<{ isMath: boolean; val: string }> = [
+        { isMath: false, val: token.value },
+      ];
+
+      const apply = (
+        regex: RegExp,
+        replacer: (match: string) => string,
+      ) => {
+        const next: Array<{ isMath: boolean; val: string }> = [];
+        for (const seg of segments) {
+          if (seg.isMath) {
+            next.push(seg);
+          } else {
+            let lastIdx = 0;
+            const re = new RegExp(regex.source, regex.flags);
+            let m: RegExpExecArray | null;
+            while ((m = re.exec(seg.val)) !== null) {
+              if (m.index > lastIdx) {
+                next.push({
+                  isMath: false,
+                  val: seg.val.slice(lastIdx, m.index),
+                });
+              }
+              next.push({ isMath: true, val: replacer(m[0]) });
+              lastIdx = re.lastIndex;
+            }
+            if (lastIdx < seg.val.length) {
+              next.push({ isMath: false, val: seg.val.slice(lastIdx) });
+            }
+          }
+        }
+        segments = next;
+      };
+
+      // 0. Wrap full un-delimited math equations containing '=' and LaTeX commands
+      // e.g., \sigma_p^2 = w_A^2 \sigma_A^2 + w_B^2 \sigma_B^2 + 2 w_A w_B \text{Cov}(R_A, R_B)
+      const eqRegex =
+        /\\(?:sigma|beta|rho|alpha|mu|bar|text\{[^{}]+\}|frac\{[^{}]+\}\{[^{}]+\})(?:_\{[^{}]+\}|_[A-Za-z0-9]+)?(?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)?\s*=\s*(?:[^.,;:\n(){}\[\]]+|\([^)]*\)|\{(?:[^{}]|\{[^{}]*\})*\}|\[[^\]]*\])+?(?=[.,;:]?(?:\s+(?:for|the|and|where|with|while|when|if|in|is|as|to|of|from|by|given|based|measured|meaning|defined|which|that)\b|\s*$))/g;
+      apply(eqRegex, (m) => {
+        if (/\\(?:sigma|beta|rho|alpha|mu|bar|text|frac|sqrt|sum|prod|Delta|quad|times|div|approx|le|ge)\b/.test(m)) {
+          return `$${m.trim()}$`;
+        }
+        return m;
+      });
+
+      // 1. Wrap fractions: \frac{...}{...} (supporting up to 2 levels of nested braces)
+      const fracRegex =
+        /\\frac\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}/g;
+      apply(fracRegex, (m) => `$${m}$`);
+
+      // 2. Wrap square roots: \sqrt{...}
+      const sqrtRegex = /\\sqrt\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}/g;
+      apply(sqrtRegex, (m) => `$${m}$`);
+
+      // 3. Wrap Covariance, Correlation, Variance functions: \text{Cov}(...), \text{Corr}(...), \text{Var}(...)
+      const covRegex =
+        /\\text\{(?:Cov|Corr|Var)\}(?:\([A-Za-z0-9_,\s\(\)\^\{\}\+\-\*\/]+\))?/g;
+      apply(covRegex, (m) => `$${m}$`);
+
+      // 4. Wrap Greek variables with optional sub/superscripts: \sigma_p^2, \beta_i, \rho_{AB}, etc.
+      const greekRegex =
+        /\\(?:sigma|beta|rho|alpha|mu|Delta)(?:_\{[^{}]*\}|_[a-zA-Z0-9]+)?(?:\^\{[^{}]*\}|\^[a-zA-Z0-9]+)?/g;
+      apply(greekRegex, (m) => `$${m}$`);
+
+      // 5. Wrap Summation & Product expressions: \sum_{t=1}^T, \prod_{t=1}^T
+      const sumProdRegex =
+        /\\(?:sum|prod)(?:_\{[^{}]*\}|_[a-zA-Z0-9=]+)?(?:\^\{[^{}]*\}|\^[a-zA-Z0-9]+)?/g;
+      apply(sumProdRegex, (m) => `$${m}$`);
+
+      // 6. Wrap bar expressions: \bar{R}, \bar{R}_{\text{geom}}, etc.
+      const barRegex =
+        /\\bar\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}(?:_\{[^{}]*\}|_[a-zA-Z0-9]+)?|\\bar\s+[a-zA-Z]/g;
+      apply(barRegex, (m) => `$${m}$`);
+
+      // 7. Wrap comparison / operators when surrounded by whitespace or variables
+      const compRegex =
+        /\s+(\\(?:approx|le|ge|leq|geq|times|div|cdot|neq|pm|mp))\s+/g;
+      apply(compRegex, (op) => ` $${op.trim()}$ `);
+
+      let plain = segments.map((s) => s.val).join("");
+
+      // Move trailing sentence punctuation outside inline math delimiters:
+      plain = plain.replace(/(\$[^$\n]+?)([.,;:])\$/g, "$1$$$2");
+
+      parts.push(plain);
+    }
+  }
+
+  return parts.join("");
+}
+
+/**
  * Normalizes plain ASCII or Unicode economics/math expressions into beautiful LaTeX.
  * If the input already contains LaTeX markers ($ or $$ or \[ or \(), it leaves them intact.
  */
@@ -251,6 +402,16 @@ export function normalizeMathFormulas(raw: string): string {
       /\|?E(d)?\|?\s*=\s*\|?%\s*[Δ\u0394]\s*(?:quantity demanded|Q(?:d)?)\s*[÷\/]\s*%\s*[Δ\u0394]\s*(?:price|P)\|?\.?\s*/i,
       () => "$$|E_d| = \\left|\\frac{\\%\\Delta Q_d}{\\%\\Delta P}\\right|$$\n",
     );
+  }
+
+  // Pattern 2.5: Un-delimited LaTeX formula equation starting with LaTeX command or symbol
+  // e.g. \sigma_p^2 = ..., \text{Cov}(R_A, R_B) = ..., \beta_i = ...
+  if (
+    !text.includes("$") &&
+    /\\(?:sigma|beta|rho|alpha|mu|text|frac|sqrt|sum|prod|Delta|bar)\b/.test(text) &&
+    /^[A-Za-z0-9_().\s\\\[\]{}]+=\s*[A-Za-z0-9_().\s+\-*\/^$≈\\\[\]{}]+$/.test(text.trim())
+  ) {
+    return `$${text.trim()}$`;
   }
 
   // Pattern 3: Standalone formula equation without math markers (e.g. in metadata.rule or explanation)
@@ -290,6 +451,9 @@ export function normalizeMathFormulas(raw: string): string {
   text = text.replace(/\|Ed\|\s*>\s*1/g, () => "$|E_d| > 1$");
   text = text.replace(/\|Ed\|\s*<\s*1/g, () => "$|E_d| < 1$");
   text = text.replace(/\bE\s*=\s*hf\b/g, () => "$E = hf$");
+
+  // Wrap any un-delimited LaTeX sequences in inline math delimiters
+  text = ensureInlineMathDelimiters(text);
 
   return text;
 }
@@ -389,8 +553,8 @@ export function tokenizeMath(input: string): MathToken[] {
     // 4. Inline math: $...$
     if (text[i] === "$") {
       const nextChar = text[i + 1];
-      // If $ is followed by a digit or space or end of string, it is currency or punctuation (e.g. $5,000)
-      if (!nextChar || /\d|\s/.test(nextChar)) {
+      // If $ is followed by a digit or end of string, it is currency or punctuation (e.g. $5,000)
+      if (!nextChar || /\d/.test(nextChar)) {
         textBuffer += "$";
         i++;
         continue;
@@ -416,20 +580,19 @@ export function tokenizeMath(input: string): MathToken[] {
             j++;
             continue;
           }
-          if (text[j - 1] !== " ") {
-            closeIdx = j;
-            break;
-          }
+          closeIdx = j;
+          break;
         }
       }
 
       if (closeIdx !== -1) {
         const candidate = text.slice(i + 1, closeIdx);
-        if (isLikelyInlineMath(candidate)) {
+        const trimmed = candidate.trim();
+        if (isLikelyInlineMath(trimmed)) {
           flushText();
           tokens.push({
             type: "inline-math",
-            value: candidate,
+            value: trimmed,
           });
           i = closeIdx + 1;
           continue;

@@ -12,7 +12,8 @@ import type { SourceBlock } from "@/lib/schemas/ingestion";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { getGenerationModel, getGroqModel } from "./provider";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
-import { repairCorruptedLatex } from "@/lib/math/latex";
+import { repairCorruptedLatex, ensureInlineMathDelimiters } from "@/lib/math/latex";
+export { ensureInlineMathDelimiters } from "@/lib/math/latex";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 
 /**
@@ -183,12 +184,12 @@ function sanitizeFormula(f: NoteFormula): NoteFormula {
   return {
     ...f,
     name: f.name ? repairCorruptedLatex(f.name) : "",
-    leadText: f.leadText ? repairCorruptedLatex(f.leadText) : undefined,
+    leadText: f.leadText ? ensureInlineMathDelimiters(repairCorruptedLatex(f.leadText)) : undefined,
     latex: repairCorruptedLatex(f.latex).replace(/^\$+|\$+$/g, "").trim(),
-    description: f.description ? repairCorruptedLatex(f.description) : undefined,
+    description: f.description ? ensureInlineMathDelimiters(repairCorruptedLatex(f.description)) : undefined,
     variables: (f.variables ?? []).map((v) => ({
       symbol: repairCorruptedLatex(v.symbol).replace(/^\$+|\$+$/g, "").trim(),
-      definition: repairCorruptedLatex(v.definition),
+      definition: ensureInlineMathDelimiters(repairCorruptedLatex(v.definition)),
     })),
   };
 }
@@ -253,19 +254,6 @@ function cleanTypoString(str: string): string {
     .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*R_?p\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{P_1}{1 + R_p}");
 }
 
-/**
- * Ensures bare \frac{...}{...} fractions in prose strings (without existing $ delimiters)
- * are wrapped in $...$ inline math delimiters so they render cleanly via KaTeX in MathText.
- * Supports up to 1 level of nested curly braces in numerator and denominator.
- */
-export function ensureInlineMathDelimiters(text: string): string {
-  if (!text || typeof text !== "string") return text;
-  if (!text.includes("$") && text.includes("\\frac{")) {
-    const fracRegex = /\\frac\{(?:[^{}]|\{[^{}]*\})*\}\{(?:[^{}]|\{[^{}]*\})*\}/g;
-    return text.replace(fracRegex, (match) => `$${match}$`);
-  }
-  return text;
-}
 
 export function sanitizeAcademicHeader(
   rawTitle: string,
@@ -296,7 +284,7 @@ export function sanitizeAcademicHeader(
   // or if explicitly not Stock Valuation, preserve the clean uppercase topic title with letter prefix!
   const isNonStockTopic =
     !isStockValuation ||
-    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn|cost of debt|chi phí nợ|cost of equity|chi phí.*cổ phần|chi phí.*chủ sở hữu|cost of preferred|chi phí.*(cổ phiếu )?ưu đãi|flotation|chi phí phát hành|divisional risk|rủi ro bộ phận|capital structure|cơ cấu vốn|pure play|subjective approach|capital budgeting|ngân sách vốn|sml|capm/i.test(
+    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn|cost of debt|chi phí nợ|cost of equity|chi phí.*cổ phần|chi phí.*chủ sở hữu|cost of preferred|chi phí.*(cổ phiếu )?ưu đãi|flotation|chi phí phát hành|divisional risk|rủi ro bộ phận|capital structure|cơ cấu vốn|pure play|subjective approach|capital budgeting|ngân sách vốn|sml|capm|risk|return|rủi ro|tỷ suất sinh lời|lợi suất|portfolio|danh mục|beta|covariance|hiệp phương sai|correlation|tương quan|variance|phương sai|độ lệch chuẩn|historical/i.test(
       lower,
     );
 
@@ -344,13 +332,15 @@ function shieldFormula(
   f: NoteFormula,
   contextHint: string,
   isStockValuation: boolean = true,
+  isChapter10: boolean = false,
+  isChapter11: boolean = false,
 ): NoteFormula {
   let latex = cleanTypoString(f.latex);
-  let leadText = f.leadText ? cleanTypoString(f.leadText) : undefined;
-  let description = f.description ? cleanTypoString(f.description) : undefined;
+  let leadText = f.leadText ? ensureInlineMathDelimiters(cleanTypoString(f.leadText)) : undefined;
+  let description = f.description ? ensureInlineMathDelimiters(cleanTypoString(f.description)) : undefined;
   let variables = f.variables.map((v) => ({
     symbol: cleanTypoString(v.symbol),
-    definition: cleanTypoString(v.definition),
+    definition: ensureInlineMathDelimiters(cleanTypoString(v.definition)),
   }));
 
   // Intercept one-period valuation formula exponent error:
@@ -401,6 +391,63 @@ function shieldFormula(
     ) {
       latex =
         "R = \\underbrace{\\frac{D_1}{P_0}}_{\\text{Dividend Yield}} + \\underbrace{g}_{\\text{Capital Gains Yield}}";
+    }
+  }
+
+  // Chapter 10 Historical Risk & Return Variance Shield:
+  // Historical sample variance uses denominator strictly T - 1. NEVER divide by T, NEVER use scenario probabilities P_i.
+  const isHistoricalVariance =
+    isChapter10 ||
+    /historical|mẫu lịch sử|sample variance|phương sai lịch sử/i.test(contextHint) ||
+    /s\^2\s*=|s\s*=\s*\\sqrt/i.test(latex);
+
+  if (
+    isHistoricalVariance &&
+    (/variance|phương sai|độ lệch chuẩn|s\^2/i.test(contextHint) || /s\^2|\\bar\{R\}|R_t/i.test(latex))
+  ) {
+    // Intercept if probability P_i was hallucinated into historical sample variance
+    if (/P_i|p_i|\\sum\s*P/i.test(latex)) {
+      latex = "s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2, \\quad s = \\sqrt{s^2}";
+      leadText = "Phương sai và độ lệch chuẩn mẫu lịch sử (mẫu số strictly T - 1, không dùng xác suất P_i):";
+      description = "Mẫu số là T - 1 để ước lượng không chệch cho phương sai tổng thể.";
+      variables = [
+        { symbol: "s^2, s", definition: "Phương sai mẫu và độ lệch chuẩn mẫu lịch sử" },
+        { symbol: "T", definition: "Số thời kỳ quan sát trong chuỗi dữ liệu lịch sử" },
+        { symbol: "\\bar{R}", definition: "Tỷ suất sinh lời trung bình số học của mẫu" },
+        { symbol: "R_t", definition: "Tỷ suất sinh lời thực tế tại thời kỳ t" },
+      ];
+    } else {
+      // Fix denominator T to T - 1 if divided by T without - 1
+      latex = latex.replace(/\\frac\{1\}\{T\}(?!\s*-\s*1)/g, "\\frac{1}{T - 1}");
+      latex = latex.replace(/\{\s*T\s*\}(?!\s*-\s*1)/g, "{T - 1}");
+    }
+  }
+
+  // Chapter 11 Scenario Variance Shield:
+  // Expected return & portfolio scenario variance uses \sum P_i (R_i - E[R])^2. NO T - 1 denominator!
+  const isScenarioVariance =
+    isChapter11 ||
+    /scenario|kịch bản|xác suất|probability/i.test(contextHint) ||
+    /\\sigma\^2\s*=|\\sigma\s*=\s*\\sqrt/i.test(latex);
+
+  if (
+    isScenarioVariance &&
+    (/variance|phương sai|độ lệch chuẩn|\\sigma/i.test(contextHint) || /\\sigma\^2|P_i/i.test(latex))
+  ) {
+    // Intercept if divided by T - 1 or n - 1 or T in scenario variance
+    const isDividedBySample =
+      /\\frac\{1\}\{[TnN]\s*-\s*1\}|\/\s*\(?[TnN]\s*-\s*1\)?/i.test(latex);
+
+    if (isDividedBySample) {
+      latex = "\\sigma^2 = \\sum_{i=1}^n P_i (R_i - E[R])^2, \\quad \\sigma = \\sqrt{\\sigma^2}";
+      leadText = "Phương sai và độ lệch chuẩn theo kịch bản xác suất (trọng số P_i, không chia cho T - 1):";
+      description = "Phương sai kịch bản được tính bằng tổng gia quyền theo xác suất P_i.";
+      variables = [
+        { symbol: "\\sigma^2, \\sigma", definition: "Phương sai và độ lệch chuẩn theo kịch bản xác suất" },
+        { symbol: "P_i", definition: "Xác suất xảy ra kịch bản kinh tế i" },
+        { symbol: "R_i", definition: "Tỷ suất sinh lời trong kịch bản i" },
+        { symbol: "E[R]", definition: "Tỷ suất sinh lời kỳ vọng" },
+      ];
     }
   }
 
@@ -705,19 +752,31 @@ export function applyHallucinationShield(
   rawSlideText: string = "",
 ): NoteSection[] {
   const normSlideText = rawSlideText.toLowerCase();
+  const allTitlesText = sections.map((s) => s.titleVi).join(" ").toLowerCase();
+  const combinedContext = `${normSlideText} ${allTitlesText}`;
 
   const isWaccOrCostOfCapital =
-    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn/i.test(
-      `${rawSlideText} ${sections.map((s) => s.titleVi).join(" ")}`,
+    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn/i.test(combinedContext);
+
+  const isChapter10Historical =
+    !isWaccOrCostOfCapital &&
+    /chapter\s*10|historical.*(risk|return)|lợi suất lịch sử|phương sai lịch sử|sample variance|geometric average|arithmetic average|blume|holding period/i.test(
+      combinedContext,
+    );
+
+  const isChapter11Portfolio =
+    !isWaccOrCostOfCapital &&
+    /chapter\s*11|portfolio|danh mục|capm|sml|expected return|kịch bản|xác suất|covariance|hiệp phương sai|correlation|hệ số tương quan|beta\b|rủi ro hệ thống|systematic risk/i.test(
+      combinedContext,
     );
 
   const isChapter9StockValuation =
     !isWaccOrCostOfCapital &&
+    !isChapter10Historical &&
+    !isChapter11Portfolio &&
     (/stock valuation|định giá cổ phiếu|dividend discount|gordon growth/i.test(rawSlideText) ||
-      /stock valuation|định giá cổ phiếu/i.test(sections.map((s) => s.titleVi).join(" ")) ||
-      /ddm|ritm|hạnh hạnh/i.test(
-        `${rawSlideText} ${sections.map((s) => s.titleVi).join(" ")}`,
-      ));
+      /stock valuation|định giá cổ phiếu/i.test(allTitlesText) ||
+      /ddm|ritm|hạnh hạnh/i.test(combinedContext));
 
   // Step 1: Consolidate fragmented sections if the LLM output 8–10 split sections
   const consolidated = consolidateFragmentedSections(sections, rawSlideText);
@@ -759,7 +818,9 @@ export function applyHallucinationShield(
     }
 
     // 2b. Shield formulas at section top-level
-    sec.formulas = sec.formulas.map((f) => shieldFormula(f, sec.titleVi, isChapter9StockValuation));
+    sec.formulas = sec.formulas.map((f) =>
+      shieldFormula(f, sec.titleVi, isChapter9StockValuation, isChapter10Historical, isChapter11Portfolio),
+    );
 
     // 2c. Shield sub-sections
     if (sec.subSections) {
@@ -772,7 +833,13 @@ export function applyHallucinationShield(
           ensureInlineMathDelimiters(cleanTypoString(bp)),
         );
         sub.formulas = sub.formulas.map((f) =>
-          shieldFormula(f, `${sec.titleVi} ${sub.heading}`, isChapter9StockValuation),
+          shieldFormula(
+            f,
+            `${sec.titleVi} ${sub.heading}`,
+            isChapter9StockValuation,
+            isChapter10Historical,
+            isChapter11Portfolio,
+          ),
         );
 
         if (isChapter9StockValuation) {
@@ -867,6 +934,262 @@ export function applyHallucinationShield(
 
     return sec;
   });
+
+  // Step 2f. Chapter 10 & 11 Core Formula Safeguards:
+  // If the slides cover Risk & Return (Chapters 10 & 11) and the AI omitted boxed formulas
+  // for Portfolio Return/Risk, Covariance/Correlation, CAPM, or Historical Variance,
+  // populate them into the appropriate section.
+  if (isChapter11Portfolio) {
+    // 1. Portfolio Expected Return & Portfolio Risk (2 assets)
+    const hasPortfolioRiskFormula = processed.some(
+      (sec) =>
+        sec.formulas.some((f) => /\\sigma_p\^?2|w_A\^2/i.test(f.latex)) ||
+        (sec.subSections &&
+          sec.subSections.some((sub) =>
+            sub.formulas.some((f) => /\\sigma_p\^?2|w_A\^2/i.test(f.latex)),
+          )),
+    );
+
+    if (!hasPortfolioRiskFormula) {
+      let targetSec = processed.find((sec) => /portfolio|danh mục/i.test(sec.titleVi));
+      if (!targetSec && processed.length > 1) {
+        targetSec = processed[1]; // Typically Section B
+      }
+      if (targetSec) {
+        targetSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Tỷ suất sinh lời kỳ vọng của danh mục 2 tài sản:",
+            latex: "E[R_p] = w_A E[R_A] + w_B E[R_B]",
+            description: "Tỷ suất sinh lời kỳ vọng của danh mục là bình quân gia quyền theo tỷ trọng đầu tư.",
+            variables: [
+              { symbol: "E[R_p]", definition: "Tỷ suất sinh lời kỳ vọng của danh mục (Portfolio expected return)" },
+              { symbol: "w_A, w_B", definition: "Tỷ trọng vốn đầu tư vào tài sản A và B ($w_A + w_B = 1$)" },
+              { symbol: "E[R_A], E[R_B]", definition: "Tỷ suất sinh lời kỳ vọng của tài sản A và B" },
+            ],
+          }),
+          sanitizeFormula({
+            name: "",
+            leadText: "Phương sai và độ lệch chuẩn của danh mục 2 tài sản:",
+            latex: "\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B) = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\sigma_A \\sigma_B \\rho_{AB}",
+            description: "\\sigma_p = \\sqrt{\\sigma_p^2} đo lường tổng rủi ro của danh mục.",
+            variables: [
+              { symbol: "\\sigma_p^2, \\sigma_p", definition: "Phương sai và độ lệch chuẩn của danh mục" },
+              { symbol: "\\sigma_A, \\sigma_B", definition: "Độ lệch chuẩn riêng của tài sản A và B" },
+              { symbol: "\\text{Cov}(R_A, R_B)", definition: "Hiệp phương sai giữa hai tài sản" },
+              { symbol: "\\rho_{AB}", definition: "Hệ số tương quan giữa hai tài sản ($-1 \\le \\rho_{AB} \\le 1$)" },
+            ],
+          }),
+          sanitizeFormula({
+            name: "",
+            leadText: "Độ lệch chuẩn danh mục:",
+            latex: "\\sigma_p = \\sqrt{\\sigma_p^2}",
+            description: "Căn bậc hai của phương sai danh mục đầu tư.",
+            variables: [],
+          }),
+        );
+      }
+    }
+
+    // 2. Covariance & Correlation Coefficient
+    const hasCovarianceFormula = processed.some(
+      (sec) =>
+        sec.formulas.some((f) =>
+          /\\sum.*P_i.*R_\{?A\}?|\\text\{Corr\}\(R_A,\s*R_B\)/i.test(f.latex),
+        ) ||
+        (sec.subSections &&
+          sec.subSections.some((sub) =>
+            sub.formulas.some((f) =>
+              /\\sum.*P_i.*R_\{?A\}?|\\text\{Corr\}\(R_A,\s*R_B\)/i.test(f.latex),
+            ),
+          )),
+    );
+
+    if (!hasCovarianceFormula) {
+      let targetSec = processed.find((sec) =>
+        /hiệp phương sai|covariance|tương quan|correlation/i.test(sec.titleVi),
+      );
+      if (!targetSec && processed.length > 2) {
+        targetSec = processed[2]; // Typically Section C
+      }
+      if (!targetSec) {
+        targetSec = processed.find((sec) => /portfolio|danh mục/i.test(sec.titleVi)) ?? processed[0];
+      }
+      if (targetSec) {
+        targetSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Hiệp phương sai theo các kịch bản xác suất:",
+            latex: "\\text{Cov}(R_A, R_B) = \\sum_{i=1}^n P_i (R_{A,i} - E[R_A])(R_{B,i} - E[R_B])",
+            description: "Đo lường mức độ đồng biến thiên giữa lợi suất của hai tài sản.",
+            variables: [
+              { symbol: "\\text{Cov}(R_A, R_B)", definition: "Hiệp phương sai giữa tài sản A và B" },
+              { symbol: "P_i", definition: "Xác suất kịch bản i" },
+              { symbol: "R_{A,i}, R_{B,i}", definition: "Lợi suất của A và B trong kịch bản i" },
+            ],
+          }),
+          sanitizeFormula({
+            name: "",
+            leadText: "Hệ số tương quan và mối quan hệ với hiệp phương sai:",
+            latex: "\\rho_{AB} = \\text{Corr}(R_A, R_B) = \\frac{\\text{Cov}(R_A, R_B)}{\\sigma_A \\sigma_B} \\quad \\implies \\quad \\text{Cov}(R_A, R_B) = \\rho_{AB} \\sigma_A \\sigma_B",
+            description: "Hệ số tương quan chuẩn hóa hiệp phương sai về đoạn [-1, 1].",
+            variables: [
+              { symbol: "\\rho_{AB}", definition: "Hệ số tương quan (Correlation coefficient)" },
+            ],
+          }),
+        );
+      }
+    }
+
+    // 3. CAPM / SML & Beta
+    const hasCapmFormula = processed.some(
+      (sec) =>
+        sec.formulas.some((f) => /R_f\s*\+\s*\\beta|\\beta_p\s*=/i.test(f.latex)) ||
+        (sec.subSections &&
+          sec.subSections.some((sub) =>
+            sub.formulas.some((f) => /R_f\s*\+\s*\\beta|\\beta_p\s*=/i.test(f.latex)),
+          )),
+    );
+
+    if (!hasCapmFormula) {
+      let targetSec = processed.find((sec) =>
+        /capm|sml|thị trường chứng khoán|beta/i.test(sec.titleVi),
+      );
+      if (!targetSec && processed.length > 3) {
+        targetSec = processed[processed.length - 1]; // Typically Section E
+      }
+      if (targetSec) {
+        targetSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Mô hình định giá tài sản vốn (CAPM / SML):",
+            latex: "E[R_i] = R_f + \\beta_i (E[R_M] - R_f)",
+            description: "Tỷ suất sinh lời đòi hỏi của tài sản i dựa trên rủi ro hệ thống beta.",
+            variables: [
+              { symbol: "E[R_i]", definition: "Tỷ suất sinh lời đòi hỏi của tài sản i" },
+              { symbol: "R_f", definition: "Lãi suất phi rủi ro (Risk-free rate)" },
+              { symbol: "\\beta_i", definition: "Hệ số beta đo lường rủi ro hệ thống của tài sản i" },
+              { symbol: "E[R_M] - R_f", definition: "Phần bù rủi ro thị trường (Market risk premium)" },
+            ],
+          }),
+          sanitizeFormula({
+            name: "",
+            leadText: "Hệ số Beta danh mục và công thức xác định Beta:",
+            latex: "\\beta_p = \\sum_{j=1}^m w_j \\beta_j = w_A \\beta_A + w_B \\beta_B, \\quad \\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2} = \\frac{\\rho_{i,M}\\sigma_i}{\\sigma_M}",
+            description: "Beta danh mục là bình quân gia quyền các beta thành phần.",
+            variables: [
+              { symbol: "\\beta_p", definition: "Hệ số beta của danh mục đầu tư" },
+              { symbol: "\\sigma_M^2", definition: "Phương sai của danh mục thị trường" },
+            ],
+          }),
+        );
+      }
+    }
+  }
+
+  if (isChapter10Historical) {
+    // Historical Sample Variance
+    const hasHistoricalVariance = processed.some(
+      (sec) =>
+        sec.formulas.some((f) => /s\^2|T\s*-\s*1/i.test(f.latex)) ||
+        (sec.subSections &&
+          sec.subSections.some((sub) =>
+            sub.formulas.some((f) => /s\^2|T\s*-\s*1/i.test(f.latex)),
+          )),
+    );
+
+    if (!hasHistoricalVariance) {
+      let targetSec = processed.find((sec) =>
+        /phương sai|độ lệch chuẩn|variance|standard deviation/i.test(sec.titleVi),
+      );
+      if (!targetSec && processed.length > 2) {
+        targetSec = processed[2]; // Typically Section C
+      }
+      if (!targetSec) targetSec = processed[0];
+      if (targetSec) {
+        targetSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Phương sai và độ lệch chuẩn mẫu lịch sử (mẫu số strictly T - 1):",
+            latex: "s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2, \\quad s = \\sqrt{s^2}",
+            description: "Khi ước lượng phương sai mẫu từ chuỗi dữ liệu lịch sử, bắt buộc chia cho T - 1.",
+            variables: [
+              { symbol: "s^2, s", definition: "Phương sai mẫu và độ lệch chuẩn mẫu lịch sử" },
+              { symbol: "T", definition: "Số thời kỳ quan sát trong mẫu" },
+              { symbol: "\\bar{R}", definition: "Trung bình số học của các tỷ suất sinh lời lịch sử" },
+              { symbol: "R_t", definition: "Tỷ suất sinh lời thực tế tại thời kỳ t" },
+            ],
+          }),
+        );
+      }
+    }
+
+    // Historical Total Return
+    const hasTotalReturn = processed.some(
+      (sec) =>
+        sec.formulas.some((f) => /D_?\{?t\+1\}?|P_?\{?t\+1\}?|Dividend Yield/i.test(f.latex)) ||
+        (sec.subSections &&
+          sec.subSections.some((sub) =>
+            sub.formulas.some((f) => /D_?\{?t\+1\}?|P_?\{?t\+1\}?|Dividend Yield/i.test(f.latex)),
+          )),
+    );
+
+    if (!hasTotalReturn) {
+      let targetSec = processed.find((sec) =>
+        /tổng quan|lợi suất|return/i.test(sec.titleVi),
+      );
+      if (!targetSec) targetSec = processed[0];
+      if (targetSec) {
+        targetSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Tổng tỷ suất sinh lời lịch sử:",
+            latex: "R_{t+1} = \\frac{D_{t+1} + P_{t+1} - P_t}{P_t} = \\text{Dividend Yield} + \\text{Capital Gains Yield}",
+            description: "Tổng lợi suất bao gồm lợi suất cổ tức và lợi suất tăng vốn.",
+            variables: [
+              { symbol: "R_{t+1}", definition: "Tổng tỷ suất sinh lời ở thời kỳ t+1" },
+              { symbol: "D_{t+1}", definition: "Cổ tức nhận được ở thời kỳ t+1" },
+              { symbol: "P_t, P_{t+1}", definition: "Giá cổ phiếu tại đầu kỳ và cuối kỳ" },
+            ],
+          }),
+        );
+      }
+    }
+
+    // Geometric vs Arithmetic Average
+    const hasAverages = processed.some(
+      (sec) =>
+        sec.formulas.some((f) => /\\prod|\\bar\{R\}_\{?\\text\{(geom|arith)\}\}?/i.test(f.latex)) ||
+        (sec.subSections &&
+          sec.subSections.some((sub) =>
+            sub.formulas.some((f) => /\\prod|\\bar\{R\}_\{?\\text\{(geom|arith)\}\}?/i.test(f.latex)),
+          )),
+    );
+
+    if (!hasAverages) {
+      let targetSec = processed.find((sec) =>
+        /trung bình|average|hình học|số học/i.test(sec.titleVi),
+      );
+      if (!targetSec && processed.length > 1) {
+        targetSec = processed[1]; // Typically Section B
+      }
+      if (!targetSec) targetSec = processed[0];
+      if (targetSec) {
+        targetSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Trung bình hình học và trung bình số học:",
+            latex: "\\bar{R}_{\\text{geom}} = \\left[\\prod_{t=1}^T (1 + R_t)\\right]^{1/T} - 1, \\quad \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t",
+            description: "Trung bình hình học đo lường tăng trưởng kép thực tế qua các năm; luôn nhỏ hơn hoặc bằng trung bình số học.",
+            variables: [
+              { symbol: "\\bar{R}_{\\text{geom}}", definition: "Tỷ suất sinh lời trung bình hình học (Geometric average return)" },
+              { symbol: "\\bar{R}_{\\text{arith}}", definition: "Tỷ suất sinh lời trung bình số học (Arithmetic average return)" },
+            ],
+          }),
+        );
+      }
+    }
+  }
 
   return processed;
 }
@@ -1292,7 +1615,7 @@ export async function generateClutchNote(
     originalSlideCount: options.slideCount,
     estimatedDistilledPages: meta.estimatedDistilledPages || 3,
     noiseReductionRate: noiseRate,
-    executiveSummary: repairCorruptedLatex(meta.executiveSummary.trim()),
+    executiveSummary: ensureInlineMathDelimiters(repairCorruptedLatex(meta.executiveSummary.trim())),
     sections: shieldedSections,
   };
 

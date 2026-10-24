@@ -6,6 +6,7 @@ import {
   isLikelyInlineMath,
   splitMathBlocks,
   repairCorruptedLatex,
+  ensureInlineMathDelimiters,
 } from "@/lib/math/latex";
 
 describe("currency and prose protection", () => {
@@ -237,6 +238,80 @@ describe("LaTeX escape repair and CAPM formula rendering", () => {
   it("recognizes long equations without backslashes as valid inline math", () => {
     const formula = "r = r_f + beta * (Rm - r_f) = 3% + 1.29 * (8% - 3%) = 9.45%";
     expect(isLikelyInlineMath(formula)).toBe(true);
+  });
+});
+
+describe("ensureInlineMathDelimiters & raw LaTeX leakage prevention", () => {
+  it("wraps un-delimited Greek variables and formula equations in $...$", () => {
+    const text = "Portfolio risk is calculated as \\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B).";
+    const wrapped = ensureInlineMathDelimiters(text);
+    expect(wrapped).toContain("$\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B)$.");
+    expect(wrapped.endsWith("$.")).toBe(true);
+  });
+
+  it("wraps single Greek letters and statistical terms in running text", () => {
+    const text = "where \\beta_i represents systematic risk, \\rho_{AB} is correlation, and \\mu is expected return.";
+    const wrapped = ensureInlineMathDelimiters(text);
+    expect(wrapped).toContain("$\\beta_i$");
+    expect(wrapped).toContain("$\\rho_{AB}$");
+    expect(wrapped).toContain("$\\mu$");
+    expect(wrapped).toContain("and $\\mu$ is expected return.");
+  });
+
+  it("handles fractions and square roots without delimiters", () => {
+    const text = "The Sharpe ratio is \\frac{E[R_p] - R_f}{\\sigma_p} while standard deviation is \\sqrt{\\sigma^2}.";
+    const wrapped = ensureInlineMathDelimiters(text);
+    expect(wrapped).toContain("$\\frac{E[R_p] - R_f}{\\sigma_p}$");
+    expect(wrapped).toContain("$\\sqrt{\\sigma^2}$.");
+  });
+
+  it("preserves already delimited math ($...$, $$...$$, \\[...\\])", () => {
+    const text = "Here is an equation: $\\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}$ and display $$E[R_p]$$.";
+    const wrapped = ensureInlineMathDelimiters(text);
+    expect(wrapped).toBe(text);
+  });
+
+  it("does not wrap currency symbols into math", () => {
+    const text = "The investment requires $5,000 initially and returns $30 daily.";
+    const wrapped = ensureInlineMathDelimiters(text);
+    expect(wrapped).toBe(text);
+  });
+});
+
+describe("tokenizeMath whitespace and delimiter handling", () => {
+  it("normalizes whitespace inside inline math delimiters", () => {
+    const input1 = "Risk is $ \\sigma_p $.";
+    const tokens1 = tokenizeMath(input1);
+    const mathToken1 = tokens1.find((t) => t.type === "inline-math");
+    expect(mathToken1).toBeDefined();
+    expect(mathToken1?.value).toBe("\\sigma_p");
+
+    const input2 = "Risk is $\\sigma_p $.";
+    const tokens2 = tokenizeMath(input2);
+    const mathToken2 = tokens2.find((t) => t.type === "inline-math");
+    expect(mathToken2).toBeDefined();
+    expect(mathToken2?.value).toBe("\\sigma_p");
+
+    const input3 = "Risk is $ \\sigma_p$.";
+    const tokens3 = tokenizeMath(input3);
+    const mathToken3 = tokens3.find((t) => t.type === "inline-math");
+    expect(mathToken3).toBeDefined();
+    expect(mathToken3?.value).toBe("\\sigma_p");
+  });
+});
+
+describe("repairCorruptedLatex for financial statistics symbols", () => {
+  it("repairs Greek symbols, operators, and functions corrupted by ASCII or escaped backslashes", () => {
+    const corrupted = "\\\\sigma_p^2 + \\\\rho_{AB} + \\\\beta_i + \\\\sum P_i + \\\\text{Cov} + \\\\sqrt{\\\\sigma^2} + \\\\bar{R}";
+    const repaired = repairCorruptedLatex(corrupted);
+    expect(repaired).toContain("\\sigma_p^2");
+    expect(repaired).toContain("\\rho_{AB}");
+    expect(repaired).toContain("\\beta_i");
+    expect(repaired).toContain("\\sum P_i");
+    expect(repaired).toContain("\\text{Cov}");
+    expect(repaired).toContain("\\sqrt{\\sigma^2}");
+    expect(repaired).toContain("\\bar{R}");
+    expect(repaired).not.toContain("\\\\");
   });
 });
 

@@ -698,4 +698,213 @@ Flotation Costs: f_A = (E/V) * f_E + (D/V) * f_D, Initial Outlay = Project Cost 
     expect(allLatex).not.toContain("Dividend Yield (Lợi suất cổ tức)");
     expect(allLatex).not.toContain("Capital Gains Yield (Lợi suất tăng vốn)");
   });
+
+  it("accurately preserves Chapter 10 Historical Risk & Return sections and formulas, intercepts biased variance denominator, and injects missing core problem formulas", () => {
+    const rawSlideText =
+      "Chapter 10: Some Lessons from Capital Market History. Historical returns, arithmetic vs geometric averages, sample variance with T - 1, and efficient markets.";
+
+    const mockChapter10Sections: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. TỔNG QUAN LỢI SUẤT & LỢI SUẤT LỊCH SỬ",
+        bulletPoints: ["Total return includes dividend yield and capital gains yield."],
+        formulas: [],
+        subSections: [],
+      },
+      {
+        id: "sec-b",
+        letter: "B",
+        titleVi: "B. TRUNG BÌNH SỐ HỌC VÀ HÌNH HỌC",
+        bulletPoints: ["Arithmetic vs Geometric average returns."],
+        formulas: [],
+        subSections: [],
+      },
+      {
+        id: "sec-c",
+        letter: "C",
+        titleVi: "C. PHƯƠNG SAI VÀ ĐỘ LỆCH CHUẨN LỊCH SỬ",
+        bulletPoints: ["Sample variance calculation over T periods."],
+        formulas: [
+          {
+            leadText: "Sample variance (corrupted with T instead of T - 1):",
+            latex: "s^2 = \\frac{1}{T} \\sum_{t=1}^T (R_t - \\bar{R})^2",
+            description: "",
+            variables: [],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-d",
+        letter: "D",
+        titleVi: "D. THỊ TRƯỜNG HIỆU QUẢ (EFFICIENT CAPITAL MARKETS)",
+        bulletPoints: [
+          "Weak form: past prices.",
+          "Semi-strong form: all public information.",
+          "Strong form: all information including insider info.",
+        ],
+        formulas: [],
+        subSections: [],
+      },
+    ];
+
+    // Verify academic headers are not overwritten
+    expect(sanitizeAcademicHeader("A. TỔNG QUAN LỢI SUẤT & LỢI SUẤT LỊCH SỬ", "A")).toBe(
+      "A. TỔNG QUAN LỢI SUẤT & LỢI SUẤT LỊCH SỬ",
+    );
+    expect(sanitizeAcademicHeader("C. PHƯƠNG SAI VÀ ĐỘ LỆCH CHUẨN LỊCH SỬ", "C")).toBe(
+      "C. PHƯƠNG SAI VÀ ĐỘ LỆCH CHUẨN LỊCH SỬ",
+    );
+
+    const shielded = applyHallucinationShield(mockChapter10Sections, rawSlideText);
+
+    // Verify Chapter 10 titles are preserved
+    expect(shielded.length).toBeGreaterThanOrEqual(4);
+    expect(shielded[0].titleVi).toContain("TỔNG QUAN LỢI SUẤT");
+    expect(shielded[1].titleVi).toContain("TRUNG BÌNH SỐ HỌC VÀ HÌNH HỌC");
+    expect(shielded[2].titleVi).toContain("PHƯƠNG SAI VÀ ĐỘ LỆCH CHUẨN LỊCH SỬ");
+    expect(shielded[3].titleVi).toContain("THỊ TRƯỜNG HIỆU QUẢ");
+
+    // ZERO Chapter 9 or Chapter 13 titles
+    const allTitles = shielded.map((s) => s.titleVi).join(" ");
+    expect(allTitles).not.toContain("NGUYÊN LÝ CƠ BẢN");
+    expect(allTitles).not.toContain("DDM (DIVIDEND DISCOUNT MODEL)");
+    expect(allTitles).not.toContain("CHI PHÍ SỬ DỤNG VỐN");
+
+    // Verify biased variance denominator 1/T is intercepted and corrected to 1/(T - 1)
+    const varSec = shielded[2];
+    expect(varSec.formulas[0].latex).toContain("T - 1");
+    expect(varSec.formulas[0].latex).not.toContain("\\frac{1}{T} \\sum");
+
+    // Verify core problem formulas injected into Chapter 10 (Total Return, Geometric, Arithmetic)
+    const secA = shielded[0];
+    expect(secA.formulas.some((f: any) => f.latex.includes("D_{t+1} + P_{t+1} - P_t"))).toBe(true);
+    const secB = shielded[1];
+    expect(secB.formulas.some((f: any) => f.latex.includes("\\bar{R}_{\\text{geom}}"))).toBe(true);
+    expect(secB.formulas.some((f: any) => f.latex.includes("\\prod_{t=1}^T (1 + R_t)"))).toBe(true);
+  });
+
+  it("accurately preserves Chapter 11 Expected Return, Portfolio Theory & CAPM sections, corrects scenario variance, and safeguards 4 core calculation problem formulas", () => {
+    const rawSlideText =
+      "Chapter 11: Risk and Return - Capital Asset Pricing Model (CAPM). Portfolio expected returns, portfolio variance for 2 assets, covariance, correlation coefficient, systematic risk and beta.";
+
+    const mockChapter11Sections: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. TỶ SUẤT SINH LỜI KỲ VỌNG VÀ PHƯƠNG SAI KỊCH BẢN",
+        bulletPoints: ["Expected return and scenario variance using probabilities P_i."],
+        formulas: [
+          {
+            leadText: "Scenario variance (corrupted with T - 1 degrees of freedom):",
+            latex: "\\sigma^2 = \\frac{1}{T - 1} \\sum_{i=1}^n P_i (R_i - E[R])^2",
+            description: "",
+            variables: [],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-b",
+        letter: "B",
+        titleVi: "B. DANH MỤC ĐẦU TƯ VÀ RỦI RO DANH MỤC",
+        bulletPoints: ["Portfolio weights w_A + w_B = 1."],
+        formulas: [],
+        subSections: [],
+      },
+      {
+        id: "sec-c",
+        letter: "C",
+        titleVi: "C. HIỆP PHƯƠNG SAI VÀ HỆ SỐ TƯƠNG QUAN",
+        bulletPoints: ["Covariance measures how two assets co-move."],
+        formulas: [],
+        subSections: [],
+      },
+      {
+        id: "sec-d",
+        letter: "D",
+        titleVi: "D. ĐA DẠNG HÓA VÀ RỦI RO HỆ THỐNG",
+        bulletPoints: ["Unsystematic risk is diversifiable; systematic risk is non-diversifiable."],
+        formulas: [],
+        subSections: [],
+      },
+      {
+        id: "sec-e",
+        letter: "E",
+        titleVi: "E. ĐƯỜNG THỊ TRƯỜNG CHỨNG KHOÁN (SML) VÀ MÔ HÌNH CAPM",
+        bulletPoints: ["SML represents market equilibrium."],
+        formulas: [],
+        subSections: [],
+      },
+    ];
+
+    // Verify academic headers are not overwritten
+    expect(sanitizeAcademicHeader("A. TỶ SUẤT SINH LỜI KỲ VỌNG VÀ PHƯƠNG SAI KỊCH BẢN", "A")).toBe(
+      "A. TỶ SUẤT SINH LỜI KỲ VỌNG VÀ PHƯƠNG SAI KỊCH BẢN",
+    );
+    expect(sanitizeAcademicHeader("E. ĐƯỜNG THỊ TRƯỜNG CHỨNG KHOÁN (SML) VÀ MÔ HÌNH CAPM", "E")).toBe(
+      "E. ĐƯỜNG THỊ TRƯỜNG CHỨNG KHOÁN (SML) VÀ MÔ HÌNH CAPM",
+    );
+
+    const shielded = applyHallucinationShield(mockChapter11Sections, rawSlideText);
+
+    // Verify Chapter 11 titles preserved
+    expect(shielded.length).toBe(5);
+    expect(shielded[0].titleVi).toContain("TỶ SUẤT SINH LỜI KỲ VỌNG");
+    expect(shielded[1].titleVi).toContain("DANH MỤC ĐẦU TƯ");
+    expect(shielded[2].titleVi).toContain("HIỆP PHƯƠNG SAI");
+    expect(shielded[3].titleVi).toContain("ĐA DẠNG HÓA");
+    expect(shielded[4].titleVi).toContain("MÔ HÌNH CAPM");
+
+    // Verify scenario variance denominator corruption (T - 1) is purged
+    const secA = shielded[0];
+    expect(secA.formulas[0].latex).toContain("\\sum_{i=1}^n P_i (R_i - E[R])^2");
+    expect(secA.formulas[0].latex).not.toContain("T - 1");
+
+    // Verify 4 Core Calculation Problem Types formulas are safeguarded/injected:
+    // 1. Portfolio Return & Portfolio Risk
+    const secB = shielded[1];
+    expect(secB.formulas.some((f: any) => f.latex.includes("\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2"))).toBe(true);
+    expect(secB.formulas.some((f: any) => f.latex.includes("E[R_p] = w_A E[R_A] + w_B E[R_B]"))).toBe(true);
+
+    // 2. Covariance & Correlation
+    const secC = shielded[2];
+    expect(secC.formulas.some((f: any) => f.latex.includes("\\text{Cov}(R_A, R_B)"))).toBe(true);
+    expect(secC.formulas.some((f: any) => f.latex.includes("\\rho_{AB} = \\text{Corr}(R_A, R_B)"))).toBe(true);
+
+    // 3. CAPM / SML & Beta
+    const secE = shielded[4];
+    expect(secE.formulas.some((f: any) => f.latex.includes("E[R_i] = R_f + \\beta_i (E[R_M] - R_f)"))).toBe(true);
+    expect(secE.formulas.some((f: any) => f.latex.includes("\\beta_p = \\sum"))).toBe(true);
+  });
+
+  it("prevents raw LaTeX code leakage across all note fields using ensureInlineMathDelimiters", () => {
+    const rawNoteContent = {
+      leadText: "Calculated via \\sigma_p = \\sqrt{\\sigma_p^2} for the portfolio:",
+      description: "where \\beta_i measures systematic risk, \\rho_{AB} is correlation, and \\text{Cov}(R_A, R_B) is covariance.",
+      variables: [
+        { symbol: "\\sigma_p^2", definition: "Portfolio variance given by \\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B)." },
+        { symbol: "\\beta_i", definition: "Asset beta defined as \\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}." },
+      ],
+      bulletPoints: [
+        "Historical sample variance uses unbiased degrees of freedom: s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2.",
+        "Expected return in probability states: E[R] = \\sum_{i=1}^n P_i R_i.",
+      ],
+    };
+
+    const sanitizedLead = ensureInlineMathDelimiters(rawNoteContent.leadText);
+    expect(sanitizedLead).toContain("$\\sigma_p = \\sqrt{\\sigma_p^2}$");
+
+    const sanitizedDesc = ensureInlineMathDelimiters(rawNoteContent.description);
+    expect(sanitizedDesc).toContain("$\\beta_i$");
+    expect(sanitizedDesc).toContain("$\\rho_{AB}$");
+    expect(sanitizedDesc).toContain("$\\text{Cov}(R_A, R_B)$");
+
+    const sanitizedVarDef = ensureInlineMathDelimiters(rawNoteContent.variables[0].definition);
+    expect(sanitizedVarDef).toContain("$\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B)$.");
+
+    const sanitizedBullet = ensureInlineMathDelimiters(rawNoteContent.bulletPoints[0]);
+    expect(sanitizedBullet).toContain("$\\frac{1}{T - 1}");
+  });
 });
