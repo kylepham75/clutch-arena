@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+vi.mock("server-only", () => ({}));
+import { zodSchema } from "ai";
 import { clutchNoteSchema } from "@/lib/schemas/notes";
+import { generatedClutchNoteSchema } from "@/lib/ai/generate-notes";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "@/lib/ai/prompts-notes";
 
@@ -100,5 +103,28 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
     expect(prompt).toContain("=== Slide 1 ===");
     expect(prompt).toContain("=== Slide 2 ===");
     expect(prompt).toContain("Valuation models: P0 = D1 / (r - g)");
+  });
+
+  it("requires 100% of fields in generatedClutchNoteSchema so Gemini structured decoding never omits section content", () => {
+    const jsonSchema = zodSchema(generatedClutchNoteSchema).jsonSchema as Record<string, any>;
+
+    function assertAllObjectPropertiesRequired(node: any, path = "root") {
+      if (!node || typeof node !== "object") return;
+      if (node.type === "object" && node.properties) {
+        const propKeys = Object.keys(node.properties).sort();
+        const requiredKeys = [...(node.required ?? [])].sort();
+        expect(requiredKeys, `Missing required keys at ${path}`).toEqual(propKeys);
+
+        for (const [key, child] of Object.entries<any>(node.properties)) {
+          expect(child.default, `Unexpected .default() at ${path}.${key}`).toBeUndefined();
+          assertAllObjectPropertiesRequired(child, `${path}.${key}`);
+        }
+      }
+      if (node.type === "array" && node.items) {
+        assertAllObjectPropertiesRequired(node.items, `${path}[]`);
+      }
+    }
+
+    assertAllObjectPropertiesRequired(jsonSchema);
   });
 });
