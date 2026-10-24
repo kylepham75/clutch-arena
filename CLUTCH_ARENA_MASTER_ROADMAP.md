@@ -460,6 +460,23 @@ gantt
 - **SSR Hydration Fix (`665031b`):** Resolved React 19 SSR hydration mismatch on tier badges (`+ Tutor / - Cram Pass`) by initializing `useUserTier` deterministically to `"contender"` during SSR and hydrating `localStorage` inside `useEffect`.
 - **Multiplayer SSE Fallback & Active Gemini Models (`665031b`, `1afc5c7`):** Standardized zero-config multiplayer around Next.js API + Supabase Realtime SSE following the hosted PartyKit shutdown, and updated AI Coach / Generation routing to active Gemini `3.5` / `3.8` model IDs with surfaced streaming error diagnostics.
 
+### 10.5 Strict Academic Hallucination Shield v2.1 & Canonical Section Architecture (`7d7144d`, Current)
+- **Problem Identified:** Testing slide decks through lightweight models surfaced 3 quality and notational errors:
+  1. *One-Period Exponent Typo:* The 1-year holding formula rendered with an undefined variable exponent $T$ ($P_0 = \frac{D_1}{(1+R)^T} + \frac{P_1}{(1+R)^T}$) rather than power 1 ($P_0 = \frac{D_1}{1+R} + \frac{P_1}{1+R}$).
+  2. *Vietnamese Translation Hallucinations:* Unconstrained English-to-Vietnamese machine translation produced absurd headers (e.g., *"CHỌN MÔ HÌNH GIÁO DỤC"* for valuation, *"GIÁ TRỊ CỨU TRỢ CHỨNG KHOÁN ƯU TIÊN"* for preference shares, *"MÔ HÌNH TĂNG TRƯỞNG HẠNH HẠNH"* / *"RITM KHÔNG ĐỎI"*, and *"CỔ PHIẾU ƯU TIÊN BỔ TRỢ HỢP TÁC"*).
+  3. *Section Duplication & 9-Section Fragmentation:* Models split each case and parameter into separate top-level sections (A through I) while duplicating Case 1 and Case 2 formulas at both the top level and inside sub-sections.
+- **What Shipped:**
+  - **One-Period Formula Exponent Shield (`cleanTypoString` & `shieldFormula`):** Intercepts and rewrites any 1-year holding horizon formula containing $(1+R)^T$ or $(1+R)^t$ strictly to $P_0 = \frac{D_1}{1+R} + \frac{P_1}{1+R}$.
+  - **Academic Header Sanitizer (`sanitizeAcademicHeader` & `sanitizeSubSectionHeading`):** Purges all bizarre machine translations and maps section headers to canonical academic terms:
+    - `A. NGUYÊN LÝ CƠ BẢN`
+    - `B. CÔNG THỨC TỔNG QUÁT`
+    - `C. DDM (DIVIDEND DISCOUNT MODEL)`
+    - `D. PARAMETERS IN DIVIDEND DISCOUNT MODEL`
+    - `E. VALUE OF PREFERENCE SHARE`
+  - **Section Consolidation & Double-Pasting Shield (`consolidateFragmentedSections` & `deduplicateSectionC`):** Automatically consolidates fragmented 8–10 section runs into strictly 5 canonical sections (A through E). In Section C, specific case formulas ($P_0 = D/R$ and $P_0 = D_1/(R-g)$) are pruned from the top level (keeping only the general infinite summation) and nested cleanly inside sub-sections with their explanations.
+  - **Deduplication Engine (`deduplicateSubSections`):** Merges duplicate sub-sections covering the same case or parameter into single canonical entries.
+  - **Verification:** Unit tests expanded in `tests/unit/clutch-notes.test.ts` to verify 9-section consolidation, exponent correction, and header sanitization. Full suite passing with 224/224 tests and 0 TypeScript errors.
+
 ---
 
 *Document maintained by the Clutch Arena Core Team. Keep this file updated as validation stages conclude and milestones are achieved.*

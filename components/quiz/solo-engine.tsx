@@ -35,6 +35,7 @@ import {
   FolderSync,
   Compass,
   Upload,
+  MessageSquarePlus,
 } from "lucide-react";
 import type { StudyPack } from "@/lib/schemas/question";
 import { activeQuestion } from "@/lib/game/reducer";
@@ -80,6 +81,8 @@ import { mockMicroeconomicsDoc, mockMicroeconomics } from "@/data/mock-microecon
 import { TutorialDialog, isTutorialCompleted } from "@/components/tutorial/tutorial-dialog";
 import { useUserTier } from "@/hooks/use-user-tier";
 import { PricingModal } from "@/components/pricing/pricing-modal";
+import { FeedbackDialog } from "@/components/workspace/feedback-dialog";
+import type { FeedbackCategory } from "@/lib/schemas/telemetry";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
 import type { CoachFocus } from "@/lib/schemas/coach";
 
@@ -109,6 +112,12 @@ export function SoloEngine({
   const [shareOpen, setShareOpen] = useState(false);
   const [showFlashcards, setShowFlashcards] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackSeed, setFeedbackSeed] = useState<{
+    category?: FeedbackCategory;
+    questionId?: string;
+    citation?: string;
+  } | null>(null);
 
   // Prompt tutorial for first-time visitors / new accounts
   useEffect(() => {
@@ -761,6 +770,20 @@ export function SoloEngine({
               </Button>
               <Button
                 variant="ghost"
+                size="sm"
+                type="button"
+                data-testid="open-pilot-feedback"
+                aria-label={language === "vi" ? "Góp ý & Báo lỗi" : "Send Feedback"}
+                title={language === "vi" ? "Góp ý & Báo lỗi" : "Send Feedback"}
+                onClick={() => {
+                  setFeedbackSeed(null);
+                  setFeedbackOpen(true);
+                }}
+              >
+                <MessageSquarePlus size={18} />
+              </Button>
+              <Button
+                variant="ghost"
                 size="icon"
                 aria-label={t.topbar.howToPlay}
                 onClick={() => setTutorialOpen(true)}
@@ -1410,6 +1433,14 @@ export function SoloEngine({
                         onNext={next}
                         onAskCoach={handleExplainMissWithCoach}
                         onCitationClick={handleCitationClick}
+                        onReportCitation={() => {
+                          setFeedbackSeed({
+                            category: "citation_mismatch",
+                            questionId: current.id,
+                            citation: pack?.metadata[current.id]?.citation,
+                          });
+                          setFeedbackOpen(true);
+                        }}
                       />
                     )}
                   </div>
@@ -1527,6 +1558,17 @@ export function SoloEngine({
           }}
           onSelectSamplePack={handleLoadSamplePack}
           onGoToUpload={() => setActiveTab("ingest")}
+        />
+        <FeedbackDialog
+          open={feedbackOpen}
+          onOpenChange={setFeedbackOpen}
+          initialCategory={feedbackSeed?.category}
+          context={{
+            packTitle: pack?.title,
+            questionId: feedbackSeed?.questionId,
+            citation: feedbackSeed?.citation,
+            tier,
+          }}
         />
         <Dialog
           open={panel === "progress"}

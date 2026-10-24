@@ -20,6 +20,8 @@ import { getGenerationModel, getGroqModel } from "./provider";
 import { buildIngestionPrompt, ingestionSystemPrompt } from "./prompts";
 import { budgetSourceBlocks } from "./budget-sources";
 import { repairCorruptedLatex } from "@/lib/math/latex";
+import { recordTelemetryEvent } from "@/lib/telemetry/recorder";
+import type { CitationRejectionReason } from "@/lib/schemas/telemetry";
 
 // Providers accept homogeneous JSON arrays. Convert to the strict tuple contract
 // only after generation, without weakening the game's QuestionItem schema.
@@ -205,6 +207,38 @@ function badOutput(message: string): never {
   throw new IngestionError("INVALID_AI_OUTPUT", message, 502);
 }
 
+function notifyCitationRejection(params: {
+  reason: CitationRejectionReason;
+  document: ParsedDocument;
+  sourceKind?: "testbank" | "lecture" | "mixed";
+  questionId?: string;
+  sourceId?: string;
+  excerpt?: string;
+}): void {
+  try {
+    const documentTitle = params.document.fileName
+      ? params.document.fileName.slice(0, 200)
+      : undefined;
+    const sourceId = params.sourceId ? params.sourceId.slice(0, 100) : undefined;
+    const excerptPreview = params.excerpt ? params.excerpt.slice(0, 240) : undefined;
+    const questionId = params.questionId ? params.questionId.slice(0, 100) : undefined;
+    const totalSources = Math.min(Math.max(0, params.document.sources.length), 5000);
+
+    void recordTelemetryEvent({
+      kind: "citation_rejection",
+      reason: params.reason,
+      documentTitle,
+      sourceKind: params.sourceKind,
+      sourceId,
+      excerptPreview,
+      questionId,
+      totalSources,
+    }).catch(() => {});
+  } catch {
+    // never crash validation
+  }
+}
+
 export function validateGeneratedStudy(
   raw: unknown,
   document: ParsedDocument,
@@ -232,10 +266,16 @@ export function validateGeneratedStudy(
     output.annotations.length !== questions.length ||
     new Set(output.annotations.map((a) => a.questionId)).size !==
       questions.length
-  )
+  ) {
+    notifyCitationRejection({
+      reason: "annotation_count_mismatch",
+      document,
+      sourceKind: output.sourceKind,
+    });
     return badOutput(
       "The AI did not provide one source reference per question. Please retry.",
     );
+  }
   const metadata: StudyPack["metadata"] = Object.create(null);
   const references: Record<string, SourceReference> = Object.create(null);
   const sources = new Map(
@@ -248,6 +288,14 @@ export function validateGeneratedStudy(
   for (const question of questions) {
     const annotation = annotations.get(question.id);
     if (!annotation || normalize(annotation.excerpt).length < 12) {
+      notifyCitationRejection({
+        reason: "missing_or_short_excerpt",
+        document,
+        sourceKind: output.sourceKind,
+        questionId: question.id,
+        sourceId: annotation?.sourceId,
+        excerpt: annotation?.excerpt,
+      });
       return badOutput(
         "A generated citation could not be verified against the uploaded text. Please retry.",
       );
@@ -264,6 +312,14 @@ export function validateGeneratedStudy(
     }
 
     if (!source) {
+      notifyCitationRejection({
+        reason: "unknown_source_id",
+        document,
+        sourceKind: output.sourceKind,
+        questionId: question.id,
+        sourceId: annotation.sourceId,
+        excerpt: annotation.excerpt,
+      });
       return badOutput(
         "A generated citation could not be verified against the uploaded text. Please retry.",
       );
@@ -296,11 +352,27 @@ export function validateGeneratedStudy(
             source = bestSource;
             annotation.sourceId = bestSource.id;
           } else {
+            notifyCitationRejection({
+              reason: "unmatched_excerpt_in_source",
+              document,
+              sourceKind: output.sourceKind,
+              questionId: question.id,
+              sourceId: annotation.sourceId,
+              excerpt: annotation.excerpt,
+            });
             return badOutput(
               "A generated citation could not be verified against the uploaded text. Please retry.",
             );
           }
         } else {
+          notifyCitationRejection({
+            reason: "unmatched_excerpt_in_source",
+            document,
+            sourceKind: output.sourceKind,
+            questionId: question.id,
+            sourceId: annotation.sourceId,
+            excerpt: annotation.excerpt,
+          });
           return badOutput(
             "A generated citation could not be verified against the uploaded text. Please retry.",
           );
@@ -336,6 +408,14 @@ export function validateGeneratedStudy(
         "Exact mode returned wording that does not match the source. Please retry or choose concept variants.",
       );
     if (!source) {
+      notifyCitationRejection({
+        reason: "unknown_source_id",
+        document,
+        sourceKind: output.sourceKind,
+        questionId: question.id,
+        sourceId: annotation.sourceId,
+        excerpt: annotation.excerpt,
+      });
       return badOutput(
         "A generated citation could not be verified against the uploaded text. Please retry.",
       );

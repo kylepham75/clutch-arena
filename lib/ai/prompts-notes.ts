@@ -10,6 +10,9 @@ Follow these exact transformation rules:
 
 2. STRICT ACADEMIC HALLUCINATION SHIELD & FORMULA FIDELITY:
    - ZERO SUBSTITUTION / ZERO CIRCULAR LOGIC:
+     * ONE-PERIOD HOLDING HORIZON FORMULA: For a 1-year holding period, the exponent is strictly 1:
+       P_0 = \\frac{D_1}{1 + R} + \\frac{P_1}{1 + R}
+       NEVER write (1+R)^T or (1+R)^t with an undefined variable power T or t. A 1-year holding horizon has power 1.
      * FUNDAMENTAL GROWTH RATE (g): In Corporate Finance, the growth rate of dividends must be grounded in fundamental accounting:
        g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}
        NEVER define g as \\frac{P_1 - P_0}{P_0} or \\frac{\\Delta P}{P_0}. That is circular logic (calculating future price P_1 requires knowing g in advance) and confuses growth rate with Capital Gains Yield.
@@ -26,16 +29,45 @@ Follow these exact transformation rules:
    - STRICT TYPOGRAPHICAL INTEGRITY:
      * Always use the numeric digit 0 for zero-growth conditions (g = 0) and time-zero subscripts (P_0, D_0). NEVER write "g = o" or "P_o" with the letter "o".
 
-3. HIERARCHICAL STRUCTURE (NO EMPTY SECTIONS):
-   - Use a short uppercase main title (e.g., "CHAPTER 9: STOCK VALUATION").
-   - Group the distilled knowledge into logical alphabetical sections (A, B, C, D, E...).
-   - CRITICAL: Every section MUST contain substantive body content in \`bulletPoints\`, \`formulas\`, or \`subSections\`. NEVER output a bare section heading with empty content arrays.
-   - When a section contains multiple cases (e.g., "1. CASE 1: Zero Growth Model (g = 0)", "2. CASE 2: Constant Growth Model (Gordon Growth Model)", "3. CASE 3: Differential Growth Model (Tăng trưởng không đều)") or distinct parameter derivations (e.g., "1. Finding the growth rate (g)", "2. Finding the discount rate (R) with DGM"), place them inside \`subSections\` so each case flows naturally with its own bold heading, 1–3 crisp bullets, and its boxed formula right below.
+3. CANONICAL HIERARCHICAL ARCHITECTURE (EXACTLY 4–5 SECTIONS, NEVER 8–10 SECTIONS):
+   - Group the distilled knowledge into strictly 4–5 canonical sections (A through E). NEVER create separate top-level sections F, G, H, I.
+     * Section A: "A. NGUYÊN LÝ CƠ BẢN" (Fundamental Principle of Asset Valuation)
+     * Section B: "B. CÔNG THỨC TỔNG QUÁT" (One-Period Valuation Model)
+     * Section C: "C. DDM (DIVIDEND DISCOUNT MODEL)"
+       - Top-level formulas: ONLY the general infinite summation P_0 = \\sum_{t=1}^{\\infty} \\frac{D_t}{(1 + R)^t}.
+       - subSections: MUST contain exactly the 3 cases:
+         1. CASE 1: Zero Growth Model (Không tăng trưởng, g = 0)
+         2. CASE 2: Constant Growth Model (Tăng trưởng đều)
+         3. CASE 3: Differential Growth Model (Tăng trưởng nhiều giai đoạn) with Terminal Value P_N
+       - NEVER output separate top-level sections for Case 1, Case 2, or Case 3!
+     * Section D: "D. PARAMETERS IN DIVIDEND DISCOUNT MODEL"
+       - subSections: MUST contain exactly the 2 parameter derivations:
+         1. Finding the growth rate (g): g = Retention ratio * Return on retained earnings (ROE)
+         2. Finding the discount rate (R) with DGM: R = Dividend Yield (D_1/P_0) + Capital Gains Yield (g)
+       - NEVER split Finding g and Finding R into separate top-level sections!
+     * Section E: "E. VALUE OF PREFERENCE SHARE"
+       - Top-level: Preferred stock features & standard perpetuity formula P_p = D_p / R_p.
+       - subSections: Deferred Preferred Stock (Cổ phiếu ưu đãi hoãn trả) with 2-step deferred valuation.
+       - NEVER split Deferred Preferred Stock into a separate top-level section!
+   - ZERO DUPLICATION / ZERO DOUBLE-PASTING:
+     * If a model case or parameter derivation is inside \`subSections\`, DO NOT duplicate its formula or explanation in the top-level \`formulas\` or \`bulletPoints\` of that section. Stacking the same formula at both top-level and subSection level is strictly forbidden.
+     * CRITICAL: Every section MUST contain substantive body content in \`bulletPoints\`, \`formulas\`, or \`subSections\`. NEVER output a bare section heading with empty content arrays.
 
-4. BILINGUAL COGNITIVE ANCHORING (EN/VI):
-   - Write explanations and definitions in plain, direct, easy-to-understand English (avoid dense textbook jargon).
-   - Use clean uppercase Vietnamese section headers for foundational sections (e.g., "A. NGUYÊN LÝ CƠ BẢN", "B. CÔNG THỨC TỔNG QUÁT") and crisp uppercase English headers for named models/topics (e.g., "C. DDM (DIVIDEND DISCOUNT MODEL)", "D. PARAMETERS IN DIVIDEND DISCOUNT MODEL", "E. VALUE OF PREFERENCE SHARE").
-   - Add concise inline Vietnamese translations in parentheses ONLY where they anchor key terms or sub-models (e.g., "Dividends (Cổ tức) – regular payments from the company", "Capital gains (Lợi nhuận vốn) – the price you get when you sell the stock", "CASE 1: Zero Growth Model (Không tăng trưởng)").
+4. STRICT ACADEMIC HEADER POLICY (ZERO MACHINE-TRANSLATION GIBBERISH):
+   - In university Corporate Finance, technical models are named in standard English.
+   - Use clean uppercase Vietnamese ONLY for the two introductory foundational sections:
+     * "A. NGUYÊN LÝ CƠ BẢN"
+     * "B. CÔNG THỨC TỔNG QUÁT"
+   - Use standard uppercase English for technical model and parameter sections:
+     * "C. DDM (DIVIDEND DISCOUNT MODEL)"
+     * "D. PARAMETERS IN DIVIDEND DISCOUNT MODEL"
+     * "E. VALUE OF PREFERENCE SHARE"
+   - STRICTLY FORBIDDEN: NEVER invent absurd literal machine translations for financial terms:
+     * NEVER write "giáo dục" (education) for valuation/models.
+     * NEVER write "cứu trợ" (disaster relief/bailout) for preferred stock.
+     * NEVER write "hạnh hạnh" or "ritm" for constant growth / DDM.
+     * NEVER write "bổ trợ hợp tác" for deferred preferred stock.
+   - Inline Vietnamese translations in parentheses are ONLY for well-known financial terms: "Định giá" (Valuation), "Cổ phiếu ưu đãi" (Preferred stock), "Cổ phiếu ưu đãi hoãn trả" (Deferred preferred stock), "Tăng trưởng đều" (Constant growth), "Không tăng trưởng" (Zero growth), "Lợi suất cổ tức" (Dividend yield), "Lợi suất tăng vốn" (Capital gains yield).
 
 5. FORMULA STANDARDIZATION & NON-REDUNDANT "Trong đó:":
    - Render all mathematical equations in clean LaTeX (without outer dollar signs in \`latex\` fields).
@@ -75,15 +107,18 @@ RAW SLIDES:
 ${slideContent}
 
 Strict Output Checklist & Hallucination Shield:
+- One-Year Exponent: For a 1-year holding period, the formula is strictly P_0 = D_1 / (1 + R) + P_1 / (1 + R). NEVER use power T or t.
+- Canonical 5 Sections: Output strictly sections A, B, C, D, E. Keep all 3 Cases inside Section C's subSections, both parameters inside Section D's subSections, and Deferred Preferred inside Section E's subSections. NEVER create sections F, G, H, I.
+- Header Fidelity: Use canonical headers ('A. NGUYÊN LÝ CƠ BẢN', 'B. CÔNG THỨC TỔNG QUÁT', 'C. DDM (DIVIDEND DISCOUNT MODEL)', 'D. PARAMETERS IN DIVIDEND DISCOUNT MODEL', 'E. VALUE OF PREFERENCE SHARE'). NEVER use machine translations like 'giáo dục', 'cứu trợ', 'hạnh hạnh', 'ritm', 'bổ trợ hợp tác'.
 - Zero Substitution: NEVER define growth rate g as (P1 - P0)/P0. Use fundamental formula: g = Retention ratio * Return on retained earnings (ROE).
 - Decomposition: Explicitly decompose R into Dividend Yield (D1 / P0) and Capital Gains Yield (g) with clear definitions.
 - Multi-Stage Terminal Value: Include the explicit terminal price equation P_N = D_{N+1} / (R - g) = D_N(1 + g) / (R - g).
 - Deferred Preferred Stock: If slides include delayed dividends (e.g. starting Year t), provide P_{t-1} = D_t / R_p and P_0 = P_{t-1} / (1 + R_p)^{t-1}.
 - Typo Check: Use numeric digit 0 (never letter 'o') for g = 0 and P_0.
+- Zero Double-Pasting: If a formula is inside subSections (Case 1, 2, 3), DO NOT duplicate it at the section top-level.
 - Strip 100% of cover/agenda/QR/thank-you slides AND strip all multi-slide numerical practice exercises/word problems.
 - Every section MUST include real distilled content (\`bulletPoints\`, \`formulas\`, or \`subSections\`)—never return empty header-only sections.
 - Keep every \`overview\` to at most 1 short sentence (or empty ""), and every bullet point to 5–15 plain-English words.
-- Group multi-case models (CASE 1, CASE 2, CASE 3) or parameter derivations inside \`subSections\` with their boxed LaTeX formulas right underneath.
 - Include "Trong đó:" (\`variables\`) ONLY when new symbols first appear; leave \`variables: []\` on subsequent formulas so nothing is repeated.
 - Populate \`takeaways\` (3–5 short numbered items + arrow \`subBullets\`) on the main multi-case section (or final section), and pass \`takeaways: []\` on other sections.
 - Estimate noise reduction percentage accurately as an integer from 40 to 95 (typical raw decks with exercises are 65–90% noise).`;

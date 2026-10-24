@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, BookOpen, CheckCircle2, Lightbulb, Sparkles } from "lucide-react";
+import { ArrowRight, BookOpen, CheckCircle2, Flag, Lightbulb, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
 import type { Attempt } from "@/lib/game/reducer";
 import type { QuestionMetadata } from "@/lib/schemas/question";
@@ -17,6 +17,7 @@ export function FeedbackCard({
   onNext,
   onAskCoach,
   onCitationClick,
+  onReportCitation,
 }: {
   attempt: Attempt;
   explanation: string;
@@ -26,8 +27,9 @@ export function FeedbackCard({
   onNext: () => void;
   onAskCoach?: () => void;
   onCitationClick?: (citation: string) => void;
+  onReportCitation?: () => void;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const [now, setNow] = useState(() => Date.now());
   const button = useRef<HTMLButtonElement>(null);
   const remaining = Math.max(0, Math.ceil((unlockAt - now) / 1000));
@@ -64,13 +66,34 @@ export function FeedbackCard({
           <div className="rule">
             <MathText content={metadata.rule} />
           </div>
-          <small
-            className={`citation ${onCitationClick ? "cursor-pointer hover:underline" : ""}`}
-            onClick={() => onCitationClick?.(metadata.citation)}
-          >
-            <BookOpen size={13} />
-            {metadata.citation}
-          </small>
+          {onReportCitation ? (
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <small
+                className={`citation ${onCitationClick ? "cursor-pointer hover:underline" : ""}`}
+                onClick={() => onCitationClick?.(metadata.citation)}
+              >
+                <BookOpen size={13} />
+                {metadata.citation}
+              </small>
+              <button
+                type="button"
+                onClick={onReportCitation}
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 transition-colors py-0.5 px-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer"
+                aria-label={language === "vi" ? "Báo lỗi trích dẫn" : "Flag citation"}
+              >
+                <Flag size={12} className="text-amber-600 shrink-0" />
+                <span>{language === "vi" ? "Báo lỗi trích dẫn" : "Flag citation"}</span>
+              </button>
+            </div>
+          ) : (
+            <small
+              className={`citation ${onCitationClick ? "cursor-pointer hover:underline" : ""}`}
+              onClick={() => onCitationClick?.(metadata.citation)}
+            >
+              <BookOpen size={13} />
+              {metadata.citation}
+            </small>
+          )}
         </>
       )}
       <div className="feedback-footer">

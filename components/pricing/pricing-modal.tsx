@@ -49,8 +49,29 @@ export function PricingModal({
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
+  const [earlyContact, setEarlyContact] = useState("");
+  const [intentSubmitted, setIntentSubmitted] = useState(false);
 
   const isVi = language === "vi" || currency === "vnd";
+
+  const sendSmokeTestTelemetry = (
+    planId: "cram_pass" | "pro" | "tutor",
+    action: "plan_selected" | "verify_clicked" | "early_access_requested",
+    contact?: string,
+  ) => {
+    fetch("/api/telemetry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "smoke_test_intent",
+        planId,
+        currency,
+        action,
+        ...(contact && contact.trim() ? { contact: contact.trim().slice(0, 160) } : {}),
+        language,
+      }),
+    }).catch(() => {});
+  };
 
   const handleSelectPlan = (plan: PlanPricing) => {
     if (plan.comingSoon || plan.id === "tutor") return;
@@ -59,9 +80,14 @@ export function PricingModal({
       onClose();
       return;
     }
+    if (plan.id === "cram_pass" || plan.id === "pro") {
+      sendSmokeTestTelemetry(plan.id, "plan_selected");
+    }
     setSelectedPlan(plan);
     setPaymentSuccess(false);
     setVerificationError(null);
+    setEarlyContact("");
+    setIntentSubmitted(false);
   };
 
   const handleCopy = (text: string, field: string) => {
@@ -74,6 +100,13 @@ export function PricingModal({
 
   const handleVerifyPayment = async () => {
     if (!selectedPlan) return;
+    if (
+      selectedPlan.id === "cram_pass" ||
+      selectedPlan.id === "pro" ||
+      selectedPlan.id === "tutor"
+    ) {
+      sendSmokeTestTelemetry(selectedPlan.id, "verify_clicked");
+    }
     setSimulating(true);
     setVerificationError(null);
     try {
@@ -365,6 +398,69 @@ export function PricingModal({
                   <ShieldCheck size={13} className="text-emerald-600" />
                   Processed securely by LemonSqueezy Merchant of Record. Tax compliant.
                 </p>
+              </div>
+            )}
+
+            {!paymentSuccess && (
+              <div className="mt-5 pt-4 border-t border-stone-200 dark:border-stone-800">
+                <div className="p-3.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/40">
+                  {intentSubmitted ? (
+                    <div className="flex items-center gap-2 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                      <CheckCircle2 size={16} className="shrink-0" />
+                      <span>
+                        {isVi
+                          ? "Đã ghi nhận đăng ký! Đội ngũ Clutch Arena sẽ liên hệ kích hoạt quyền ưu tiên thử nghiệm cho bạn trong 24h."
+                          : "Request received! The Clutch Arena team will prioritize early-access activation for you within 24h."}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
+                          <Sparkles size={13} className="text-amber-600" />
+                          {isVi
+                            ? "Đăng ký mở khóa thử nghiệm kỳ thi giữa kỳ"
+                            : "Early-Access Pilot Request"}
+                        </span>
+                        <span className="text-[10px] font-medium text-stone-500 uppercase tracking-wider">
+                          {isVi ? "Thử nghiệm 48h" : "48h Pilot"}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-snug">
+                        {isVi
+                          ? "Cần mở khóa gấp cho đợt ôn thi tuần này? Để lại Zalo hoặc Email để nhận slot hỗ trợ trực tiếp từ ban phát triển."
+                          : "Need immediate unlock for midterms this week? Leave your Zalo or Email for direct pilot access."}
+                      </p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <input
+                          type="text"
+                          value={earlyContact}
+                          onChange={(e) => setEarlyContact(e.target.value)}
+                          placeholder={isVi ? "Zalo / Số ĐT / Email của bạn" : "Your Zalo / Phone / Email"}
+                          maxLength={160}
+                          className="flex-1 px-3 py-1.5 text-xs bg-white dark:bg-stone-950 border border-stone-200 dark:border-stone-700 rounded-lg text-stone-900 dark:text-stone-100 placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => {
+                            if (selectedPlan.id === "cram_pass" || selectedPlan.id === "pro") {
+                              sendSmokeTestTelemetry(
+                                selectedPlan.id,
+                                "early_access_requested",
+                                earlyContact,
+                              );
+                              setIntentSubmitted(true);
+                            }
+                          }}
+                          className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg shrink-0 cursor-pointer"
+                        >
+                          {isVi ? "Đăng ký thử nghiệm" : "Request Access"}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>

@@ -103,7 +103,7 @@ const generatedNoteSectionSchema = z
       .string()
       .min(1)
       .describe(
-        "Clean uppercase section header WITH letter prefix, e.g. 'A. NGUYÊN LÝ CƠ BẢN', 'B. CÔNG THỨC TỔNG QUÁT', 'C. DDM (DIVIDEND DISCOUNT MODEL)', 'D. PARAMETERS IN DIVIDEND DISCOUNT MODEL', 'E. VALUE OF PREFERENCE SHARE'",
+        "Clean uppercase section header WITH letter prefix. MUST follow canonical academic titles: 'A. NGUYÊN LÝ CƠ BẢN', 'B. CÔNG THỨC TỔNG QUÁT', 'C. DDM (DIVIDEND DISCOUNT MODEL)', 'D. PARAMETERS IN DIVIDEND DISCOUNT MODEL', 'E. VALUE OF PREFERENCE SHARE'. NEVER invent machine translations.",
       ),
     coreStatement: z
       .string()
@@ -164,7 +164,7 @@ export const generatedClutchNoteSchema = z
       .string()
       .min(1)
       .describe("One short 1-sentence summary of what this sheet covers (max 25 words)"),
-    sections: z.array(generatedNoteSectionSchema).min(1).max(10),
+    sections: z.array(generatedNoteSectionSchema).min(3).max(6),
   })
   .strict();
 
@@ -203,7 +203,68 @@ function cleanTypoString(str: string): string {
     .replace(/\bR_o\b/g, "R_0")
     .replace(/\bP_\{o\}\b/g, "P_{0}")
     .replace(/\bD_\{o\}\b/g, "D_{0}")
-    .replace(/\bR_\{o\}\b/g, "R_{0}");
+    .replace(/\bR_\{o\}\b/g, "R_{0}")
+    // One-year holding period exponent: (1+R)^T or (1+R)^t -> 1+R
+    .replace(/\\frac\{\s*D_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{D_1}{1 + R}")
+    .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{P_1}{1 + R}")
+    .replace(/\\frac\{\s*D_?1\s*\}\{\s*\(1\s*\+\s*R_?p\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{D_1}{1 + R_p}")
+    .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*R_?p\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{P_1}{1 + R_p}");
+}
+
+export function sanitizeAcademicHeader(rawTitle: string, letter: string): string {
+  let title = rawTitle.trim();
+
+  // Strip leading prefixes like "Header B: ", "B. ", "1. ", "Section B: "
+  title = title
+    .replace(/^(header\s+[a-z0-9]+[:\s\-]+|section\s+[a-z0-9]+[:\s\-]+|[a-z0-9]+[\.\:\-]\s*)/i, "")
+    .trim();
+
+  // 1. Purge absurd machine translations
+  title = title
+    .replace(/giáo dục/gi, "ĐỊNH GIÁ")
+    .replace(/cứu trợ chứng khoán/gi, "CỔ PHIẾU")
+    .replace(/cứu trợ/gi, "CỔ PHIẾU ƯU ĐÃI")
+    .replace(/hạnh hạnh/gi, "TĂNG TRƯỞNG ĐỀU")
+    .replace(/ritm không đổi/gi, "MÔ HÌNH KHÔNG TĂNG TRƯỞNG")
+    .replace(/ritm/gi, "DDM")
+    .replace(/bổ trợ hợp tác/gi, "CỔ PHIẾU ƯU ĐÃI HOÃN TRẢ")
+    .replace(/bổ trợ/gi, "HOÃN TRẢ");
+
+  const lower = title.toLowerCase();
+
+  // 2. Map directly to canonical academic headers for Corporate Finance
+  if (/nguyên lý|cơ bản|fundamental.*principle/i.test(lower)) {
+    return `${letter}. NGUYÊN LÝ CƠ BẢN`;
+  }
+  if (/preference|preferred|ưu đãi|ưu tiên|cứu trợ|bổ trợ/i.test(lower)) {
+    return `${letter}. VALUE OF PREFERENCE SHARE`;
+  }
+  if (/parameter|tham số|finding g|finding r|growth rate|discount rate|lợi suất/i.test(lower)) {
+    return `${letter}. PARAMETERS IN DIVIDEND DISCOUNT MODEL`;
+  }
+  if (/ddm|dividend discount|tăng trưởng đều|không tăng trưởng|differential|ritm|hạnh hạnh/i.test(lower)) {
+    return `${letter}. DDM (DIVIDEND DISCOUNT MODEL)`;
+  }
+  if (/công thức tổng quát|tổng quát|one-period|định giá|chọn mô hình|giáo dục/i.test(lower)) {
+    return `${letter}. CÔNG THỨC TỔNG QUÁT`;
+  }
+
+  const cleanStripped = title.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
+  return `${letter}. ${cleanStripped.toUpperCase()}`;
+}
+
+export function sanitizeSubSectionHeading(heading: string): string {
+  let h = heading.trim();
+  h = h
+    .replace(/giáo dục/gi, "Định giá")
+    .replace(/cứu trợ chứng khoán/gi, "Cổ phiếu")
+    .replace(/cứu trợ/gi, "Cổ phiếu ưu đãi")
+    .replace(/hạnh hạnh/gi, "Tăng trưởng đều")
+    .replace(/ritm không đổi/gi, "Không tăng trưởng")
+    .replace(/ritm/gi, "DDM")
+    .replace(/bổ trợ hợp tác/gi, "Cổ phiếu ưu đãi hoãn trả")
+    .replace(/bổ trợ/gi, "Hoãn trả");
+  return cleanTypoString(h);
 }
 
 function shieldFormula(f: NoteFormula, contextHint: string): NoteFormula {
@@ -214,6 +275,22 @@ function shieldFormula(f: NoteFormula, contextHint: string): NoteFormula {
     symbol: cleanTypoString(v.symbol),
     definition: cleanTypoString(v.definition),
   }));
+
+  // Intercept one-period valuation formula exponent error:
+  // e.g. P_0 = D_1 / (1+R)^T + P_1 / (1+R)^T -> P_0 = D_1 / (1+R) + P_1 / (1+R)
+  const isOnePeriodFormula =
+    /D_?1/i.test(latex) &&
+    /P_?1/i.test(latex) &&
+    !/\\sum/i.test(latex);
+
+  if (isOnePeriodFormula) {
+    latex = latex
+      .replace(/\\frac\{\s*D_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{D_1}{1 + R}")
+      .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{P_1}{1 + R}");
+    if (/\(1\s*\+\s*R\)\s*\^\s*\{?[Tt]\}?/i.test(latex)) {
+      latex = "P_0 = \\frac{D_1}{1 + R} + \\frac{P_1}{1 + R}";
+    }
+  }
 
   // Intercept circular/hallucinated growth rate substitution (e.g. g = (P1 - P0)/P0)
   const isFindingGrowthRate = /finding.*growth|growth.*rate|\(g\)/i.test(contextHint);
@@ -256,15 +333,303 @@ function shieldFormula(f: NoteFormula, contextHint: string): NoteFormula {
   };
 }
 
+/**
+ * Prunes specific Case 1 & Case 2 formulas from Section C top-level
+ * so that equations are not rendered twice (once at top-level and again in subSections).
+ */
+function deduplicateSectionC(sec: NoteSection): NoteSection {
+  const isSectionC = /DDM|DIVIDEND DISCOUNT|CỔ TỨC/i.test(sec.titleVi);
+  if (!isSectionC || !sec.subSections || sec.subSections.length === 0) {
+    return sec;
+  }
+
+  const filteredFormulas = sec.formulas.filter((f) => {
+    const isPerpetuityOnly =
+      /\\frac\{\s*D\s*\}\{\s*R\s*\}$/.test(f.latex.trim()) && !f.latex.includes("\\sum");
+    const isGordonOnly =
+      /\\frac\{\s*D_?1\s*\}\{\s*R\s*-\s*g\s*\}$/.test(f.latex.trim()) && !f.latex.includes("\\sum");
+    const isTerminalValue = /P_?N\s*=/i.test(f.latex);
+    return !isPerpetuityOnly && !isGordonOnly && !isTerminalValue;
+  });
+
+  return {
+    ...sec,
+    formulas: filteredFormulas,
+  };
+}
+
+/**
+ * Deduplicates multiple subSections in the same section that cover the exact same case or topic.
+ */
+function deduplicateSubSections(subSections: NoteSubSection[]): NoteSubSection[] {
+  const seenCategories = new Set<string>();
+  const deduplicated: NoteSubSection[] = [];
+
+  for (const sub of subSections) {
+    let cat = "";
+    if (/case\s*1|zero\s*growth|không\s*tăng\s*trưởng/i.test(sub.heading)) cat = "case1";
+    else if (/case\s*2|constant\s*growth|tăng\s*trưởng\s*đều|gordon/i.test(sub.heading)) cat = "case2";
+    else if (/case\s*3|differential|non-?constant|nhiều\s*giai\s*đoạn/i.test(sub.heading)) cat = "case3";
+    else if (/finding.*growth|\(g\)/i.test(sub.heading)) cat = "finding-g";
+    else if (/finding.*(discount|return)|\(r\)/i.test(sub.heading)) cat = "finding-r";
+    else if (/deferred|hoãn\s*trả|delayed/i.test(sub.heading)) cat = "deferred";
+
+    if (cat && seenCategories.has(cat)) {
+      const existing = deduplicated.find((item) => {
+        if (cat === "case1") return /case\s*1|zero\s*growth|không\s*tăng\s*trưởng/i.test(item.heading);
+        if (cat === "case2") return /case\s*2|constant\s*growth|tăng\s*trưởng\s*đều|gordon/i.test(item.heading);
+        if (cat === "case3") return /case\s*3|differential|non-?constant|nhiều\s*giai\s*đoạn/i.test(item.heading);
+        if (cat === "finding-g") return /finding.*growth|\(g\)/i.test(item.heading);
+        if (cat === "finding-r") return /finding.*(discount|return)|\(r\)/i.test(item.heading);
+        if (cat === "deferred") return /deferred|hoãn\s*trả|delayed/i.test(item.heading);
+        return false;
+      });
+
+      if (existing) {
+        for (const bp of sub.bulletPoints) {
+          if (!existing.bulletPoints.includes(bp)) {
+            existing.bulletPoints.push(bp);
+          }
+        }
+        for (const f of sub.formulas) {
+          if (!existing.formulas.some((ef) => ef.latex === f.latex)) {
+            existing.formulas.push(f);
+          }
+        }
+        continue;
+      }
+    }
+
+    if (cat) seenCategories.add(cat);
+    deduplicated.push(sub);
+  }
+
+  return deduplicated;
+}
+
+/**
+ * Consolidates fragmented sections (e.g. when an LLM outputs 8–10 sections by splitting
+ * every case and parameter into separate top-level sections) into the canonical 5 sections.
+ */
+function consolidateFragmentedSections(
+  sections: NoteSection[],
+  rawSlideText: string,
+): NoteSection[] {
+  const isFinanceValuation =
+    /stock valuation|định giá|ddm|dividend discount|gordon|preference share|cổ phiếu/i.test(
+      `${rawSlideText} ${sections.map((s) => s.titleVi).join(" ")}`,
+    );
+
+  if (!isFinanceValuation) {
+    return sections;
+  }
+
+  const isFragmented =
+    sections.length > 5 ||
+    sections.some((s) =>
+      /case\s*[123]|ritm|hạnh hạnh|zero growth|tăng trưởng đều|không tăng trưởng|differential|finding.*growth|finding.*discount|cứu trợ|bổ trợ/i.test(
+        s.titleVi,
+      ),
+    );
+
+  if (!isFragmented) {
+    return sections;
+  }
+
+  let sectionA: NoteSection | null = null;
+  let sectionB: NoteSection | null = null;
+  let sectionC: NoteSection | null = null;
+  let sectionD: NoteSection | null = null;
+  let sectionE: NoteSection | null = null;
+
+  for (const sec of sections) {
+    const title = sec.titleVi.toLowerCase();
+
+    // Section A: Fundamental Principle
+    if (/nguyên lý|cơ bản|fundamental.*principle/i.test(title)) {
+      if (!sectionA) sectionA = { ...sec };
+      continue;
+    }
+
+    // Section B: One-Period Formula
+    if (/công thức tổng quát|tổng quát|one-period|đầu tư trong 1 năm|giáo dục/i.test(title)) {
+      if (!sectionB) sectionB = { ...sec };
+      continue;
+    }
+
+    // Section D: Parameters (Finding g / Finding R)
+    if (
+      /parameters|tham số|finding.*(growth|discount|r|g)|growth rate|discount rate|tốc độ tăng trưởng/i.test(
+        title,
+      ) ||
+      (sec.subSections &&
+        sec.subSections.some((sub) => /finding.*(growth|discount|r|g)/i.test(sub.heading)))
+    ) {
+      if (!sectionD) {
+        sectionD = {
+          ...sec,
+          titleVi: "D. PARAMETERS IN DIVIDEND DISCOUNT MODEL",
+          formulas: [],
+          subSections:
+            sec.subSections && sec.subSections.length > 0
+              ? [...sec.subSections]
+              : [
+                  {
+                    heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
+                    bulletPoints: [...sec.bulletPoints],
+                    formulas: [...sec.formulas],
+                  },
+                ],
+        };
+      } else {
+        if (sec.subSections && sec.subSections.length > 0) {
+          sectionD.subSections = [...(sectionD.subSections || []), ...sec.subSections];
+        } else {
+          sectionD.subSections = [
+            ...(sectionD.subSections || []),
+            {
+              heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
+              bulletPoints: [...sec.bulletPoints],
+              formulas: [...sec.formulas],
+            },
+          ];
+        }
+      }
+      continue;
+    }
+
+    // Section E: Preference Shares / Deferred Preferred
+    if (
+      /preference|preferred|ưu đãi|ưu tiên|cứu trợ|bổ trợ/i.test(title) ||
+      (sec.subSections &&
+        sec.subSections.some((sub) =>
+          /preference|preferred|ưu đãi|ưu tiên|cứu trợ|bổ trợ/i.test(sub.heading),
+        ))
+    ) {
+      const isDeferredSection = /deferred|hoãn trả|bổ trợ/i.test(title);
+
+      if (!sectionE) {
+        sectionE = {
+          ...sec,
+          titleVi: "E. VALUE OF PREFERENCE SHARE",
+          formulas: isDeferredSection ? [] : sec.formulas,
+          subSections:
+            sec.subSections && sec.subSections.length > 0
+              ? [...sec.subSections]
+              : isDeferredSection
+                ? [
+                    {
+                      heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
+                      bulletPoints: [...sec.bulletPoints],
+                      formulas: [...sec.formulas],
+                    },
+                  ]
+                : [],
+        };
+      } else {
+        if (sec.subSections && sec.subSections.length > 0) {
+          sectionE.subSections = [...(sectionE.subSections || []), ...sec.subSections];
+        } else {
+          sectionE.subSections = [
+            ...(sectionE.subSections || []),
+            {
+              heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
+              bulletPoints: [...sec.bulletPoints],
+              formulas: [...sec.formulas],
+            },
+          ];
+        }
+      }
+      continue;
+    }
+
+    // Section C: DDM & Cases (Zero Growth, Constant Growth, Differential Growth, ritm, hạnh hạnh)
+    if (
+      /ddm|dividend discount|case\s*[123]|zero growth|constant growth|tăng trưởng|ritm|hạnh hạnh/i.test(
+        title,
+      ) ||
+      sec.formulas.some((f) =>
+        /\\sum|D_?1\s*\/\s*\(R\s*-\s*g\)|D\s*\/\s*R/i.test(f.latex),
+      )
+    ) {
+      const isStandaloneCase =
+        /case\s*[123]|zero growth|constant growth|không tăng trưởng|ritm|hạnh hạnh/i.test(title);
+
+      if (!sectionC) {
+        sectionC = {
+          ...sec,
+          titleVi: "C. DDM (DIVIDEND DISCOUNT MODEL)",
+          formulas: isStandaloneCase
+            ? [
+                {
+                  name: "",
+                  latex: "P_0 = \\sum_{t=1}^{\\infty} \\frac{D_t}{(1 + R)^t}",
+                  variables: [],
+                },
+              ]
+            : sec.formulas,
+          subSections:
+            sec.subSections && sec.subSections.length > 0
+              ? [...sec.subSections]
+              : isStandaloneCase
+                ? [
+                    {
+                      heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
+                      bulletPoints: [...sec.bulletPoints],
+                      formulas: [...sec.formulas],
+                    },
+                  ]
+                : [],
+        };
+      } else {
+        if (sec.subSections && sec.subSections.length > 0) {
+          sectionC.subSections = [...(sectionC.subSections || []), ...sec.subSections];
+        } else {
+          sectionC.subSections = [
+            ...(sectionC.subSections || []),
+            {
+              heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
+              bulletPoints: [...sec.bulletPoints],
+              formulas: [...sec.formulas],
+            },
+          ];
+        }
+        if (sec.keyTakeaways && !sectionC.keyTakeaways) {
+          sectionC.keyTakeaways = sec.keyTakeaways;
+        }
+      }
+      continue;
+    }
+  }
+
+  const result: NoteSection[] = [];
+  if (sectionA) result.push(sectionA);
+  if (sectionB) result.push(sectionB);
+  if (sectionC) result.push(sectionC);
+  if (sectionD) result.push(sectionD);
+  if (sectionE) result.push(sectionE);
+
+  return result.length >= 3 ? result : sections;
+}
+
 export function applyHallucinationShield(
   sections: NoteSection[],
   rawSlideText: string = "",
 ): NoteSection[] {
   const normSlideText = rawSlideText.toLowerCase();
 
-  return sections.map((sec) => {
-    // 1. Clean typo characters in all section text
-    sec.titleVi = cleanTypoString(sec.titleVi);
+  // Step 1: Consolidate fragmented sections if the LLM output 8–10 split sections
+  const consolidated = consolidateFragmentedSections(sections, rawSlideText);
+
+  // Step 2: Apply fine-grained formula, header, and content shields
+  const processed = consolidated.map((sec, idx) => {
+    const sequentialLetter = String.fromCharCode(65 + idx);
+
+    // 2a. Sanitize headers and purge machine-translation hallucinations
+    sec.titleVi = sanitizeAcademicHeader(sec.titleVi, sequentialLetter);
+    sec.letter = sequentialLetter;
+    sec.id = `sec-${sequentialLetter.toLowerCase()}-${idx + 1}`;
+
     if (sec.coreStatement) sec.coreStatement = cleanTypoString(sec.coreStatement);
     if (sec.overview) sec.overview = cleanTypoString(sec.overview);
     sec.bulletPoints = sec.bulletPoints.map(cleanTypoString);
@@ -284,20 +649,21 @@ export function applyHallucinationShield(
       sec.keyTakeaways.summaryPoints = (sec.keyTakeaways.summaryPoints ?? []).map(cleanTypoString);
     }
 
-    // 2. Shield formulas at section top-level
+    // 2b. Shield formulas at section top-level
     sec.formulas = sec.formulas.map((f) => shieldFormula(f, sec.titleVi));
 
-    // 3. Shield sub-sections
+    // 2c. Shield sub-sections
     if (sec.subSections) {
+      sec.subSections = deduplicateSubSections(sec.subSections);
       sec.subSections = sec.subSections.map((sub) => {
-        sub.heading = cleanTypoString(sub.heading);
+        sub.heading = sanitizeSubSectionHeading(sub.heading);
         if (sub.leadIn) sub.leadIn = cleanTypoString(sub.leadIn);
         sub.bulletPoints = sub.bulletPoints.map(cleanTypoString);
         sub.formulas = sub.formulas.map((f) =>
           shieldFormula(f, `${sec.titleVi} ${sub.heading}`),
         );
 
-        // 3a. Shield Case 3 (Differential Growth) Terminal Value PN
+        // Case 3 (Differential Growth) Terminal Value PN injection
         const isDifferentialGrowth =
           /case\s*3|differential|non-?constant|tăng trưởng (không đều|khác biệt|nhiều giai đoạn)/i.test(
             sub.heading,
@@ -327,7 +693,7 @@ export function applyHallucinationShield(
           }
         }
 
-        // 3b. Shield Finding R decomposition
+        // Finding R decomposition injection
         const isFindingR = /finding.*(discount rate|required return|\(R\))/i.test(sub.heading);
         if (isFindingR) {
           const hasYieldDefinitions = sub.bulletPoints.some((bp) =>
@@ -345,7 +711,10 @@ export function applyHallucinationShield(
       });
     }
 
-    // 4. Shield Section E (Preference Share / Deferred Preferred Stock)
+    // 2d. Section C top-level deduplication (no double-pasting with subSections)
+    sec = deduplicateSectionC(sec);
+
+    // 2e. Section E (Preference Share / Deferred Preferred Stock)
     const isPreferredStock = /preference|preferred|ưu đãi/i.test(sec.titleVi);
     const mentionsDeferredPerpetuity =
       /novaco|beginning \d+ years|deferred|hoãn trả|year 11|year 12|delay/i.test(
@@ -380,6 +749,8 @@ export function applyHallucinationShield(
 
     return sec;
   });
+
+  return processed;
 }
 
 function sanitizeSubSection(sub: NoteSubSection): NoteSubSection {
