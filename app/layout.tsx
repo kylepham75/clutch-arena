@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Space_Grotesk, Be_Vietnam_Pro, JetBrains_Mono } from "next/font/google";
+import { Space_Grotesk, Be_Vietnam_Pro, JetBrains_Mono, Lora } from "next/font/google";
 import { LanguageProvider } from "@/lib/i18n/context";
 import { AuthProvider } from "@/lib/auth/context";
 import { AuthDialog } from "@/components/auth/auth-dialog";
@@ -27,6 +27,13 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
+const lora = Lora({
+  subsets: ["latin", "vietnamese"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-lora",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "ClutchArena — Make every minute count",
   description:
@@ -48,7 +55,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${spaceGrotesk.variable} ${beVietnamPro.variable} ${jetbrainsMono.variable}`}
+      className={`${spaceGrotesk.variable} ${beVietnamPro.variable} ${jetbrainsMono.variable} ${lora.variable}`}
     >
       <body>
         <LanguageProvider>

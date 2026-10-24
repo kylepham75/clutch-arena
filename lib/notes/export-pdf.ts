@@ -197,6 +197,9 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
 <head>
   <meta charset="utf-8">
   <title>${escapeHtml(note.title)} — Clutch Notes AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
   <style>
     @page {
@@ -240,13 +243,17 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
     }
 
     body {
-      font-family: Georgia, "Times New Roman", Times, serif;
+      font-family: 'Lora', 'Be Vietnam Pro', Georgia, serif;
       font-size: 13.5px;
       line-height: 1.5;
       color: #111827;
       background: #f6f6f3;
       margin: 0;
       padding: 0;
+    }
+
+    h1, h2, h3, .doc-main-title, .pdf-section-title-vi, .pdf-sub-heading {
+      font-family: 'Lora', 'Be Vietnam Pro', Georgia, serif;
     }
 
     /* Fixed watermark overlay: Centered Clutch Arena icon + name */

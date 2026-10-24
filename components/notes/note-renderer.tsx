@@ -176,7 +176,10 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
           </div>
         </div>
 
-        <div className="relative z-10 font-serif text-[#111827]">
+        <div
+          className="relative z-10 font-serif text-[#111827]"
+          style={{ fontFamily: "var(--font-serif)" }}
+        >
           {/* Top-left subtle course label */}
           <div className="text-xs sm:text-sm italic font-semibold text-[#374151] mb-4">
             {note.subject} — Clutch Notes AI

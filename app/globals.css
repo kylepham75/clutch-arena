@@ -15,6 +15,7 @@
   --font-heading: var(--font-space-grotesk), "Space Grotesk", "Be Vietnam Pro", sans-serif;
   --font-body: var(--font-be-vietnam-pro), "Be Vietnam Pro", Arial, Helvetica, sans-serif;
   --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", "Space Mono", monospace;
+  --font-serif: var(--font-lora), var(--font-be-vietnam-pro), "Times New Roman", serif;
   --font-sans: var(--font-body);
 }
 @theme inline {
@@ -29,6 +30,7 @@
   --font-heading: var(--font-heading);
   --font-body: var(--font-body);
   --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
   --font-sans: var(--font-body);
 }
 * {
@@ -456,7 +458,7 @@ svg {
   background: #e5d9c8;
   border: 3px solid #fff;
   color: #81735f;
-  font-family: Georgia, serif;
+  font-family: var(--font-serif);
   border-radius: 50%;
   width: 34px;
   height: 34px;

@@ -193,8 +193,50 @@ function sanitizeFormula(f: NoteFormula): NoteFormula {
   };
 }
 
+const VIETNAMESE_GRAVE_MAP: Record<string, string> = {
+  a: "à", A: "À", ă: "ằ", Ă: "Ằ", â: "ầ", Â: "Ầ",
+  e: "è", E: "È", ê: "ề", Ê: "Ề",
+  i: "ì", I: "Ì",
+  o: "ò", O: "Ò", ô: "ồ", Ô: "Ồ", ơ: "ờ", Ơ: "Ờ",
+  u: "ù", U: "Ù", ư: "ừ", Ư: "Ừ",
+  y: "ỳ", Y: "Ỳ",
+};
+
 function cleanTypoString(str: string): string {
-  return str
+  if (!str || typeof str !== "string") return str;
+  let s = str.normalize("NFC");
+
+  // Re-attach isolated or spaced combining diacritical marks to preceding letters and compose to NFC
+  s = s.replace(/([\p{L}\p{M}]+)\s+([\u0300-\u036f]+)/gu, "$1$2").normalize("NFC");
+
+  // Repair known Windows DirectWrite/Georgia detached backticks and floating accents
+  s = s
+    .replace(/đề[\x60'\u00B4]\s*u/gi, "đều")
+    .replace(/nhiê[\x60'\u00B4]\s*u/gi, "nhiều")
+    .replace(/suấ[\x60'\u00B4]\s*t/gi, "suất")
+    .replace(/vố[\x60'\u00B4]\s*n/gi, "vốn")
+    .replace(/phiế[\x60'\u00B4]\s*u/gi, "phiếu");
+
+  // Compose floating backtick after unaccented/circumflex vowel inside words to grave accent (e.g. nhiê` u -> nhiều)
+  s = s.replace(/([aăâeêioôơuưyAĂÂEÊIOÔƠUƯY])[\x60'\u00B4]\s*([a-zA-Z\u00C0-\u1EF9])/gu, (_match, v, next) => {
+    return (VIETNAMESE_GRAVE_MAP[v] || v) + next;
+  });
+
+  // Strip stray floating backticks or acute accents right after already toned vowels inside words (e.g. đề`u -> đều)
+  s = s.replace(
+    /([àáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵÀÁẢÃẠẰẮẲẴẶẦẤẨẪẬÈÉẺẼẸỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌỒỐỔỖỘỜỚỞỠỢÙÚỦŨỤỪỨỬỮỰỲÝỶỸỴ])[\x60'\u00B4]\s*([a-zA-Z\u00C0-\u1EF9])/gu,
+    "$1$2",
+  );
+
+  // Strip stray floating backticks before vowels inside words
+  s = s.replace(
+    /([a-zA-Z\u00C0-\u1EF9])\s*[\x60'\u00B4]([aăâeêioôơuưyAĂÂEÊIOÔƠUƯYàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ])/gu,
+    "$1$2",
+  );
+
+  s = s.normalize("NFC");
+
+  return s
     .replace(/\b([gG])\s*=\s*[oO]\b/g, "$1 = 0")
     .replace(/\(([gG])\s*=\s*[oO]\)/g, "($1 = 0)")
     .replace(/\\text\{[gG]\s*=\s*[oO]\}/g, "\\text{$1 = 0}")
