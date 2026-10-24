@@ -1,49 +1,84 @@
 "use client";
 
 import React, { useState } from "react";
-import {
-  FileText,
-  Printer,
-  Copy,
-  Check,
-  Sparkles,
-  ArrowLeft,
-  Share2,
-  ChevronDown,
-  Layers,
-  HelpCircle,
-  AlertOctagon,
-  BookOpen,
-} from "lucide-react";
+import { Printer, Copy, Check, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MathText } from "@/components/ui/math-text";
 import { exportClutchNotePdf } from "@/lib/notes/export-pdf";
-import type { ClutchNote, NoteSection } from "@/lib/schemas/notes";
+import type { ClutchNote, NoteFormula, NoteSection } from "@/lib/schemas/notes";
 
 interface NoteRendererProps {
   note: ClutchNote;
   onReset: () => void;
 }
 
+function FormulaBlock({ formula }: { formula: NoteFormula }) {
+  return (
+    <div className="my-3">
+      {formula.leadText ? (
+        <p className="text-sm sm:text-[15px] text-[#1f2937] leading-relaxed mb-2.5">
+          <MathText content={formula.leadText} inline />
+        </p>
+      ) : formula.name ? (
+        <div className="text-sm font-bold text-[#111827] mb-2">
+          <MathText content={formula.name} inline />
+        </div>
+      ) : null}
+
+      {/* Centered crisp bordered equation box */}
+      <div className="my-3 flex justify-center overflow-x-auto py-0.5">
+        <div className="inline-block border border-[#1f2937] bg-white px-5 sm:px-7 py-2.5 sm:py-3 text-[#111827] max-w-full overflow-x-auto">
+          <MathText content={`$$${formula.latex}$$`} />
+        </div>
+      </div>
+
+      {/* "Trong đó:" variable list — rendered only when new variables are defined */}
+      {formula.variables && formula.variables.length > 0 && (
+        <div className="mt-2.5 mb-3 text-sm sm:text-[15px] text-[#1f2937]">
+          <div className="mb-1.5">Trong đó:</div>
+          <ul className="pl-7 space-y-1 list-disc marker:text-[#111827]">
+            {formula.variables.map((v, vIdx) => (
+              <li key={vIdx} className="leading-relaxed">
+                <span className="font-medium text-[#111827]">
+                  <MathText content={`$${v.symbol}$`} inline />
+                </span>
+                {": "}
+                <MathText content={v.definition} inline />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {formula.description && (
+        <p className="text-sm sm:text-[15px] text-[#1f2937] leading-relaxed mt-2.5 mb-1.5">
+          <MathText content={formula.description} inline />
+        </p>
+      )}
+    </div>
+  );
+}
+
+function BulletList({ items }: { items: string[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <ul className="pl-7 space-y-1.5 list-disc marker:text-[#111827] text-sm sm:text-[15px] text-[#1f2937] my-2">
+      {items.map((bp, idx) => (
+        <li key={idx} className="leading-relaxed">
+          <MathText content={bp} inline />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function NoteRenderer({ note, onReset }: NoteRendererProps) {
   const [copied, setCopied] = useState(false);
-  const [activeSectionId, setActiveSectionId] = useState<string>(
-    note.sections[0]?.id || "section-a",
-  );
 
   const displayNoiseRate =
     note.noiseReductionRate > 0 && note.noiseReductionRate <= 1
       ? Math.round(note.noiseReductionRate * 100)
       : Math.round(note.noiseReductionRate || 85);
-
-  const parsedDate = new Date(note.createdAt);
-  const isValidDate = !isNaN(parsedDate.getTime()) && parsedDate.getFullYear() >= 2024;
-  const noteDate = isValidDate ? parsedDate : new Date();
-  const generatedDate = noteDate.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
 
   const handleCopyMarkdown = () => {
     if (!note.rawMarkdown) return;
@@ -57,19 +92,53 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
     exportClutchNotePdf(note);
   };
 
-  return (
-    <div className="w-full max-w-5xl mx-auto space-y-6 animate-in fade-in duration-300 pb-16">
-      {/* Top action header bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-[#e2e6db] rounded-xl p-4 shadow-xs">
-        <button
-          onClick={onReset}
-          className="inline-flex items-center gap-2 text-xs font-semibold text-[#67735f] hover:text-[#1a2118] transition-colors cursor-pointer"
-        >
-          <ArrowLeft size={16} />
-          <span>Upload Another Deck</span>
-        </button>
+  const scrollToSection = (sectionId: string) => {
+    const el = document.getElementById(`note-sec-${sectionId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
 
-        <div className="flex items-center gap-2.5">
+  return (
+    <div className="w-full max-w-4xl mx-auto space-y-4 animate-in fade-in duration-300 pb-16">
+      {/* Compact Sticky Top Toolbar */}
+      <div className="sticky top-2 z-20 flex flex-wrap items-center justify-between gap-3 bg-white/95 backdrop-blur-xs border border-[#e2e6db] rounded-xl px-4 py-3 shadow-xs">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={onReset}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5b6653] hover:text-[#1a2118] transition-colors cursor-pointer"
+          >
+            <ArrowLeft size={15} />
+            <span>New Deck</span>
+          </button>
+
+          <span className="hidden sm:inline-block h-4 w-px bg-[#e2e6db]" />
+
+          <span className="px-2.5 py-0.5 rounded-full bg-[#f7f8f4] border border-[#e2e6dc] text-[#4c5745] text-[11px] font-semibold">
+            {note.originalSlideCount} Slides → {note.estimatedDistilledPages} Pages
+          </span>
+          <span className="px-2.5 py-0.5 rounded-full bg-[#edf5e8] border border-[#cde0c3] text-[#2e6320] text-[11px] font-bold">
+            {displayNoiseRate}% Noise Stripped
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Quick jump section anchors */}
+          {note.sections.length > 1 && (
+            <div className="hidden md:flex items-center gap-1 mr-1">
+              {note.sections.map((sec) => (
+                <button
+                  key={sec.id}
+                  onClick={() => scrollToSection(sec.id)}
+                  title={sec.titleVi}
+                  className="w-6 h-6 rounded text-[11px] font-bold text-[#5c6753] hover:text-[#991b1b] hover:bg-[#fdf2f2] transition-colors cursor-pointer"
+                >
+                  {sec.letter}
+                </button>
+              ))}
+            </div>
+          )}
+
           <Button
             variant="outline"
             size="sm"
@@ -77,7 +146,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
             className="border-[#dce1d5] bg-white hover:bg-[#f7f8f4] text-[#3d4735] text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-2xs"
           >
             {copied ? <Check size={14} className="text-[#2e7d32]" /> : <Copy size={14} />}
-            <span>{copied ? "Copied Markdown" : "Copy Markdown"}</span>
+            <span>{copied ? "Copied" : "Copy Markdown"}</span>
           </Button>
 
           <Button
@@ -86,272 +155,171 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
             className="bg-[#e96b44] hover:bg-[#d95e37] text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
           >
             <Printer size={14} />
-            <span>Export Watermarked PDF</span>
+            <span>Export PDF</span>
           </Button>
         </div>
       </div>
 
-      {/* Hero Note Metadata Card */}
-      <div className="bg-white border border-[#e2e6db] rounded-2xl p-6 sm:p-7 shadow-xs relative overflow-hidden">
-        {/* Watermark: Big Clutch Arena icon with name below in the middle */}
+      {/* Single Continuous Concise Study Handout Sheet */}
+      <article className="bg-white border border-[#dcded6] rounded-xl px-6 py-8 sm:px-14 sm:py-12 shadow-sm relative overflow-hidden">
+        {/* Subtle centered Clutch Arena watermark */}
         <div
-          className="pointer-events-none select-none absolute inset-0 overflow-hidden opacity-[0.035] flex items-center justify-center z-0"
+          className="pointer-events-none select-none absolute inset-0 overflow-hidden opacity-[0.04] flex items-center justify-center z-0"
           aria-hidden="true"
         >
-          <div className="flex flex-col items-center justify-center gap-2">
+          <div className="flex flex-col items-center justify-center gap-3">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/brand-icon.png" alt="" className="w-24 h-24 sm:w-32 sm:h-32 object-contain" />
-            <span className="text-lg sm:text-xl font-black tracking-[0.25em] text-[#1a2118] uppercase">
+            <img src="/brand-icon.png" alt="" className="w-48 h-48 sm:w-64 sm:h-64 object-contain" />
+            <span className="text-2xl sm:text-3xl font-black tracking-[0.25em] text-[#1a2118] uppercase">
               Clutch Arena
             </span>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 mb-3 relative z-10">
-          <span className="px-2.5 py-0.5 rounded-full bg-[#fff4ec] border border-[#fbd8c8] text-[#d9532f] text-[11px] font-bold uppercase tracking-wider">
-            Clutch Notes AI · Pro Synthesis
-          </span>
-          <span className="px-2.5 py-0.5 rounded-full bg-[#f7f8f4] border border-[#e2e6dc] text-[#55604e] text-[11px] font-semibold">
-            {note.originalSlideCount} Slides → {note.estimatedDistilledPages} Pages
-          </span>
-          <span className="px-2.5 py-0.5 rounded-full bg-[#edf5e8] border border-[#cde0c3] text-[#2e6320] text-[11px] font-bold">
-            {displayNoiseRate}% Noise Stripped
-          </span>
-        </div>
-
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1a2118] tracking-tight mb-2 relative z-10">
-          {note.title}
-        </h1>
-
-        <div className="text-xs text-[#707a68] flex flex-wrap gap-x-6 gap-y-1 mb-5 font-mono relative z-10">
-          <span>Subject: <strong className="text-[#2b3525] font-sans">{note.subject}</strong></span>
-          <span>Source: <strong className="text-[#2b3525] font-sans">{note.originalFileName}</strong></span>
-          <span>Generated: <strong className="text-[#2b3525] font-sans">{generatedDate}</strong></span>
-          <span>Note ID: <strong className="text-[#d9532f] font-mono">{note.id}</strong></span>
-        </div>
-
-        {/* Executive summary block */}
-        <div className="bg-[#fdfaf5] border-l-4 border-[#e96b44] rounded-r-xl p-4 text-xs sm:text-sm text-[#384131] leading-relaxed relative z-10">
-          <span className="font-bold text-[#c2512a] mr-1">TỔNG QUAN TÀI LIỆU (Executive Summary):</span>
-          <MathText content={note.executiveSummary} inline />
-        </div>
-      </div>
-
-      {/* Section navigation tabs */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-        {note.sections.map((section) => {
-          const isActive = activeSectionId === section.id;
-          return (
-            <button
-              key={section.id}
-              onClick={() => setActiveSectionId(section.id)}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-2 ${
-                isActive
-                  ? "bg-[#e96b44] text-white shadow-xs"
-                  : "bg-white border border-[#e2e6db] text-[#5c6753] hover:text-[#1a2118] hover:bg-[#f7f8f4]"
-              }`}
-            >
-              <span className={`w-5 h-5 rounded flex items-center justify-center text-[11px] font-black ${isActive ? "bg-[#d45832] text-white" : "bg-[#f1f3ea] text-[#56604e]"}`}>
-                {section.letter}
-              </span>
-              <span>{section.titleVi.split(":")[0].replace(/^[A-Z]\.\s*/, "") || section.titleEn}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Active Section Content */}
-      {note.sections
-        .filter((sec) => sec.id === activeSectionId)
-        .map((section: NoteSection) => (
-          <div
-            key={section.id}
-            className="bg-white border border-[#e2e6db] rounded-2xl p-6 sm:p-8 space-y-6 shadow-xs relative overflow-hidden"
-          >
-            {/* Watermark: Big Clutch Arena icon with name below in the middle */}
-            <div
-              className="pointer-events-none select-none absolute inset-0 overflow-hidden opacity-[0.035] flex items-center justify-center z-0"
-              aria-hidden="true"
-            >
-              <div className="flex flex-col items-center justify-center gap-3">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/brand-icon.png" alt="" className="w-32 h-32 sm:w-44 sm:h-44 object-contain" />
-                <span className="text-xl sm:text-2xl font-black tracking-[0.25em] text-[#1a2118] uppercase">
-                  Clutch Arena
-                </span>
-              </div>
-            </div>
-
-            {/* Section Header */}
-            <div className="border-b border-[#edf0e8] pb-4 relative z-10">
-              <div className="flex items-baseline gap-3 mb-1">
-                <span className="px-2.5 py-1 rounded-md bg-[#fbede5] border border-[#f6cfc1] text-[#d9532f] text-xs font-black">
-                  Section {section.letter}
-                </span>
-                <h2 className="text-xl sm:text-2xl font-black text-[#1a2118] tracking-tight">
-                  {section.titleVi}
-                </h2>
-              </div>
-              <p className="text-xs font-semibold text-[#737f6a] uppercase tracking-wider ml-1">
-                {section.titleEn}
-              </p>
-            </div>
-
-            {/* Overview / Bilingual Concept Explanation */}
-            <div className="text-sm text-[#2f3929] leading-relaxed bg-[#fafbf8] border border-[#e5e9de] rounded-xl p-4">
-              <MathText content={section.overview} />
-            </div>
-
-            {/* Key Bullet Points */}
-            {section.bulletPoints && section.bulletPoints.length > 0 && (
-              <div className="space-y-2">
-                <h3 className="text-xs font-bold text-[#b45309] uppercase tracking-wider flex items-center gap-1.5">
-                  <BookOpen size={14} />
-                  <span>Điểm Trọng Tâm Ôn Thi (Core Takeaways)</span>
-                </h3>
-                <ul className="space-y-2">
-                  {section.bulletPoints.map((bp, idx) => (
-                    <li
-                      key={idx}
-                      className="text-xs sm:text-sm text-[#333d2c] flex items-start gap-2.5 bg-white p-3 rounded-lg border border-[#e8ece2] shadow-2xs"
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#e96b44] mt-2 flex-shrink-0" />
-                      <div className="flex-1">
-                        <MathText content={bp} />
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* Formula Cards */}
-            {section.formulas && section.formulas.length > 0 && (
-              <div className="space-y-4 pt-2">
-                <h3 className="text-xs font-bold text-[#b45309] uppercase tracking-wider flex items-center gap-1.5">
-                  <span className="text-sm">📐</span>
-                  <span>Công Thức Chuẩn Hóa &amp; Định Nghĩa Biến Số (LaTeX Standardization)</span>
-                </h3>
-
-                <div className="grid grid-cols-1 gap-4">
-                  {section.formulas.map((formula, fIdx) => (
-                    <div
-                      key={fIdx}
-                      className="bg-[#fdfcf9] border border-[#e4e8dc] rounded-xl p-5 shadow-2xs relative overflow-hidden"
-                    >
-                      <div className="text-xs font-bold text-[#c8532f] uppercase tracking-wider mb-2">
-                        {formula.name}
-                      </div>
-
-                      {/* LaTeX Equation Display */}
-                      <div className="my-3 py-3 px-4 rounded-lg bg-[#fafbf8] border border-[#e1e6d7] text-center overflow-x-auto text-[#111827]">
-                        <MathText content={`$$${formula.latex}$$`} />
-                      </div>
-
-                      {formula.description && (
-                        <p className="text-xs text-[#6e7765] italic mb-3">
-                          <MathText content={formula.description} inline />
-                        </p>
-                      )}
-
-                      {/* "Trong đó:" Variable Definitions */}
-                      {formula.variables && formula.variables.length > 0 && (
-                        <div className="mt-3 pt-3 border-t border-[#edf0e8] bg-[#f7f9f4] rounded-lg p-3.5">
-                          <div className="text-xs font-bold text-[#2d5c21] mb-2 flex items-center gap-1">
-                            <span>Trong đó: (Where:)</span>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                            {formula.variables.map((v, vIdx) => (
-                              <div
-                                key={vIdx}
-                                className="flex items-baseline gap-2 bg-white p-2 rounded border border-[#e3e8da] shadow-2xs"
-                              >
-                                <span className="font-bold text-[#d9532f] font-mono flex-shrink-0">
-                                  <MathText content={`$${v.symbol}$`} inline />:
-                                </span>
-                                <span className="text-[#333d2c]">{v.definition}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* KEY TAKEAWAYS Box */}
-            {section.keyTakeaways && (
-              <div className="mt-6 pt-4 border-t border-[#edf0e8]">
-                <div className="bg-[#fffbf6] border-2 border-[#f3aa84] rounded-xl p-5 sm:p-6 shadow-xs">
-                  <div className="flex items-center gap-2 mb-4 pb-2 border-b border-[#fcdccb]">
-                    <div className="p-1 rounded bg-[#e96b44] text-white">
-                      <Sparkles size={16} />
-                    </div>
-                    <h4 className="text-sm sm:text-base font-extrabold text-[#963714] tracking-tight">
-                      {section.keyTakeaways.title}
-                    </h4>
-                  </div>
-
-                  <div className="space-y-3 text-xs sm:text-sm">
-                    {section.keyTakeaways.modelSelectionRule && (
-                      <div className="bg-white p-3 rounded-lg border border-[#fcdccb]">
-                        <span className="font-bold text-[#c24e23] block mb-1">
-                          (a) Cách Chọn Mô Hình (Model Selection Rule):
-                        </span>
-                        <div className="text-[#333d2c] leading-relaxed">
-                          <MathText content={section.keyTakeaways.modelSelectionRule} />
-                        </div>
-                      </div>
-                    )}
-
-                    {section.keyTakeaways.realWorldConditions && (
-                      <div className="bg-white p-3 rounded-lg border border-[#fcdccb]">
-                        <span className="font-bold text-[#c24e23] block mb-1">
-                          (b) Điều Kiện Áp Dụng Thực Tế (Real-World Conditions):
-                        </span>
-                        <div className="text-[#333d2c] leading-relaxed">
-                          <MathText content={section.keyTakeaways.realWorldConditions} />
-                        </div>
-                      </div>
-                    )}
-
-                    {section.keyTakeaways.boundaryConditions && (
-                      <div className="bg-[#fef2f2] p-3.5 rounded-lg border-l-4 border-[#ef4444] text-red-900">
-                        <span className="font-bold text-[#b91c1c] flex items-center gap-1.5 mb-1 text-xs">
-                          <AlertOctagon size={14} />
-                          <span>(c) Giới Hạn Toán Học &amp; Bẫy Thi Cử (Mathematical Boundary &amp; Pitfalls):</span>
-                        </span>
-                        <div className="text-red-950 text-xs sm:text-sm leading-relaxed">
-                          <MathText content={section.keyTakeaways.boundaryConditions} />
-                        </div>
-                      </div>
-                    )}
-
-                    {section.keyTakeaways.summaryPoints && section.keyTakeaways.summaryPoints.length > 0 && (
-                      <div className="mt-3 pt-2">
-                        <div className="text-xs font-bold text-[#963714] mb-2 uppercase tracking-wider">
-                          Key Exam Rules:
-                        </div>
-                        <ul className="space-y-1.5 pl-1">
-                          {section.keyTakeaways.summaryPoints.map((sp, idx) => (
-                            <li key={idx} className="flex items-start gap-2 text-xs text-[#333d2c]">
-                              <span className="text-[#d9532f] font-bold">{idx + 1}.</span>
-                              <div className="flex-1">
-                                <MathText content={sp} />
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
+        <div className="relative z-10 font-serif text-[#111827]">
+          {/* Top-left subtle course label */}
+          <div className="text-xs sm:text-sm italic font-semibold text-[#374151] mb-4">
+            {note.subject} — Clutch Notes AI
           </div>
-        ))}
+
+          {/* Centered Chapter / Topic Title */}
+          <h1 className="text-xl sm:text-[26px] font-bold text-[#991b1b] text-center uppercase tracking-wide mb-7 leading-snug">
+            {note.title}
+          </h1>
+
+          {/* Continuous Flow of Alphabetical Sections */}
+          <div className="space-y-6">
+            {note.sections.map((section: NoteSection) => {
+              const formulasIntroduceBullets =
+                section.formulas.length > 0 &&
+                !section.formulas[0].leadText &&
+                Boolean(section.formulas[0].description?.trim().endsWith(":"));
+
+              const hasStructuredTakeaways =
+                section.keyTakeaways &&
+                section.keyTakeaways.items &&
+                section.keyTakeaways.items.length > 0;
+
+              const fallbackTakeawayPoints: string[] = [];
+              if (section.keyTakeaways && !hasStructuredTakeaways) {
+                const kt = section.keyTakeaways;
+                if (kt.summaryPoints && kt.summaryPoints.length > 0) {
+                  fallbackTakeawayPoints.push(...kt.summaryPoints);
+                } else {
+                  if (kt.modelSelectionRule) fallbackTakeawayPoints.push(kt.modelSelectionRule);
+                  if (kt.realWorldConditions) fallbackTakeawayPoints.push(kt.realWorldConditions);
+                  if (kt.boundaryConditions) fallbackTakeawayPoints.push(kt.boundaryConditions);
+                }
+              }
+
+              return (
+                <section
+                  key={section.id}
+                  id={`note-sec-${section.id}`}
+                  className="scroll-mt-20"
+                >
+                  {/* Section Heading (A., B., C., D., E.) */}
+                  <h2 className="text-base sm:text-[17px] font-bold text-[#991b1b] tracking-wide mb-2.5">
+                    {section.titleVi}
+                  </h2>
+
+                  {/* Bold 1-line Core Principle Statement */}
+                  {section.coreStatement && (
+                    <p className="text-sm sm:text-[15px] font-bold text-[#111827] text-center my-3 px-2 leading-relaxed">
+                      <MathText content={section.coreStatement} inline />
+                    </p>
+                  )}
+
+                  {/* Concise 1-line Overview / Lead-in */}
+                  {section.overview && (
+                    <p className="text-sm sm:text-[15px] text-[#1f2937] leading-relaxed mb-2">
+                      <MathText content={section.overview} inline />
+                    </p>
+                  )}
+
+                  {/* Section-level Bullets & Boxed Formulas in natural reading order */}
+                  {formulasIntroduceBullets ? (
+                    <>
+                      {section.formulas.map((f, fIdx) => (
+                        <FormulaBlock key={fIdx} formula={f} />
+                      ))}
+                      <BulletList items={section.bulletPoints} />
+                    </>
+                  ) : (
+                    <>
+                      <BulletList items={section.bulletPoints} />
+                      {section.formulas.map((f, fIdx) => (
+                        <FormulaBlock key={fIdx} formula={f} />
+                      ))}
+                    </>
+                  )}
+
+                  {/* Sub-Sections (CASE 1, CASE 2, CASE 3, Finding g, Finding R, etc.) */}
+                  {section.subSections && section.subSections.length > 0 && (
+                    <div className="space-y-4 mt-3.5">
+                      {section.subSections.map((sub, sIdx) => (
+                        <div key={sIdx}>
+                          {sub.heading && (
+                            <h3 className="text-sm sm:text-[15px] font-bold text-[#111827] mb-1.5">
+                              <MathText content={sub.heading} inline />
+                            </h3>
+                          )}
+                          {sub.leadIn && (
+                            <p className="text-sm sm:text-[15px] text-[#1f2937] leading-relaxed mb-1.5">
+                              <MathText content={sub.leadIn} inline />
+                            </p>
+                          )}
+                          <BulletList items={sub.bulletPoints} />
+                          {sub.formulas.map((f, fIdx) => (
+                            <FormulaBlock key={fIdx} formula={f} />
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Crisp Boxed KEY TAKEAWAYS */}
+                  {section.keyTakeaways &&
+                    (hasStructuredTakeaways || fallbackTakeawayPoints.length > 0) && (
+                      <div className="my-5 border border-[#1f2937] bg-white px-5 py-4">
+                        <div className="text-sm sm:text-[15px] font-bold text-[#991b1b] uppercase tracking-wide mb-2">
+                          {section.keyTakeaways.title || "KEY TAKEAWAYS"}
+                        </div>
+
+                        {hasStructuredTakeaways ? (
+                          <ol className="pl-6 space-y-1.5 list-decimal text-sm sm:text-[15px] text-[#111827]">
+                            {section.keyTakeaways.items!.map((item, idx) => (
+                              <li key={idx} className="leading-relaxed">
+                                <MathText content={item.point} inline />
+                                {item.subBullets && item.subBullets.length > 0 && (
+                                  <ul className="pl-6 mt-1 space-y-1 list-disc marker:text-[#111827]">
+                                    {item.subBullets.map((sb, sbIdx) => (
+                                      <li key={sbIdx} className="leading-relaxed">
+                                        <MathText content={sb} inline />
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </li>
+                            ))}
+                          </ol>
+                        ) : (
+                          <ol className="pl-6 space-y-1.5 list-decimal text-sm sm:text-[15px] text-[#111827]">
+                            {fallbackTakeawayPoints.map((pt, idx) => (
+                              <li key={idx} className="leading-relaxed">
+                                <MathText content={pt} inline />
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </div>
+                    )}
+                </section>
+              );
+            })}
+          </div>
+        </div>
+      </article>
     </div>
   );
 }

@@ -1,166 +1,300 @@
 import type { ClutchNote } from "@/lib/schemas/notes";
 
 export const SAMPLE_CLUTCH_NOTE: ClutchNote = {
-  id: "clutch-note-corp-fin-equity-valuation",
-  title: "Corporate Finance: Equity Valuation & Dividend Discount Models",
-  subject: "Corporate Finance / Tài chính doanh nghiệp (FIN301)",
+  id: "clutch-note-ch9-stock-valuation",
+  title: "CHAPTER 9: STOCK VALUATION",
+  subject: "Corporate Finance",
   createdAt: new Date().toISOString(),
-  originalFileName: "FIN301_Lecture05_EquityValuation_Slides.pptx",
+  originalFileName: "Corporate_Finance_Session2_Chapter9_Stock_Valuation.pdf",
   originalSlideCount: 27,
   estimatedDistilledPages: 3,
   noiseReductionRate: 89,
   executiveSummary:
-    "Distilled from 27 raw lecture slides down to 3 exam-ready pages. Removes administrative announcements, introductory agendas, and numerical arithmetic drills. Synthesizes core discounted cash flow valuation principles, zero-growth, Gordon constant-growth, and two-stage non-constant dividend models with standardized LaTeX equations and model selection boundary conditions.",
+    "Distilled from 27 lecture slides into a single 3-page study sheet covering DDM models, growth & discount parameters, and preference share valuation.",
   sections: [
     {
       id: "section-a",
       letter: "A",
-      titleVi: "A. NGUYÊN LÝ CƠ BẢN & ĐỊNH GIÁ DÒNG TIỀN CỔ PHIẾU",
-      titleEn: "Fundamental Principles of Stock Valuation",
-      overview:
-        "The intrinsic value ($P_0$) of a share of stock is the present value (Giá trị hiện tại) of all expected future cash flows that the stock provides to its investor. Unlike bonds which pay fixed coupons, equity cash flows consist of uncertain Dividends (Cổ tức) and Capital Gains (Lãi vốn) realized at the horizon selling price ($P_n$).",
+      titleVi: "A. NGUYÊN LÝ CƠ BẢN",
+      titleEn: "Fundamental Principle",
+      coreStatement:
+        "The value of any asset = the present value (PV) of its expected future cash flows.",
+      overview: "For stocks, future cash flows come from:",
       bulletPoints: [
-        "One-period investor horizon: Value equals expected dividend $D_1$ plus expected terminal selling price $P_1$, discounted at required rate of return $r$.",
-        "Infinite holding period: Terminal price discounts to zero asymptotically. Stock value equals the infinite sum of discounted dividends.",
-        "Required rate of return ($r$ - Tỷ suất sinh lời đòi hỏi): Derived from CAPM or investor opportunity cost of capital.",
+        "Dividends (Cổ tức) – regular payments from the company",
+        "Capital gains (Lợi nhuận vốn) – the price you get when you sell the stock",
       ],
-      formulas: [
-        {
-          name: "General Dividend Discount Model (Mô hình chiết khấu cổ tức tổng quát)",
-          latex: "P_0 = \\sum_{t=1}^{\\infty} \\frac{D_t}{(1 + r)^t}",
-          description: "Theoretical foundation of equity valuation across an infinite holding period",
-          variables: [
-            { symbol: "P_0", definition: "Current intrinsic value of stock ($/share)" },
-            { symbol: "D_t", definition: "Expected cash dividend paid at end of period t ($/share)" },
-            { symbol: "r", definition: "Required rate of equity return / cost of equity (decimal or %)" },
-            { symbol: "t", definition: "Time period (years: 1, 2, ..., ∞)" },
-          ],
-        },
-      ],
+      formulas: [],
+      subSections: [],
       keyTakeaways: null,
-      sourceSlides: [1, 2, 3, 4, 5],
+      sourceSlides: [4],
     },
     {
       id: "section-b",
       letter: "B",
-      titleVi: "B. CÔNG THỨC TỔNG QUÁT: CÁC MÔ HÌNH CHIẾT KHẤU CỔ TỨC THEO GIAI ĐOẠN",
-      titleEn: "Dividend Growth Models & Closed-Form Formulations",
-      overview:
-        "Because forecasting infinite individual dividends is practically impossible, corporate finance groups dividend behavior into three canonical operational cases based on corporate lifecycle stage (Chu kỳ sống doanh nghiệp).",
-      bulletPoints: [
-        "CASE 1: Zero Growth Model (Không tăng trưởng) – Dividends remain perpetual fixed payments ($D_1 = D_2 = D$), mathematically identical to a preferred stock perpetuity.",
-        "CASE 2: Constant Growth Model (Tăng trưởng đều / Gordon Growth Model) – Dividends grow at a constant annual rate ($g$) perpetually into the future.",
-        "CASE 3: Non-Constant / Multi-Stage Growth Model (Tăng trưởng đa giai đoạn) – Supernormal short-term growth followed by steady-state constant growth.",
-      ],
+      titleVi: "B. CÔNG THỨC TỔNG QUÁT",
+      titleEn: "General One-Period Formula",
+      overview: "",
+      bulletPoints: [],
       formulas: [
         {
-          name: "CASE 1: Zero Growth / Preferred Stock (Cổ phiếu ưu đãi / Không tăng trưởng)",
-          latex: "P_0 = \\frac{D}{r}",
-          description: "Perpetuity valuation formula when growth rate g = 0",
+          name: "",
+          leadText: "Nếu chỉ đầu tư trong 1 năm:",
+          latex: "P_0 = \\frac{D_1}{1 + R} + \\frac{P_1}{1 + R}",
           variables: [
-            { symbol: "P_0", definition: "Stock price ($/share)" },
-            { symbol: "D", definition: "Constant annual dividend payment ($)" },
-            { symbol: "r", definition: "Required rate of return" },
-          ],
-        },
-        {
-          name: "CASE 2: Constant Growth Model (Mô hình tăng trưởng đều - Gordon)",
-          latex: "P_0 = \\frac{D_1}{r - g} = \\frac{D_0(1 + g)}{r - g}",
-          description: "Closed-form solution for perpetual constant geometric dividend expansion",
-          variables: [
-            { symbol: "P_0", definition: "Current stock price at time t = 0" },
-            { symbol: "D_0", definition: "Most recent dividend ALREADY PAID by company" },
-            { symbol: "D_1", definition: "Next expected dividend to be paid at end of year 1 ($D_1 = D_0 \\times (1 + g)$)" },
-            { symbol: "r", definition: "Required return on equity capital" },
-            { symbol: "g", definition: "Constant annual dividend growth rate" },
+            { symbol: "P_0", definition: "Price of the stock today" },
+            { symbol: "D_1", definition: "Expected dividend at the end of the year" },
+            { symbol: "P_1", definition: "Expected price at the end of the year" },
+            { symbol: "R", definition: "Required rate of return" },
           ],
         },
       ],
+      subSections: [],
       keyTakeaways: null,
-      sourceSlides: [6, 7, 8, 9, 10, 11, 12],
+      sourceSlides: [4],
     },
     {
       id: "section-c",
       letter: "C",
-      titleVi: "C. MÔ HÌNH TĂNG TRƯỞNG PHI LIÊN TỤC & ĐA GIAI ĐOẠN",
-      titleEn: "Non-Constant & Supernormal Growth Valuation",
-      overview:
-        "Emerging technology and high-growth corporations typically experience an initial phase of Supernormal Growth ($g_s$ - Tăng trưởng vượt trội) for $N$ years due to patent protection or rapid market expansion, before maturing into steady sustainable long-run growth ($g_n$).",
-      bulletPoints: [
-        "Phase 1 (Explicit Forecast): Calculate individual expected dividends $D_1, D_2, ..., D_N$ and discount each to present value at rate $r$.",
-        "Phase 2 (Terminal Horizon Value - $P_N$): Apply Gordon Growth formula at horizon year $N$ using steady-state rate $g_n$.",
-        "Total Valuation: Intrinsic value equals the sum of discounted explicit dividends plus the discounted horizon value $P_N / (1 + r)^N$.",
-      ],
+      titleVi: "C. DDM (DIVIDEND DISCOUNT MODEL)",
+      titleEn: "",
+      overview: "The DDM calculates stock value as the present value of all expected future dividends:",
+      bulletPoints: ["Zero Growth.", "Constant Growth.", "Differential Growth."],
       formulas: [
         {
-          name: "Two-Stage Valuation Model (Mô hình định giá hai giai đoạn)",
-          latex: "P_0 = \\sum_{t=1}^{N} \\frac{D_t}{(1 + r)^t} + \\frac{P_N}{(1 + r)^N}",
-          description: "Combined multi-period explicit DCF and terminal value",
-          variables: [
-            { symbol: "P_0", definition: "Current intrinsic equity value" },
-            { symbol: "N", definition: "Number of years of supernormal/unstable growth" },
-            { symbol: "D_t", definition: "Forecasted explicit dividend at year t" },
-            { symbol: "P_N", definition: "Terminal / Horizon price calculated at year N ($P_N = \\frac{D_{N+1}}{r - g_n}$)" },
-            { symbol: "g_n", definition: "Long-run steady growth rate of mature economy" },
+          name: "",
+          latex:
+            "P_0 = \\frac{D_1}{(1 + R)} + \\frac{D_2}{(1 + R)^2} + \\frac{D_3}{(1 + R)^3} + \\dots = \\sum_{t=1}^{\\infty} \\frac{D_t}{(1 + R)^t}",
+          description: "We classify stock valuation models based on how dividends grow:",
+          variables: [],
+        },
+      ],
+      subSections: [
+        {
+          heading: "CASE 1: Zero Growth Model (Không tăng trưởng)",
+          bulletPoints: [
+            "Dividends remain the same forever",
+            "This is a perpetuity model",
           ],
+          formulas: [
+            {
+              name: "",
+              latex:
+                "P_0 = \\frac{D}{(1 + R)} + \\frac{D}{(1 + R)^2} + \\frac{D}{(1 + R)^3} + \\frac{D}{(1 + R)^4} + \\dots = \\frac{D}{R}",
+              variables: [],
+            },
+          ],
+        },
+        {
+          heading: "CASE 2: Constant Growth Model (Tăng trưởng đều)",
+          bulletPoints: [
+            "Dividends grow at a constant rate g forever",
+            "Used when the company is stable and mature",
+          ],
+          formulas: [
+            {
+              name: "",
+              latex:
+                "P_0 = \\frac{D_1}{(1 + R)} + \\frac{D_1 \\cdot (1 + g)}{(1 + R)^2} + \\frac{D_1 \\cdot (1 + g)^2}{(1 + R)^3} + \\frac{D_1 \\cdot (1 + g)^3}{(1 + R)^4} + \\dots = \\frac{D_1}{R - g}",
+              variables: [],
+            },
+          ],
+        },
+        {
+          heading: "CASE 3: Differential Growth Model (Tăng trưởng khác biệt)",
+          bulletPoints: ["Used when dividends grow at different rates over time"],
+          formulas: [],
         },
       ],
       keyTakeaways: {
-        title: "KEY TAKEAWAYS: MODEL SELECTION, REAL-WORLD APPLICABILITY & BOUNDARY CONDITIONS",
-        modelSelectionRule:
-          "1. Use Zero Growth ($P_0 = D/r$) solely for Preferred Stocks or utility companies with guaranteed fixed payouts. 2. Use Constant Growth ($P_0 = D_1 / (r - g)$) for mature blue-chip conglomerates (e.g., consumer staples). 3. Use Multi-Stage Growth when the firm is expanding aggressively or reinvesting all initial earnings.",
-        realWorldConditions:
-          "Gordon model assumes the dividend payout ratio and return on equity (ROE) remain permanently constant ($g = ROE \\times b$, where $b$ is retention ratio).",
-        boundaryConditions:
-          "CRITICAL MATHEMATICAL PITFALL: Make sure $g < r$. If $g \\ge r$, the denominator $(r - g) \\le 0$, resulting in an infinite or negative stock price, which causes the mathematical model to completely break down. In reality, a company's sustainable long-run growth rate ($g$) cannot exceed the overall GDP growth rate of the macro economy.",
+        title: "KEY TAKEAWAYS",
+        items: [
+          {
+            point: "Stock value = present value of expected future dividends",
+            subBullets: [],
+          },
+          {
+            point: "Use different models depending on dividend behavior:",
+            subBullets: [
+              "Zero growth → Perpetuity",
+              "Constant growth → Gordon model",
+              "Differential growth → Multi-stage valuation",
+            ],
+          },
+          {
+            point: "Only use DDM if company pays dividends regularly",
+            subBullets: [],
+          },
+          {
+            point: "Make sure $g < r$, otherwise the model breaks down",
+            subBullets: [],
+          },
+        ],
+        boundaryConditions: "Make sure g < r, otherwise the model breaks down",
         summaryPoints: [
-          "Differentiate D_0 vs D_1 in exam problems: 'just paid' or 'current dividend' is D_0; 'will pay', 'next year dividend', or 'expected' is D_1.",
-          "Gordon Growth Model strictly requires required return to exceed growth rate (r > g).",
-          "Long-term growth rate g cannot exceed macro GDP growth (~3-5% annually).",
-          "Terminal value P_N must be discounted back to t = 0 by multiplying by 1/(1 + r)^N.",
+          "Stock value = present value of expected future dividends",
+          "Use different models depending on dividend behavior: Zero growth → Perpetuity, Constant growth → Gordon model, Differential growth → Multi-stage valuation",
+          "Only use DDM if company pays dividends regularly",
+          "Make sure g < r, otherwise the model breaks down",
         ],
       },
-      sourceSlides: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27],
+      sourceSlides: [5, 6, 7, 8, 9],
+    },
+    {
+      id: "section-d",
+      letter: "D",
+      titleVi: "D. PARAMETERS IN DIVIDEND DISCOUNT MODEL",
+      titleEn: "",
+      overview: "",
+      bulletPoints: [],
+      formulas: [],
+      subSections: [
+        {
+          heading: "Finding the growth rate (g)",
+          bulletPoints: [],
+          formulas: [
+            {
+              name: "",
+              latex: "g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}",
+              variables: [],
+            },
+          ],
+        },
+        {
+          heading: "Finding the discount rate (R)",
+          leadIn: "The discount rate can be broken into two parts:",
+          bulletPoints: ["The dividend yield.", "The growth rate (in dividends)"],
+          formulas: [
+            {
+              name: "",
+              leadText:
+                "In practice, there is a great deal of estimation error involved in estimating R. Let's start with the DGM:",
+              latex: "P_0 = \\frac{D_0(1 + g)}{R - g} = \\frac{D_1}{R - g}",
+              variables: [],
+            },
+            {
+              name: "",
+              leadText: "Rearranging the equation to solve for R, we get:",
+              latex: "R = \\frac{D_0(1 + g)}{P_0} + g = \\frac{D_1}{P_0} + g",
+              variables: [],
+            },
+          ],
+        },
+      ],
+      keyTakeaways: null,
+      sourceSlides: [14],
+    },
+    {
+      id: "section-e",
+      letter: "E",
+      titleVi: "E. VALUE OF PREFERENCE SHARE",
+      titleEn: "",
+      overview: "Some key features:",
+      bulletPoints: [
+        "Pays fixed dividends (like bonds) but has no maturity date.",
+        "Dividends paid before common stockholders.",
+        "Usually no voting rights.",
+        "Valued as perpetuity.",
+      ],
+      formulas: [
+        {
+          name: "",
+          leadText: "The equation:",
+          latex: "P_p = \\frac{D_p}{R_p}",
+          variables: [
+            { symbol: "P_p", definition: "Price of the preferred stock" },
+            { symbol: "D_p", definition: "Annual dividend of the preferred stock" },
+            { symbol: "R_p", definition: "Required rate of return" },
+          ],
+        },
+      ],
+      subSections: [],
+      keyTakeaways: null,
+      sourceSlides: [18, 19],
     },
   ],
-  rawMarkdown: `# Corporate Finance: Equity Valuation & Dividend Discount Models
-*FIN301 / Quản trị tài chính · 27 Slides Distilled to 3 Pages · Noise Stripped: 89%*
+  rawMarkdown: `# CHAPTER 9: STOCK VALUATION
+*Corporate Finance · 27 Slides → 3 Pages*
 
-## A. NGUYÊN LÝ CƠ BẢN & ĐỊNH GIÁ DÒNG TIỀN CỔ PHIẾU
-The intrinsic value ($P_0$) of a share of stock is the present value (Giá trị hiện tại) of all expected future cash flows that the stock provides to its investor.
+## A. NGUYÊN LÝ CƠ BẢN
+**The value of any asset = the present value (PV) of its expected future cash flows.**
 
-$$P_0 = \\sum_{t=1}^{\\infty} \\frac{D_t}{(1 + r)^t}$$
+For stocks, future cash flows come from:
+- Dividends (Cổ tức) – regular payments from the company
+- Capital gains (Lợi nhuận vốn) – the price you get when you sell the stock
 
-**Trong đó:**
-- $P_0$: Current intrinsic value of stock ($/share)
-- $D_t$: Expected cash dividend paid at end of period t ($/share)
-- $r$: Required rate of equity return / cost of equity (decimal or %)
-- $t$: Time period (years: 1, 2, ..., ∞)
+## B. CÔNG THỨC TỔNG QUÁT
+Nếu chỉ đầu tư trong 1 năm:
 
-## B. CÔNG THỨC TỔNG QUÁT: CÁC MÔ HÌNH CHIẾT KHẤU CỔ TỨC
-- **CASE 1: Zero Growth Model (Không tăng trưởng)**
-$$P_0 = \\frac{D}{r}$$
-
-- **CASE 2: Constant Growth Model (Mô hình tăng trưởng đều - Gordon)**
-$$P_0 = \\frac{D_1}{r - g} = \\frac{D_0(1 + g)}{r - g}$$
+$$P_0 = \\frac{D_1}{1 + R} + \\frac{P_1}{1 + R}$$
 
 **Trong đó:**
-- $P_0$: Current stock price at time t = 0
-- $D_0$: Most recent dividend ALREADY PAID by company
-- $D_1$: Next expected dividend to be paid at end of year 1 ($D_1 = D_0 \\times (1 + g)$)
-- $r$: Required return on equity capital
-- $g$: Constant annual dividend growth rate
+- $P_0$: Price of the stock today
+- $D_1$: Expected dividend at the end of the year
+- $P_1$: Expected price at the end of the year
+- $R$: Required rate of return
 
-## C. MÔ HÌNH TĂNG TRƯỞNG PHI LIÊN TỤC & ĐA GIAI ĐOẠN
-$$P_0 = \\sum_{t=1}^{N} \\frac{D_t}{(1 + r)^t} + \\frac{P_N}{(1 + r)^N}$$
+## C. DDM (DIVIDEND DISCOUNT MODEL)
+The DDM calculates stock value as the present value of all expected future dividends:
+
+$$P_0 = \\frac{D_1}{(1 + R)} + \\frac{D_2}{(1 + R)^2} + \\frac{D_3}{(1 + R)^3} + \\dots = \\sum_{t=1}^{\\infty} \\frac{D_t}{(1 + R)^t}$$
+
+We classify stock valuation models based on how dividends grow:
+- Zero Growth.
+- Constant Growth.
+- Differential Growth.
+
+### CASE 1: Zero Growth Model (Không tăng trưởng)
+- Dividends remain the same forever
+- This is a perpetuity model
+
+$$P_0 = \\frac{D}{(1 + R)} + \\frac{D}{(1 + R)^2} + \\frac{D}{(1 + R)^3} + \\frac{D}{(1 + R)^4} + \\dots = \\frac{D}{R}$$
+
+### CASE 2: Constant Growth Model (Tăng trưởng đều)
+- Dividends grow at a constant rate g forever
+- Used when the company is stable and mature
+
+$$P_0 = \\frac{D_1}{(1 + R)} + \\frac{D_1 \\cdot (1 + g)}{(1 + R)^2} + \\dots = \\frac{D_1}{R - g}$$
+
+### CASE 3: Differential Growth Model (Tăng trưởng khác biệt)
+- Used when dividends grow at different rates over time
+
+> **KEY TAKEAWAYS**
+> 1. Stock value = present value of expected future dividends
+> 2. Use different models depending on dividend behavior:
+>    - Zero growth → Perpetuity
+>    - Constant growth → Gordon model
+>    - Differential growth → Multi-stage valuation
+> 3. Only use DDM if company pays dividends regularly
+> 4. Make sure $g < r$, otherwise the model breaks down
+
+## D. PARAMETERS IN DIVIDEND DISCOUNT MODEL
+### Finding the growth rate (g)
+$$g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}$$
+
+### Finding the discount rate (R)
+The discount rate can be broken into two parts:
+- The dividend yield.
+- The growth rate (in dividends)
+
+In practice, there is a great deal of estimation error involved in estimating R. Let's start with the DGM:
+$$P_0 = \\frac{D_0(1 + g)}{R - g} = \\frac{D_1}{R - g}$$
+
+Rearranging the equation to solve for R, we get:
+$$R = \\frac{D_0(1 + g)}{P_0} + g = \\frac{D_1}{P_0} + g$$
+
+## E. VALUE OF PREFERENCE SHARE
+Some key features:
+- Pays fixed dividends (like bonds) but has no maturity date.
+- Dividends paid before common stockholders.
+- Usually no voting rights.
+- Valued as perpetuity.
+
+The equation:
+$$P_p = \\frac{D_p}{R_p}$$
 
 **Trong đó:**
-- $P_N = \\frac{D_{N+1}}{r - g_n}$ (Horizon terminal value at year N)
-- $g_n$: Long-run steady growth rate
-
-### 🌟 KEY TAKEAWAYS
-1. **Model Selection**: Zero growth for preferred stock; Constant growth for mature firms; Multi-stage for tech/rapid growth firms.
-2. **Crucial Exam Distinction**: Pay close attention to $D_0$ ('just paid') vs $D_1$ ('next year will pay').
-3. **Boundary Condition & Pitfall**: Must verify $g < r$. If $g \\ge r$, the model breaks down with non-sensical negative or infinite values.
-`,
+- $P_p$: Price of the preferred stock
+- $D_p$: Annual dividend of the preferred stock
+- $R_p$: Required rate of return`,
 };

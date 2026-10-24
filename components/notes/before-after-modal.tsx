@@ -138,32 +138,35 @@ export function BeforeAfterModal({
             </div>
 
             {/* Mock Distilled Note Preview */}
-            <div className="space-y-3 text-xs">
-              <div className="bg-white border border-[#fcdccb] rounded-lg p-2.5 shadow-2xs">
-                <div className="text-[11px] font-bold text-[#c8532f] mb-1">
-                  B. CÔNG THỨC TỔNG QUÁT: Gordon Constant Growth
+            <div className="space-y-3 text-xs font-serif text-[#111827]">
+              <div className="bg-white border border-[#e5e7eb] rounded-lg p-3 shadow-2xs">
+                <div className="text-[11px] font-bold text-[#991b1b] mb-1">
+                  B. CÔNG THỨC TỔNG QUÁT
                 </div>
-                <div className="py-1 px-2 rounded bg-[#fdf8f4] text-[#c24e23] text-center my-1 text-xs sm:text-sm font-bold flex justify-center">
-                  <MathText content="$$P_0 = \frac{D_1}{r - g}$$" />
+                <div className="text-[11px] mb-1.5">Nếu chỉ đầu tư trong 1 năm:</div>
+                <div className="flex justify-center my-1.5">
+                  <div className="inline-block border border-[#1f2937] bg-white px-3 py-1 text-xs">
+                    <MathText content="$$P_0 = \frac{D_1}{1 + R} + \frac{P_1}{1 + R}$$" />
+                  </div>
                 </div>
-                <div className="text-[10px] text-[#6b7562]">
-                  <strong>Trong đó:</strong> P_0 (giá cổ phiếu), D_1 (cổ tức kỳ tới), r (tỷ suất đòi hỏi), g (tốc độ
-                  tăng trưởng).
+                <div className="text-[10.5px] text-[#374151]">
+                  <strong>Trong đó:</strong> <MathText content="$P_0$" inline />: Price today ·{" "}
+                  <MathText content="$D_1$" inline />: Expected dividend ·{" "}
+                  <MathText content="$R$" inline />: Required return
                 </div>
               </div>
 
-              <div className="bg-[#fdfaf5] border-l-4 border-[#e96b44] rounded-r-lg p-2.5">
-                <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#963714] mb-1">
-                  <Sparkles size={13} className="text-[#e96b44]" />
-                  <span>KEY TAKEAWAYS & BOUNDARY CONDITIONS</span>
+              <div className="bg-white border border-[#1f2937] p-3">
+                <div className="text-[11px] font-bold text-[#991b1b] uppercase mb-1">
+                  KEY TAKEAWAYS
                 </div>
-                <div className="text-[11px] text-[#3c4636] leading-relaxed">
-                  1. Điều kiện mô hình: Bắt buộc <strong>g &lt; r</strong> (nếu g ≥ r, mẫu số âm/vô cực, mô hình đổ
-                  vỡ).
-                </div>
-                <div className="text-[11px] text-[#3c4636] leading-relaxed">
-                  2. Phân biệt đề thi: "vừa trả" = D_0; "sẽ trả năm tới" = D_1.
-                </div>
+                <ol className="pl-4 list-decimal space-y-0.5 text-[11px] text-[#111827] leading-snug">
+                  <li>Zero growth → Perpetuity · Constant growth → Gordon model</li>
+                  <li>Only use DDM if company pays dividends regularly</li>
+                  <li>
+                    Make sure <strong>g &lt; R</strong>, otherwise the model breaks down
+                  </li>
+                </ol>
               </div>
             </div>
 

@@ -1,7 +1,13 @@
 import "server-only";
 import { generateObject, type LanguageModel } from "ai";
 import { randomUUID } from "node:crypto";
-import { clutchNoteSchema, type ClutchNote, type NoteSection } from "@/lib/schemas/notes";
+import {
+  clutchNoteSchema,
+  type ClutchNote,
+  type NoteFormula,
+  type NoteSection,
+  type NoteSubSection,
+} from "@/lib/schemas/notes";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 import { getGenerationModel } from "./provider";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
@@ -17,26 +23,51 @@ export interface GenerateClutchNoteOptions {
   signal?: AbortSignal;
 }
 
+function sanitizeFormula(f: NoteFormula): NoteFormula {
+  return {
+    ...f,
+    name: f.name ? repairCorruptedLatex(f.name) : "",
+    leadText: f.leadText ? repairCorruptedLatex(f.leadText) : undefined,
+    latex: repairCorruptedLatex(f.latex).replace(/^\$+|\$+$/g, "").trim(),
+    description: f.description ? repairCorruptedLatex(f.description) : undefined,
+    variables: (f.variables ?? []).map((v) => ({
+      symbol: repairCorruptedLatex(v.symbol).replace(/^\$+|\$+$/g, "").trim(),
+      definition: repairCorruptedLatex(v.definition),
+    })),
+  };
+}
+
+function sanitizeSubSection(sub: NoteSubSection): NoteSubSection {
+  return {
+    ...sub,
+    heading: repairCorruptedLatex(sub.heading),
+    leadIn: sub.leadIn ? repairCorruptedLatex(sub.leadIn) : undefined,
+    bulletPoints: (sub.bulletPoints ?? []).map((bp) => repairCorruptedLatex(bp)),
+    formulas: (sub.formulas ?? []).map(sanitizeFormula),
+  };
+}
+
 /**
  * Sanitizes and repairs LaTeX formulas and strings inside distilled sections
  */
 function sanitizeSectionLatex(section: NoteSection): NoteSection {
   return {
     ...section,
-    overview: repairCorruptedLatex(section.overview),
-    bulletPoints: section.bulletPoints.map((bp) => repairCorruptedLatex(bp)),
-    formulas: section.formulas.map((f) => ({
-      ...f,
-      latex: repairCorruptedLatex(f.latex).replace(/^\$+|\$+$/g, "").trim(),
-      description: f.description ? repairCorruptedLatex(f.description) : undefined,
-      variables: f.variables.map((v) => ({
-        symbol: repairCorruptedLatex(v.symbol).replace(/^\$+|\$+$/g, "").trim(),
-        definition: repairCorruptedLatex(v.definition),
-      })),
-    })),
+    titleEn: section.titleEn ?? "",
+    coreStatement: section.coreStatement
+      ? repairCorruptedLatex(section.coreStatement)
+      : undefined,
+    overview: section.overview ? repairCorruptedLatex(section.overview) : "",
+    bulletPoints: (section.bulletPoints ?? []).map((bp) => repairCorruptedLatex(bp)),
+    formulas: (section.formulas ?? []).map(sanitizeFormula),
+    subSections: (section.subSections ?? []).map(sanitizeSubSection),
     keyTakeaways: section.keyTakeaways
       ? {
           ...section.keyTakeaways,
+          items: (section.keyTakeaways.items ?? []).map((item) => ({
+            point: repairCorruptedLatex(item.point),
+            subBullets: (item.subBullets ?? []).map((sb) => repairCorruptedLatex(sb)),
+          })),
           modelSelectionRule: section.keyTakeaways.modelSelectionRule
             ? repairCorruptedLatex(section.keyTakeaways.modelSelectionRule)
             : undefined,
@@ -46,73 +77,145 @@ function sanitizeSectionLatex(section: NoteSection): NoteSection {
           boundaryConditions: section.keyTakeaways.boundaryConditions
             ? repairCorruptedLatex(section.keyTakeaways.boundaryConditions)
             : undefined,
-          summaryPoints: section.keyTakeaways.summaryPoints.map((sp) => repairCorruptedLatex(sp)),
+          summaryPoints: (section.keyTakeaways.summaryPoints ?? []).map((sp) =>
+            repairCorruptedLatex(sp),
+          ),
         }
       : null,
   };
 }
 
+function renderFormulaMarkdown(formula: NoteFormula, parts: string[]) {
+  if (formula.leadText) {
+    parts.push(formula.leadText);
+    parts.push("");
+  } else if (formula.name) {
+    parts.push(`**${formula.name}**`);
+    parts.push("");
+  }
+  parts.push(`$$${formula.latex}$$`);
+  parts.push("");
+  if (formula.variables && formula.variables.length > 0) {
+    parts.push("**Trong đó:**");
+    for (const v of formula.variables) {
+      parts.push(`- $${v.symbol}$: ${v.definition}`);
+    }
+    parts.push("");
+  }
+  if (formula.description) {
+    parts.push(formula.description);
+    parts.push("");
+  }
+}
+
 /**
- * Generates unified Markdown representation for easy clipboard copying & rendering
+ * Generates clean, concise Markdown representation for clipboard copying
  */
 function buildMarkdownNote(note: Omit<ClutchNote, "rawMarkdown">): string {
   const parts: string[] = [];
 
   parts.push(`# ${note.title}`);
-  parts.push(`*${note.subject} · ${note.originalSlideCount} Slides Distilled into ${note.estimatedDistilledPages} Pages · Noise Stripped: ${note.noiseReductionRate}%*`);
-  parts.push("");
-  parts.push(`> **Executive Summary:** ${note.executiveSummary}`);
+  parts.push(
+    `*${note.subject} · ${note.originalSlideCount} Slides → ${note.estimatedDistilledPages} Pages*`,
+  );
   parts.push("");
 
   for (const section of note.sections) {
-    parts.push(`## ${section.titleVi} (${section.titleEn})`);
-    parts.push(section.overview);
-    parts.push("");
+    const headerSuffix =
+      section.titleEn && !section.titleVi.toLowerCase().includes(section.titleEn.toLowerCase())
+        ? ""
+        : "";
+    parts.push(`## ${section.titleVi}${headerSuffix}`);
 
-    if (section.bulletPoints.length > 0) {
-      for (const bp of section.bulletPoints) {
-        parts.push(`- ${bp}`);
-      }
+    if (section.coreStatement) {
+      parts.push(`**${section.coreStatement}**`);
       parts.push("");
     }
 
-    if (section.formulas.length > 0) {
+    if (section.overview) {
+      parts.push(section.overview);
+      parts.push("");
+    }
+
+    const formulasIntroduceBullets =
+      section.formulas.length > 0 &&
+      !section.formulas[0].leadText &&
+      Boolean(section.formulas[0].description?.trim().endsWith(":"));
+
+    if (formulasIntroduceBullets) {
       for (const formula of section.formulas) {
-        parts.push(`### 📐 ${formula.name}`);
-        parts.push(`$$${formula.latex}$$`);
-        if (formula.description) {
-          parts.push(`*${formula.description}*`);
+        renderFormulaMarkdown(formula, parts);
+      }
+      if (section.bulletPoints.length > 0) {
+        for (const bp of section.bulletPoints) {
+          parts.push(`- ${bp}`);
         }
         parts.push("");
-        if (formula.variables.length > 0) {
-          parts.push("**Trong đó:**");
-          for (const v of formula.variables) {
-            parts.push(`- $${v.symbol}$: ${v.definition}`);
+      }
+    } else {
+      if (section.bulletPoints.length > 0) {
+        for (const bp of section.bulletPoints) {
+          parts.push(`- ${bp}`);
+        }
+        parts.push("");
+      }
+      for (const formula of section.formulas) {
+        renderFormulaMarkdown(formula, parts);
+      }
+    }
+
+    if (section.subSections && section.subSections.length > 0) {
+      for (const sub of section.subSections) {
+        if (sub.heading) {
+          parts.push(`### ${sub.heading}`);
+        }
+        if (sub.leadIn) {
+          parts.push(sub.leadIn);
+        }
+        if (sub.bulletPoints.length > 0) {
+          for (const bp of sub.bulletPoints) {
+            parts.push(`- ${bp}`);
           }
           parts.push("");
+        }
+        for (const formula of sub.formulas) {
+          renderFormulaMarkdown(formula, parts);
         }
       }
     }
 
     if (section.keyTakeaways) {
-      parts.push(`### 🌟 ${section.keyTakeaways.title}`);
-      if (section.keyTakeaways.modelSelectionRule) {
-        parts.push(`- **Model Selection (Cách chọn mô hình):** ${section.keyTakeaways.modelSelectionRule}`);
-      }
-      if (section.keyTakeaways.realWorldConditions) {
-        parts.push(`- **Real-World Conditions (Điều kiện áp dụng thực tế):** ${section.keyTakeaways.realWorldConditions}`);
-      }
-      if (section.keyTakeaways.boundaryConditions) {
-        parts.push(`- **Boundary Conditions & Pitfalls (Giới hạn toán học & Bẫy thi cử):** ${section.keyTakeaways.boundaryConditions}`);
-      }
-      for (const point of section.keyTakeaways.summaryPoints) {
-        parts.push(`- ${point}`);
+      const kt = section.keyTakeaways;
+      parts.push(`> **${kt.title || "KEY TAKEAWAYS"}**`);
+      if (kt.items && kt.items.length > 0) {
+        kt.items.forEach((item, idx) => {
+          parts.push(`> ${idx + 1}. ${item.point}`);
+          if (item.subBullets && item.subBullets.length > 0) {
+            for (const sb of item.subBullets) {
+              parts.push(`>    - ${sb}`);
+            }
+          }
+        });
+      } else {
+        let num = 1;
+        if (kt.modelSelectionRule) {
+          parts.push(`> ${num++}. ${kt.modelSelectionRule}`);
+        }
+        if (kt.realWorldConditions) {
+          parts.push(`> ${num++}. ${kt.realWorldConditions}`);
+        }
+        if (kt.boundaryConditions) {
+          parts.push(`> ${num++}. ${kt.boundaryConditions}`);
+        }
+        for (const point of kt.summaryPoints) {
+          parts.push(`> ${num++}. ${point}`);
+        }
       }
       parts.push("");
     }
   }
 
-  return parts.join("\n");
+  return parts.join("\n").trim();
 }
 
 export async function generateClutchNote(

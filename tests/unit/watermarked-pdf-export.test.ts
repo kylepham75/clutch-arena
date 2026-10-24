@@ -3,7 +3,7 @@ import { generateClutchNotePdfHtml } from "@/lib/notes/export-pdf";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 
 describe("Clutch Arena Watermarked PDF Export Generator", () => {
-  it("generates complete HTML with repeating watermark and KaTeX stylesheet", () => {
+  it("generates concise study handout HTML with watermark, boxed equations, subSections, and KaTeX", () => {
     const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE);
 
     // 1. Must include KaTeX stylesheet for vector math rendering
@@ -22,19 +22,24 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
     expect(html).toContain("CLUTCH ARENA");
     expect(html).not.toContain("CLUTCH ARENA · PRO NOTES");
 
-    // 4. Must include bilingual section headers
+    // 4. Must include concise section headers & sub-case headings
+    expect(html).toContain("CHAPTER 9: STOCK VALUATION");
     expect(html).toContain("NGUYÊN LÝ CƠ BẢN");
     expect(html).toContain("CÔNG THỨC TỔNG QUÁT");
+    expect(html).toContain("CASE 1: Zero Growth Model");
+    expect(html).toContain("CASE 2: Constant Growth Model");
+    expect(html).toContain("VALUE OF PREFERENCE SHARE");
 
-    // 5. Must include LaTeX rendered formulas and "Trong đó:" variable block
+    // 5. Must include LaTeX rendered boxed formulas and "Trong đó:" variable block
     expect(html).toContain("pdf-formula-card");
-    expect(html).toContain("Trong đó (Where):");
+    expect(html).toContain("Trong đó:");
     expect(html).toContain("pdf-variable-list");
 
-    // 6. Must include Key Takeaways callout box with boundary condition warning
+    // 6. Must include crisp bordered Key Takeaways box with structured sub-bullets
     expect(html).toContain("pdf-takeaways-card");
-    expect(html).toContain("pdf-pitfall-alert");
-    expect(html).toContain("CRITICAL MATHEMATICAL PITFALL");
+    expect(html).toContain("KEY TAKEAWAYS");
+    expect(html).toContain("Constant growth → Gordon model");
+    expect(html).toContain("otherwise the model breaks down");
     expect(html).toContain("katex");
 
     // 7. Must include print CSS rules with page-break-inside avoid
