@@ -6,6 +6,7 @@ import {
   generatedClutchNoteSchema,
   applyHallucinationShield,
   sanitizeAcademicHeader,
+  ensureInlineMathDelimiters,
 } from "@/lib/ai/generate-notes";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "@/lib/ai/prompts-notes";
@@ -254,9 +255,16 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
     expect(secC.subSections[0].formulas[0].latex).toContain("P_0");
     expect(secC.subSections[0].formulas[0].latex).toContain("R_0");
 
-    // 4. Case 3 Terminal Value injected
+    // 4. Case 3 Terminal Value injected with LaTeX math delimiters
     const case3 = secC.subSections[2];
-    expect(case3.formulas.some((f: any) => f.latex.includes("P_N"))).toBe(true);
+    const case3Terminal = case3.formulas.find((f: any) => f.latex.includes("P_N"));
+    expect(case3Terminal).toBeDefined();
+    expect(case3Terminal?.description).toBe(
+      "$P_N$ represents the present value of the constant growth perpetuity at the end of Year $N$.",
+    );
+    expect(
+      case3Terminal?.variables.find((v: any) => v.symbol === "D_{N+1}")?.definition,
+    ).toBe("First dividend in the constant growth stage ($D_N \\times (1 + g)$)");
 
     // 5. Circular growth rate replaced with Retention Ratio * Return on retained earnings
     const secD = shielded[3];
@@ -266,18 +274,29 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
     expect(growthSub.formulas[0].latex).toContain("\\text{Return on retained earnings");
     expect(growthSub.formulas[0].latex).not.toContain("P_1 - P_0");
 
-    // 6. R decomposition underbraces and bullets added
+    // 6. R decomposition underbraces and bullets added with $...$ inline math delimiters
     const discountSub = secD.subSections[1];
     expect(discountSub.formulas[0].latex).toContain("Dividend Yield");
     expect(discountSub.formulas[0].latex).toContain("Capital Gains Yield");
-    expect(discountSub.bulletPoints.some((bp: string) => bp.includes("Dividend Yield"))).toBe(true);
+    expect(discountSub.bulletPoints[0]).toBe(
+      "Dividend Yield (Lợi suất cổ tức) $= \\frac{D_1}{P_0}$: Expected annual dividend divided by current stock price (tested independently).",
+    );
+    expect(discountSub.bulletPoints[1]).toBe(
+      "Capital Gains Yield (Lợi suất tăng vốn) $= g$: The rate at which the stock price increases over time.",
+    );
 
-    // 7. Preferred stock header sanitized & Deferred Preferred Stock injected
+    // 7. Preferred stock header sanitized & Deferred Preferred Stock injected with $...$ delimiters
     const prefSec = shielded[4];
     expect(prefSec.titleVi).toBe("E. VALUE OF PREFERENCE SHARE");
     const deferredSub = prefSec.subSections.find((sub: any) => sub.heading.includes("Deferred"));
     expect(deferredSub).toBeDefined();
     expect(deferredSub?.formulas[0].latex).toContain("P_{t-1}");
+    expect(deferredSub?.bulletPoints[0]).toBe(
+      "Step 1: Calculate the price at Year $t-1$ (one year before first dividend): $P_{t-1} = \\frac{D_t}{R_p}$",
+    );
+    expect(deferredSub?.bulletPoints[1]).toBe(
+      "Step 2: Discount $P_{t-1}$ back to Year 0: $P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}$",
+    );
   });
 
   it("consolidates fragmented 9-section LLM outputs (A through I) into strictly 5 canonical sections", () => {
@@ -431,5 +450,44 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
     }
 
     assertAllObjectPropertiesRequired(jsonSchema);
+  });
+
+  it("wraps bare \\frac{...}{...} in prose bulletPoints in $...$ delimiters without modifying strings that already have $", () => {
+    // 1. Bare fraction wrapped in $...$
+    const rawBullet = "Dividend Yield = \\frac{D_1}{P_0}: Expected annual dividend";
+    expect(ensureInlineMathDelimiters(rawBullet)).toBe(
+      "Dividend Yield = $\\frac{D_1}{P_0}$: Expected annual dividend",
+    );
+
+    // 2. Bare fraction with 1 level of nested braces wrapped in $...$
+    const nestedBullet =
+      "Deferred price step: P_{t-1} = \\frac{D_t}{R_p} and P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}";
+    expect(ensureInlineMathDelimiters(nestedBullet)).toBe(
+      "Deferred price step: P_{t-1} = $\\frac{D_t}{R_p}$ and P_0 = $\\frac{P_{t-1}}{(1 + R_p)^{t-1}}$",
+    );
+
+    // 3. String that already has $ is preserved as-is
+    const alreadyWrapped = "Dividend Yield $= \\frac{D_1}{P_0}$: already has delimiters";
+    expect(ensureInlineMathDelimiters(alreadyWrapped)).toBe(alreadyWrapped);
+
+    // 4. String without fraction is untouched
+    const plainText = "Standard bullet point with no math formulas.";
+    expect(ensureInlineMathDelimiters(plainText)).toBe(plainText);
+
+    // 5. Bare fraction in Section bulletPoints processed via applyHallucinationShield
+    const testSections: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. NGUYÊN LÝ CƠ BẢN",
+        bulletPoints: ["Raw fraction bullet: \\frac{CF_t}{(1+r)^t} without dollars"],
+        formulas: [],
+        subSections: [],
+      },
+    ];
+    const result = applyHallucinationShield(testSections, "");
+    expect(result[0].bulletPoints[0]).toBe(
+      "Raw fraction bullet: $\\frac{CF_t}{(1+r)^t}$ without dollars",
+    );
   });
 });

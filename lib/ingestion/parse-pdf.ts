@@ -24,14 +24,18 @@ export async function parsePdf(bytes: Buffer, signal: AbortSignal) {
         "Upload at most 150 PDF pages at a time.",
         413,
       );
+    signal.throwIfAborted();
+    const result = await parser.getText();
     const sources: SourceBlock[] = [];
     let characterCount = 0;
     let emptyPages = 0;
+    const pageMap = new Map<number, string>();
+    for (const pageItem of result.pages) {
+      pageMap.set(pageItem.num, pageItem.text);
+    }
     for (let page = 1; page <= info.total; page++) {
       signal.throwIfAborted();
-      const result = await parser.getText({ partial: [page] });
-      const text =
-        result.pages.find((item) => item.num === page)?.text.trim() || "";
+      const text = pageMap.get(page)?.trim() || "";
       if (!text) {
         emptyPages++;
         continue;

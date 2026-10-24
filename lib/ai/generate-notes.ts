@@ -211,6 +211,20 @@ function cleanTypoString(str: string): string {
     .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*R_?p\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{P_1}{1 + R_p}");
 }
 
+/**
+ * Ensures bare \frac{...}{...} fractions in prose strings (without existing $ delimiters)
+ * are wrapped in $...$ inline math delimiters so they render cleanly via KaTeX in MathText.
+ * Supports up to 1 level of nested curly braces in numerator and denominator.
+ */
+export function ensureInlineMathDelimiters(text: string): string {
+  if (!text || typeof text !== "string") return text;
+  if (!text.includes("$") && text.includes("\\frac{")) {
+    const fracRegex = /\\frac\{(?:[^{}]|\{[^{}]*\})*\}\{(?:[^{}]|\{[^{}]*\})*\}/g;
+    return text.replace(fracRegex, (match) => `$${match}$`);
+  }
+  return text;
+}
+
 export function sanitizeAcademicHeader(rawTitle: string, letter: string): string {
   let title = rawTitle.trim();
 
@@ -630,23 +644,31 @@ export function applyHallucinationShield(
     sec.letter = sequentialLetter;
     sec.id = `sec-${sequentialLetter.toLowerCase()}-${idx + 1}`;
 
-    if (sec.coreStatement) sec.coreStatement = cleanTypoString(sec.coreStatement);
-    if (sec.overview) sec.overview = cleanTypoString(sec.overview);
-    sec.bulletPoints = sec.bulletPoints.map(cleanTypoString);
+    if (sec.coreStatement)
+      sec.coreStatement = ensureInlineMathDelimiters(cleanTypoString(sec.coreStatement));
+    if (sec.overview)
+      sec.overview = ensureInlineMathDelimiters(cleanTypoString(sec.overview));
+    sec.bulletPoints = sec.bulletPoints.map((bp) =>
+      ensureInlineMathDelimiters(cleanTypoString(bp)),
+    );
 
     if (sec.keyTakeaways) {
       if (sec.keyTakeaways.items) {
         sec.keyTakeaways.items = sec.keyTakeaways.items.map((item) => ({
-          point: cleanTypoString(item.point),
-          subBullets: (item.subBullets ?? []).map(cleanTypoString),
+          point: ensureInlineMathDelimiters(cleanTypoString(item.point)),
+          subBullets: (item.subBullets ?? []).map((sb) =>
+            ensureInlineMathDelimiters(cleanTypoString(sb)),
+          ),
         }));
       }
       if (sec.keyTakeaways.boundaryConditions) {
-        sec.keyTakeaways.boundaryConditions = cleanTypoString(
-          sec.keyTakeaways.boundaryConditions,
+        sec.keyTakeaways.boundaryConditions = ensureInlineMathDelimiters(
+          cleanTypoString(sec.keyTakeaways.boundaryConditions),
         );
       }
-      sec.keyTakeaways.summaryPoints = (sec.keyTakeaways.summaryPoints ?? []).map(cleanTypoString);
+      sec.keyTakeaways.summaryPoints = (sec.keyTakeaways.summaryPoints ?? []).map((sp) =>
+        ensureInlineMathDelimiters(cleanTypoString(sp)),
+      );
     }
 
     // 2b. Shield formulas at section top-level
@@ -657,8 +679,11 @@ export function applyHallucinationShield(
       sec.subSections = deduplicateSubSections(sec.subSections);
       sec.subSections = sec.subSections.map((sub) => {
         sub.heading = sanitizeSubSectionHeading(sub.heading);
-        if (sub.leadIn) sub.leadIn = cleanTypoString(sub.leadIn);
-        sub.bulletPoints = sub.bulletPoints.map(cleanTypoString);
+        if (sub.leadIn)
+          sub.leadIn = ensureInlineMathDelimiters(cleanTypoString(sub.leadIn));
+        sub.bulletPoints = sub.bulletPoints.map((bp) =>
+          ensureInlineMathDelimiters(cleanTypoString(bp)),
+        );
         sub.formulas = sub.formulas.map((f) =>
           shieldFormula(f, `${sec.titleVi} ${sub.heading}`),
         );
@@ -678,7 +703,7 @@ export function applyHallucinationShield(
               leadText: "Terminal Value calculation at Year N:",
               latex: "P_N = \\frac{D_{N+1}}{R - g} = \\frac{D_N \\cdot (1 + g)}{R - g}",
               description:
-                "P_N represents the present value of the constant growth perpetuity at the end of Year N.",
+                "$P_N$ represents the present value of the constant growth perpetuity at the end of Year $N$.",
               variables: [
                 {
                   symbol: "P_N",
@@ -686,7 +711,7 @@ export function applyHallucinationShield(
                 },
                 {
                   symbol: "D_{N+1}",
-                  definition: "First dividend in the constant growth stage = D_N * (1 + g)",
+                  definition: "First dividend in the constant growth stage ($D_N \\times (1 + g)$)",
                 },
               ],
             });
@@ -701,8 +726,8 @@ export function applyHallucinationShield(
           );
           if (!hasYieldDefinitions) {
             sub.bulletPoints.unshift(
-              "Dividend Yield (Lợi suất cổ tức) = \\frac{D_1}{P_0}: Expected annual dividend divided by current stock price (tested independently).",
-              "Capital Gains Yield (Lợi suất tăng vốn) = g: The rate at which the stock price increases over time.",
+              "Dividend Yield (Lợi suất cổ tức) $= \\frac{D_1}{P_0}$: Expected annual dividend divided by current stock price (tested independently).",
+              "Capital Gains Yield (Lợi suất tăng vốn) $= g$: The rate at which the stock price increases over time.",
             );
           }
         }
@@ -730,8 +755,8 @@ export function applyHallucinationShield(
           heading: "Deferred Preferred Stock (Cổ phiếu ưu đãi hoãn trả)",
           leadIn: "When dividends begin at Year t (delayed perpetuity):",
           bulletPoints: [
-            "Step 1: Calculate the price at Year t-1 (one year before first dividend): P_{t-1} = \\frac{D_t}{R_p}",
-            "Step 2: Discount P_{t-1} back to Year 0: P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}",
+            "Step 1: Calculate the price at Year $t-1$ (one year before first dividend): $P_{t-1} = \\frac{D_t}{R_p}$",
+            "Step 2: Discount $P_{t-1}$ back to Year 0: $P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}$",
           ],
           formulas: [
             {
@@ -757,8 +782,10 @@ function sanitizeSubSection(sub: NoteSubSection): NoteSubSection {
   return {
     ...sub,
     heading: repairCorruptedLatex(sub.heading),
-    leadIn: sub.leadIn ? repairCorruptedLatex(sub.leadIn) : undefined,
-    bulletPoints: (sub.bulletPoints ?? []).map((bp) => repairCorruptedLatex(bp)),
+    leadIn: sub.leadIn ? ensureInlineMathDelimiters(repairCorruptedLatex(sub.leadIn)) : undefined,
+    bulletPoints: (sub.bulletPoints ?? []).map((bp) =>
+      ensureInlineMathDelimiters(repairCorruptedLatex(bp)),
+    ),
     formulas: (sub.formulas ?? []).map(sanitizeFormula),
   };
 }
@@ -771,18 +798,24 @@ function sanitizeSectionLatex(section: NoteSection): NoteSection {
     ...section,
     titleEn: section.titleEn ?? "",
     coreStatement: section.coreStatement
-      ? repairCorruptedLatex(section.coreStatement)
+      ? ensureInlineMathDelimiters(repairCorruptedLatex(section.coreStatement))
       : undefined,
-    overview: section.overview ? repairCorruptedLatex(section.overview) : "",
-    bulletPoints: (section.bulletPoints ?? []).map((bp) => repairCorruptedLatex(bp)),
+    overview: section.overview
+      ? ensureInlineMathDelimiters(repairCorruptedLatex(section.overview))
+      : "",
+    bulletPoints: (section.bulletPoints ?? []).map((bp) =>
+      ensureInlineMathDelimiters(repairCorruptedLatex(bp)),
+    ),
     formulas: (section.formulas ?? []).map(sanitizeFormula),
     subSections: (section.subSections ?? []).map(sanitizeSubSection),
     keyTakeaways: section.keyTakeaways
       ? {
           ...section.keyTakeaways,
           items: (section.keyTakeaways.items ?? []).map((item) => ({
-            point: repairCorruptedLatex(item.point),
-            subBullets: (item.subBullets ?? []).map((sb) => repairCorruptedLatex(sb)),
+            point: ensureInlineMathDelimiters(repairCorruptedLatex(item.point)),
+            subBullets: (item.subBullets ?? []).map((sb) =>
+              ensureInlineMathDelimiters(repairCorruptedLatex(sb)),
+            ),
           })),
           modelSelectionRule: section.keyTakeaways.modelSelectionRule
             ? repairCorruptedLatex(section.keyTakeaways.modelSelectionRule)
@@ -791,10 +824,10 @@ function sanitizeSectionLatex(section: NoteSection): NoteSection {
             ? repairCorruptedLatex(section.keyTakeaways.realWorldConditions)
             : undefined,
           boundaryConditions: section.keyTakeaways.boundaryConditions
-            ? repairCorruptedLatex(section.keyTakeaways.boundaryConditions)
+            ? ensureInlineMathDelimiters(repairCorruptedLatex(section.keyTakeaways.boundaryConditions))
             : undefined,
           summaryPoints: (section.keyTakeaways.summaryPoints ?? []).map((sp) =>
-            repairCorruptedLatex(sp),
+            ensureInlineMathDelimiters(repairCorruptedLatex(sp)),
           ),
         }
       : null,

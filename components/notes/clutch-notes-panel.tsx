@@ -26,6 +26,10 @@ import { BeforeAfterModal } from "./before-after-modal";
 import { NoteRenderer } from "./note-renderer";
 import { PricingModal } from "@/components/pricing/pricing-modal";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
+import {
+  extractSlidesInBrowser,
+  ClientSlideExtractionError,
+} from "@/lib/notes/client-extract-slides";
 import type { ClutchNote } from "@/lib/schemas/notes";
 
 export function ClutchNotesPanel() {
@@ -80,9 +84,9 @@ export function ClutchNotesPanel() {
         return;
       }
 
-      if (file.size > 4.5 * 1024 * 1024) {
+      if (file.size > 25 * 1024 * 1024) {
         setError(
-          `File size is ${(file.size / (1024 * 1024)).toFixed(1)}MB. Vercel serverless functions have a 4.5MB upload limit. Please compress the PDF/PPTX or upload a smaller chapter deck.`,
+          `File size is ${(file.size / (1024 * 1024)).toFixed(1)}MB. Maximum allowed slide deck size is 25MB.`,
         );
         return;
       }
@@ -112,32 +116,63 @@ export function ClutchNotesPanel() {
 
     setLoading(true);
     setError(null);
-    setProgressStep("Ingesting slide deck and extracting mathematical notation...");
+    setProgressStep("Extracting slide text & mathematical notation locally...");
+
+    const progressTimers = [
+      setTimeout(() => {
+        setProgressStep("Stripping attendance QR codes, cover slides & repetitive noise...");
+      }, 800),
+      setTimeout(() => {
+        setProgressStep("Extracting mathematical notation and bilingual conceptual structure...");
+      }, 3500),
+      setTimeout(() => {
+        setProgressStep("Analyzing valuation models, accounting formulas & economic principles...");
+      }, 9000),
+      setTimeout(() => {
+        setProgressStep("Standardizing LaTeX equations and compiling 'Trong đó:' variable list...");
+      }, 18_000),
+      setTimeout(() => {
+        setProgressStep("Synthesizing exam-ready Key Takeaways & boundary condition rules...");
+      }, 35_000),
+    ];
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 120_000); // 2 minutes matching serverless maxDuration
 
     try {
-      const formData = new FormData();
-      formData.append("file", selectedFile);
-      if (focus.trim()) {
-        formData.append("focus", focus.trim());
-      }
+      let extracted: {
+        fileName: string;
+        slideCount: number;
+        sources: any[];
+      } | null = null;
+      let useMultipartFallback = false;
 
-      const progressTimers = [
-        setTimeout(() => {
-          setProgressStep("Stripping attendance QR codes, cover slides & repetitive noise...");
-        }, 1200),
-        setTimeout(() => {
-          setProgressStep("Extracting mathematical notation and bilingual conceptual structure...");
-        }, 6000),
-        setTimeout(() => {
-          setProgressStep("Analyzing valuation models, accounting formulas & economic principles...");
-        }, 22_000),
-        setTimeout(() => {
-          setProgressStep("Standardizing LaTeX equations and compiling 'Trong đó:' variable list...");
-        }, 45_000),
-        setTimeout(() => {
-          setProgressStep("Synthesizing exam-ready Key Takeaways & boundary condition rules...");
-        }, 68_000),
-      ];
+      try {
+        extracted = await extractSlidesInBrowser(selectedFile, controller.signal);
+      } catch (err: any) {
+        if (
+          err instanceof ClientSlideExtractionError ||
+          err?.isUserActionable === true ||
+          err?.name === "AbortError"
+        ) {
+          throw err;
+        }
+
+        // Only fall back to multipart if file size is within 4.5MB server limit
+        if (selectedFile.size <= 4.5 * 1024 * 1024) {
+          console.warn(
+            "[ClutchNotes] Client extraction encountered non-actionable error, falling back to server multipart ingestion:",
+            err,
+          );
+          useMultipartFallback = true;
+        } else {
+          throw new Error(
+            `Local slide extraction failed (${err?.message || "unknown error"}), and file size (${(selectedFile.size / (1024 * 1024)).toFixed(1)}MB) exceeds the 4.5MB direct upload fallback limit. Please compress the file or upload a smaller chapter deck.`,
+          );
+        }
+      }
 
       const effectiveTier = tier && tier !== "contender" ? tier : "contender";
       const headers: Record<string, string> = {
@@ -162,69 +197,77 @@ export function ClutchNotesPanel() {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        controller.abort();
-      }, 120_000); // 2 minutes matching serverless maxDuration
-
-      try {
-        const res = await fetch("/api/notes/generate", {
-          method: "POST",
-          headers,
-          body: formData,
-          signal: controller.signal,
+      let requestBody: BodyInit;
+      if (!useMultipartFallback && extracted) {
+        headers["Content-Type"] = "application/json";
+        requestBody = JSON.stringify({
+          fileName: extracted.fileName,
+          slideCount: extracted.slideCount,
+          sources: extracted.sources,
+          focus: focus.trim() || undefined,
         });
-
-        let data: any = null;
-        let rawText = "";
-        try {
-          rawText = await res.text();
-          data = JSON.parse(rawText);
-        } catch {
-          // Response is not JSON (e.g. Vercel 504 / 413 proxy page)
+      } else {
+        const formData = new FormData();
+        formData.append("file", selectedFile);
+        if (focus.trim()) {
+          formData.append("focus", focus.trim());
         }
-
-        if (!res.ok || !data || !data.ok) {
-          if (res.status === 413) {
-            throw new Error(
-              "Slide deck exceeds Vercel serverless upload limit (4.5MB). Please compress the PDF/PPTX or upload specific chapters.",
-            );
-          }
-          if (res.status === 504) {
-            throw new Error(
-              "The note synthesis timed out on the server (120s limit). Please try converting fewer slides or specify a focused chapter topic.",
-            );
-          }
-          if (res.status === 403) {
-            setBeforeAfterOpen(true);
-            throw new Error(
-              data?.error?.message || "Paid subscription required (Cram Pass, Pro, or Tutor).",
-            );
-          }
-          if (res.status === 429) {
-            throw new Error(
-              data?.error?.message || "Daily limit reached: up to 30 deck conversions per day.",
-            );
-          }
-          const serverMsg =
-            data?.error?.message ||
-            (res.statusText
-              ? `Server error (${res.status}): ${res.statusText}`
-              : "Failed to synthesize study notes. Please try again.");
-          throw new Error(serverMsg);
-        }
-
-        setNote(data.note);
-        setDailyUsage((prev) => prev + 1);
-        setSelectedFile(null);
-      } finally {
-        clearTimeout(timeoutId);
-        progressTimers.forEach(clearTimeout);
+        requestBody = formData;
       }
+
+      const res = await fetch("/api/notes/generate", {
+        method: "POST",
+        headers,
+        body: requestBody,
+        signal: controller.signal,
+      });
+
+      let data: any = null;
+      let rawText = "";
+      try {
+        rawText = await res.text();
+        data = JSON.parse(rawText);
+      } catch {
+        // Response is not JSON (e.g. Vercel 504 / 413 proxy page)
+      }
+
+      if (!res.ok || !data || !data.ok) {
+        if (res.status === 413) {
+          throw new Error(
+            "Slide deck exceeds Vercel serverless upload limit (4.5MB). Please compress the PDF/PPTX or upload specific chapters.",
+          );
+        }
+        if (res.status === 504) {
+          throw new Error(
+            "The note synthesis timed out on the server (120s limit). Please try converting fewer slides or specify a focused chapter topic.",
+          );
+        }
+        if (res.status === 403) {
+          setBeforeAfterOpen(true);
+          throw new Error(
+            data?.error?.message || "Paid subscription required (Cram Pass, Pro, or Tutor).",
+          );
+        }
+        if (res.status === 429) {
+          throw new Error(
+            data?.error?.message || "Daily limit reached: up to 30 deck conversions per day.",
+          );
+        }
+        const serverMsg =
+          data?.error?.message ||
+          (res.statusText
+            ? `Server error (${res.status}): ${res.statusText}`
+            : "Failed to synthesize study notes. Please try again.");
+        throw new Error(serverMsg);
+      }
+
+      setNote(data.note);
+      setDailyUsage((prev) => prev + 1);
+      setSelectedFile(null);
     } catch (err: any) {
       if (err.name === "AbortError") {
         setError(
-          "Synthesis timed out after 1 minute 30 seconds. The slide deck may be too dense or complex. Try compressing the PDF or uploading single chapter slides.",
+          "Synthesis timed out after 2 minutes. The slide deck may be too dense or complex. Try compressing the PDF or uploading single chapter slides.",
         );
       } else if (
         err.message?.includes("Failed to fetch") ||
@@ -238,6 +281,8 @@ export function ClutchNotesPanel() {
         setError(err.message || "An unexpected error occurred during note synthesis.");
       }
     } finally {
+      clearTimeout(timeoutId);
+      progressTimers.forEach(clearTimeout);
       setLoading(false);
       setProgressStep(null);
     }
@@ -317,7 +362,7 @@ export function ClutchNotesPanel() {
             </div>
             <span>Upload Lecturer Slide Deck</span>
           </div>
-          <span className="text-xs text-[#7e8777] font-medium">PDF or PPTX up to 4.5MB</span>
+          <span className="text-xs text-[#7e8777] font-medium">PDF or PPTX up to 25MB</span>
         </div>
 
         {/* Dropzone with PRO badge */}
@@ -358,7 +403,7 @@ export function ClutchNotesPanel() {
               <p className="text-xs text-[#788270] leading-relaxed">
                 Accepts <strong className="text-[#3c4636]">.pdf</strong> and{" "}
                 <strong className="text-[#3c4636]">.pptx</strong> files from university courses
-                (Finance, Economics, Engineering, STEM). Max 4.5MB per deck.
+                (Finance, Economics, Engineering, STEM). Max 25MB per deck.
               </p>
             </div>
           )}
