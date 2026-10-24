@@ -103,7 +103,7 @@ const generatedNoteSectionSchema = z
       .string()
       .min(1)
       .describe(
-        "Clean uppercase section header WITH letter prefix. MUST follow canonical academic titles: 'A. NGUYÊN LÝ CƠ BẢN', 'B. CÔNG THỨC TỔNG QUÁT', 'C. DDM (DIVIDEND DISCOUNT MODEL)', 'D. PARAMETERS IN DIVIDEND DISCOUNT MODEL', 'E. VALUE OF PREFERENCE SHARE'. NEVER invent machine translations.",
+        "Clean uppercase section header WITH letter prefix. Derive titles directly from the slide topic (e.g. for Cost of Capital/WACC: 'A. TỔNG QUAN CHI PHÍ VỐN', 'B. CHI PHÍ VỐN CỔ PHẦN (COST OF EQUITY)', 'C. CHI PHÍ NỢ VAY VÀ CỔ PHIẾU ƯU ĐÃI', 'D. CHI PHÍ SỬ DỤNG VỐN BÌNH QUÂN (WACC)', 'E. RỦI RO BỘ PHẬN VÀ CHI PHÍ PHÁT HÀNH'; for Stock Valuation: 'A. NGUYÊN LÝ CƠ BẢN', 'B. CÔNG THỨC TỔNG QUÁT', 'C. DDM (DIVIDEND DISCOUNT MODEL)', 'D. PARAMETERS IN DIVIDEND DISCOUNT MODEL', 'E. VALUE OF PREFERENCE SHARE'). NEVER invent machine translations.",
       ),
     coreStatement: z
       .string()
@@ -145,7 +145,7 @@ export const generatedClutchNoteSchema = z
       .string()
       .min(1)
       .describe(
-        "Concise uppercase chapter/topic heading, e.g. 'CHAPTER 9: STOCK VALUATION' (keep under 8 words)",
+        "Concise uppercase chapter/topic heading, e.g. 'CHAPTER 13: COST OF CAPITAL & WACC' or 'CHAPTER 9: STOCK VALUATION' (keep under 8 words)",
       ),
     subject: z
       .string()
@@ -267,7 +267,11 @@ export function ensureInlineMathDelimiters(text: string): string {
   return text;
 }
 
-export function sanitizeAcademicHeader(rawTitle: string, letter: string): string {
+export function sanitizeAcademicHeader(
+  rawTitle: string,
+  letter: string,
+  isStockValuation: boolean = true,
+): string {
   let title = rawTitle.trim();
 
   // Strip leading prefixes like "Header B: ", "B. ", "1. ", "Section B: "
@@ -288,20 +292,33 @@ export function sanitizeAcademicHeader(rawTitle: string, letter: string): string
 
   const lower = title.toLowerCase();
 
-  // 2. Map directly to canonical academic headers for Corporate Finance
-  if (/nguyên lý|cơ bản|fundamental.*principle/i.test(lower)) {
+  // 2. If the topic is Cost of Capital / WACC, Cost of Debt, Cost of Equity, Flotation Costs, etc.,
+  // or if explicitly not Stock Valuation, preserve the clean uppercase topic title with letter prefix!
+  const isNonStockTopic =
+    !isStockValuation ||
+    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn|cost of debt|chi phí nợ|cost of equity|chi phí.*cổ phần|chi phí.*chủ sở hữu|cost of preferred|chi phí.*(cổ phiếu )?ưu đãi|flotation|chi phí phát hành|divisional risk|rủi ro bộ phận|capital structure|cơ cấu vốn|pure play|subjective approach|capital budgeting|ngân sách vốn|sml|capm/i.test(
+      lower,
+    );
+
+  if (isNonStockTopic) {
+    const cleanStripped = title.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
+    return `${letter}. ${cleanStripped.toUpperCase()}`;
+  }
+
+  // 3. Map directly to canonical academic headers for Corporate Finance (Stock Valuation / DDM)
+  if (/nguyên lý|fundamental.*principle/i.test(lower) || (/cơ bản/i.test(lower) && !/vốn|nợ|wacc/i.test(lower))) {
     return `${letter}. NGUYÊN LÝ CƠ BẢN`;
   }
-  if (/preference|preferred|ưu đãi|ưu tiên|cứu trợ|bổ trợ/i.test(lower)) {
+  if (/preference|preferred|ưu đãi|ưu tiên|cứu trợ|bổ trợ/i.test(lower) && !/cost|chi phí|nợ|debt|wacc|vốn/i.test(lower)) {
     return `${letter}. VALUE OF PREFERENCE SHARE`;
   }
-  if (/parameter|tham số|finding g|finding r|growth rate|discount rate|lợi suất/i.test(lower)) {
+  if (/parameter|tham số|finding g|finding r/i.test(lower) || (/growth rate|discount rate|lợi suất/i.test(lower) && !/debt|equity|wacc|vốn/i.test(lower))) {
     return `${letter}. PARAMETERS IN DIVIDEND DISCOUNT MODEL`;
   }
-  if (/ddm|dividend discount|tăng trưởng đều|không tăng trưởng|differential|ritm|hạnh hạnh/i.test(lower)) {
+  if (/ddm|dividend discount|gordon|ritm|hạnh hạnh/i.test(lower) || (/tăng trưởng đều|không tăng trưởng|differential/i.test(lower) && !/wacc|vốn/i.test(lower))) {
     return `${letter}. DDM (DIVIDEND DISCOUNT MODEL)`;
   }
-  if (/công thức tổng quát|tổng quát|one-period|định giá|chọn mô hình|giáo dục/i.test(lower)) {
+  if (/công thức tổng quát|one-period|định giá|chọn mô hình/i.test(lower) && !/wacc|chi phí/i.test(lower)) {
     return `${letter}. CÔNG THỨC TỔNG QUÁT`;
   }
 
@@ -323,7 +340,11 @@ export function sanitizeSubSectionHeading(heading: string): string {
   return cleanTypoString(h);
 }
 
-function shieldFormula(f: NoteFormula, contextHint: string): NoteFormula {
+function shieldFormula(
+  f: NoteFormula,
+  contextHint: string,
+  isStockValuation: boolean = true,
+): NoteFormula {
   let latex = cleanTypoString(f.latex);
   let leadText = f.leadText ? cleanTypoString(f.leadText) : undefined;
   let description = f.description ? cleanTypoString(f.description) : undefined;
@@ -348,36 +369,39 @@ function shieldFormula(f: NoteFormula, contextHint: string): NoteFormula {
     }
   }
 
-  // Intercept circular/hallucinated growth rate substitution (e.g. g = (P1 - P0)/P0)
-  const isFindingGrowthRate = /finding.*growth|growth.*rate|\(g\)/i.test(contextHint);
-  const isPriceAppreciationFormula =
-    /(\\frac\{\s*P_?1\s*-\s*P_?0\s*\}\{\s*P_?0\s*\}|\(P_?1\s*-\s*P_?0\)\s*\/\s*P_?0|\\Delta P)/i.test(
-      latex,
-    );
+  // Intercept circular/hallucinated growth rate substitution (e.g. g = (P1 - P0)/P0) - ONLY for Stock Valuation
+  if (isStockValuation) {
+    const isFindingGrowthRate = /finding.*growth|growth.*rate|\(g\)/i.test(contextHint);
+    const isPriceAppreciationFormula =
+      /(\\frac\{\s*P_?1\s*-\s*P_?0\s*\}\{\s*P_?0\s*\}|\(P_?1\s*-\s*P_?0\)\s*\/\s*P_?0|\\Delta P)/i.test(
+        latex,
+      );
 
-  if (isFindingGrowthRate && isPriceAppreciationFormula) {
-    latex = "g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}";
-    leadText = "Fundamental accounting formula for sustainable dividend growth:";
-    description = "Growth rate is driven by reinvestment policy and ROE, NOT circular price changes.";
-    variables = [
-      {
-        symbol: "\\text{Retention ratio}",
-        definition: "Proportion of net earnings retained in the business = 1 - Dividend Payout Ratio",
-      },
-      {
-        symbol: "\\text{ROE}",
-        definition: "Return on equity earned on retained earnings",
-      },
-    ];
-  }
+    if (isFindingGrowthRate && isPriceAppreciationFormula) {
+      latex = "g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}";
+      leadText = "Fundamental accounting formula for sustainable dividend growth:";
+      description = "Growth rate is driven by reinvestment policy and ROE, NOT circular price changes.";
+      variables = [
+        {
+          symbol: "\\text{Retention ratio}",
+          definition: "Proportion of net earnings retained in the business = 1 - Dividend Payout Ratio",
+        },
+        {
+          symbol: "\\text{ROE}",
+          definition: "Return on equity earned on retained earnings",
+        },
+      ];
+    }
 
-  // Underbraced decomposition for Required Return R
-  if (
-    /R\s*=\s*(\\frac\{D_?1\}\{P_?0\}|\(D_?1\/P_?0\))\s*\+\s*g/i.test(latex) &&
-    !latex.includes("underbrace")
-  ) {
-    latex =
-      "R = \\underbrace{\\frac{D_1}{P_0}}_{\\text{Dividend Yield}} + \\underbrace{g}_{\\text{Capital Gains Yield}}";
+    // Underbraced decomposition for Required Return R (Stock Valuation only, don't overwrite R_E or other returns)
+    if (
+      /R\s*=\s*(\\frac\{D_?1\}\{P_?0\}|\(D_?1\/P_?0\))\s*\+\s*g/i.test(latex) &&
+      !latex.includes("underbrace") &&
+      !/R_?[EePpDd]/i.test(latex)
+    ) {
+      latex =
+        "R = \\underbrace{\\frac{D_1}{P_0}}_{\\text{Dividend Yield}} + \\underbrace{g}_{\\text{Capital Gains Yield}}";
+    }
   }
 
   return {
@@ -471,12 +495,20 @@ function consolidateFragmentedSections(
   sections: NoteSection[],
   rawSlideText: string,
 ): NoteSection[] {
-  const isFinanceValuation =
-    /stock valuation|định giá|ddm|dividend discount|gordon|preference share|cổ phiếu/i.test(
+  const isWaccOrCostOfCapital =
+    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn/i.test(
       `${rawSlideText} ${sections.map((s) => s.titleVi).join(" ")}`,
     );
 
-  if (!isFinanceValuation) {
+  const isChapter9StockValuation =
+    !isWaccOrCostOfCapital &&
+    (/stock valuation|định giá cổ phiếu|dividend discount|gordon growth/i.test(rawSlideText) ||
+      /stock valuation|định giá cổ phiếu/i.test(sections.map((s) => s.titleVi).join(" ")) ||
+      /ddm|ritm|hạnh hạnh/i.test(
+        `${rawSlideText} ${sections.map((s) => s.titleVi).join(" ")}`,
+      ));
+
+  if (!isChapter9StockValuation) {
     return sections;
   }
 
@@ -674,6 +706,19 @@ export function applyHallucinationShield(
 ): NoteSection[] {
   const normSlideText = rawSlideText.toLowerCase();
 
+  const isWaccOrCostOfCapital =
+    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn/i.test(
+      `${rawSlideText} ${sections.map((s) => s.titleVi).join(" ")}`,
+    );
+
+  const isChapter9StockValuation =
+    !isWaccOrCostOfCapital &&
+    (/stock valuation|định giá cổ phiếu|dividend discount|gordon growth/i.test(rawSlideText) ||
+      /stock valuation|định giá cổ phiếu/i.test(sections.map((s) => s.titleVi).join(" ")) ||
+      /ddm|ritm|hạnh hạnh/i.test(
+        `${rawSlideText} ${sections.map((s) => s.titleVi).join(" ")}`,
+      ));
+
   // Step 1: Consolidate fragmented sections if the LLM output 8–10 split sections
   const consolidated = consolidateFragmentedSections(sections, rawSlideText);
 
@@ -682,7 +727,7 @@ export function applyHallucinationShield(
     const sequentialLetter = String.fromCharCode(65 + idx);
 
     // 2a. Sanitize headers and purge machine-translation hallucinations
-    sec.titleVi = sanitizeAcademicHeader(sec.titleVi, sequentialLetter);
+    sec.titleVi = sanitizeAcademicHeader(sec.titleVi, sequentialLetter, isChapter9StockValuation);
     sec.letter = sequentialLetter;
     sec.id = `sec-${sequentialLetter.toLowerCase()}-${idx + 1}`;
 
@@ -714,7 +759,7 @@ export function applyHallucinationShield(
     }
 
     // 2b. Shield formulas at section top-level
-    sec.formulas = sec.formulas.map((f) => shieldFormula(f, sec.titleVi));
+    sec.formulas = sec.formulas.map((f) => shieldFormula(f, sec.titleVi, isChapter9StockValuation));
 
     // 2c. Shield sub-sections
     if (sec.subSections) {
@@ -727,50 +772,52 @@ export function applyHallucinationShield(
           ensureInlineMathDelimiters(cleanTypoString(bp)),
         );
         sub.formulas = sub.formulas.map((f) =>
-          shieldFormula(f, `${sec.titleVi} ${sub.heading}`),
+          shieldFormula(f, `${sec.titleVi} ${sub.heading}`, isChapter9StockValuation),
         );
 
-        // Case 3 (Differential Growth) Terminal Value PN injection
-        const isDifferentialGrowth =
-          /case\s*3|differential|non-?constant|tăng trưởng (không đều|khác biệt|nhiều giai đoạn)/i.test(
-            sub.heading,
-          );
-        if (isDifferentialGrowth) {
-          const hasTerminalFormula = sub.formulas.some((f) =>
-            /P_?N\s*=|\\frac\{\s*D_?\{?N\+1\}?|\(1\s*\+\s*g\)\}/i.test(f.latex),
-          );
-          if (!hasTerminalFormula) {
-            sub.formulas.push({
-              name: "",
-              leadText: "Terminal Value calculation at Year N:",
-              latex: "P_N = \\frac{D_{N+1}}{R - g} = \\frac{D_N \\cdot (1 + g)}{R - g}",
-              description:
-                "$P_N$ represents the present value of the constant growth perpetuity at the end of Year $N$.",
-              variables: [
-                {
-                  symbol: "P_N",
-                  definition: "Terminal price of the stock at Year N",
-                },
-                {
-                  symbol: "D_{N+1}",
-                  definition: "First dividend in the constant growth stage ($D_N \\times (1 + g)$)",
-                },
-              ],
-            });
-          }
-        }
-
-        // Finding R decomposition injection
-        const isFindingR = /finding.*(discount rate|required return|\(R\))/i.test(sub.heading);
-        if (isFindingR) {
-          const hasYieldDefinitions = sub.bulletPoints.some((bp) =>
-            /dividend yield/i.test(bp),
-          );
-          if (!hasYieldDefinitions) {
-            sub.bulletPoints.unshift(
-              "Dividend Yield (Lợi suất cổ tức) $= \\frac{D_1}{P_0}$: Expected annual dividend divided by current stock price (tested independently).",
-              "Capital Gains Yield (Lợi suất tăng vốn) $= g$: The rate at which the stock price increases over time.",
+        if (isChapter9StockValuation) {
+          // Case 3 (Differential Growth) Terminal Value PN injection
+          const isDifferentialGrowth =
+            /case\s*3|differential|non-?constant|tăng trưởng (không đều|khác biệt|nhiều giai đoạn)/i.test(
+              sub.heading,
             );
+          if (isDifferentialGrowth) {
+            const hasTerminalFormula = sub.formulas.some((f) =>
+              /P_?N\s*=|\\frac\{\s*D_?\{?N\+1\}?|\(1\s*\+\s*g\)\}/i.test(f.latex),
+            );
+            if (!hasTerminalFormula) {
+              sub.formulas.push({
+                name: "",
+                leadText: "Terminal Value calculation at Year N:",
+                latex: "P_N = \\frac{D_{N+1}}{R - g} = \\frac{D_N \\cdot (1 + g)}{R - g}",
+                description:
+                  "$P_N$ represents the present value of the constant growth perpetuity at the end of Year $N$.",
+                variables: [
+                  {
+                    symbol: "P_N",
+                    definition: "Terminal price of the stock at Year N",
+                  },
+                  {
+                    symbol: "D_{N+1}",
+                    definition: "First dividend in the constant growth stage ($D_N \\times (1 + g)$)",
+                  },
+                ],
+              });
+            }
+          }
+
+          // Finding R decomposition injection
+          const isFindingR = /finding.*(discount rate|required return|\(R\))/i.test(sub.heading);
+          if (isFindingR) {
+            const hasYieldDefinitions = sub.bulletPoints.some((bp) =>
+              /dividend yield/i.test(bp),
+            );
+            if (!hasYieldDefinitions) {
+              sub.bulletPoints.unshift(
+                "Dividend Yield (Lợi suất cổ tức) $= \\frac{D_1}{P_0}$: Expected annual dividend divided by current stock price (tested independently).",
+                "Capital Gains Yield (Lợi suất tăng vốn) $= g$: The rate at which the stock price increases over time.",
+              );
+            }
           }
         }
 
@@ -779,38 +826,42 @@ export function applyHallucinationShield(
     }
 
     // 2d. Section C top-level deduplication (no double-pasting with subSections)
-    sec = deduplicateSectionC(sec);
+    if (isChapter9StockValuation) {
+      sec = deduplicateSectionC(sec);
+    }
 
     // 2e. Section E (Preference Share / Deferred Preferred Stock)
-    const isPreferredStock = /preference|preferred|ưu đãi/i.test(sec.titleVi);
-    const mentionsDeferredPerpetuity =
-      /novaco|beginning \d+ years|deferred|hoãn trả|year 11|year 12|delay/i.test(
-        normSlideText,
-      );
+    if (isChapter9StockValuation) {
+      const isPreferredStock = /preference|preferred|ưu đãi/i.test(sec.titleVi);
+      const mentionsDeferredPerpetuity =
+        /novaco|beginning \d+ years|deferred|hoãn trả|year 11|year 12|delay/i.test(
+          normSlideText,
+        );
 
-    if (isPreferredStock && mentionsDeferredPerpetuity && sec.subSections) {
-      const hasDeferred = sec.subSections.some((sub) =>
-        /deferred|hoãn trả|delayed/i.test(sub.heading),
-      );
-      if (!hasDeferred) {
-        sec.subSections.push({
-          heading: "Deferred Preferred Stock (Cổ phiếu ưu đãi hoãn trả)",
-          leadIn: "When dividends begin at Year t (delayed perpetuity):",
-          bulletPoints: [
-            "Step 1: Calculate the price at Year $t-1$ (one year before first dividend): $P_{t-1} = \\frac{D_t}{R_p}$",
-            "Step 2: Discount $P_{t-1}$ back to Year 0: $P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}$",
-          ],
-          formulas: [
-            {
-              name: "",
-              leadText: "Two-step deferred perpetuity valuation:",
-              latex: "P_{t-1} = \\frac{D_t}{R_p} \\implies P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}",
-              description:
-                "Find the price one period before the first dividend payment, then discount back to today.",
-              variables: [],
-            },
-          ],
-        });
+      if (isPreferredStock && mentionsDeferredPerpetuity && sec.subSections) {
+        const hasDeferred = sec.subSections.some((sub) =>
+          /deferred|hoãn trả|delayed/i.test(sub.heading),
+        );
+        if (!hasDeferred) {
+          sec.subSections.push({
+            heading: "Deferred Preferred Stock (Cổ phiếu ưu đãi hoãn trả)",
+            leadIn: "When dividends begin at Year t (delayed perpetuity):",
+            bulletPoints: [
+              "Step 1: Calculate the price at Year $t-1$ (one year before first dividend): $P_{t-1} = \\frac{D_t}{R_p}$",
+              "Step 2: Discount $P_{t-1}$ back to Year 0: $P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}$",
+            ],
+            formulas: [
+              {
+                name: "",
+                leadText: "Two-step deferred perpetuity valuation:",
+                latex: "P_{t-1} = \\frac{D_t}{R_p} \\implies P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}",
+                description:
+                  "Find the price one period before the first dividend payment, then discount back to today.",
+                variables: [],
+              },
+            ],
+          });
+        }
       }
     }
 
