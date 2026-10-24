@@ -463,7 +463,7 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
     const nestedBullet =
       "Deferred price step: P_{t-1} = \\frac{D_t}{R_p} and P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}";
     expect(ensureInlineMathDelimiters(nestedBullet)).toBe(
-      "Deferred price step: P_{t-1} = $\\frac{D_t}{R_p}$ and P_0 = $\\frac{P_{t-1}}{(1 + R_p)^{t-1}}$",
+      "Deferred price step: $P_{t-1} = \\frac{D_t}{R_p}$ and $P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}$",
     );
 
     // 3. String that already has $ is preserved as-is
@@ -905,6 +905,527 @@ Flotation Costs: f_A = (E/V) * f_E + (D/V) * f_D, Initial Outlay = Project Cost 
     expect(sanitizedVarDef).toContain("$\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B)$.");
 
     const sanitizedBullet = ensureInlineMathDelimiters(rawNoteContent.bulletPoints[0]);
-    expect(sanitizedBullet).toContain("$\\frac{1}{T - 1}");
+    expect(sanitizedBullet).toContain("$s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2$.");
+  });
+
+  it("accurately preserves Capital Budgeting & Project Evaluation sections, preserves NPV formula with decision rule, and rejects Stock Valuation or WACC contamination", () => {
+    const rawSlideText = `
+Chapter 9: Net Present Value and Other Investment Criteria.
+Capital Budgeting principles: Evaluating capital investments using discounted cash flow criteria.
+1. Net Present Value (NPV): Market value minus initial investment cost. Accept if NPV > 0.
+2. Internal Rate of Return (IRR): Discount rate equating NPV to zero. Accept if IRR > r.
+3. Profitability Index (PI): Benefit-cost ratio of present value of future cash flows to initial outlay.
+4. Payback Period: Years required to recover initial investment outlay.
+`;
+
+    const mockCapitalBudgetingSections: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. GIÁ TRỊ HIỆN TẠI THUẦN (NET PRESENT VALUE - NPV)",
+        coreStatement: "The Net Present Value (NPV) evaluates whether an investment creates value.",
+        bulletPoints: [
+          "NPV Decision Rule: Accept an investment if NPV > 0; reject if NPV < 0.",
+          "NPV directly measures the increase in firm value from undertaking the project.",
+        ],
+        formulas: [
+          {
+            leadText: "General Net Present Value formula:",
+            latex: "NPV = -I_0 + \\sum_{t=1}^n \\frac{CF_t}{(1 + r)^t}",
+            description: "Accept when NPV > 0.",
+            variables: [
+              { symbol: "I_0", definition: "Initial investment cash outlay at period 0" },
+              { symbol: "CF_t", definition: "Operating cash flow generated in period t" },
+              { symbol: "r", definition: "Required rate of return (hurdle rate / discount rate)" },
+            ],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-b",
+        letter: "B",
+        titleVi: "B. TỶ SUẤT HOÀN VỐN NỘI BỘ (INTERNAL RATE OF RETURN - IRR)",
+        coreStatement: "IRR is the break-even discount rate that forces NPV to equal exactly zero.",
+        bulletPoints: [
+          "Decision rule: Accept the project if IRR > hurdle rate (r).",
+          "Pitfall: Multiple IRRs can occur if cash flows are unconventional (change signs more than once).",
+        ],
+        formulas: [
+          {
+            leadText: "IRR equilibrium equation:",
+            latex: "0 = -I_0 + \\sum_{t=1}^n \\frac{CF_t}{(1 + \\text{IRR})^t}",
+            description: "IRR is the root of the polynomial equation where NPV = 0.",
+            variables: [
+              { symbol: "\\text{IRR}", definition: "Internal rate of return" },
+            ],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-c",
+        letter: "C",
+        titleVi: "C. CHỈ SỐ KHẢ NĂNG SINH LỜI (PROFITABILITY INDEX - PI)",
+        bulletPoints: [
+          "Measures the present value of future cash flows per unit of initial investment.",
+          "Decision rule: Accept project if PI > 1.0.",
+        ],
+        formulas: [
+          {
+            leadText: "Profitability Index formula:",
+            latex: "\\text{PI} = \\frac{\\sum_{t=1}^n \\frac{CF_t}{(1 + r)^t}}{I_0}",
+            description: "PI is especially useful when capital rationing constraints apply.",
+            variables: [
+              { symbol: "\\text{PI}", definition: "Profitability index (benefit-cost ratio)" },
+            ],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-d",
+        letter: "D",
+        titleVi: "D. THỜI GIAN HOÀN VỐN (PAYBACK PERIOD)",
+        bulletPoints: [
+          "Payback period is the time required for accumulated cash flows to equal initial outlay.",
+          "Disadvantages: Ignores the time value of money and cash flows beyond the cutoff date.",
+        ],
+        formulas: [],
+        subSections: [],
+      },
+    ];
+
+    const shielded = applyHallucinationShield(mockCapitalBudgetingSections, rawSlideText);
+
+    // 1. Verify sections remain within canonical length (4 sections)
+    expect(shielded.length).toBe(4);
+    expect(shielded.map((s) => s.letter)).toEqual(["A", "B", "C", "D"]);
+
+    // 2. Canonical Capital Budgeting titles preserved
+    expect(shielded[0].titleVi).toContain("NET PRESENT VALUE");
+    expect(shielded[1].titleVi).toContain("INTERNAL RATE OF RETURN");
+    expect(shielded[2].titleVi).toContain("PROFITABILITY INDEX");
+    expect(shielded[3].titleVi).toContain("THỜI GIAN HOÀN VỐN");
+
+    // 3. ZERO Stock Valuation or WACC contamination
+    const allText = JSON.stringify(shielded);
+    expect(allText).not.toContain("NGUYÊN LÝ CƠ BẢN");
+    expect(allText).not.toContain("DDM (DIVIDEND DISCOUNT MODEL)");
+    expect(allText).not.toContain("Gordon");
+    expect(allText).not.toContain("P_N = \\frac{D_{N+1}}{R - g}");
+    expect(allText).not.toContain("Deferred Preferred");
+    expect(allText).not.toContain("CHI PHÍ SỬ DỤNG VỐN BÌNH QUÂN");
+    expect(allText).not.toContain("WACC");
+
+    // 4. Boxed NPV formula and decision rule strictly preserved
+    const npvSec = shielded[0];
+    expect(npvSec.formulas[0].latex).toBe("NPV = -I_0 + \\sum_{t=1}^n \\frac{CF_t}{(1 + r)^t}");
+    expect(npvSec.formulas[0].description).toContain("Accept when NPV > 0.");
+    expect(npvSec.bulletPoints[0]).toContain("NPV > 0");
+
+    // 5. IRR and PI formulas preserved
+    const irrSec = shielded[1];
+    expect(irrSec.formulas[0].latex).toContain("\\text{IRR}");
+    const piSec = shielded[2];
+    expect(piSec.formulas[0].latex).toContain("\\text{PI}");
+  });
+
+  it("accurately preserves Time Value of Money (TVM) formulas, shields growing perpetuity denominator to r - g (intercepting r + g), and preserves EAR vs APR", () => {
+    const rawSlideText = `
+Time Value of Money (TVM) & Cash Flow Valuation.
+Topics: Present Value, Future Value, Ordinary Annuities, Perpetuities, and Compounding Frequencies.
+EAR vs APR conversions.
+`;
+
+    const mockTvmSections: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. GIÁ TRỊ THỜI GIAN CỦA TIỀN & DÒNG TIỀN ĐƠN (TVM & SINGLE CASH FLOWS)",
+        bulletPoints: [
+          "Future Value (FV) compounds a present cash flow forward in time.",
+          "Present Value (PV) discounts a future cash flow back to today.",
+        ],
+        formulas: [
+          {
+            leadText: "Future Value (FV) and Present Value (PV) of a lump sum:",
+            latex: "FV_t = PV \\cdot (1 + r)^t, \\quad PV = \\frac{FV_t}{(1 + r)^t}",
+            description: "Basic compounding and discounting relation.",
+            variables: [
+              { symbol: "FV_t", definition: "Future value at period t" },
+              { symbol: "PV", definition: "Present value today (t = 0)" },
+              { symbol: "r", definition: "Interest rate per period" },
+              { symbol: "t", definition: "Number of compounding periods" },
+            ],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-b",
+        letter: "B",
+        titleVi: "B. NIÊN KIM VÀ DÒNG TIỀN VĨNH CỬU (ANNUITIES & PERPETUITIES)",
+        bulletPoints: [
+          "Ordinary annuity: Equal cash flows at the end of each period.",
+          "Perpetuity: Infinite stream of equal periodic cash flows.",
+        ],
+        formulas: [
+          {
+            leadText: "Present value of an ordinary annuity:",
+            latex: "PV = C \\cdot \\left[ \\frac{1 - (1 + r)^{-t}}{r} \\right]",
+            description: "",
+            variables: [],
+          },
+          {
+            leadText: "Present value of an ordinary perpetuity:",
+            latex: "PV = \\frac{C}{r}",
+            description: "",
+            variables: [],
+          },
+          {
+            // Simulate hallucinated r + g denominator in growing perpetuity
+            leadText: "Present value of a growing perpetuity (corrupted with r + g):",
+            latex: "PV = \\frac{C_1}{r + g}",
+            description: "Perpetual cash flow growing at constant rate g.",
+            variables: [
+              { symbol: "C_1", definition: "Cash flow to be received in period 1" },
+              { symbol: "r", definition: "Discount rate" },
+              { symbol: "g", definition: "Constant growth rate per period" },
+            ],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-c",
+        letter: "C",
+        titleVi: "C. LÃI SUẤT HIỆU DỤNG (EAR VS APR)",
+        bulletPoints: [
+          "APR (Annual Percentage Rate): Nominal quoted annual rate.",
+          "EAR (Effective Annual Rate): The true annual rate accounting for compounding frequency m.",
+        ],
+        formulas: [
+          {
+            leadText: "Effective Annual Rate conversion formula:",
+            latex: "EAR = \\left(1 + \\frac{\\text{APR}}{m}\\right)^m - 1",
+            description: "Used to compare investments with different compounding frequencies.",
+            variables: [
+              { symbol: "EAR", definition: "Effective annual rate" },
+              { symbol: "\\text{APR}", definition: "Annual percentage rate (nominal quoted rate)" },
+              { symbol: "m", definition: "Number of compounding periods per year" },
+            ],
+          },
+        ],
+        subSections: [],
+      },
+    ];
+
+    const shielded = applyHallucinationShield(mockTvmSections, rawSlideText);
+
+    expect(shielded.length).toBe(3);
+    expect(shielded[0].titleVi).toContain("GIÁ TRỊ THỜI GIAN CỦA TIỀN");
+    expect(shielded[1].titleVi).toContain("NIÊN KIM VÀ DÒNG TIỀN VĨNH CỬU");
+    expect(shielded[2].titleVi).toContain("LÃI SUẤT HIỆU DỤNG");
+
+    // Verify growing perpetuity denominator is intercepted and corrected to r - g
+    const perpetuitySec = shielded[1];
+    const growingPerpFormula = perpetuitySec.formulas.find((f: any) => f.latex.includes("C_1"));
+    expect(growingPerpFormula).toBeDefined();
+    expect(growingPerpFormula?.latex).toBe("PV = \\frac{C_1}{r - g}");
+    expect(growingPerpFormula?.latex).not.toContain("r + g");
+
+    // Verify ordinary annuity and ordinary perpetuity formulas preserved
+    expect(perpetuitySec.formulas.some((f: any) => f.latex.includes("\\frac{C}{r}"))).toBe(true);
+    expect(perpetuitySec.formulas.some((f: any) => f.latex.includes("(1 + r)^{-t}"))).toBe(true);
+
+    // Verify EAR vs APR formula preserved intact
+    const earSec = shielded[2];
+    expect(earSec.formulas[0].latex).toBe("EAR = \\left(1 + \\frac{\\text{APR}}{m}\\right)^m - 1");
+    expect(earSec.formulas[0].variables.some((v: any) => v.symbol === "EAR")).toBe(true);
+  });
+
+  it("accurately preserves Financial Statement Analysis and DuPont Identity formulas across 3-stage and 5-stage decompositions", () => {
+    const rawSlideText = `
+Financial Statement Analysis and Firm Performance.
+Ratio analysis: Liquidity, Solvency, Turnover, and Profitability.
+The DuPont Identity decomposes Return on Equity (ROE) into operating efficiency, asset use efficiency, and financial leverage.
+`;
+
+    const mockDuPontSections: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. TỔNG QUAN PHÂN TÍCH BÁO CÁO TÀI CHÍNH (FINANCIAL STATEMENT OVERVIEW)",
+        bulletPoints: [
+          "Financial ratios allow comparison across time and between firms of different sizes.",
+          "DuPont analysis explains the root drivers of Return on Equity (ROE).",
+        ],
+        formulas: [],
+        subSections: [],
+      },
+      {
+        id: "sec-b",
+        letter: "B",
+        titleVi: "B. ĐẲNG THỨC DUPONT 3 THÀNH PHẦN (3-STAGE DUPONT IDENTITY)",
+        bulletPoints: [
+          "Decomposes ROE into Profit Margin, Total Asset Turnover, and Equity Multiplier.",
+        ],
+        formulas: [
+          {
+            leadText: "Standard 3-Stage DuPont Identity:",
+            latex: "ROE = \\text{Profit Margin} \\times \\text{Total Asset Turnover} \\times \\text{Equity Multiplier}",
+            description: "Operating efficiency x Asset use efficiency x Financial leverage.",
+            variables: [
+              { symbol: "ROE", definition: "Return on Equity (\\frac{\\text{Net Income}}{\\text{Total Equity}})" },
+              { symbol: "\\text{Profit Margin}", definition: "\\frac{\\text{Net Income}}{\\text{Sales}}" },
+              { symbol: "\\text{Total Asset Turnover}", definition: "\\frac{\\text{Sales}}{\\text{Total Assets}}" },
+              { symbol: "\\text{Equity Multiplier}", definition: "\\frac{\\text{Total Assets}}{\\text{Total Equity}} = 1 + \\frac{\\text{Debt}}{\\text{Equity}}" },
+            ],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-c",
+        letter: "C",
+        titleVi: "C. ĐẲNG THỨC DUPONT MỞ RỘNG 5 THÀNH PHẦN (5-STAGE DUPONT IDENTITY)",
+        bulletPoints: [
+          "Isolates tax burden, interest burden, and operating profit margin (EBIT / Sales).",
+        ],
+        formulas: [
+          {
+            leadText: "Extended 5-Stage DuPont Identity:",
+            latex: "ROE = \\frac{\\text{Net Income}}{\\text{EBT}} \\times \\frac{\\text{EBT}}{\\text{EBIT}} \\times \\frac{\\text{EBIT}}{\\text{Sales}} \\times \\frac{\\text{Sales}}{\\text{Assets}} \\times \\frac{\\text{Assets}}{\\text{Equity}}",
+            description: "Tax Burden x Interest Burden x Operating Margin x Asset Turnover x Leverage.",
+            variables: [],
+          },
+        ],
+        subSections: [],
+      },
+    ];
+
+    const shielded = applyHallucinationShield(mockDuPontSections, rawSlideText);
+
+    expect(shielded.length).toBe(3);
+    expect(shielded[0].titleVi).toContain("FINANCIAL STATEMENT OVERVIEW");
+    expect(shielded[1].titleVi).toContain("3-STAGE DUPONT IDENTITY");
+    expect(shielded[2].titleVi).toContain("5-STAGE DUPONT IDENTITY");
+
+    // 3-Stage DuPont equation preserved
+    const dupont3Sec = shielded[1];
+    expect(dupont3Sec.formulas[0].latex).toContain("\\text{Profit Margin}");
+    expect(dupont3Sec.formulas[0].latex).toContain("\\text{Total Asset Turnover}");
+    expect(dupont3Sec.formulas[0].latex).toContain("\\text{Equity Multiplier}");
+
+    // 5-Stage DuPont equation preserved
+    const dupont5Sec = shielded[2];
+    expect(dupont5Sec.formulas[0].latex).toContain("\\frac{\\text{Net Income}}{\\text{EBT}}");
+    expect(dupont5Sec.formulas[0].latex).toContain("\\frac{\\text{EBT}}{\\text{EBIT}}");
+    expect(dupont5Sec.formulas[0].latex).toContain("\\frac{\\text{EBIT}}{\\text{Sales}}");
+
+    // Zero unwanted stock valuation injections
+    const fullJson = JSON.stringify(shielded);
+    expect(fullJson).not.toContain("DDM");
+    expect(fullJson).not.toContain("Gordon");
+  });
+
+  it("accurately preserves Bond Valuation pricing equations, annuity coupon discounting, par value mechanics, and YTM relationships", () => {
+    const rawSlideText = `
+Bond Valuation and Interest Rates.
+Key concepts: Face value (Par), Coupon payment (C), Yield to Maturity (y or YTM), Time to maturity (t).
+Bond pricing formula combines an annuity of coupon payments and lump sum par value.
+Premium vs Discount bonds.
+`;
+
+    const mockBondSections: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. CƠ CHẾ VÀ ĐỊNH GIÁ TRÁI PHIẾU (BOND VALUATION & PRICING)",
+        coreStatement: "The market price of a bond is the present value of its promised cash flows (coupons + face value).",
+        bulletPoints: [
+          "Coupons form an annuity stream; par value is a lump sum at maturity.",
+        ],
+        formulas: [
+          {
+            leadText: "Comprehensive bond pricing equation:",
+            latex: "P_B = C \\left[ \\frac{1 - (1 + y)^{-t}}{y} \\right] + \\frac{F}{(1 + y)^t}",
+            description: "PV of coupon annuity + PV of par value.",
+            variables: [
+              { symbol: "P_B", definition: "Current market price of the bond" },
+              { symbol: "C", definition: "Periodic coupon payment ($C = \\text{Coupon Rate} \\times F$)" },
+              { symbol: "y", definition: "Yield to maturity (YTM) per period" },
+              { symbol: "t", definition: "Number of periods until maturity" },
+              { symbol: "F", definition: "Face value (par value) of the bond (typically $1,000)" },
+            ],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-b",
+        letter: "B",
+        titleVi: "B. LỢI SUẤT ĐÁO HẠN VÀ RỦI RO LÃI SUẤT (YTM & INTEREST RATE RISK)",
+        bulletPoints: [
+          "If Coupon Rate = YTM, then Bond Price = Par Value (Par bond).",
+          "If Coupon Rate > YTM, then Bond Price > Par Value (Premium bond).",
+          "If Coupon Rate < YTM, then Bond Price < Par Value (Discount bond).",
+          "Interest rate risk: Bond prices move inversely to market yields.",
+        ],
+        formulas: [
+          {
+            leadText: "Current yield approximation:",
+            latex: "\\text{Current Yield} = \\frac{\\text{Annual Coupon}}{P_B}",
+            description: "",
+            variables: [],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-c",
+        letter: "C",
+        titleVi: "C. TRÁI PHIẾU KHÔNG TRẢ LÃI ĐỊNH KỲ (ZERO-COUPON BONDS)",
+        bulletPoints: [
+          "Zero-coupon bonds pay no coupons and sell at a deep discount to par value.",
+        ],
+        formulas: [
+          {
+            leadText: "Price of a pure discount (zero-coupon) bond:",
+            latex: "P_{\\text{zero}} = \\frac{F}{(1 + y)^t}",
+            description: "",
+            variables: [],
+          },
+        ],
+        subSections: [],
+      },
+    ];
+
+    const shielded = applyHallucinationShield(mockBondSections, rawSlideText);
+
+    expect(shielded.length).toBe(3);
+    expect(shielded[0].titleVi).toContain("BOND VALUATION & PRICING");
+    expect(shielded[1].titleVi).toContain("YTM & INTEREST RATE RISK");
+    expect(shielded[2].titleVi).toContain("ZERO-COUPON BONDS");
+
+    // Verify bond pricing equation preserved with brackets and exponents
+    const bondPricingSec = shielded[0];
+    expect(bondPricingSec.formulas[0].latex).toContain("P_B = C \\left[ \\frac{1 - (1 + y)^{-t}}{y} \\right] + \\frac{F}{(1 + y)^t}");
+    expect(bondPricingSec.formulas[0].variables.some((v: any) => v.symbol === "P_B")).toBe(true);
+    expect(bondPricingSec.formulas[0].variables.some((v: any) => v.symbol === "F")).toBe(true);
+
+    // Verify YTM relationships and zero-coupon formula preserved
+    const zeroSec = shielded[2];
+    expect(zeroSec.formulas[0].latex).toBe("P_{\\text{zero}} = \\frac{F}{(1 + y)^t}");
+  });
+
+  it("harvests calculation equations from bulletPoints when LLM leaves formulas: [] and constructs boxed NoteFormula with non-redundant variables", () => {
+    // Section with formulas: [] where formulas are only written inside bulletPoints
+    const rawSlideText = "Corporate Financial Analysis and Capital Budgeting criteria.";
+
+    const mockUnboxedSections: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. PHÂN TÍCH CHỈ SỐ ROE (ROE DECOMPOSITION)",
+        bulletPoints: [
+          "Return on Equity can be computed through the DuPont formula.",
+          "DuPont Identity equation: ROE = \\text{Profit Margin} \\times \\text{Total Asset Turnover} \\times \\text{Equity Multiplier}",
+        ],
+        formulas: [], // Left empty by LLM!
+        subSections: [],
+      },
+      {
+        id: "sec-b",
+        letter: "B",
+        titleVi: "B. QUY TẮC ĐỊNH GIÁ NPV (NET PRESENT VALUE RULE)",
+        bulletPoints: [
+          "Discounted cash flows determine project profitability.",
+          "Net Present Value definition: $NPV = -I_0 + \\sum_{t=1}^n \\frac{CF_t}{(1+r)^t}$ for all future cash flows",
+        ],
+        formulas: [], // Left empty by LLM!
+        subSections: [],
+      },
+      {
+        id: "sec-c",
+        letter: "C",
+        titleVi: "C. TRÁI PHIẾU ĐỊNH KỲ (BOND PRICING)",
+        bulletPoints: ["Bonds pay coupon and principal."],
+        formulas: [],
+        subSections: [
+          {
+            heading: "1. Bond Valuation Equation",
+            bulletPoints: [
+              "General formula: P_B = C \\left[ \\frac{1 - (1+y)^{-t}}{y} \\right] + \\frac{F}{(1+y)^t}",
+            ],
+            formulas: [], // Left empty in subSection by LLM!
+          },
+        ],
+      },
+    ];
+
+    const shielded = applyHallucinationShield(mockUnboxedSections, rawSlideText);
+
+    // Section A: Harvested DuPont ROE formula into formulas array
+    const secA = shielded[0];
+    expect(secA.formulas.length).toBeGreaterThanOrEqual(1);
+    expect(secA.formulas[0].latex).toContain("ROE = \\text{Profit Margin} \\times \\text{Total Asset Turnover} \\times \\text{Equity Multiplier}");
+    expect(secA.formulas[0].leadText).toContain("DuPont Identity equation:");
+    expect(secA.formulas[0].variables).toEqual([]);
+
+    // Section B: Harvested NPV formula into formulas array
+    const secB = shielded[1];
+    expect(secB.formulas.length).toBeGreaterThanOrEqual(1);
+    expect(secB.formulas[0].latex).toContain("NPV = -I_0 + \\sum_{t=1}^n \\frac{CF_t}{(1+r)^t}");
+    expect(secB.formulas[0].leadText).toContain("Net Present Value definition:");
+    expect(secB.formulas[0].variables).toEqual([]);
+
+    // Section C SubSection: Harvested Bond pricing equation into subSection formulas array
+    const secC = shielded[2];
+    const subSecC = secC.subSections[0];
+    expect(subSecC.formulas.length).toBeGreaterThanOrEqual(1);
+    expect(subSecC.formulas[0].latex).toContain("P_B = C \\left[ \\frac{1 - (1+y)^{-t}}{y} \\right] + \\frac{F}{(1+y)^t}");
+    expect(subSecC.formulas[0].variables).toEqual([]);
+  });
+
+  it("verifies sanitizeAcademicHeader does not force Chapter 9 titles on Capital Budgeting, Bonds, Macroeconomics, or Machine Learning topics", () => {
+    // 1. Capital Budgeting
+    expect(
+      sanitizeAcademicHeader("Header A: QUY TRÌNH NGÂN SÁCH VỐN (CAPITAL BUDGETING)", "A"),
+    ).toBe("A. QUY TRÌNH NGÂN SÁCH VỐN (CAPITAL BUDGETING)");
+    expect(
+      sanitizeAcademicHeader("Header B: GIÁ TRỊ HIỆN TẠI THUẦN (NET PRESENT VALUE - NPV)", "B"),
+    ).toBe("B. GIÁ TRỊ HIỆN TẠI THUẦN (NET PRESENT VALUE - NPV)");
+
+    // 2. Bond Valuation (with isStockValuation explicitly false)
+    expect(
+      sanitizeAcademicHeader("Header A: BOND VALUATION & YIELD TO MATURITY", "A", false),
+    ).toBe("A. BOND VALUATION & YIELD TO MATURITY");
+    expect(
+      sanitizeAcademicHeader("Header B: TRÁI PHIẾU VÀ ĐỊNH GIÁ TRÁI PHIẾU", "B", false),
+    ).toBe("B. TRÁI PHIẾU VÀ ĐỊNH GIÁ TRÁI PHIẾU");
+
+    // 3. Macroeconomics / Economics
+    expect(
+      sanitizeAcademicHeader("Header A: IS-LM FRAMEWORK & AGGREGATE DEMAND", "A"),
+    ).toBe("A. IS-LM FRAMEWORK & AGGREGATE DEMAND");
+    expect(
+      sanitizeAcademicHeader("Header B: CUNG TIỀN VÀ LẠM PHÁT (MONEY SUPPLY & INFLATION)", "B"),
+    ).toBe("B. CUNG TIỀN VÀ LẠM PHÁT (MONEY SUPPLY & INFLATION)");
+
+    // 4. Machine Learning & STEM
+    expect(
+      sanitizeAcademicHeader("Header A: SUPERVISED LEARNING & GRADIENT DESCENT OPTIMIZATION", "A", false),
+    ).toBe("A. SUPERVISED LEARNING & GRADIENT DESCENT OPTIMIZATION");
+    expect(
+      sanitizeAcademicHeader("Header C: PROBABILITY DISTRIBUTIONS & BAYES THEOREM", "C"),
+    ).toBe("C. PROBABILITY DISTRIBUTIONS & BAYES THEOREM");
+
+    // 5. Machine translation purging even in non-stock topics:
+    // "giáo dục" -> "ĐỊNH GIÁ"
+    expect(
+      sanitizeAcademicHeader("Header B: CHỌN MÔ HÌNH GIÁO DỤC TÀI CHÍNH", "B"),
+    ).toBe("B. CHỌN MÔ HÌNH ĐỊNH GIÁ TÀI CHÍNH");
   });
 });

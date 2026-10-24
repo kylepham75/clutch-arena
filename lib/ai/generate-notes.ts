@@ -180,16 +180,21 @@ export interface GenerateClutchNoteOptions {
   signal?: AbortSignal;
 }
 
+export function sanitizeUniversalText(str: string): string {
+  if (!str || typeof str !== "string") return str;
+  return ensureInlineMathDelimiters(repairCorruptedLatex(cleanTypoString(str)));
+}
+
 function sanitizeFormula(f: NoteFormula): NoteFormula {
   return {
     ...f,
-    name: f.name ? repairCorruptedLatex(f.name) : "",
-    leadText: f.leadText ? ensureInlineMathDelimiters(repairCorruptedLatex(f.leadText)) : undefined,
-    latex: repairCorruptedLatex(f.latex).replace(/^\$+|\$+$/g, "").trim(),
-    description: f.description ? ensureInlineMathDelimiters(repairCorruptedLatex(f.description)) : undefined,
+    name: f.name ? sanitizeUniversalText(f.name) : "",
+    leadText: f.leadText ? sanitizeUniversalText(f.leadText) : undefined,
+    latex: repairCorruptedLatex(cleanTypoString(f.latex)).replace(/^\$+|\$+$/g, "").trim(),
+    description: f.description ? sanitizeUniversalText(f.description) : undefined,
     variables: (f.variables ?? []).map((v) => ({
-      symbol: repairCorruptedLatex(v.symbol).replace(/^\$+|\$+$/g, "").trim(),
-      definition: ensureInlineMathDelimiters(repairCorruptedLatex(v.definition)),
+      symbol: cleanTypoString(repairCorruptedLatex(v.symbol)).replace(/^\$+|\$+$/g, "").trim(),
+      definition: sanitizeUniversalText(v.definition),
     })),
   };
 }
@@ -284,7 +289,7 @@ export function sanitizeAcademicHeader(
   // or if explicitly not Stock Valuation, preserve the clean uppercase topic title with letter prefix!
   const isNonStockTopic =
     !isStockValuation ||
-    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn|cost of debt|chi phí nợ|cost of equity|chi phí.*cổ phần|chi phí.*chủ sở hữu|cost of preferred|chi phí.*(cổ phiếu )?ưu đãi|flotation|chi phí phát hành|divisional risk|rủi ro bộ phận|capital structure|cơ cấu vốn|pure play|subjective approach|capital budgeting|ngân sách vốn|sml|capm|risk|return|rủi ro|tỷ suất sinh lời|lợi suất|portfolio|danh mục|beta|covariance|hiệp phương sai|correlation|tương quan|variance|phương sai|độ lệch chuẩn|historical/i.test(
+    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn|cost of debt|chi phí nợ|cost of equity|chi phí.*cổ phần|chi phí.*chủ sở hữu|cost of preferred|chi phí.*(cổ phiếu )?ưu đãi|flotation|chi phí phát hành|divisional risk|rủi ro bộ phận|capital structure|cơ cấu vốn|pure play|subjective approach|capital budgeting|ngân sách vốn|sml|capm|risk|return|rủi ro|tỷ suất sinh lời|lợi suất|portfolio|danh mục|beta|covariance|hiệp phương sai|correlation|tương quan|variance|phương sai|độ lệch chuẩn|historical|thống kê|kinh tế|economics|accounting|kế toán|tài chính|statistics|probability|xác suất|toán|math|stem|operations|vận hành|physics|chemistry|cung|cầu|supply|demand|gdp|lạm phát|inflation/i.test(
       lower,
     );
 
@@ -335,15 +340,15 @@ function shieldFormula(
   isChapter10: boolean = false,
   isChapter11: boolean = false,
 ): NoteFormula {
-  let latex = cleanTypoString(f.latex);
-  let leadText = f.leadText ? ensureInlineMathDelimiters(cleanTypoString(f.leadText)) : undefined;
-  let description = f.description ? ensureInlineMathDelimiters(cleanTypoString(f.description)) : undefined;
-  let variables = f.variables.map((v) => ({
-    symbol: cleanTypoString(v.symbol),
-    definition: ensureInlineMathDelimiters(cleanTypoString(v.definition)),
+  let latex = cleanTypoString(f.latex).replace(/^\$+|\$+$/g, "").trim();
+  let leadText = f.leadText ? sanitizeUniversalText(f.leadText) : undefined;
+  let description = f.description ? sanitizeUniversalText(f.description) : undefined;
+  let variables = (f.variables ?? []).map((v) => ({
+    symbol: cleanTypoString(repairCorruptedLatex(v.symbol)).replace(/^\$+|\$+$/g, "").trim(),
+    definition: sanitizeUniversalText(v.definition),
   }));
 
-  // Intercept one-period valuation formula exponent error:
+  // 1. One-period valuation formula exponent error:
   // e.g. P_0 = D_1 / (1+R)^T + P_1 / (1+R)^T -> P_0 = D_1 / (1+R) + P_1 / (1+R)
   const isOnePeriodFormula =
     /D_?1/i.test(latex) &&
@@ -352,6 +357,8 @@ function shieldFormula(
 
   if (isOnePeriodFormula) {
     latex = latex
+      .replace(/\\frac\{\s*D_?1\s*\}\{\s*\(1\s*\+\s*([RrKk]|R_[epdEPD])\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{D_1}{1 + $1}")
+      .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*([RrKk]|R_[epdEPD])\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{P_1}{1 + $1}")
       .replace(/\\frac\{\s*D_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{D_1}{1 + R}")
       .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{P_1}{1 + R}");
     if (/\(1\s*\+\s*R\)\s*\^\s*\{?[Tt]\}?/i.test(latex)) {
@@ -359,31 +366,56 @@ function shieldFormula(
     }
   }
 
-  // Intercept circular/hallucinated growth rate substitution (e.g. g = (P1 - P0)/P0) - ONLY for Stock Valuation
+  // 2. Intercept circular/hallucinated growth rate substitution (e.g. g = (P1 - P0)/P0):
+  // g must be retention ratio * ROE, never circular price change (P1 - P0)/P0
+  const isSolvingForGrowthRate =
+    /finding.*growth|growth.*rate|\(g\)/i.test(contextHint) ||
+    /^\s*g\s*=/i.test(latex);
+  const isPriceAppreciationFormula =
+    /(\\frac\{\s*P_?1\s*-\s*P_?0\s*\}\{\s*P_?0\s*\}|\(P_?1\s*-\s*P_?0\)\s*\/\s*P_?0|\\Delta P)/i.test(
+      latex,
+    );
+
+  if (isSolvingForGrowthRate && isPriceAppreciationFormula) {
+    latex = "g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}";
+    leadText = "Fundamental accounting formula for sustainable dividend growth:";
+    description = "Growth rate is driven by reinvestment policy and ROE, NOT circular price changes.";
+    variables = [
+      {
+        symbol: "\\text{Retention ratio}",
+        definition: "Proportion of net earnings retained in the business = 1 - Dividend Payout Ratio",
+      },
+      {
+        symbol: "\\text{ROE}",
+        definition: "Return on equity earned on retained earnings",
+      },
+    ];
+  }
+
+  // 3. Growing Perpetuity Denominator: Ensure denominator is r - g or R - g, never r + g or R + g
+  latex = latex
+    .replace(/\\frac\{((?:[^{}]|\{[^{}]*\})+)\}\{\s*([RrKk]|R_[Ee])\s*\+\s*g\s*\}/g, "\\frac{$1}{$2 - g}")
+    .replace(/\/\s*\(\s*([RrKk]|R_[Ee])\s*\+\s*g\s*\)/g, "/ ($1 - g)");
+
+  // 4. WACC Tax Shield: Ensure (1 - T_C) applies STRICTLY to Debt R_D, NEVER to Equity R_E or Preferred R_P
+  if (/WACC/i.test(latex) || /chi phí (sử dụng )?vốn bình quân/i.test(contextHint)) {
+    latex = latex
+      .replace(/\\left\(\\frac\{E\}\{V\}\\right\)\s*R_E\s*\(1\s*-\s*T_C\)/g, "\\left(\\frac{E}{V}\\right) R_E")
+      .replace(/\(\\frac\{E\}\{V\}\)\s*R_E\s*\(1\s*-\s*T_C\)/g, "\\left(\\frac{E}{V}\\right) R_E")
+      .replace(/w_E\s*R_E\s*\(1\s*-\s*T_C\)/g, "w_E R_E")
+      .replace(/\\left\(\\frac\{P\}\{V\}\\right\)\s*R_P\s*\(1\s*-\s*T_C\)/g, "\\left(\\frac{P}{V}\\right) R_P")
+      .replace(/\(\\frac\{P\}\{V\}\)\s*R_P\s*\(1\s*-\s*T_C\)/g, "\\left(\\frac{P}{V}\\right) R_P")
+      .replace(/w_P\s*R_P\s*\(1\s*-\s*T_C\)/g, "w_P R_P");
+  }
+  if (/R_E\s*=/i.test(latex) && !/WACC/i.test(latex)) {
+    latex = latex.replace(/\(1\s*-\s*T_C\)/g, "").trim();
+  }
+  if (/R_P\s*=/i.test(latex) && !/WACC/i.test(latex)) {
+    latex = latex.replace(/\(1\s*-\s*T_C\)/g, "").trim();
+  }
+
+  // 5. Underbraced decomposition for Required Return R (Stock Valuation only, don't overwrite R_E or other returns)
   if (isStockValuation) {
-    const isFindingGrowthRate = /finding.*growth|growth.*rate|\(g\)/i.test(contextHint);
-    const isPriceAppreciationFormula =
-      /(\\frac\{\s*P_?1\s*-\s*P_?0\s*\}\{\s*P_?0\s*\}|\(P_?1\s*-\s*P_?0\)\s*\/\s*P_?0|\\Delta P)/i.test(
-        latex,
-      );
-
-    if (isFindingGrowthRate && isPriceAppreciationFormula) {
-      latex = "g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}";
-      leadText = "Fundamental accounting formula for sustainable dividend growth:";
-      description = "Growth rate is driven by reinvestment policy and ROE, NOT circular price changes.";
-      variables = [
-        {
-          symbol: "\\text{Retention ratio}",
-          definition: "Proportion of net earnings retained in the business = 1 - Dividend Payout Ratio",
-        },
-        {
-          symbol: "\\text{ROE}",
-          definition: "Return on equity earned on retained earnings",
-        },
-      ];
-    }
-
-    // Underbraced decomposition for Required Return R (Stock Valuation only, don't overwrite R_E or other returns)
     if (
       /R\s*=\s*(\\frac\{D_?1\}\{P_?0\}|\(D_?1\/P_?0\))\s*\+\s*g/i.test(latex) &&
       !latex.includes("underbrace") &&
@@ -394,8 +426,8 @@ function shieldFormula(
     }
   }
 
-  // Chapter 10 Historical Risk & Return Variance Shield:
-  // Historical sample variance uses denominator strictly T - 1. NEVER divide by T, NEVER use scenario probabilities P_i.
+  // 6. Chapter 10 Historical Risk & Return Variance Shield:
+  // Historical sample variance uses denominator strictly T - 1 (or n - 1). NEVER divide by T, NEVER use scenario probabilities P_i.
   const isHistoricalVariance =
     isChapter10 ||
     /historical|mẫu lịch sử|sample variance|phương sai lịch sử/i.test(contextHint) ||
@@ -420,10 +452,12 @@ function shieldFormula(
       // Fix denominator T to T - 1 if divided by T without - 1
       latex = latex.replace(/\\frac\{1\}\{T\}(?!\s*-\s*1)/g, "\\frac{1}{T - 1}");
       latex = latex.replace(/\{\s*T\s*\}(?!\s*-\s*1)/g, "{T - 1}");
+      latex = latex.replace(/\\frac\{1\}\{n\}(?!\s*-\s*1)/g, "\\frac{1}{n - 1}");
+      latex = latex.replace(/\{\s*n\s*\}(?!\s*-\s*1)/g, "{n - 1}");
     }
   }
 
-  // Chapter 11 Scenario Variance Shield:
+  // 7. Chapter 11 Scenario Probability Variance Shield:
   // Expected return & portfolio scenario variance uses \sum P_i (R_i - E[R])^2. NO T - 1 denominator!
   const isScenarioVariance =
     isChapter11 ||
@@ -436,7 +470,9 @@ function shieldFormula(
   ) {
     // Intercept if divided by T - 1 or n - 1 or T in scenario variance
     const isDividedBySample =
-      /\\frac\{1\}\{[TnN]\s*-\s*1\}|\/\s*\(?[TnN]\s*-\s*1\)?/i.test(latex);
+      /\\frac\{1\}\{[TnN]\s*-\s*1\}|\/\s*\(?[TnN]\s*-\s*1\)?|\\frac\{1\}\{[TnN]\}|\/\s*\(?[TnN]\)?/i.test(
+        latex,
+      );
 
     if (isDividedBySample) {
       latex = "\\sigma^2 = \\sum_{i=1}^n P_i (R_i - E[R])^2, \\quad \\sigma = \\sqrt{\\sigma^2}";
@@ -747,6 +783,120 @@ function consolidateFragmentedSections(
   return result.length >= 3 ? result : sections;
 }
 
+/**
+ * Universally consolidates sections into strictly 3–5 canonical sections (A through E)
+ * across any course or academic discipline (Finance, Economics, Accounting, Statistics, STEM).
+ */
+function consolidateSectionsUniversally(
+  sections: NoteSection[],
+  rawSlideText: string,
+  isChapter9StockValuation: boolean,
+): NoteSection[] {
+  if (isChapter9StockValuation) {
+    return consolidateFragmentedSections(sections, rawSlideText);
+  }
+
+  // If sections are already between 3 and 5, keep them as is
+  if (sections.length <= 5 && sections.length >= 3) {
+    return sections;
+  }
+
+  // If sections > 5, consolidate into exactly 5 canonical sections (A through E)
+  if (sections.length > 5) {
+    const headSections = sections.slice(0, 4);
+    const baseSectionE = { ...sections[4] };
+    const mergedSubSections: NoteSubSection[] = baseSectionE.subSections
+      ? [...baseSectionE.subSections]
+      : [];
+
+    for (let i = 5; i < sections.length; i++) {
+      const extraSec = sections[i];
+      const extraSubHeading = extraSec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
+      mergedSubSections.push({
+        heading: extraSubHeading,
+        leadIn: extraSec.overview || undefined,
+        bulletPoints: [...extraSec.bulletPoints],
+        formulas: [...extraSec.formulas],
+      });
+      if (extraSec.subSections && extraSec.subSections.length > 0) {
+        mergedSubSections.push(...extraSec.subSections);
+      }
+    }
+
+    baseSectionE.subSections = mergedSubSections;
+    return [...headSections, baseSectionE];
+  }
+
+  return sections;
+}
+
+/**
+ * Universal Formula Harvester:
+ * Extracts distinct mathematical/valuation formulas from prose bullet points or text
+ * when an LLM relegated an equation to text and left the formulas array empty.
+ */
+function harvestEquationFromText(line: string): NoteFormula | null {
+  if (!line || typeof line !== "string" || !line.includes("=")) return null;
+
+  // Indicators that text contains a quantitative or valuation formula
+  const hasMathIndicators =
+    /\\frac|\\sum|\\sqrt|\\prod|\\beta|\\sigma|\\rho|\\times|\\cdot|\\Delta|\^|\/|\+|-|\b(NPV|IRR|WACC|ROE|ROA|EAR|APR|YTM|CAPM|E\[R\]|Cov|Corr|Beta|DuPont|COGS|EBIT|EBITDA|EVA|FCF|PV|FV|PMT|P_0|P_1|P_t|D_1|D_0|EPS|DPS|PE|P\/E|Retention|Payout|Variance|StdDev)\b/i.test(
+      line,
+    );
+
+  if (!hasMathIndicators) return null;
+
+  // Avoid trivial assignments without calculation (e.g. "let t = 1", "g = 0", "N = 5")
+  if (/^\s*[a-zA-Z_]\s*=\s*[0-9a-zA-Z_]\s*$/i.test(line.trim())) return null;
+
+  // 1. Check for inline math delimiters: $...=...$ or $$...=...$$
+  const mathDelimMatch = line.match(/\${1,2}([^$]+=[^$]+)\${1,2}/);
+  if (mathDelimMatch) {
+    const rawEquation = mathDelimMatch[1].trim();
+    const prefix = line.slice(0, mathDelimMatch.index).trim().replace(/[:\-–—]+$/, "").trim();
+    return {
+      name: "",
+      leadText: prefix.length > 0 ? sanitizeUniversalText(`${prefix}:`) : undefined,
+      latex: repairCorruptedLatex(cleanTypoString(rawEquation)).replace(/^\$+|\$+$/g, "").trim(),
+      description: undefined,
+      variables: [],
+    };
+  }
+
+  // 2. Prose equation pattern e.g. "DuPont Identity: ROE = Net Profit Margin * Asset Turnover * Equity Multiplier"
+  const colonIndex = line.indexOf(":");
+  let leadText: string | undefined = undefined;
+  let eqText = line;
+
+  if (colonIndex > 0) {
+    const beforeColon = line.slice(0, colonIndex).trim();
+    const afterColon = line.slice(colonIndex + 1).trim();
+    if (afterColon.includes("=")) {
+      leadText = beforeColon;
+      eqText = afterColon;
+    } else if (beforeColon.includes("=")) {
+      eqText = beforeColon;
+      leadText = undefined;
+    }
+  }
+
+  const cleanedEq = eqText
+    .replace(/^[-*•\d\.\s]+/, "") // remove leading bullet marks
+    .replace(/\s*\([^)]*\)\s*$/, "") // remove trailing parenthetical explanations
+    .replace(/[.;,]+$/, "") // remove trailing punctuation
+    .trim();
+
+  if (cleanedEq.length < 3 || !cleanedEq.includes("=")) return null;
+
+  return {
+    name: "",
+    leadText: leadText ? sanitizeUniversalText(`${leadText}:`) : undefined,
+    latex: repairCorruptedLatex(cleanTypoString(cleanedEq)).replace(/^\$+|\$+$/g, "").trim(),
+    description: undefined,
+    variables: [],
+  };
+}
+
 export function applyHallucinationShield(
   sections: NoteSection[],
   rawSlideText: string = "",
@@ -778,8 +928,12 @@ export function applyHallucinationShield(
       /stock valuation|định giá cổ phiếu/i.test(allTitlesText) ||
       /ddm|ritm|hạnh hạnh/i.test(combinedContext));
 
-  // Step 1: Consolidate fragmented sections if the LLM output 8–10 split sections
-  const consolidated = consolidateFragmentedSections(sections, rawSlideText);
+  // Step 1: Consolidate fragmented sections universally into 3–5 canonical sections
+  const consolidated = consolidateSectionsUniversally(
+    sections,
+    rawSlideText,
+    isChapter9StockValuation,
+  );
 
   // Step 2: Apply fine-grained formula, header, and content shields
   const processed = consolidated.map((sec, idx) => {
@@ -791,29 +945,38 @@ export function applyHallucinationShield(
     sec.id = `sec-${sequentialLetter.toLowerCase()}-${idx + 1}`;
 
     if (sec.coreStatement)
-      sec.coreStatement = ensureInlineMathDelimiters(cleanTypoString(sec.coreStatement));
+      sec.coreStatement = sanitizeUniversalText(sec.coreStatement);
     if (sec.overview)
-      sec.overview = ensureInlineMathDelimiters(cleanTypoString(sec.overview));
-    sec.bulletPoints = sec.bulletPoints.map((bp) =>
-      ensureInlineMathDelimiters(cleanTypoString(bp)),
-    );
+      sec.overview = sanitizeUniversalText(sec.overview);
+    sec.bulletPoints = sec.bulletPoints.map(sanitizeUniversalText);
 
     if (sec.keyTakeaways) {
+      if (sec.keyTakeaways.title) {
+        sec.keyTakeaways.title = cleanTypoString(sec.keyTakeaways.title);
+      }
       if (sec.keyTakeaways.items) {
         sec.keyTakeaways.items = sec.keyTakeaways.items.map((item) => ({
-          point: ensureInlineMathDelimiters(cleanTypoString(item.point)),
-          subBullets: (item.subBullets ?? []).map((sb) =>
-            ensureInlineMathDelimiters(cleanTypoString(sb)),
-          ),
+          point: sanitizeUniversalText(item.point),
+          subBullets: (item.subBullets ?? []).map(sanitizeUniversalText),
         }));
       }
       if (sec.keyTakeaways.boundaryConditions) {
-        sec.keyTakeaways.boundaryConditions = ensureInlineMathDelimiters(
-          cleanTypoString(sec.keyTakeaways.boundaryConditions),
+        sec.keyTakeaways.boundaryConditions = sanitizeUniversalText(
+          sec.keyTakeaways.boundaryConditions,
         );
       }
-      sec.keyTakeaways.summaryPoints = (sec.keyTakeaways.summaryPoints ?? []).map((sp) =>
-        ensureInlineMathDelimiters(cleanTypoString(sp)),
+      if (sec.keyTakeaways.modelSelectionRule) {
+        sec.keyTakeaways.modelSelectionRule = sanitizeUniversalText(
+          sec.keyTakeaways.modelSelectionRule,
+        );
+      }
+      if (sec.keyTakeaways.realWorldConditions) {
+        sec.keyTakeaways.realWorldConditions = sanitizeUniversalText(
+          sec.keyTakeaways.realWorldConditions,
+        );
+      }
+      sec.keyTakeaways.summaryPoints = (sec.keyTakeaways.summaryPoints ?? []).map(
+        sanitizeUniversalText,
       );
     }
 
@@ -822,16 +985,37 @@ export function applyHallucinationShield(
       shieldFormula(f, sec.titleVi, isChapter9StockValuation, isChapter10Historical, isChapter11Portfolio),
     );
 
+    // Universal Formula Harvester:
+    // If a section contains descriptive text or bullets with mathematical equations but formulas is empty,
+    // harvest equations and create boxed NoteFormula so formulas are NEVER omitted!
+    if (sec.formulas.length === 0) {
+      const candidates = [sec.coreStatement, sec.overview, ...sec.bulletPoints].filter(
+        (t): t is string => Boolean(t && t.includes("=")),
+      );
+      for (const cand of candidates) {
+        const harvested = harvestEquationFromText(cand);
+        if (harvested && !sec.formulas.some((f) => f.latex === harvested.latex)) {
+          sec.formulas.push(
+            shieldFormula(
+              harvested,
+              sec.titleVi,
+              isChapter9StockValuation,
+              isChapter10Historical,
+              isChapter11Portfolio,
+            ),
+          );
+        }
+      }
+    }
+
     // 2c. Shield sub-sections
     if (sec.subSections) {
       sec.subSections = deduplicateSubSections(sec.subSections);
       sec.subSections = sec.subSections.map((sub) => {
         sub.heading = sanitizeSubSectionHeading(sub.heading);
         if (sub.leadIn)
-          sub.leadIn = ensureInlineMathDelimiters(cleanTypoString(sub.leadIn));
-        sub.bulletPoints = sub.bulletPoints.map((bp) =>
-          ensureInlineMathDelimiters(cleanTypoString(bp)),
-        );
+          sub.leadIn = sanitizeUniversalText(sub.leadIn);
+        sub.bulletPoints = sub.bulletPoints.map(sanitizeUniversalText);
         sub.formulas = sub.formulas.map((f) =>
           shieldFormula(
             f,
@@ -841,6 +1025,27 @@ export function applyHallucinationShield(
             isChapter11Portfolio,
           ),
         );
+
+        // Sub-section Formula Harvester:
+        if (sub.formulas.length === 0) {
+          const subCandidates = [sub.leadIn, ...sub.bulletPoints].filter(
+            (t): t is string => Boolean(t && t.includes("=")),
+          );
+          for (const cand of subCandidates) {
+            const harvested = harvestEquationFromText(cand);
+            if (harvested && !sub.formulas.some((f) => f.latex === harvested.latex)) {
+              sub.formulas.push(
+                shieldFormula(
+                  harvested,
+                  `${sec.titleVi} ${sub.heading}`,
+                  isChapter9StockValuation,
+                  isChapter10Historical,
+                  isChapter11Portfolio,
+                ),
+              );
+            }
+          }
+        }
 
         if (isChapter9StockValuation) {
           // Case 3 (Differential Growth) Terminal Value PN injection
@@ -1197,11 +1402,9 @@ export function applyHallucinationShield(
 function sanitizeSubSection(sub: NoteSubSection): NoteSubSection {
   return {
     ...sub,
-    heading: repairCorruptedLatex(sub.heading),
-    leadIn: sub.leadIn ? ensureInlineMathDelimiters(repairCorruptedLatex(sub.leadIn)) : undefined,
-    bulletPoints: (sub.bulletPoints ?? []).map((bp) =>
-      ensureInlineMathDelimiters(repairCorruptedLatex(bp)),
-    ),
+    heading: sanitizeSubSectionHeading(sub.heading),
+    leadIn: sub.leadIn ? sanitizeUniversalText(sub.leadIn) : undefined,
+    bulletPoints: (sub.bulletPoints ?? []).map(sanitizeUniversalText),
     formulas: (sub.formulas ?? []).map(sanitizeFormula),
   };
 }
@@ -1212,38 +1415,35 @@ function sanitizeSubSection(sub: NoteSubSection): NoteSubSection {
 function sanitizeSectionLatex(section: NoteSection): NoteSection {
   return {
     ...section,
-    titleEn: section.titleEn ?? "",
+    titleEn: section.titleEn ? sanitizeUniversalText(section.titleEn) : "",
     coreStatement: section.coreStatement
-      ? ensureInlineMathDelimiters(repairCorruptedLatex(section.coreStatement))
+      ? sanitizeUniversalText(section.coreStatement)
       : undefined,
     overview: section.overview
-      ? ensureInlineMathDelimiters(repairCorruptedLatex(section.overview))
+      ? sanitizeUniversalText(section.overview)
       : "",
-    bulletPoints: (section.bulletPoints ?? []).map((bp) =>
-      ensureInlineMathDelimiters(repairCorruptedLatex(bp)),
-    ),
+    bulletPoints: (section.bulletPoints ?? []).map(sanitizeUniversalText),
     formulas: (section.formulas ?? []).map(sanitizeFormula),
     subSections: (section.subSections ?? []).map(sanitizeSubSection),
     keyTakeaways: section.keyTakeaways
       ? {
           ...section.keyTakeaways,
+          title: cleanTypoString(section.keyTakeaways.title || "KEY TAKEAWAYS"),
           items: (section.keyTakeaways.items ?? []).map((item) => ({
-            point: ensureInlineMathDelimiters(repairCorruptedLatex(item.point)),
-            subBullets: (item.subBullets ?? []).map((sb) =>
-              ensureInlineMathDelimiters(repairCorruptedLatex(sb)),
-            ),
+            point: sanitizeUniversalText(item.point),
+            subBullets: (item.subBullets ?? []).map(sanitizeUniversalText),
           })),
           modelSelectionRule: section.keyTakeaways.modelSelectionRule
-            ? repairCorruptedLatex(section.keyTakeaways.modelSelectionRule)
+            ? sanitizeUniversalText(section.keyTakeaways.modelSelectionRule)
             : undefined,
           realWorldConditions: section.keyTakeaways.realWorldConditions
-            ? repairCorruptedLatex(section.keyTakeaways.realWorldConditions)
+            ? sanitizeUniversalText(section.keyTakeaways.realWorldConditions)
             : undefined,
           boundaryConditions: section.keyTakeaways.boundaryConditions
-            ? ensureInlineMathDelimiters(repairCorruptedLatex(section.keyTakeaways.boundaryConditions))
+            ? sanitizeUniversalText(section.keyTakeaways.boundaryConditions)
             : undefined,
-          summaryPoints: (section.keyTakeaways.summaryPoints ?? []).map((sp) =>
-            ensureInlineMathDelimiters(repairCorruptedLatex(sp)),
+          summaryPoints: (section.keyTakeaways.summaryPoints ?? []).map(
+            sanitizeUniversalText,
           ),
         }
       : null,
@@ -1608,14 +1808,14 @@ export async function generateClutchNote(
 
   const finalNote: ClutchNote = {
     id: noteId,
-    title: repairCorruptedLatex(meta.title.trim()),
-    subject: repairCorruptedLatex(meta.subject.trim()),
+    title: sanitizeUniversalText(meta.title.trim()),
+    subject: sanitizeUniversalText(meta.subject.trim()),
     createdAt: new Date().toISOString(),
     originalFileName: options.fileName,
     originalSlideCount: options.slideCount,
     estimatedDistilledPages: meta.estimatedDistilledPages || 3,
     noiseReductionRate: noiseRate,
-    executiveSummary: ensureInlineMathDelimiters(repairCorruptedLatex(meta.executiveSummary.trim())),
+    executiveSummary: sanitizeUniversalText(meta.executiveSummary.trim()),
     sections: shieldedSections,
   };
 

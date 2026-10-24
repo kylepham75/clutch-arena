@@ -268,7 +268,6 @@ export function convertAsciiMathSegment(segment: string): string {
  */
 export function ensureInlineMathDelimiters(text: string): string {
   if (!text || typeof text !== "string") return text;
-  if (!text.includes("\\")) return text;
 
   // Split string into segments preserving already delimited math
   const tokens = tokenizeMath(text);
@@ -305,7 +304,31 @@ export function ensureInlineMathDelimiters(text: string): string {
                   val: seg.val.slice(lastIdx, m.index),
                 });
               }
-              next.push({ isMath: true, val: replacer(m[0]) });
+              const matched = m[0];
+              const trimmed = matched.trim();
+              const leadSpace = matched.slice(0, matched.indexOf(trimmed));
+              const trailSpace = matched.slice(matched.indexOf(trimmed) + trimmed.length);
+
+              if (leadSpace) {
+                next.push({ isMath: false, val: leadSpace });
+              }
+
+              const res = replacer(trimmed);
+              // Check if replacer moved punctuation outside delimiter, e.g. "$x$."
+              const punctMatch = res.match(/^(\$[\s\S]+?\$)([.,;:]+)$/);
+              if (punctMatch) {
+                next.push({ isMath: true, val: punctMatch[1] });
+                next.push({ isMath: false, val: punctMatch[2] });
+              } else if (res.startsWith("$") && res.endsWith("$")) {
+                next.push({ isMath: true, val: res });
+              } else {
+                next.push({ isMath: false, val: res });
+              }
+
+              if (trailSpace) {
+                next.push({ isMath: false, val: trailSpace });
+              }
+
               lastIdx = re.lastIndex;
             }
             if (lastIdx < seg.val.length) {
@@ -316,50 +339,99 @@ export function ensureInlineMathDelimiters(text: string): string {
         segments = next;
       };
 
-      // 0. Wrap full un-delimited math equations containing '=' and LaTeX commands
-      // e.g., \sigma_p^2 = w_A^2 \sigma_A^2 + w_B^2 \sigma_B^2 + 2 w_A w_B \text{Cov}(R_A, R_B)
-      const eqRegex =
-        /\\(?:sigma|beta|rho|alpha|mu|bar|text\{[^{}]+\}|frac\{[^{}]+\}\{[^{}]+\})(?:_\{[^{}]+\}|_[A-Za-z0-9]+)?(?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)?\s*=\s*(?:[^.,;:\n(){}\[\]]+|\([^)]*\)|\{(?:[^{}]|\{[^{}]*\})*\}|\[[^\]]*\])+?(?=[.,;:]?(?:\s+(?:for|the|and|where|with|while|when|if|in|is|as|to|of|from|by|given|based|measured|meaning|defined|which|that)\b|\s*$))/g;
-      apply(eqRegex, (m) => {
-        if (/\\(?:sigma|beta|rho|alpha|mu|bar|text|frac|sqrt|sum|prod|Delta|quad|times|div|approx|le|ge)\b/.test(m)) {
-          return `$${m.trim()}$`;
+      const wrapInMath = (expr: string): string => {
+        const trimmed = expr.trim();
+        if (!trimmed) return expr;
+        const m = trimmed.match(/^([\s\S]+?)([.,;:]+)$/);
+        if (m) {
+          return `$${m[1].trim()}$${m[2]}`;
         }
-        return m;
-      });
+        return `$${trimmed}$`;
+      };
 
-      // 1. Wrap fractions: \frac{...}{...} (supporting up to 2 levels of nested braces)
+      const isMathEquation = (m: string): boolean => {
+        if (!/=|\\approx|≈|\\sim|\\le|\\ge|\\leq|\\geq|\\ne|\\neq/.test(m)) return false;
+        if (/\\(?:sigma|beta|rho|alpha|mu|gamma|delta|epsilon|theta|lambda|pi|tau|phi|omega|Delta|Sigma|Omega|bar|hat|tilde|vec|mathbf|mathit|text|frac|sqrt|sum|prod|int|partial|left|right|times|div|approx|le|ge|leq|geq|ne|neq|cdot|pm|mp|circ|infty)\b/.test(m)) {
+          return true;
+        }
+        if (/[_^{}]/.test(m)) return true;
+        if (/[+\-*/^]/.test(m) && /[A-Za-z0-9]/.test(m)) return true;
+        if (/\b(?:NPV|IRR|WACC|ROE|ROA|PV|FV|EAR|APR|EBIT|EBITDA|CAPM|EPS|DPS)\b/.test(m)) return true;
+        if (/[A-Z]\[[A-Za-z0-9]|(?:Var|Cov|Corr|SD|SE)\(/.test(m)) return true;
+        return false;
+      };
+
+      // 0. Wrap full un-delimited math equations containing '=' or '\approx' with math symbols/variables
+      const eqRegex =
+        /(?:\\(?:sigma|beta|rho|alpha|mu|gamma|delta|epsilon|theta|lambda|pi|tau|phi|omega|Delta|Sigma|Omega|bar|hat|tilde|vec|mathbf|mathit|text\{[^{}]+\}|frac\{[^{}]+\}\{[^{}]+\})(?:_\{[^{}]+\}|_[A-Za-z0-9]+)?(?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)?(?![a-zA-Z0-9_])|\b(?:NPV|IRR|WACC|ROE|ROA|PV|FV|EAR|APR|EBIT|EBITDA|CAPM|EPS|DPS|PE|PB)(?:_\{[^{}]+\}|_[A-Za-z0-9]+)?(?![a-zA-Z0-9_])|(?:E\[[A-Za-z0-9_{}^]+\]|E\([A-Za-z0-9_{}^]+\)|Var\([A-Za-z0-9_{}^,\s]+\)|Cov\([A-Za-z0-9_{}^,\s]+\)|Corr\([A-Za-z0-9_{}^,\s]+\)|SD\([A-Za-z0-9_{}^,\s]+\))|\b[A-Za-z]{1,3}_(?:\{[^{}]+\}|[A-Za-z0-9]+)(?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)?(?![a-zA-Z0-9_])|\b[A-Za-z](?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)(?![a-zA-Z0-9_])|\b[A-Za-z]{1,2}_[A-Za-z0-9]+\s*[\+\-\*\/]\s*[A-Za-z]{1,2}_[A-Za-z0-9]+\b|\([A-Za-z0-9\s+\-*\/^_{}]+\)|\b[A-Za-z]\b)\s*(?:=|\\approx|≈|\\sim|\\le|\\ge|\\leq|\\geq|\\ne|\\neq)\s*(?:\d+\.\d+%?|\((?:[^()]|\([^()]*\))*\)|\{(?:[^{}]|\{[^{}]*\})*\}|\[(?:[^\[\]]|\[[^\[\]]*\])*\]|,(?!\s)|[^\s.,;:\n(){}\[\]]+|\s+(?!(?:for|the|and|where|with|while|when|if|in|is|as|to|of|from|by|given|based|measured|meaning|defined|which|that|or|trong|với|khi|nếu|và|hoặc|cho|thì|là|được|theo|ở|gồm|tại|từ|do|để|như)\b))+?(?=[.,;:]?(?:\s+(?:for|the|and|where|with|while|when|if|in|is|as|to|of|from|by|given|based|measured|meaning|defined|which|that|or|trong|với|khi|nếu|và|hoặc|cho|thì|là|được|theo|ở|gồm|tại|từ|do|để|như)\b|\s*$))/g;
+      apply(eqRegex, (m) => (isMathEquation(m) ? wrapInMath(m) : m));
+
+      // 1. Wrap \left ... \right bracketed expressions
+      const leftRightRegex =
+        /\\left([\[\(\{|\.]).*?\\right([\]\)\}|\.])/g;
+      apply(leftRightRegex, (m) => wrapInMath(m));
+
+      // 2. Wrap fractions: \frac{...}{...} (supporting up to 2 levels of nested braces)
       const fracRegex =
         /\\frac\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}/g;
-      apply(fracRegex, (m) => `$${m}$`);
+      apply(fracRegex, (m) => wrapInMath(m));
 
-      // 2. Wrap square roots: \sqrt{...}
-      const sqrtRegex = /\\sqrt\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}/g;
-      apply(sqrtRegex, (m) => `$${m}$`);
+      // 3. Wrap square roots: \sqrt{...}
+      const sqrtRegex =
+        /\\sqrt(?:\[[^\]]*\])?\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}/g;
+      apply(sqrtRegex, (m) => wrapInMath(m));
 
-      // 3. Wrap Covariance, Correlation, Variance functions: \text{Cov}(...), \text{Corr}(...), \text{Var}(...)
-      const covRegex =
-        /\\text\{(?:Cov|Corr|Var)\}(?:\([A-Za-z0-9_,\s\(\)\^\{\}\+\-\*\/]+\))?/g;
-      apply(covRegex, (m) => `$${m}$`);
-
-      // 4. Wrap Greek variables with optional sub/superscripts: \sigma_p^2, \beta_i, \rho_{AB}, etc.
-      const greekRegex =
-        /\\(?:sigma|beta|rho|alpha|mu|Delta)(?:_\{[^{}]*\}|_[a-zA-Z0-9]+)?(?:\^\{[^{}]*\}|\^[a-zA-Z0-9]+)?/g;
-      apply(greekRegex, (m) => `$${m}$`);
-
-      // 5. Wrap Summation & Product expressions: \sum_{t=1}^T, \prod_{t=1}^T
+      // 4. Wrap Summation, Product, Integral expressions: \sum_{t=1}^T, \prod_{t=1}^T, \int_{a}^b, \partial
       const sumProdRegex =
-        /\\(?:sum|prod)(?:_\{[^{}]*\}|_[a-zA-Z0-9=]+)?(?:\^\{[^{}]*\}|\^[a-zA-Z0-9]+)?/g;
-      apply(sumProdRegex, (m) => `$${m}$`);
+        /\\(?:sum|prod|int)(?:_\{[^{}]*\}|_[a-zA-Z0-9=]+)?(?:\^\{[^{}]*\}|\^[a-zA-Z0-9]+)?(?:\s+(?:[a-zA-Z]\([a-zA-Z]\)\s*d[a-zA-Z]\b|d[a-zA-Z]\b))?|\\partial(?:_\{[^{}]*\}|_[a-zA-Z0-9]+)?(?:\^\{[^{}]*\}|\^[a-zA-Z0-9]+)?/g;
+      apply(sumProdRegex, (m) => wrapInMath(m));
 
-      // 6. Wrap bar expressions: \bar{R}, \bar{R}_{\text{geom}}, etc.
-      const barRegex =
-        /\\bar\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}(?:_\{[^{}]*\}|_[a-zA-Z0-9]+)?|\\bar\s+[a-zA-Z]/g;
-      apply(barRegex, (m) => `$${m}$`);
+      // 5. Wrap Financial & Quantitative functions: \text{Cov}(...), \text{Corr}(...), \text{Var}(...), \text{SD}(...), \text{NPV}, etc.
+      const covRegex =
+        /\\text\{(?:Cov|Corr|Var|SD|SE|NPV|IRR|WACC|ROE|ROA|PV|FV|EAR|APR|EBIT|EBITDA)\}(?:\([A-Za-z0-9_,\s\(\)\^\{\}\+\-\*\/]+\))?/g;
+      apply(covRegex, (m) => wrapInMath(m));
 
-      // 7. Wrap comparison / operators when surrounded by whitespace or variables
+      // 6. Wrap math accents and fonts: \bar{...}, \hat{...}, \tilde{...}, \vec{...}, \mathbf{...}, \mathit{...}
+      const accentRegex =
+        /\\(?:bar|hat|tilde|vec|mathbf|mathit)\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}(?:_\{[^{}]*\}|_[a-zA-Z0-9]+)?(?:\^\{[^{}]*\}|\^[a-zA-Z0-9]+)?|\\(?:bar|hat|tilde|vec)\s+[a-zA-Z]/g;
+      apply(accentRegex, (m) => wrapInMath(m));
+
+      // 7. Wrap Greek variables with optional sub/superscripts: \sigma_p^2, \beta_i, \rho_{AB}, \Delta P, etc.
+      const deltaVarRegex =
+        /\\Delta\s+[A-Za-z]\b/g;
+      apply(deltaVarRegex, (m) => wrapInMath(m));
+
+      const greekRegex =
+        /\\(?:alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|pi|varpi|rho|varrho|sigma|varsigma|tau|upsilon|phi|varphi|chi|psi|omega|Delta|Sigma|Omega|Gamma|Theta|Lambda|Xi|Pi|Upsilon|Phi|Psi)(?:_\{[^{}]*\}|_[a-zA-Z0-9]+)?(?:\^\{[^{}]*\}|\^[a-zA-Z0-9]+)?(?![a-zA-Z0-9])/g;
+      apply(greekRegex, (m) => wrapInMath(m));
+
+      // 8. Wrap comparison / operators when adjacent to numbers or surrounded by whitespace
+      const opNumRegex =
+        /(\\(?:pm|mp|approx))\s*(\d+(?:\.\d+)?%?)/g;
+      apply(opNumRegex, (m) => wrapInMath(m));
+
       const compRegex =
-        /\s+(\\(?:approx|le|ge|leq|geq|times|div|cdot|neq|pm|mp))\s+/g;
+        /\s+(\\(?:approx|sim|le|ge|leq|geq|ne|neq|times|div|pm|mp|cdot|circ|infty|forall|exists|in|notin|subset|cup|cap))\s+/g;
       apply(compRegex, (op) => ` $${op.trim()}$ `);
+
+      // 9. Wrap variables with subscripts: P_0, D_1, R_f, R_M, R_E, R_D, R_P, CF_t, CF_0, w_A, w_B, T_C, P_t, P_{t+1}, D_{t+1}, Q_d, Q_s
+      const subscriptRegex =
+        /\b(?:P_0|D_1|R_f|R_M|R_E|R_D|R_P|CF_t|CF_0|w_A|w_B|T_C|P_t|P_\{t\+1\}|D_\{t\+1\}|Q_d|Q_s|E_d|E_\{xy\}|Q_x|P_y|[A-Za-z]{1,2}_(?:\{[^{}]+\}|[A-Za-z0-9]{1,4}))(?=[.,;:]?(?:\s|$))/g;
+      apply(subscriptRegex, (m) => wrapInMath(m));
+
+      // 10. Wrap variables and base terms with exponents: s^2, \sigma^2, (1+r)^t, (1+R)^T
+      const expBaseRegex =
+        /\((?:1\s*[\+\-]\s*[a-zA-Z0-9.]+)\)\^\{?[+-]?[a-zA-Z0-9]+\}?(?=[.,;:]?(?:\s|$))/g;
+      apply(expBaseRegex, (m) => wrapInMath(m));
+
+      const expVarRegex =
+        /\b[a-zA-Z](?:\^\{[^{}]+\}|\^[0-9a-zA-Z]+)(?=[.,;:]?(?:\s|$))/g;
+      apply(expVarRegex, (m) => wrapInMath(m));
+
+      // 11. Wrap any remaining un-delimited \text{...} macros
+      const textMacroRegex =
+        /\\text\{(?:[^{}]|\{[^{}]*\})*\}/g;
+      apply(textMacroRegex, (m) => wrapInMath(m));
 
       let plain = segments.map((s) => s.val).join("");
 
@@ -383,9 +455,9 @@ export function normalizeMathFormulas(raw: string): string {
   // Always repair corrupted LaTeX escape sequences first
   let text = repairCorruptedLatex(raw);
 
-  // If already formatted with LaTeX display markers, preserve it (with repairs applied)
+  // If already formatted with LaTeX display markers, run ensureInlineMathDelimiters to protect surrounding prose and return
   if (text.includes("$$") || text.includes("\\[") || text.includes("\\(")) {
-    return text;
+    return ensureInlineMathDelimiters(text);
   }
 
   // Pattern 1: Cross-price elasticity: Exy = %ΔQx ÷ %ΔPy. Positive = substitutes; negative = complements

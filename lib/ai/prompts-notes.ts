@@ -4,54 +4,75 @@ You are equipped with a STRICT ACADEMIC HALLUCINATION SHIELD. Academic accuracy 
 
 Follow these exact transformation rules:
 
-0. TOPIC FIDELITY (RULE 0: GROUND STRICTLY IN THE UPLOADED SLIDE DECK):
-   - Summarize ONLY the specific topic, chapter, formulas, and problem types taught in the provided slides.
-   - NEVER cross-contaminate or copy formulas from an unrelated chapter (e.g., NEVER force Stock Valuation / DDM onto a Cost of Capital / WACC deck, or vice versa).
-   - If the slides cover Chapter 13 (Cost of Capital & WACC / Chi phí sử dụng vốn), synthesize strictly Chapter 13 formulas and concepts.
-   - If the slides cover Chapter 9 (Stock Valuation / Định giá cổ phiếu), synthesize strictly Chapter 9 formulas and concepts.
-   - If the slides cover Chapter 10 (Historical Risk & Return / Lợi suất & Rủi ro lịch sử), synthesize strictly Chapter 10 historical formulas and concepts.
-   - If the slides cover Chapter 11 (Expected Return & Portfolio Theory / Lợi suất kỳ vọng, Rủi ro danh mục & Mô hình CAPM), synthesize strictly Chapter 11 portfolio and CAPM formulas and concepts.
+0. TOPIC FIDELITY & DYNAMIC THEMATIC MAPPING (RULE 0: GROUND STRICTLY IN THE UPLOADED SLIDE DECK):
+   - Summarize strictly the specific topic, chapter, and problem types taught in the provided slides.
+   - Derive section titles directly from the primary thematic modules of the provided deck.
+   - NEVER cross-contaminate or force headers from one chapter onto another (e.g., NEVER force Stock Valuation / DDM onto a Cost of Capital / WACC deck, or vice versa).
+   - Every subject (Corporate Finance, Micro/Macroeconomics, Accounting, Statistics, Operations, STEM) must be synthesized according to its own academic domain:
+     * If the slides cover Chapter 13 (Cost of Capital & WACC / Chi phí sử dụng vốn), synthesize strictly Chapter 13 formulas and concepts.
+     * If the slides cover Chapter 9 (Stock Valuation / Định giá cổ phiếu), synthesize strictly Chapter 9 formulas and concepts.
+     * If the slides cover Chapter 10 (Historical Risk & Return / Lợi suất & Rủi ro lịch sử), synthesize strictly Chapter 10 historical formulas and concepts.
+     * If the slides cover Chapter 11 (Expected Return & Portfolio Theory / Lợi suất kỳ vọng, Rủi ro danh mục & Mô hình CAPM), synthesize strictly Chapter 11 portfolio and CAPM formulas and concepts.
+     * If the slides cover Economics, Accounting, Statistics, Operations, or other STEM fields, derive sections matching that course's canonical syllabus.
 
-1. STRIP ALL NOISE (BUT PRESERVE ALL CORE MECHANICS):
+1. STRIP ALL NOISE (RULE 1: PRESERVE ALL CORE MECHANICS):
    - Completely remove cover slides, instructor/captain names, attendance QR codes, agenda/outline slides, thank-you/feedback slides, and repetitive arithmetic drill numbers (e.g., specific company examples like "Five Star Corporation pays $3.04").
-   - PRESERVE 100% of the underlying problem types, calculation mechanics, multi-step valuation rules, and component definitions taught across the slides.
+   - PRESERVE 100% of the underlying problem types, calculation mechanics, multi-step valuation rules, accounting identities, decision rules, and component definitions taught across the slides.
 
-2. STRICT ACADEMIC HALLUCINATION SHIELD & FORMULA FIDELITY:
-   - GENERAL FIDELITY PRINCIPLES:
-     * For any formula present in the slides, preserve textbook accounting identities and exact component definitions.
-     * When calculating Cost of Capital / WACC:
+2. STRICT ACADEMIC HALLUCINATION SHIELD & THE FIRST LAW OF CLUTCH NOTES: EXHAUSTIVE FORMULA EXTRACTION:
+   - THE FIRST LAW OF CLUTCH NOTES (RULE 2: EXHAUSTIVE FORMULA EXTRACTION):
+     * EVERY distinct mathematical formula, calculation equation, quantitative rule, or valuation model taught in the slides MUST be rendered as an explicit boxed equation in \`formulas\`.
+     * NEVER relegate calculation formulas to prose bullet points without providing their boxed equation.
+     * If an exercise or slide teaches how to calculate something (e.g., NPV, IRR, WACC, Beta, Portfolio Return/Risk, Covariance, EAR, Bond Price, Growth Rate, DuPont ROE, Sample Variance, Expected Value), the mathematical equation MUST be present in \`formulas\`.
+   - UNIVERSAL ACADEMIC INTEGRITY & HALLUCINATION SHIELD (RULE 3):
+     * STATISTICAL DISTINCTION (Sample vs Scenario Variance):
+       - Historical sample statistics use observations t = 1 ... T, dividing by T - 1 degrees of freedom (s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2). NEVER divide by T, NEVER use scenario probabilities P_i.
+       - Scenario probability distributions use economic states i = 1 ... n with probabilities P_i (where \\sum P_i = 1), multiplying by P_i (\\sigma^2 = \\sum_{i=1}^n P_i (R_i - E[R])^2). There is NO T - 1 denominator.
+     * TIME VALUE & COMPOUNDING (1-Period Exponent):
+       - Exponent for a 1-period horizon is strictly 1:
+         P_0 = \\frac{D_1}{1 + R} + \\frac{P_1}{1 + R}
+         NEVER write (1+R)^T or (1+R)^t with an undefined variable power T or t. A 1-year holding horizon has power 1.
+     * GROWTH & RATES (Sustainable Growth Rate):
+       - Fundamental growth is g = \\text{Retention ratio} \\times \\text{ROE} = (1 - \\text{Payout}) \\times \\text{ROE}.
+         NEVER define g as circular price change \\frac{P_1 - P_0}{P_0} or \\frac{\\Delta P}{P_0}.
+     * COST OF CAPITAL & TAXES (WACC Tax Shield):
+       - Tax deduction / shield (1 - T_C) applies STRICTLY to Debt (R_D), NEVER to Equity (R_E) or Preferred (R_P).
+         WACC = \\left(\\frac{E}{V}\\right) R_E + \\left(\\frac{P}{V}\\right) R_P + \\left(\\frac{D}{V}\\right) R_D (1 - T_C)
+     * CAPITAL BUDGETING RULES:
+       - NPV, IRR, Payback, Profitability Index (PI). Accept project if \\text{NPV} > 0, \\text{IRR} > \\text{WACC}, \\text{PI} > 1.
+     * ASSET VALUATION PRINCIPLE:
+       - The value of any asset = the present value (PV) of its expected future cash flows.
+     * GROWING PERPETUITY DENOMINATOR:
+       - Denominator of a growing perpetuity is strictly discount rate minus growth rate (R - g or r - g). NEVER write R + g or r + g.
+     * CLEAN LATEX:
+       - All formulas in clean LaTeX without outer dollar signs in \`latex\` fields.
+     * STRICT TYPOGRAPHICAL INTEGRITY:
+       - Always use numeric digit 0 for zero-growth conditions (g = 0) and time-zero subscripts (P_0, D_0). NEVER write "g = o" or "P_o" with the letter "o".
+   - TOPIC-SPECIFIC FORMULA FIDELITY:
+     * When calculating Cost of Capital / WACC (Chapter 13):
        - WACC: WACC = \\left(\\frac{E}{V}\\right) R_E + \\left(\\frac{P}{V}\\right) R_P + \\left(\\frac{D}{V}\\right) R_D (1 - T_C)
        - Cost of Equity via CAPM / SML: R_E = R_f + \\beta_E (R_M - R_f)
        - Cost of Equity via DGM: R_E = \\frac{D_1}{P_0} + g
        - Cost of Debt after-tax: R_D (1 - T_C)
        - Cost of Preferred: R_P = \\frac{D}{P_0}
        - Flotation cost adjustments: f_A = \\left(\\frac{E}{V}\\right) f_E + \\left(\\frac{D}{V}\\right) f_D, \\quad \\text{Initial outlay} = \\frac{\\text{Project Cost}}{1 - f_A}
-     * When calculating dividend growth g in stock valuation:
-       g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}
-       NEVER define g as \\frac{P_1 - P_0}{P_0} or circular price changes.
-     * 1-year holding periods: exponent is strictly 1:
-       P_0 = \\frac{D_1}{1 + R} + \\frac{P_1}{1 + R}
-       NEVER write (1+R)^T or (1+R)^t with an undefined variable power T or t. A 1-year holding horizon has power 1.
-     * Always use numeric zero 0 for subscripts and zero growth (g = 0, P_0), never letter "o".
-     * Multi-stage terminal values (P_N) and deferred payments (P_{t-1} \\implies P_0) must include explicit formulas whenever multi-stage/deferred models are taught in the slides.
-   - TOPIC-SPECIFIC FORMULA FIDELITY (Stock Valuation / DDM):
-     * ONE-PERIOD HOLDING HORIZON FORMULA: For a 1-year holding period, the exponent is strictly 1:
-       P_0 = \\frac{D_1}{1 + R} + \\frac{P_1}{1 + R}
-     * FUNDAMENTAL GROWTH RATE (g): In Corporate Finance, the growth rate of dividends must be grounded in fundamental accounting:
-       g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}
-       NEVER define g as \\frac{P_1 - P_0}{P_0} or \\frac{\\Delta P}{P_0}. That is circular logic (calculating future price P_1 requires knowing g in advance) and confuses growth rate with Capital Gains Yield.
-     * REQUIRED RETURN (R) DECOMPOSITION: Whenever presenting R = \\frac{D_1}{P_0} + g, ALWAYS explicitly label and define the two separate economic components:
-       R = \\underbrace{\\frac{D_1}{P_0}}_{\\text{Dividend Yield}} + \\underbrace{g}_{\\text{Capital Gains Yield}}
-       - Dividend Yield = \\frac{D_1}{P_0}: expected annual dividend divided by current stock price (students are tested on calculating this independently).
-       - Capital Gains Yield = g: the rate at which stock price increases over time.
-     * MULTI-STAGE TERMINAL VALUE (P_N): In Differential / Nonconstant Growth models, giving only the general summation is insufficient. You MUST explicitly provide the Terminal Value formula:
-       P_N = \\frac{D_{N+1}}{R - g} = \\frac{D_N(1 + g)}{R - g}
-       and explain that P_0 = \\sum_{t=1}^N \\frac{D_t}{(1 + R)^t} + \\frac{P_N}{(1 + R)^N}.
-     * DEFERRED PREFERRED STOCK: If the slides cover preferred stock or perpetuities delayed to Year t (e.g. dividends starting in Year 12), you MUST include the 2-step deferred valuation formula:
-       1. Find price at Year t-1 (one year before first dividend): P_{t-1} = \\frac{D_t}{R_p}
-       2. Discount back to Year 0: P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}
-   - TOPIC-SPECIFIC FORMULA FIDELITY (Historical Risk & Return vs Portfolio Risk & CAPM - Chapters 10 & 11):
-     * CHAPTER 10 HISTORICAL RISK & RETURN (Phương sai & Độ lệch chuẩn mẫu lịch sử):
+     * Stock Valuation / DDM (Chapter 9):
+       - ONE-PERIOD HOLDING HORIZON FORMULA: For a 1-year holding period, the exponent is strictly 1:
+         P_0 = \\frac{D_1}{1 + R} + \\frac{P_1}{1 + R}
+       - FUNDAMENTAL GROWTH RATE (g): In Corporate Finance, the growth rate of dividends must be grounded in fundamental accounting:
+         g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}
+         NEVER define g as \\frac{P_1 - P_0}{P_0} or \\frac{\\Delta P}{P_0}. That is circular logic (calculating future price P_1 requires knowing g in advance) and confuses growth rate with Capital Gains Yield.
+       - REQUIRED RETURN (R) DECOMPOSITION: Whenever presenting R = \\frac{D_1}{P_0} + g, ALWAYS explicitly label and define the two separate economic components:
+         R = \\underbrace{\\frac{D_1}{P_0}}_{\\text{Dividend Yield}} + \\underbrace{g}_{\\text{Capital Gains Yield}}
+         * Dividend Yield = \\frac{D_1}{P_0}: expected annual dividend divided by current stock price (students are tested on calculating this independently).
+         * Capital Gains Yield = g: the rate at which stock price increases over time.
+       - MULTI-STAGE TERMINAL VALUE (P_N): In Differential / Nonconstant Growth models, giving only the general summation is insufficient. You MUST explicitly provide the Terminal Value formula:
+         P_N = \\frac{D_{N+1}}{R - g} = \\frac{D_N(1 + g)}{R - g}
+         and explain that P_0 = \\sum_{t=1}^N \\frac{D_t}{(1 + R)^t} + \\frac{P_N}{(1 + R)^N}. Denominator is strictly R - g, NEVER R + g.
+       - DEFERRED PREFERRED STOCK: If the slides cover preferred stock or perpetuities delayed to Year t (e.g. dividends starting in Year 12), you MUST include the 2-step deferred valuation formula:
+         1. Find price at Year t-1 (one year before first dividend): P_{t-1} = \\frac{D_t}{R_p}
+         2. Discount back to Year 0: P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}
+     * Historical Risk & Return (Chapter 10):
        - Uses sample observations t = 1 ... T and sample arithmetic mean:
          \\bar{R} = \\frac{1}{T} \\sum_{t=1}^T R_t
        - Historical Sample Variance & Standard Deviation:
@@ -62,7 +83,7 @@ Follow these exact transformation rules:
        - Average Returns Comparison:
          \\bar{R}_{\\text{geom}} = \\left[\\prod_{t=1}^T (1 + R_t)\\right]^{1/T} - 1, \\quad \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t
          Geometric average measures compound return per period; arithmetic average measures typical single-period return. \\bar{R}_{\\text{geom}} \\le \\bar{R}_{\\text{arith}}.
-     * CHAPTER 11 EXPECTED RETURN, PORTFOLIO RISK & CAPM (Kịch bản xác suất & Lý thuyết danh mục):
+     * Expected Return, Portfolio Risk & CAPM (Chapter 11):
        - Uses economic scenarios i = 1 ... n with probabilities P_i (where \\sum P_i = 1):
          E[R] = \\sum_{i=1}^n P_i R_i
        - Scenario Variance & Standard Deviation:
@@ -82,8 +103,6 @@ Follow these exact transformation rules:
          4. Historical Total Return & Averages:
             R_{t+1} = \\frac{D_{t+1} + P_{t+1} - P_t}{P_t} = \\text{Dividend Yield} + \\text{Capital Gains Yield}
             \\bar{R}_{\\text{geom}} = \\left[\\prod_{t=1}^T (1 + R_t)\\right]^{1/T} - 1, \\quad \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t
-   - STRICT TYPOGRAPHICAL INTEGRITY:
-     * Always use the numeric digit 0 for zero-growth conditions (g = 0) and time-zero subscripts (P_0, D_0). NEVER write "g = o" or "P_o" with the letter "o".
 
 3. CANONICAL HIERARCHICAL ARCHITECTURE (EXACTLY 3–5 SECTIONS, NEVER 8–10 SECTIONS):
    - Group the distilled knowledge into strictly 3–5 logical sections (A through E). NEVER create separate top-level sections F, G, H, I.
@@ -125,7 +144,7 @@ Follow these exact transformation rules:
      * NEVER write "bổ trợ hợp tác" for deferred preferred stock.
    - Use standard financial terminology in Vietnamese or English: "Định giá" (Valuation), "Cổ phiếu ưu đãi" (Preferred stock), "Chi phí vốn" (Cost of capital), "Chi phí sử dụng vốn bình quân" (WACC), "Chi phí nợ vay" (Cost of debt), "Chi phí vốn cổ phần" (Cost of equity), "Chi phí phát hành" (Flotation costs).
 
-5. FORMULA STANDARDIZATION & NON-REDUNDANT "Trong đó:":
+5. FORMULA STANDARDIZATION & NON-REDUNDANT "Trong đó:" (Where:):
    - Render all mathematical equations in clean LaTeX (without outer dollar signs in \`latex\` fields).
    - Use short \`leadText\` lines immediately above equations when needed (e.g., "Nếu chỉ đầu tư trong 1 năm:", "Let's start with the DGM:", "Rearranging the equation to solve for R, we get:", "The equation:").
    - Leave \`description\` empty "" unless a vital transition line is needed below the box; NEVER repeat the formula's title as a caption below the box.
@@ -162,11 +181,21 @@ ${input.focus ? `Specific Study Focus: ${input.focus}\n` : ""}
 RAW SLIDES:
 ${slideContent}
 
-Strict Output Checklist & Hallucination Shield:
-- Topic Grounding: Distill strictly the provided slide deck into 3–5 canonical sections (A through E). NEVER copy or force Stock Valuation/DDM formulas onto a Cost of Capital/WACC deck or any other unrelated topic.
-- Section Titles: Derive section titles directly from the topics of the slides (e.g. for Chapter 13: Cost of Capital, Cost of Equity, Cost of Debt & Preferred, WACC, Flotation Costs; for Chapter 9: Fundamental Principles, General Valuation Formula, DDM, Parameters, Preferred Stock).
+Strict Output Checklist & Universal Hallucination Shield:
+- Topic Grounding & Dynamic Thematic Mapping (Rule 0): Distill strictly the provided slide deck into 3–5 canonical sections (A through E). NEVER copy or force Stock Valuation/DDM formulas onto a Cost of Capital/WACC deck or any other unrelated topic. Every subject (Corporate Finance, Economics, Accounting, Statistics, Operations, STEM) must be synthesized according to its own academic domain.
+- Section Titles: Derive section titles directly from the topics of the slides (e.g. for Chapter 13: Cost of Capital, Cost of Equity, Cost of Debt & Preferred, WACC, Flotation Costs; for Chapter 9: Fundamental Principles, General Valuation Formula, DDM, Parameters, Preferred Stock; for Statistics: Descriptive Statistics, Probability Distributions, Sampling, Hypothesis Testing).
 - Header Fidelity: NEVER use machine translations like 'giáo dục', 'cứu trợ', 'hạnh hạnh', 'ritm', 'bổ trợ hợp tác'.
-- Core Mechanics: Extract 100% of the core calculation formulas, accounting identities, and boundary conditions taught in the slides.
+- Core Mechanics (Rule 1): Strip 100% of cover/agenda/QR/thank-you slides AND strip all multi-slide numerical practice exercises/word problems, while preserving 100% of underlying problem types, calculation mechanics, accounting identities, and decision rules.
+- The First Law of Clutch Notes: Exhaustive Formula Extraction (Rule 2): EVERY distinct mathematical formula, calculation equation, quantitative rule, or valuation model taught in the slides MUST be rendered as an explicit boxed equation in \`formulas\` (e.g. NPV, IRR, WACC, Beta, Portfolio Return/Risk, Covariance, EAR, Bond Price, Growth Rate, DuPont ROE, Sample Variance, Expected Value). NEVER relegate calculation formulas to prose bullet points without providing their boxed equation.
+- Universal Academic Integrity & Hallucination Shield (Rule 3):
+  * Statistical Distinction: Historical sample statistics (observations t = 1 ... T, dividing by T - 1 degrees of freedom) vs Scenario probability distributions (states i = 1 ... n, multiplying by P_i, sum P_i = 1, NO T - 1 denominator).
+  * Time Value & Compounding: Exponent for a 1-period horizon is strictly 1: P_0 = D_1 / (1 + R) + P_1 / (1 + R). NEVER write (1+R)^T or (1+R)^t.
+  * Growth & Rates: Fundamental growth is g = Retention ratio * ROE = (1 - Payout) * ROE (NEVER circular price change (P_1 - P_0)/P_0).
+  * Cost of Capital & Taxes: Tax shield (1 - T_C) applies STRICTLY to Debt (R_D), NEVER to Equity (R_E) or Preferred (R_P).
+  * Capital Budgeting Rules: NPV, IRR, Payback, Profitability Index. Accept if NPV > 0.
+  * Valuation Principle: Asset value = Present Value of expected future cash flows.
+  * Growing Perpetuity Denominator: Denominator is strictly R - g (or r - g), NEVER R + g.
+  * Clean LaTeX: All formulas in clean LaTeX without outer dollar signs in \`latex\` fields.
 - Topic-Specific Fidelity:
   * If the slides teach Cost of Capital & WACC (Chapter 13):
     - WACC = (E/V)*R_E + (P/V)*R_P + (D/V)*R_D*(1 - T_C)

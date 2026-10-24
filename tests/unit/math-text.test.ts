@@ -8,6 +8,7 @@ import {
   repairCorruptedLatex,
   ensureInlineMathDelimiters,
 } from "@/lib/math/latex";
+import { formatTextWithMath } from "@/lib/notes/export-pdf";
 
 describe("currency and prose protection", () => {
   it("preserves currency dollar signs without breaking into math", () => {
@@ -312,6 +313,375 @@ describe("repairCorruptedLatex for financial statistics symbols", () => {
     expect(repaired).toContain("\\sqrt{\\sigma^2}");
     expect(repaired).toContain("\\bar{R}");
     expect(repaired).not.toContain("\\\\");
+  });
+});
+
+describe("Zero-leakage multi-discipline bare equation detection", () => {
+  it("wraps financial valuation equations in $...$ with punctuation outside", () => {
+    const text1 = "Net present value is calculated as NPV = \\sum_{t=1}^n \\frac{CF_t}{(1+r)^t} - CF_0.";
+    const res1 = ensureInlineMathDelimiters(text1);
+    expect(res1).toContain("$NPV = \\sum_{t=1}^n \\frac{CF_t}{(1+r)^t} - CF_0$.");
+    expect(res1.endsWith("$NPV = \\sum_{t=1}^n \\frac{CF_t}{(1+r)^t} - CF_0$.")).toBe(true);
+
+    const text2 = "Gordon growth model gives P_0 = \\frac{D_1}{r - g} where r > g.";
+    const res2 = ensureInlineMathDelimiters(text2);
+    expect(res2).toContain("$P_0 = \\frac{D_1}{r - g}$");
+
+    const text3 = "Weighted cost of capital is WACC = w_D R_D (1 - T_C) + w_E R_E.";
+    const res3 = ensureInlineMathDelimiters(text3);
+    expect(res3).toContain("$WACC = w_D R_D (1 - T_C) + w_E R_E$.");
+
+    const text4 = "Return on equity equals ROE = \\frac{\\text{Net Income}}{\\text{Equity}}.";
+    const res4 = ensureInlineMathDelimiters(text4);
+    expect(res4).toContain("$ROE = \\frac{\\text{Net Income}}{\\text{Equity}}$.");
+  });
+
+  it("wraps economics equations and equilibrium relations", () => {
+    const text1 = "Asset weights must satisfy w_A + w_B = 1.";
+    const res1 = ensureInlineMathDelimiters(text1);
+    expect(res1).toContain("$w_A + w_B = 1$.");
+
+    const text2 = "Linear demand is Q_d = a - b P where b is price sensitivity.";
+    const res2 = ensureInlineMathDelimiters(text2);
+    expect(res2).toContain("$Q_d = a - b P$");
+  });
+
+  it("wraps statistics and econometrics variance equations", () => {
+    const text1 = "Sample variance formula is s^2 = \\frac{1}{T-1} \\sum_{t=1}^T (R_t - \\bar{R})^2 for returns.";
+    const res1 = ensureInlineMathDelimiters(text1);
+    expect(res1).toContain("$s^2 = \\frac{1}{T-1} \\sum_{t=1}^T (R_t - \\bar{R})^2$");
+
+    const text2 = "Expected return is E[R] = \\sum_{i=1}^n P_i R_i.";
+    const res2 = ensureInlineMathDelimiters(text2);
+    expect(res2).toContain("$E[R] = \\sum_{i=1}^n P_i R_i$.");
+  });
+});
+
+describe("Subscript variables in prose protection", () => {
+  it("wraps standalone finance and economics subscript variables without swallowing punctuation", () => {
+    const text = "Key parameters include P_0, D_1, R_f, R_M, R_E, R_D, R_P, and CF_t.";
+    const res = ensureInlineMathDelimiters(text);
+    expect(res).toContain("$P_0$,");
+    expect(res).toContain("$D_1$,");
+    expect(res).toContain("$R_f$,");
+    expect(res).toContain("$R_M$,");
+    expect(res).toContain("$R_E$,");
+    expect(res).toContain("$R_D$,");
+    expect(res).toContain("$R_P$,");
+    expect(res).toContain("$CF_t$.");
+  });
+
+  it("wraps complex subscripts and market variables in prose", () => {
+    const text = "We track w_A, w_B, T_C, P_t, P_{t+1}, D_{t+1}, Q_d, and Q_s.";
+    const res = ensureInlineMathDelimiters(text);
+    expect(res).toContain("$w_A$,");
+    expect(res).toContain("$w_B$,");
+    expect(res).toContain("$T_C$,");
+    expect(res).toContain("$P_t$,");
+    expect(res).toContain("$P_{t+1}$,");
+    expect(res).toContain("$D_{t+1}$,");
+    expect(res).toContain("$Q_d$,");
+    expect(res).toContain("$Q_s$.");
+  });
+});
+
+describe("Greek symbols and mathematical operators zero-leakage", () => {
+  it("wraps Greek letters with sub/superscripts and Delta variables", () => {
+    const text = "Portfolio variance \\sigma_p^2 depends on beta \\beta_i, correlation \\rho_{AB}, and change \\Delta P.";
+    const res = ensureInlineMathDelimiters(text);
+    expect(res).toContain("$\\sigma_p^2$");
+    expect(res).toContain("$\\beta_i$,");
+    expect(res).toContain("$\\rho_{AB}$,");
+    expect(res).toContain("$\\Delta P$.");
+  });
+
+  it("wraps math macros, integrals, derivatives, and accents", () => {
+    const text = "Evaluating \\int_0^1 f(x) dx with \\hat{y}, \\bar{R}, \\tilde{x}, \\vec{v}, and \\mathbf{X}.";
+    const res = ensureInlineMathDelimiters(text);
+    expect(res).toContain("\\int_0^1 f(x) dx");
+    expect(res).toContain("$\\hat{y}$");
+    expect(res).toContain("$\\bar{R}$");
+    expect(res).toContain("$\\tilde{x}$");
+    expect(res).toContain("$\\vec{v}$");
+    expect(res).toContain("$\\mathbf{X}$");
+  });
+
+  it("wraps quantitative financial functions and exponent variables", () => {
+    const text = "Comparing \\text{Cov}(R_A, R_B) with \\text{NPV}, \\text{WACC}, and \\text{ROE}. Compounded by (1+r)^t and (1+R)^T with s^2.";
+    const res = ensureInlineMathDelimiters(text);
+    expect(res).toContain("$\\text{Cov}(R_A, R_B)$");
+    expect(res).toContain("$\\text{NPV}$");
+    expect(res).toContain("$\\text{WACC}$");
+    expect(res).toContain("$\\text{ROE}$");
+    expect(res).toContain("$(1+r)^t$");
+    expect(res).toContain("$(1+R)^T$");
+    expect(res).toContain("$s^2$.");
+  });
+});
+
+describe("English and Vietnamese bilingual lead-in text formulas", () => {
+  it("correctly delimits CAPM formula with English prose lead-in and where clause", () => {
+    const text =
+      "According to the Capital Asset Pricing Model, E[R_i] = R_f + \\beta_i (E[R_M] - R_f) where \\beta_i measures systematic risk.";
+    const res = ensureInlineMathDelimiters(text);
+    expect(res).toContain("$E[R_i] = R_f + \\beta_i (E[R_M] - R_f)$");
+    expect(res).toContain("where $\\beta_i$ measures systematic risk.");
+  });
+
+  it("correctly delimits formulas with Vietnamese prose lead-in and 'trong đó' clause", () => {
+    const text =
+      "Công thức tính phương sai danh mục: \\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B) trong đó \\sigma_p là độ lệch chuẩn.";
+    const res = ensureInlineMathDelimiters(text);
+    expect(res).toContain("$\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B)$");
+    expect(res).toContain("trong đó $\\sigma_p$ là độ lệch chuẩn.");
+  });
+
+  it("correctly delimits Gordon model with Vietnamese prose lead-in and 'với' clause", () => {
+    const text =
+      "Trong mô hình định giá cổ tức Gordon, P_0 = \\frac{D_1}{r - g} với P_0 là thị giá cổ phiếu và D_1 là cổ tức năm tới.";
+    const res = ensureInlineMathDelimiters(text);
+    expect(res).toContain("$P_0 = \\frac{D_1}{r - g}$");
+    expect(res).toContain("với $P_0$ là thị giá cổ phiếu và $D_1$ là cổ tức năm tới.");
+  });
+});
+
+describe("PDF Export formatTextWithMath zero-leakage protection", () => {
+  it("converts un-delimited equations into KaTeX spans without raw LaTeX leakage", () => {
+    const text = "Calculated as \\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B).";
+    const html = formatTextWithMath(text);
+
+    expect(html).toContain("pdf-inline-math");
+    expect(html).toContain("katex");
+    expect(html).not.toContain("Calculated as \\sigma");
+    expect(html).toContain("Calculated as <span class=\"pdf-inline-math\">");
+  });
+
+  it("converts un-delimited subscript variables into KaTeX inline math spans", () => {
+    const text = "We compute P_0 and D_1 at rate R_f.";
+    const html = formatTextWithMath(text);
+
+    expect(html).toContain("pdf-inline-math");
+    expect(html).toContain("katex");
+    expect(html).not.toContain("compute P_0");
+    expect(html).toContain("compute <span class=\"pdf-inline-math\">");
+    expect(html).toContain("at rate <span class=\"pdf-inline-math\">");
+  });
+
+  it("preserves display math blocks and escapes plain text to prevent XSS", () => {
+    const text = "Formula: $$\\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}$$ with <script>alert(1)</script>";
+    const html = formatTextWithMath(text);
+
+    expect(html).toContain("pdf-display-math");
+    expect(html).toContain("katex-display");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).not.toContain("<script>");
+  });
+
+  it("strictly preserves currency dollar amounts in PDF exports", () => {
+    const text = "Project budget requires $5,000 upfront and returns $30 daily.";
+    const html = formatTextWithMath(text);
+
+    expect(html).not.toContain("pdf-inline-math");
+    expect(html).toContain("$5,000 upfront and returns $30 daily.");
+  });
+});
+
+describe("Double-wrapping prevention & mixed display/prose normalization", () => {
+  it("never double-wraps already delimited math in inline math or display math", () => {
+    const text = "Already delimited: $\\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}$ and display $$E[R_p]$$.";
+    const res = ensureInlineMathDelimiters(text);
+
+    expect(res).toBe(text);
+    expect(res).not.toContain("$$$");
+    expect(res).not.toContain("$$E[R_p]$$$$");
+  });
+
+  it("normalizes un-delimited math in prose surrounding existing display math blocks", () => {
+    const raw = "CAPM representation:\n$$E[R_i] = R_f + \\beta_i (E[R_M] - R_f)$$\nwhere \\beta_i measures systematic risk and R_f is the benchmark.";
+    const normalized = normalizeMathFormulas(raw);
+
+    expect(normalized).toContain("$$E[R_i] = R_f + \\beta_i (E[R_M] - R_f)$$");
+    expect(normalized).toContain("where $\\beta_i$ measures systematic risk and $R_f$ is the benchmark.");
+  });
+
+  it("handles left/right bracketed expressions and operators", () => {
+    const text = "Discount factor is \\left[\\frac{1-(1+r)^{-t}}{r}\\right] with margin \\pm 5%.";
+    const res = ensureInlineMathDelimiters(text);
+
+    expect(res).toContain("$\\left[\\frac{1-(1+r)^{-t}}{r}\\right]$");
+    expect(res).toContain("$\\pm 5%$");
+  });
+
+  it("handles whitespace inside LLM generated dollar delimiters cleanly", () => {
+    const text = "Variables are $  P_0  $ and $  \\sigma_p  $.";
+    const tokens = tokenizeMath(text);
+
+    const mathTokens = tokens.filter((t) => t.type === "inline-math");
+    expect(mathTokens).toHaveLength(2);
+    expect(mathTokens[0].value).toBe("P_0");
+    expect(mathTokens[1].value).toBe("\\sigma_p");
+  });
+});
+
+describe("Universal Multi-Discipline LaTeX Sanitization & KaTeX Rendering", () => {
+  it("delimits and safely renders Physics equations via KaTeX without fallback or leakage", () => {
+    const physicsProse = [
+      "Gravitational force between two masses is F = G \\frac{m_1 m_2}{r^2} where G is constant.",
+      "Einstein mass-energy equivalence is E = m c^2.",
+      "Kinetic energy formula is E_k = \\frac{1}{2} m v^2.",
+      "Photon energy is E = h \\nu.",
+    ];
+
+    for (const text of physicsProse) {
+      const delimited = ensureInlineMathDelimiters(text);
+      expect(delimited).toContain("$");
+      const tokens = tokenizeMath(delimited);
+      const mathTokens = tokens.filter((t) => t.type === "inline-math" || t.type === "display-math");
+      expect(mathTokens.length).toBeGreaterThan(0);
+
+      for (const mt of mathTokens) {
+        const html = renderKatexSafe(mt.value, false);
+        expect(html).toContain("katex");
+        expect(html).not.toContain("katex-fallback");
+      }
+
+      const pdfHtml = formatTextWithMath(delimited);
+      expect(pdfHtml).toContain("pdf-inline-math");
+      expect(pdfHtml).toContain("katex");
+    }
+  });
+
+  it("delimits and safely renders Machine Learning & Deep Learning equations via KaTeX", () => {
+    const mlProse = [
+      "Cross-entropy loss function is L = -\\sum_{i=1}^C y_i \\log(\\hat{y}_i).",
+      "Softmax activation layer is \\sigma(z)_i = \\frac{e^{z_i}}{\\sum_{j=1}^K e^{z_j}}.",
+      "Mean Squared Error loss is \\text{MSE} = \\frac{1}{n} \\sum_{i=1}^n (y_i - \\hat{y}_i)^2.",
+      "Gradient descent weight update is \\theta_{t+1} = \\theta_t - \\alpha \\nabla L(\\theta_t).",
+    ];
+
+    for (const text of mlProse) {
+      const delimited = ensureInlineMathDelimiters(text);
+      expect(delimited).toContain("$");
+      const tokens = tokenizeMath(delimited);
+      const mathTokens = tokens.filter((t) => t.type === "inline-math" || t.type === "display-math");
+      expect(mathTokens.length).toBeGreaterThan(0);
+
+      for (const mt of mathTokens) {
+        const html = renderKatexSafe(mt.value, false);
+        expect(html).toContain("katex");
+        expect(html).not.toContain("katex-fallback");
+      }
+
+      const pdfHtml = formatTextWithMath(delimited);
+      expect(pdfHtml).toContain("pdf-inline-math");
+      expect(pdfHtml).toContain("katex");
+    }
+  });
+
+  it("delimits and safely renders Calculus & Linear Algebra equations via KaTeX", () => {
+    const mathProse = [
+      "The characteristic polynomial is \\det(\\mathbf{A} - \\lambda \\mathbf{I}) = 0.",
+      "The directional gradient is \\nabla f(x, y) = \\left[ \\frac{\\partial f}{\\partial x}, \\frac{\\partial f}{\\partial y} \\right].",
+      "Gaussian integral evaluates to \\int_{-\\infty}^\\infty e^{-x^2} dx = \\sqrt{\\pi}.",
+    ];
+
+    for (const text of mathProse) {
+      const delimited = ensureInlineMathDelimiters(text);
+      expect(delimited).toContain("$");
+      const tokens = tokenizeMath(delimited);
+      const mathTokens = tokens.filter((t) => t.type === "inline-math" || t.type === "display-math");
+      expect(mathTokens.length).toBeGreaterThan(0);
+
+      for (const mt of mathTokens) {
+        const html = renderKatexSafe(mt.value, false);
+        expect(html).toContain("katex");
+        expect(html).not.toContain("katex-fallback");
+      }
+
+      const pdfHtml = formatTextWithMath(delimited);
+      expect(pdfHtml).toContain("pdf-inline-math");
+      expect(pdfHtml).toContain("katex");
+    }
+  });
+
+  it("delimits and safely renders Macroeconomics & Microeconomics equations via KaTeX", () => {
+    const econProse = [
+      "Cobb-Douglas production function is Y = A K^\\alpha L^{1-\\alpha}.",
+      "Goods market equilibrium in open economy is Y = C + I + G + NX.",
+      "Fisher interest rate relation is 1 + i = (1 + r)(1 + \\pi).",
+      "Marginal rate of substitution is \\text{MRS} = -\\frac{\\text{MU}_x}{\\text{MU}_y}.",
+    ];
+
+    for (const text of econProse) {
+      const delimited = ensureInlineMathDelimiters(text);
+      expect(delimited).toContain("$");
+      const tokens = tokenizeMath(delimited);
+      const mathTokens = tokens.filter((t) => t.type === "inline-math" || t.type === "display-math");
+      expect(mathTokens.length).toBeGreaterThan(0);
+
+      for (const mt of mathTokens) {
+        const html = renderKatexSafe(mt.value, false);
+        expect(html).toContain("katex");
+        expect(html).not.toContain("katex-fallback");
+      }
+
+      const pdfHtml = formatTextWithMath(delimited);
+      expect(pdfHtml).toContain("pdf-inline-math");
+      expect(pdfHtml).toContain("katex");
+    }
+  });
+
+  it("delimits and safely renders Statistics & Probability equations via KaTeX", () => {
+    const statsProse = [
+      "Bayes Theorem is P(A|B) = \\frac{P(B|A) P(A)}{P(B)}.",
+      "Hypothesis testing t-statistic is t = \\frac{\\bar{x} - \\mu_0}{s / \\sqrt{n}}.",
+      "OLS regression slope coefficient is \\hat{\\beta}_1 = \\frac{\\text{Cov}(X, Y)}{\\text{Var}(X)}.",
+    ];
+
+    for (const text of statsProse) {
+      const delimited = ensureInlineMathDelimiters(text);
+      expect(delimited).toContain("$");
+      const tokens = tokenizeMath(delimited);
+      const mathTokens = tokens.filter((t) => t.type === "inline-math" || t.type === "display-math");
+      expect(mathTokens.length).toBeGreaterThan(0);
+
+      for (const mt of mathTokens) {
+        const html = renderKatexSafe(mt.value, false);
+        expect(html).toContain("katex");
+        expect(html).not.toContain("katex-fallback");
+      }
+
+      const pdfHtml = formatTextWithMath(delimited);
+      expect(pdfHtml).toContain("pdf-inline-math");
+      expect(pdfHtml).toContain("katex");
+    }
+  });
+
+  it("delimits and safely renders Capital Budgeting, TVM, and Bond equations via KaTeX", () => {
+    const financeProse = [
+      "Net present value is NPV = -I_0 + \\sum_{t=1}^n \\frac{CF_t}{(1 + r)^t}.",
+      "Bond pricing formula is P_B = C \\left[ \\frac{1 - (1 + y)^{-t}}{y} \\right] + \\frac{F}{(1 + y)^t}.",
+      "DuPont return on equity is ROE = \\text{Profit Margin} \\times \\text{Total Asset Turnover} \\times \\text{Equity Multiplier}.",
+      "Effective annual rate is EAR = \\left(1 + \\frac{\\text{APR}}{m}\\right)^m - 1.",
+    ];
+
+    for (const text of financeProse) {
+      const delimited = ensureInlineMathDelimiters(text);
+      expect(delimited).toContain("$");
+      const tokens = tokenizeMath(delimited);
+      const mathTokens = tokens.filter((t) => t.type === "inline-math" || t.type === "display-math");
+      expect(mathTokens.length).toBeGreaterThan(0);
+
+      for (const mt of mathTokens) {
+        const html = renderKatexSafe(mt.value, false);
+        expect(html).toContain("katex");
+        expect(html).not.toContain("katex-fallback");
+      }
+
+      const pdfHtml = formatTextWithMath(delimited);
+      expect(pdfHtml).toContain("pdf-inline-math");
+      expect(pdfHtml).toContain("katex");
+    }
   });
 });
 

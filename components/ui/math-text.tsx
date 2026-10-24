@@ -26,8 +26,12 @@ export function MathText({
 
   if (!content) return null;
 
-  // Fast path: if pure text without any math tokens, render simple text
-  if (tokens.length === 1 && tokens[0].type === "text") {
+  // Fast path: if pure text without any math tokens or line breaks, render simple text
+  if (
+    tokens.length === 1 &&
+    tokens[0].type === "text" &&
+    !tokens[0].value.includes("\n")
+  ) {
     return <span className={className}>{tokens[0].value}</span>;
   }
 

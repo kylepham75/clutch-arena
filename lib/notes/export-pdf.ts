@@ -1,39 +1,34 @@
-import { escapeHtml, renderKatexSafe } from "@/lib/math/latex";
+import {
+  escapeHtml,
+  normalizeMathFormulas,
+  renderKatexSafe,
+  tokenizeMath,
+} from "@/lib/math/latex";
 import { CLUTCH_ARENA_ICON_DATA_URL, CLUTCH_ARENA_BRAND_NAME } from "@/lib/notes/brand-assets";
 import type { ClutchNote, NoteFormula, NoteSection } from "@/lib/schemas/notes";
 
 /**
  * Formats inline or display text containing math delimiters ($...$ or $$...$$) into KaTeX HTML.
+ * Normalizes math formulas first to ensure zero un-delimited LaTeX leaks into PDF exports.
  * Escapes plain text segments to prevent XSS while feeding unescaped LaTeX directly to KaTeX.
  */
-function formatTextWithMath(text: string): string {
+export function formatTextWithMath(text: string): string {
   if (!text) return "";
 
-  const parts: string[] = [];
-  const regex = /(\$\$[\s\S]+?\$\$|\$[^\$\n]+?\$)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
+  const normalized = normalizeMathFormulas(text);
+  const tokens = tokenizeMath(normalized);
 
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(escapeHtml(text.slice(lastIndex, match.index)));
-    }
-    const token = match[0];
-    if (token.startsWith("$$")) {
-      const math = token.slice(2, -2).trim();
-      parts.push(`<div class="pdf-display-math">${renderKatexSafe(math, true)}</div>`);
-    } else {
-      const math = token.slice(1, -1).trim();
-      parts.push(`<span class="pdf-inline-math">${renderKatexSafe(math, false)}</span>`);
-    }
-    lastIndex = regex.lastIndex;
-  }
-
-  if (lastIndex < text.length) {
-    parts.push(escapeHtml(text.slice(lastIndex)));
-  }
-
-  return parts.join("");
+  return tokens
+    .map((token) => {
+      if (token.type === "display-math") {
+        return `<div class="pdf-display-math">${renderKatexSafe(token.value, true)}</div>`;
+      }
+      if (token.type === "inline-math") {
+        return `<span class="pdf-inline-math">${renderKatexSafe(token.value, false)}</span>`;
+      }
+      return escapeHtml(token.value);
+    })
+    .join("");
 }
 
 function renderFormulaHtml(formula: NoteFormula): string {
