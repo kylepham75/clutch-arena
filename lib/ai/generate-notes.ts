@@ -1082,6 +1082,13 @@ export async function generateClutchNote(
         abortSignal: combinedSignal,
         maxRetries: timeoutMs ? 0 : 1,
         maxOutputTokens,
+        providerOptions: {
+          google: {
+            thinkingConfig: {
+              thinkingLevel: "low",
+            },
+          },
+        },
       });
       object = res.object;
     } finally {
