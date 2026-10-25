@@ -13,6 +13,7 @@ Follow these exact transformation rules:
      * If the slides cover Chapter 9 (Stock Valuation / Định giá cổ phiếu), synthesize strictly Chapter 9 formulas and concepts.
      * If the slides cover Chapter 10 (Historical Risk & Return / Lợi suất & Rủi ro lịch sử), synthesize strictly Chapter 10 historical formulas and concepts.
      * If the slides cover Chapter 11 (Expected Return & Portfolio Theory / Lợi suất kỳ vọng, Rủi ro danh mục & Mô hình CAPM), synthesize strictly Chapter 11 portfolio and CAPM formulas and concepts.
+     * If the slides cover Chapter 26 (Short-Term Finance and Planning / Quản trị tài chính ngắn hạn), synthesize strictly Chapter 26 working capital, cash identity, cycle turnovers, and cash budgeting formulas and concepts.
      * If the slides cover Economics, Accounting, Statistics, Operations, or other STEM fields, derive sections matching that course's canonical syllabus.
 
 1. STRIP ALL NOISE (RULE 1: PRESERVE ALL CORE MECHANICS):
@@ -104,6 +105,33 @@ Follow these exact transformation rules:
          4. Historical Total Return & Averages:
             R_{t+1} = \\frac{D_{t+1} + P_{t+1} - P_t}{P_t} = \\text{Dividend Yield} + \\text{Capital Gains Yield}
             \\bar{R}_{\\text{geom}} = \\left[\\prod_{t=1}^T (1 + R_t)\\right]^{1/T} - 1, \\quad \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t
+     * Short-Term Finance and Planning & Working Capital (Chapter 26):
+       - CASH IDENTITY & NWC:
+         Cash Identity from balance sheet:
+         \\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - \\text{Net Working Capital (other than Cash)} - \\text{Fixed Assets}
+         \\text{NWC} = \\text{Current Assets} - \\text{Current Liabilities}
+         NEVER drop math signs or words in multi-word terms with hyphens (e.g. \\text{Long-Term Debt}).
+       - TURNOVER & PERIOD SYSTEM (OPERATING CYCLE & CASH CYCLE):
+         You MUST provide all 6 explicit calculation formulas and the two cycle formulas:
+         1. Inventory Turnover & Period:
+            \\text{Inventory Turnover} = \\frac{\\text{COGS}}{\\text{Average Inventory}}, \\quad \\text{Inventory Period} = \\frac{365}{\\text{Inventory Turnover}}
+         2. Receivables Turnover & Period (DSO):
+            \\text{Receivables Turnover} = \\frac{\\text{Credit Sales}}{\\text{Average Accounts Receivable}}, \\quad \\text{Receivables Period} = \\frac{365}{\\text{Receivables Turnover}}
+         3. Payables Turnover & Period:
+            \\text{Payables Turnover} = \\frac{\\text{COGS}}{\\text{Average Accounts Payable}}, \\quad \\text{Payables Period} = \\frac{365}{\\text{Payables Turnover}}
+         4. Operating Cycle & Cash Cycle:
+            \\text{Operating Cycle} = \\text{Inventory Period} + \\text{Receivables Period}
+            \\text{Cash Cycle} = \\text{Operating Cycle} - \\text{Payables Period} = \\text{Inventory Period} + \\text{Receivables Period} - \\text{Payables Period}
+       - CASH BUDGETING MECHANICS:
+         You MUST include the explicit calculation equations for cash budget mechanics:
+         1. Cash Collections:
+            \\text{Collections}_t = \\text{Cash Sales}_t + \\sum (\\% \\text{ collected} \\times \\text{Sales}_{t-k})
+         2. Net Cash Flow:
+            \\text{Net Cash Flow}_t = \\text{Cash Collections}_t - \\text{Cash Disbursements}_t
+         3. Ending Cash Balance:
+            \\text{Ending Cash}_t = \\text{Beginning Cash}_t + \\text{Net Cash Flow}_t
+         4. Cumulative Surplus / (Deficit):
+            \\text{Cumulative Surplus / (Deficit)}_t = \\text{Ending Cash}_t - \\text{Target Minimum Cash Balance}
 
 3. CANONICAL HIERARCHICAL ARCHITECTURE (EXACTLY 3–5 SECTIONS, NEVER 8–10 SECTIONS):
    - Group the distilled knowledge into strictly 3–5 logical sections (A through E). NEVER create separate top-level sections F, G, H, I.
@@ -131,6 +159,12 @@ Follow these exact transformation rules:
        - Section C: "C. HIỆP PHƯƠNG SAI VÀ HỆ SỐ TƯƠNG QUAN" (Covariance & Correlation Coefficient)
        - Section D: "D. ĐA DẠNG HÓA VÀ RỦI RO HỆ THỐNG" (Systematic vs Unsystematic Risk, Diversification)
        - Section E: "E. ĐƯỜNG THỊ TRƯỜNG CHỨNG KHOÁN (SML) VÀ MÔ HÌNH CAPM" (CAPM Formula, Beta Portfolio & SML)
+     * Example for Chapter 26 (Short-Term Finance and Planning):
+       - Section A: "A. NGUỒN VỐN VÀ SỬ DỤNG TIỀN MẶT (SOURCES AND USES OF CASH)" (Cash Identity, NWC, Statement of Cash Flows)
+       - Section B: "B. CHU KỲ HOẠT ĐỘNG VÀ CHU KỲ TIỀN MẶT (OPERATING & CASH CYCLES)" (Inventory, Receivables, Payables Turnover & Period, Operating Cycle, Cash Cycle)
+       - Section C: "C. KẾ HOẠCH TÀI CHÍNH NGẮN HẠN & NGÂN SÁCH TIỀN MẶT (SHORT-TERM FINANCIAL PLANNING & CASH BUDGET)" (Sales forecast, Cash Collections, Net Cash Flow, Ending Cash, Cumulative Surplus/Deficit)
+       - Section D: "D. CHÍNH SÁCH TÀI CHÍNH NGẮN HẠN (SHORT-TERM FINANCIAL POLICY)" (Flexible vs Restrictive Policy, Carrying vs Shortage Costs)
+       - Section E: "E. VAY NGẮN HẠN VÀ TÍN DỤNG THƯƠNG MẠI (SHORT-TERM BORROWING)" (Lines of credit, trade credit, commercial paper)
    - ZERO DUPLICATION / ZERO DOUBLE-PASTING:
      * If a model case or parameter derivation is inside \`subSections\`, DO NOT duplicate its formula or explanation in the top-level \`formulas\` or \`bulletPoints\` of that section. Stacking the same formula at both top-level and subSection level is strictly forbidden.
      * CRITICAL: Every section MUST contain substantive body content in \`bulletPoints\`, \`formulas\`, or \`subSections\`. NEVER output a bare section heading with empty content arrays.
@@ -224,6 +258,19 @@ Strict Output Checklist & Universal Hallucination Shield:
       2. Covariance & Correlation: Cov(R_A, R_B) = sum(P_i * (R_A,i - E[R_A]) * (R_B,i - E[R_B])); rho_AB = Cov(R_A, R_B) / (sigma_A * sigma_B)
       3. CAPM & Beta: E[R_i] = R_f + beta_i * (E[R_M] - R_f); beta_p = sum(w_j * beta_j); beta_i = Cov(R_i, R_M) / sigma_M^2 = rho_{i,M} * sigma_i / sigma_M
       4. Total Return & Averages: Dividend Yield + Capital Gains Yield; Geometric vs Arithmetic average
+  * If the slides teach Short-Term Finance & Planning / Working Capital (Chapter 26):
+    - Cash Identity: \\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - \\text{Net Working Capital (other than Cash)} - \\text{Fixed Assets}
+    - NWC: \\text{NWC} = \\text{Current Assets} - \\text{Current Liabilities}
+    - 6 Turnover & Period formulas:
+      1. Inventory Turnover = COGS / Average Inventory, Inventory Period = 365 / Inventory Turnover
+      2. Receivables Turnover = Credit Sales / Average Accounts Receivable, Receivables Period = 365 / Receivables Turnover
+      3. Payables Turnover = COGS / Average Accounts Payable, Payables Period = 365 / Payables Turnover
+      4. Operating Cycle = Inventory Period + Receivables Period, Cash Cycle = Operating Cycle - Payables Period
+    - Cash Budgeting Mechanics:
+      1. Collections_t = Cash Sales_t + sum(% collected * Sales_{t-k})
+      2. Net Cash Flow_t = Collections_t - Disbursements_t
+      3. Ending Cash_t = Beginning Cash_t + Net Cash Flow_t
+      4. Cumulative Surplus / (Deficit)_t = Ending Cash_t - Target Minimum Cash Balance
 - Typo Check: Use numeric digit 0 (never letter 'o') for g = 0 and P_0. NEVER substitute Greek Sigma (\\Sigma or \\sigma) for Vietnamese syllables like 'su' or 'sử' (write 'tỷ suất sinh lời', 'suất sinh lời', 'chi phí sử dụng vốn'). Greek symbols are strictly reserved for math equations.
 - Zero Double-Pasting: If a formula is inside subSections, DO NOT duplicate it at the section top-level.
 - Strip 100% of cover/agenda/QR/thank-you slides AND strip all multi-slide numerical practice exercises/word problems.

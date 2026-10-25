@@ -9,6 +9,7 @@ import {
   ensureInlineMathDelimiters,
   cleanVietnameseSigmaTypos,
   cleanTypoString,
+  formatAccountingFormula,
 } from "@/lib/math/latex";
 import { formatTextWithMath } from "@/lib/notes/export-pdf";
 
@@ -730,6 +731,108 @@ describe("Vietnamese typography and Greek Sigma sanitization", () => {
 
     const sigmaMath = "\\Sigma_{i=1}^n P_i";
     expect(repairCorruptedLatex(sigmaMath)).toBe(sigmaMath);
+  });
+});
+
+describe("formatAccountingFormula & Cash Identity KaTeX formatting (Chapter 26)", () => {
+  it("formats Cash Identity cleanly wrapping Long-Term Debt, NWC, Equity, and Fixed Assets", () => {
+    const rawEquation = "Cash = Long-Term Debt + Equity - NWC - Fixed Assets";
+    const formatted = formatAccountingFormula(rawEquation);
+    expect(formatted).toBe(
+      "\\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - \\text{NWC} - \\text{Fixed Assets}",
+    );
+
+    // Verify repairCorruptedLatex automatically cleans it up
+    const repaired = repairCorruptedLatex(rawEquation);
+    expect(repaired).toBe(
+      "\\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - \\text{NWC} - \\text{Fixed Assets}",
+    );
+
+    // Verify KaTeX renders without fallback and contains valid katex classes
+    const html = renderKatexSafe(formatted, true);
+    expect(html).toContain("katex");
+    expect(html).not.toContain("katex-fallback");
+  });
+
+  it("handles corrupted hyphen variations in Long - Term Debt without minus sign glitches", () => {
+    const variants = [
+      "Cash = Long - Term Debt + Equity - Net Working Capital - Fixed Assets",
+      "Cash = \\text{Long} - \\text{Term Debt} + Equity - NWC - Fixed Assets",
+      "Cash = \\text{Long - Term Debt} + Equity - Net Working Capital (other than Cash) - Fixed Assets",
+    ];
+
+    for (const v of variants) {
+      const formatted = formatAccountingFormula(v);
+      expect(formatted).toContain("\\text{Long-Term Debt}");
+      expect(formatted).not.toContain("\\text{Long} - \\text{Term");
+      const html = renderKatexSafe(formatted, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-fallback");
+    }
+  });
+
+  it("formats Net Working Capital and parenthetical other/excluding cash variants", () => {
+    const raw1 = "Cash = Long-Term Debt + Equity - Net Working Capital (other than Cash) - Fixed Assets";
+    expect(formatAccountingFormula(raw1)).toBe(
+      "\\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - \\text{Net Working Capital (other than Cash)} - \\text{Fixed Assets}",
+    );
+
+    const raw2 = "NWC = Current Assets - Current Liabilities";
+    expect(formatAccountingFormula(raw2)).toBe(
+      "\\text{NWC} = \\text{Current Assets} - \\text{Current Liabilities}",
+    );
+  });
+
+  it("formats Turnover & Period System equations (Inventory, Receivables, Payables, Cycles)", () => {
+    const invTurnover = "Inventory Turnover = COGS / Average Inventory";
+    expect(formatAccountingFormula(invTurnover)).toBe(
+      "\\text{Inventory Turnover} = \\frac{\\text{COGS}}{\\text{Average Inventory}}",
+    );
+
+    const invPeriod = "Inventory Period = 365 / Inventory Turnover";
+    expect(formatAccountingFormula(invPeriod)).toBe(
+      "\\text{Inventory Period} = \\frac{365}{\\text{Inventory Turnover}}",
+    );
+
+    const recTurnover = "Receivables Turnover = Credit Sales / Average Accounts Receivable";
+    expect(formatAccountingFormula(recTurnover)).toBe(
+      "\\text{Receivables Turnover} = \\frac{\\text{Credit Sales}}{\\text{Average Accounts Receivable}}",
+    );
+
+    const payTurnover = "Payables Turnover = COGS / Average Accounts Payable";
+    expect(formatAccountingFormula(payTurnover)).toBe(
+      "\\text{Payables Turnover} = \\frac{\\text{COGS}}{\\text{Average Accounts Payable}}",
+    );
+
+    const opCycle = "Operating Cycle = Inventory Period + Receivables Period";
+    expect(formatAccountingFormula(opCycle)).toBe(
+      "\\text{Operating Cycle} = \\text{Inventory Period} + \\text{Receivables Period}",
+    );
+
+    const cashCycle = "Cash Cycle = Operating Cycle - Payables Period";
+    expect(formatAccountingFormula(cashCycle)).toBe(
+      "\\text{Cash Cycle} = \\text{Operating Cycle} - \\text{Payables Period}",
+    );
+  });
+
+  it("formats Cash Budget calculation equations (Collections, Net Cash Flow, Ending Cash, Cumulative Surplus)", () => {
+    const collections = "Collections_t = Cash Sales_t + sum(% collected * Sales_{t-k})";
+    expect(formatAccountingFormula(collections)).toContain("\\text{Collections}_t = \\text{Cash Sales}_t");
+
+    const netCashFlow = "Net Cash Flow_t = Cash Collections_t - Cash Disbursements_t";
+    expect(formatAccountingFormula(netCashFlow)).toBe(
+      "\\text{Net Cash Flow}_t = \\text{Cash Collections}_t - \\text{Cash Disbursements}_t",
+    );
+
+    const endingCash = "Ending Cash_t = Beginning Cash_t + Net Cash Flow_t";
+    expect(formatAccountingFormula(endingCash)).toBe(
+      "\\text{Ending Cash}_t = \\text{Beginning Cash}_t + \\text{Net Cash Flow}_t",
+    );
+
+    const cumulative = "Cumulative Surplus / (Deficit)_t = Ending Cash_t - Target Minimum Cash Balance";
+    expect(formatAccountingFormula(cumulative)).toBe(
+      "\\text{Cumulative Surplus / (Deficit)}_t = \\text{Ending Cash}_t - \\text{Target Minimum Cash Balance}",
+    );
   });
 });
 

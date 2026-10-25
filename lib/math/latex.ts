@@ -79,6 +79,105 @@ export function cleanTypoString(str: string): string {
 }
 
 /**
+ * Formats multi-word terms and hyphenated phrases in accounting and financial formulas
+ * (e.g. "Long-Term Debt", "Net Working Capital", "Current Assets", "Cash") into clean KaTeX \text{...}
+ * ensuring hyphens are never rendered as minus signs and operators are preserved.
+ */
+export function formatAccountingFormula(latex: string): string {
+  if (!latex || typeof latex !== "string") return "";
+  let s = latex;
+
+  // 1. Repair corrupted hyphenated Long-Term Debt variants:
+  // e.g. \text{Long}-\text{Term Debt}, \text{Long - Term Debt}, Long - Term Debt, Long-Term Debt
+  s = s.replace(/\\text\{\s*Long\s*\}\s*[-–—]\s*\\text\{\s*Term Debt\s*\}/gi, "\\text{Long-Term Debt}");
+  s = s.replace(/\\text\{\s*Long\s*[-–—]\s*Term\s*\}\\text\{\s*Debt\s*\}/gi, "\\text{Long-Term Debt}");
+  s = s.replace(/(?:\\text\{\s*)?Long\s*[-–—]\s*Term\s+Debt(?:\s*\})?/gi, "\\text{Long-Term Debt}");
+  s = s.replace(/(?:\\text\{\s*)?Short\s*[-–—]\s*Term\s+Debt(?:\s*\})?/gi, "\\text{Short-Term Debt}");
+  s = s.replace(/(?:\\text\{\s*)?Long\s*[-–—]\s*Term\s+Liabilities(?:\s*\})?/gi, "\\text{Long-Term Liabilities}");
+  s = s.replace(/(?:\\text\{\s*)?Short\s*[-–—]\s*Term\s+Financial\s+Planning(?:\s*\})?/gi, "\\text{Short-Term Financial Planning}");
+  s = s.replace(/(?:\\text\{\s*)?Short\s*[-–—]\s*Term\s+Borrowing(?:\s*\})?/gi, "\\text{Short-Term Borrowing}");
+
+  // 2. Convert raw slash division in turnover formulas into \frac first:
+  s = s.replace(
+    /(?:\\text\{)?COGS(?:\})?\s*\/\s*(?:\\text\{)?Average Inventory(?:\})?/gi,
+    "\\frac{\\text{COGS}}{\\text{Average Inventory}}",
+  );
+  s = s.replace(
+    /365\s*\/\s*(?:\\text\{)?Inventory Turnover(?:\})?/gi,
+    "\\frac{365}{\\text{Inventory Turnover}}",
+  );
+  s = s.replace(
+    /(?:\\text\{)?Credit Sales(?:\})?\s*\/\s*(?:\\text\{)?Average Accounts Receivable(?:\})?/gi,
+    "\\frac{\\text{Credit Sales}}{\\text{Average Accounts Receivable}}",
+  );
+  s = s.replace(
+    /365\s*\/\s*(?:\\text\{)?Receivables Turnover(?:\})?/gi,
+    "\\frac{365}{\\text{Receivables Turnover}}",
+  );
+  s = s.replace(
+    /(?:\\text\{)?COGS(?:\})?\s*\/\s*(?:\\text\{)?Average Accounts Payable(?:\})?/gi,
+    "\\frac{\\text{COGS}}{\\text{Average Accounts Payable}}",
+  );
+  s = s.replace(
+    /365\s*\/\s*(?:\\text\{)?Payables Turnover(?:\})?/gi,
+    "\\frac{365}{\\text{Payables Turnover}}",
+  );
+
+  // 3. Multi-word phrases with optional subscript _t or _{...}:
+  const orderedPhrases: Array<[RegExp, string | ((m: string, sub?: string) => string)]> = [
+    [/(?<!\\text\{)\bNet Working Capital\s*\(\s*(?:other than|excluding)\s*Cash\s*\)(?!\})/gi, "\\text{Net Working Capital (other than Cash)}"],
+    [/(?<!\\text\{)\bNet Working Capital\b(?!\s*\(|\})/gi, "\\text{Net Working Capital}"],
+    [/(?<!\\text\{)\bCurrent Liabilities\b(?!\})/gi, "\\text{Current Liabilities}"],
+    [/(?<!\\text\{)\bCurrent Assets\b(?!\})/gi, "\\text{Current Assets}"],
+    [/(?<!\\text\{)\bFixed Assets\b(?!\})/gi, "\\text{Fixed Assets}"],
+    [/(?<!\\text\{)\bAverage Accounts Receivable\b(?!\})/gi, "\\text{Average Accounts Receivable}"],
+    [/(?<!\\text\{)\bAverage Accounts Payable\b(?!\})/gi, "\\text{Average Accounts Payable}"],
+    [/(?<!\\text\{)\bAverage Inventory\b(?!\})/gi, "\\text{Average Inventory}"],
+    [/(?<!Average\s+)(?<!\\text\{)\bAccounts Receivable\b(?!\})/gi, "\\text{Accounts Receivable}"],
+    [/(?<!Average\s+)(?<!\\text\{)\bAccounts Payable\b(?!\})/gi, "\\text{Accounts Payable}"],
+    [/(?<!\\text\{)\bCredit Sales\b(?!\})/gi, "\\text{Credit Sales}"],
+    [/(?<!\\text\{)\bCash Sales(_\{?[a-z0-9\-]+\}?)?/gi, (_m, sub) => `\\text{Cash Sales}${sub || ""}`],
+    [/(?<!\\text\{)\bCash Collections(_\{?[a-z0-9\-]+\}?)?/gi, (_m, sub) => `\\text{Cash Collections}${sub || ""}`],
+    [/(?<!\\text\{)\bCash Disbursements(_\{?[a-z0-9\-]+\}?)?/gi, (_m, sub) => `\\text{Cash Disbursements}${sub || ""}`],
+    [/(?<!\\text\{)\bNet Cash Flow(_\{?[a-z0-9\-]+\}?)?/gi, (_m, sub) => `\\text{Net Cash Flow}${sub || ""}`],
+    [/(?<!\\text\{)\bEnding Cash(_\{?[a-z0-9\-]+\}?)?/gi, (_m, sub) => `\\text{Ending Cash}${sub || ""}`],
+    [/(?<!\\text\{)\bBeginning Cash(_\{?[a-z0-9\-]+\}?)?/gi, (_m, sub) => `\\text{Beginning Cash}${sub || ""}`],
+    [/(?<!\\text\{)\bTarget Minimum Cash Balance\b(?!\})/gi, "\\text{Target Minimum Cash Balance}"],
+    [/(?<!\\text\{)\bCumulative Surplus\s*\/\s*(?:\(Deficit\)|Deficit)(_\{?[a-z0-9\-]+\}?)?/gi, (_m, sub) => `\\text{Cumulative Surplus / (Deficit)}${sub || ""}`],
+    [/(?<!\\text\{)\bOperating Cycle\b(?!\})/gi, "\\text{Operating Cycle}"],
+    [/(?<!\\text\{)\bCash Cycle\b(?!\})/gi, "\\text{Cash Cycle}"],
+    [/(?<!\\text\{)\bInventory Turnover\b(?!\})/gi, "\\text{Inventory Turnover}"],
+    [/(?<!\\text\{)\bInventory Period\b(?!\})/gi, "\\text{Inventory Period}"],
+    [/(?<!\\text\{)\bReceivables Turnover\b(?!\})/gi, "\\text{Receivables Turnover}"],
+    [/(?<!\\text\{)\bReceivables Period\b(?!\})/gi, "\\text{Receivables Period}"],
+    [/(?<!\\text\{)\bPayables Turnover\b(?!\})/gi, "\\text{Payables Turnover}"],
+    [/(?<!\\text\{)\bPayables Period\b(?!\})/gi, "\\text{Payables Period}"],
+  ];
+
+  for (const [pattern, replacement] of orderedPhrases) {
+    if (typeof replacement === "string") {
+      s = s.replace(pattern, replacement);
+    } else {
+      s = s.replace(pattern, replacement as any);
+    }
+  }
+
+  // 4. Standalone financial symbols around operators
+  s = s.replace(/(?<!\\text\{)(?<!than\s+)(?<!excluding\s+)(?<![a-zA-Z])\bCash\b(?!\s+(?:Sales|Collections|Disbursements|Flow|Cycle|Identity|Balance|Available|\}))(?!\})/g, "\\text{Cash}");
+  s = s.replace(/(?<!\\text\{)\bEquity\b(?!\})/g, "\\text{Equity}");
+  s = s.replace(/(?<!\\text\{)\bNWC\b(?!\})/g, "\\text{NWC}");
+  s = s.replace(/(?<!\\text\{)\bCOGS\b(?!\})/g, "\\text{COGS}");
+  s = s.replace(/(?<!\\text\{)\bDSO\b(?!\})/g, "\\text{DSO}");
+  s = s.replace(/(?<!\\text\{)\bCollections_t\b(?!\})/g, "\\text{Collections}_t");
+  s = s.replace(/(?<!\\text\{)\bSales_(\{?[a-z0-9\-]+\}?)(?!\})/g, "\\text{Sales}_$1");
+
+  // Clean up any double \text{\text{...}}
+  s = s.replace(/\\text\{\\text\{([^}]+)\}\}/g, "\\text{$1}");
+
+  return s;
+}
+
+/**
  * Repairs LaTeX strings that were corrupted by JSON escape sequence parsing or LLM output
  * (e.g. \beta -> \b (0x08) + eta -> " eta", \times -> \t (0x09) + imes -> " imes").
  */
@@ -169,7 +268,16 @@ export function repairCorruptedLatex(text: string): string {
     isLikelyInlineMath(inner) ? `$${inner.trim()}$` : m,
   );
 
-  // 3. Move trailing sentence punctuation outside inline math delimiters:
+  // 3. Multi-word accounting terms in equations & repair hyphens (e.g. Long-Term Debt)
+  if (
+    /(?:Long|Short)\s*[-–—]\s*Term|\b(Net Working Capital|Current Assets|Current Liabilities|Fixed Assets|Operating Cycle|Cash Cycle|Inventory Turnover|Receivables Turnover|Payables Turnover|Inventory Period|Receivables Period|Payables Period|Ending Cash|Beginning Cash|Cash Collections|Cash Disbursements|Net Cash Flow|Cumulative Surplus)\b/i.test(
+      s,
+    )
+  ) {
+    s = formatAccountingFormula(s);
+  }
+
+  // 4. Move trailing sentence punctuation outside inline math delimiters:
   // e.g. "$... = 9.45%.$" -> "$... = 9.45%$."
   s = s.replace(/(\$[^$\n]+?)([.,;:])\$/g, "$1$$$2");
 
@@ -422,14 +530,14 @@ export function ensureInlineMathDelimiters(text: string): string {
         }
         if (/[_^{}]/.test(m)) return true;
         if (/[+\-*/^]/.test(m) && /[A-Za-z0-9]/.test(m)) return true;
-        if (/\b(?:NPV|IRR|WACC|ROE|ROA|PV|FV|EAR|APR|EBIT|EBITDA|CAPM|EPS|DPS)\b/.test(m)) return true;
+        if (/\b(?:NPV|IRR|WACC|ROE|ROA|PV|FV|EAR|APR|EBIT|EBITDA|CAPM|EPS|DPS|NWC|Cash|Debt|Equity|Turnover|Period|Cycle|COGS|DSO|Working Capital)\b/.test(m)) return true;
         if (/[A-Z]\[[A-Za-z0-9]|(?:Var|Cov|Corr|SD|SE)\(/.test(m)) return true;
         return false;
       };
 
       // 0. Wrap full un-delimited math equations containing '=' or '\approx' with math symbols/variables
       const eqRegex =
-        /(?:\\(?:sigma|beta|rho|alpha|mu|gamma|delta|epsilon|theta|lambda|pi|tau|phi|omega|Delta|Sigma|Omega|bar|hat|tilde|vec|mathbf|mathit|text\{[^{}]+\}|frac\{[^{}]+\}\{[^{}]+\})(?:_\{[^{}]+\}|_[A-Za-z0-9]+)?(?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)?(?![a-zA-Z0-9_])|\b(?:NPV|IRR|WACC|ROE|ROA|PV|FV|EAR|APR|EBIT|EBITDA|CAPM|EPS|DPS|PE|PB)(?:_\{[^{}]+\}|_[A-Za-z0-9]+)?(?![a-zA-Z0-9_])|(?:E\[[A-Za-z0-9_{}^]+\]|E\([A-Za-z0-9_{}^]+\)|Var\([A-Za-z0-9_{}^,\s]+\)|Cov\([A-Za-z0-9_{}^,\s]+\)|Corr\([A-Za-z0-9_{}^,\s]+\)|SD\([A-Za-z0-9_{}^,\s]+\))|\b[A-Za-z]{1,3}_(?:\{[^{}]+\}|[A-Za-z0-9]+)(?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)?(?![a-zA-Z0-9_])|\b[A-Za-z](?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)(?![a-zA-Z0-9_])|\b[A-Za-z]{1,2}_[A-Za-z0-9]+\s*[\+\-\*\/]\s*[A-Za-z]{1,2}_[A-Za-z0-9]+\b|\([A-Za-z0-9\s+\-*\/^_{}]+\)|\b[A-Za-z]\b)\s*(?:=|\\approx|≈|\\sim|\\le|\\ge|\\leq|\\geq|\\ne|\\neq)\s*(?:\d+\.\d+%?|\((?:[^()]|\([^()]*\))*\)|\{(?:[^{}]|\{[^{}]*\})*\}|\[(?:[^\[\]]|\[[^\[\]]*\])*\]|,(?!\s)|[^\s.,;:\n(){}\[\]]+|\s+(?!(?:for|the|and|where|with|while|when|if|in|is|as|to|of|from|by|given|based|measured|meaning|defined|which|that|or|trong|với|khi|nếu|và|hoặc|cho|thì|là|được|theo|ở|gồm|tại|từ|do|để|như)\b))+?(?=[.,;:]?(?:\s+(?:for|the|and|where|with|while|when|if|in|is|as|to|of|from|by|given|based|measured|meaning|defined|which|that|or|trong|với|khi|nếu|và|hoặc|cho|thì|là|được|theo|ở|gồm|tại|từ|do|để|như)\b|\s*$))/g;
+        /(?:\\(?:sigma|beta|rho|alpha|mu|gamma|delta|epsilon|theta|lambda|pi|tau|phi|omega|Delta|Sigma|Omega|bar|hat|tilde|vec|mathbf|mathit|text\{[^{}]+\}|frac\{[^{}]+\}\{[^{}]+\})(?:_\{[^{}]+\}|_[A-Za-z0-9]+)?(?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)?(?![a-zA-Z0-9_])|\b(?:NPV|IRR|WACC|ROE|ROA|PV|FV|EAR|APR|EBIT|EBITDA|CAPM|EPS|DPS|PE|PB|NWC|Cash|Debt|Equity|Turnover|Period|Cycle|COGS|DSO)(?:_\{[^{}]+\}|_[A-Za-z0-9]+)?(?![a-zA-Z0-9_])|(?:E\[[A-Za-z0-9_{}^]+\]|E\([A-Za-z0-9_{}^]+\)|Var\([A-Za-z0-9_{}^,\s]+\)|Cov\([A-Za-z0-9_{}^,\s]+\)|Corr\([A-Za-z0-9_{}^,\s]+\)|SD\([A-Za-z0-9_{}^,\s]+\))|\b[A-Za-z]{1,3}_(?:\{[^{}]+\}|[A-Za-z0-9]+)(?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)?(?![a-zA-Z0-9_])|\b[A-Za-z](?:\^\{[^{}]+\}|\^[A-Za-z0-9]+)(?![a-zA-Z0-9_])|\b[A-Za-z]{1,2}_[A-Za-z0-9]+\s*[\+\-\*\/]\s*[A-Za-z]{1,2}_[A-Za-z0-9]+\b|\([A-Za-z0-9\s+\-*\/^_{}]+\)|\b[A-Za-z]\b)\s*(?:=|\\approx|≈|\\sim|\\le|\\ge|\\leq|\\geq|\\ne|\\neq)\s*(?:\d+\.\d+%?|\((?:[^()]|\([^()]*\))*\)|\{(?:[^{}]|\{[^{}]*\})*\}|\[(?:[^\[\]]|\[[^\[\]]*\])*\]|,(?!\s)|[^\s.,;:\n(){}\[\]]+|\s+(?!(?:for|the|and|where|with|while|when|if|in|is|as|to|of|from|by|given|based|measured|meaning|defined|which|that|or|trong|với|khi|nếu|và|hoặc|cho|thì|là|được|theo|ở|gồm|tại|từ|do|để|như)\b))+?(?=[.,;:]?(?:\s+(?:for|the|and|where|with|while|when|if|in|is|as|to|of|from|by|given|based|measured|meaning|defined|which|that|or|trong|với|khi|nếu|và|hoặc|cho|thì|là|được|theo|ở|gồm|tại|từ|do|để|như)\b|\s*$))/g;
       apply(eqRegex, (m) => (isMathEquation(m) ? wrapInMath(m) : m));
 
       // 1. Wrap \left ... \right bracketed expressions

@@ -9,6 +9,8 @@ import {
   ensureInlineMathDelimiters,
   deduplicateSectionFormulas,
   cleanTypoString,
+  harvestEquationsFromText,
+  harvestEquationFromText,
 } from "@/lib/ai/generate-notes";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "@/lib/ai/prompts-notes";
@@ -1718,5 +1720,140 @@ Premium vs Discount bonds.
     // Sub-section duplicate formula pruned: 2 cards reduced to 1
     expect(deduped.subSections?.[0].formulas.length).toBe(1);
     expect(deduped.subSections?.[0].formulas[0].latex).toBe("E[R] = \\sum_{i=1}^n P_i R_i");
+  });
+
+  describe("Stage 5: Universal Multi-Formula Harvester, Cash Identity Formatting & Chapter 26 Working Capital Safeguard", () => {
+    it("harvests multiple distinct equations from text using harvestEquationsFromText", () => {
+      const bullet =
+        "Inventory Turnover = COGS / Average Inventory; Inventory Period = 365 / Inventory Turnover";
+      const harvested = harvestEquationsFromText(bullet);
+      expect(harvested.length).toBe(2);
+      expect(harvested[0].latex).toContain("\\text{Inventory Turnover}");
+      expect(harvested[1].latex).toContain("\\text{Inventory Period}");
+
+      const delimBullet =
+        "Operating and Cash Cycles: $\\text{Operating Cycle} = \\text{Inventory Period} + \\text{Receivables Period}$ and $\\text{Cash Cycle} = \\text{Operating Cycle} - \\text{Payables Period}$";
+      const delimHarvested = harvestEquationsFromText(delimBullet);
+      expect(delimHarvested.length).toBe(2);
+      expect(delimHarvested[0].latex).toContain("Operating Cycle");
+      expect(delimHarvested[1].latex).toContain("Cash Cycle");
+    });
+
+    it("harvests calculation equations from bullet points EVEN WHEN formulas.length > 0", () => {
+      const rawSection = {
+        titleVi: "CHU KỲ HOẠT ĐỘNG VÀ CHU KỲ TIỀN MẶT",
+        overview: "Tổng quan chu kỳ luân chuyển vốn lưu động.",
+        bulletPoints: [
+          "Doanh nghiệp quản lý tồn kho và khoản thu:",
+          "Inventory Turnover = COGS / Average Inventory",
+          "Receivables Turnover = Credit Sales / Average Accounts Receivable",
+          "Kỳ luân chuyển: Inventory Period = 365 / Inventory Turnover",
+        ],
+        formulas: [
+          {
+            name: "",
+            leadText: "Chu kỳ hoạt động:",
+            latex: "\\text{Operating Cycle} = \\text{Inventory Period} + \\text{Receivables Period}",
+            variables: [],
+          },
+        ],
+      };
+
+      // Before Stage 5, having formulas.length === 1 permanently suppressed the harvester!
+      // Now, the harvester runs regardless of existing formula length.
+      const shielded = applyHallucinationShield([rawSection as any], "Short-Term Finance Chapter 26");
+      const secB = shielded[0];
+
+      // Must have preserved the initial formula AND harvested the equations from bullet points
+      expect(secB.formulas.length).toBeGreaterThan(1);
+      const hasInventoryTurnover = secB.formulas.some((f) =>
+        f.latex.includes("Inventory Turnover"),
+      );
+      const hasReceivablesTurnover = secB.formulas.some((f) =>
+        f.latex.includes("Receivables Turnover"),
+      );
+      const hasInventoryPeriod = secB.formulas.some((f) =>
+        f.latex.includes("Inventory Period"),
+      );
+
+      expect(hasInventoryTurnover).toBe(true);
+      expect(hasReceivablesTurnover).toBe(true);
+      expect(hasInventoryPeriod).toBe(true);
+    });
+
+    it("enforces Cash Identity formatting with clean KaTeX text wrappers and no minus-sign glitch on Long-Term Debt", () => {
+      const rawSection = {
+        titleVi: "A. NGUỒN VỐN VÀ SỬ DỤNG TIỀN MẶT (SOURCES AND USES OF CASH)",
+        bulletPoints: ["Đồng nhất thức tiền mặt"],
+        formulas: [
+          {
+            name: "",
+            latex: "Cash = Long-Term Debt + Equity - NWC - Fixed Assets",
+            variables: [],
+          },
+        ],
+      };
+
+      const shielded = applyHallucinationShield([rawSection as any], "Chapter 26 Working Capital");
+      const secA = shielded[0];
+
+      expect(secA.formulas.length).toBeGreaterThanOrEqual(1);
+      const cashFormula = secA.formulas[0];
+      expect(cashFormula.latex).toBe(
+        "\\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - \\text{NWC} - \\text{Fixed Assets}",
+      );
+      expect(cashFormula.variables.length).toBe(5);
+      expect(cashFormula.variables.some((v) => v.symbol === "\\text{Long-Term Debt}")).toBe(true);
+      expect(cashFormula.variables.some((v) => v.symbol === "\\text{Cash}")).toBe(true);
+    });
+
+    it("populates all required Chapter 26 formulas across Section A, Section B, and Section C when omitted by AI", () => {
+      const emptySections = [
+        {
+          titleVi: "A. NGUỒN VỐN VÀ SỬ DỤNG TIỀN MẶT (SOURCES AND USES OF CASH)",
+          overview: "Phân tích biến động tiền mặt",
+          bulletPoints: ["Nguồn tiền và sử dụng tiền"],
+          formulas: [],
+        },
+        {
+          titleVi: "B. CHU KỲ HOẠT ĐỘNG VÀ CHU KỲ TIỀN MẶT (OPERATING & CASH CYCLES)",
+          overview: "Các chu kỳ luân chuyển",
+          bulletPoints: ["Thời gian tồn kho và thu nợ"],
+          formulas: [],
+        },
+        {
+          titleVi: "C. KẾ HOẠCH TÀI CHÍNH NGẮN HẠN & NGÂN SÁCH TIỀN MẶT",
+          overview: "Lập ngân sách tiền mặt",
+          bulletPoints: ["Dự báo thu chi tiền mặt"],
+          formulas: [],
+        },
+      ];
+
+      const shielded = applyHallucinationShield(
+        emptySections as any,
+        "Chapter 26: Short-Term Finance and Planning / Quản trị tài chính ngắn hạn",
+      );
+
+      // Section A: Cash Identity
+      const secA = shielded[0];
+      expect(secA.formulas.some((f) => f.latex.includes("Cash") && f.latex.includes("Long-Term Debt"))).toBe(true);
+      expect(secA.formulas.some((f) => f.latex.includes("Net Working Capital (other than Cash)"))).toBe(true);
+
+      // Section B: 6 Turnover & Period formulas + Cycles
+      const secB = shielded[1];
+      expect(secB.formulas.some((f) => f.latex.includes("Inventory Turnover"))).toBe(true);
+      expect(secB.formulas.some((f) => f.latex.includes("Inventory Period"))).toBe(true);
+      expect(secB.formulas.some((f) => f.latex.includes("Receivables Turnover"))).toBe(true);
+      expect(secB.formulas.some((f) => f.latex.includes("Receivables Period"))).toBe(true);
+      expect(secB.formulas.some((f) => f.latex.includes("Payables Turnover"))).toBe(true);
+      expect(secB.formulas.some((f) => f.latex.includes("Payables Period"))).toBe(true);
+      expect(secB.formulas.some((f) => f.latex.includes("Operating Cycle") && f.latex.includes("Cash Cycle"))).toBe(true);
+
+      // Section C: Cash Budgeting Mechanics
+      const secC = shielded[2];
+      expect(secC.formulas.some((f) => f.latex.includes("Collections_t") || f.latex.includes("Cash Collections"))).toBe(true);
+      expect(secC.formulas.some((f) => f.latex.includes("Net Cash Flow") && f.latex.includes("Ending Cash"))).toBe(true);
+      expect(secC.formulas.some((f) => f.latex.includes("Cumulative Surplus / (Deficit)"))).toBe(true);
+    });
   });
 });

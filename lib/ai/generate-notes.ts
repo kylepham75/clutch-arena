@@ -12,7 +12,7 @@ import type { SourceBlock } from "@/lib/schemas/ingestion";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { getGenerationModel, getGroqModel } from "./provider";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
-import { repairCorruptedLatex, ensureInlineMathDelimiters, cleanVietnameseSigmaTypos } from "@/lib/math/latex";
+import { repairCorruptedLatex, ensureInlineMathDelimiters, cleanVietnameseSigmaTypos, formatAccountingFormula } from "@/lib/math/latex";
 export { ensureInlineMathDelimiters } from "@/lib/math/latex";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 
@@ -339,8 +339,9 @@ function shieldFormula(
   isStockValuation: boolean = true,
   isChapter10: boolean = false,
   isChapter11: boolean = false,
+  isChapter26: boolean = false,
 ): NoteFormula {
-  let latex = cleanTypoString(f.latex).replace(/^\$+|\$+$/g, "").trim();
+  let latex = formatAccountingFormula(cleanTypoString(f.latex).replace(/^\$+|\$+$/g, "").trim());
   let leadText = f.leadText ? sanitizeUniversalText(f.leadText) : undefined;
   let description = f.description ? sanitizeUniversalText(f.description) : undefined;
   let variables = (f.variables ?? []).map((v) => ({
@@ -516,6 +517,34 @@ function shieldFormula(
         { symbol: "E[R]", definition: "Tỷ suất sinh lời kỳ vọng" },
       ];
     }
+  }
+
+  // 8. Chapter 26 Working Capital & Cash Identity Safeguard:
+  if (
+    /\\text\{Cash\}|^\s*Cash\s*=/i.test(latex) &&
+    /Debt/i.test(latex) &&
+    (/Equity/i.test(latex) || /Fixed Assets/i.test(latex) || /NWC/i.test(latex) || /Working Capital/i.test(latex))
+  ) {
+    const usesExcludingCash = /excluding/i.test(latex);
+    const nwcPart = /\\text\{NWC\}|NWC\b/i.test(latex) && !/Net Working Capital/i.test(latex)
+      ? "\\text{NWC}"
+      : usesExcludingCash
+        ? "\\text{Net Working Capital (excluding Cash)}"
+        : "\\text{Net Working Capital (other than Cash)}";
+    latex = `\\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - ${nwcPart} - \\text{Fixed Assets}`;
+    leadText = leadText || "Đồng nhất thức tiền mặt (Cash Identity) từ Bảng cân đối kế toán:";
+    description = description || "Tiền mặt = Nợ dài hạn + Vốn CSH - Vốn lưu động ròng (ngoài tiền mặt) - Tài sản cố định.";
+    if (!variables || variables.length === 0) {
+      variables = [
+        { symbol: "\\text{Cash}", definition: "Số dư tiền mặt của doanh nghiệp" },
+        { symbol: "\\text{Long-Term Debt}", definition: "Nợ dài hạn" },
+        { symbol: "\\text{Equity}", definition: "Vốn chủ sở hữu" },
+        { symbol: nwcPart, definition: "Vốn lưu động ròng (loại trừ tiền mặt)" },
+        { symbol: "\\text{Fixed Assets}", definition: "Tài sản cố định" },
+      ];
+    }
+  } else if (/^\s*(?:\\text\{)?NWC(?:\})?\s*=/i.test(latex) && /Current/i.test(latex)) {
+    latex = "\\text{NWC} = \\text{Current Assets} - \\text{Current Liabilities}";
   }
 
   return {
@@ -953,68 +982,94 @@ function consolidateSectionsUniversally(
 /**
  * Universal Formula Harvester:
  * Extracts distinct mathematical/valuation formulas from prose bullet points or text
- * when an LLM relegated an equation to text and left the formulas array empty.
+ * when an LLM relegated an equation to text.
  */
-function harvestEquationFromText(line: string): NoteFormula | null {
-  if (!line || typeof line !== "string" || !line.includes("=")) return null;
+export function harvestEquationsFromText(line: string): NoteFormula[] {
+  if (!line || typeof line !== "string" || !line.includes("=")) return [];
 
-  // Indicators that text contains a quantitative or valuation formula
+  // Indicators that text contains a quantitative, financial, or valuation formula
   const hasMathIndicators =
-    /\\frac|\\sum|\\sqrt|\\prod|\\beta|\\sigma|\\rho|\\times|\\cdot|\\Delta|\^|\/|\+|-|\b(NPV|IRR|WACC|ROE|ROA|EAR|APR|YTM|CAPM|E\[R\]|Cov|Corr|Beta|DuPont|COGS|EBIT|EBITDA|EVA|FCF|PV|FV|PMT|P_0|P_1|P_t|D_1|D_0|EPS|DPS|PE|P\/E|Retention|Payout|Variance|StdDev)\b/i.test(
+    /\\frac|\\sum|\\sqrt|\\prod|\\beta|\\sigma|\\rho|\\times|\\cdot|\\Delta|\^|\/|\+|-|\b(NPV|IRR|WACC|ROE|ROA|EAR|APR|YTM|CAPM|E\[R\]|Cov|Corr|Beta|DuPont|COGS|EBIT|EBITDA|EVA|FCF|PV|FV|PMT|P_0|P_1|P_t|D_1|D_0|EPS|DPS|PE|P\/E|Retention|Payout|Variance|StdDev|NWC|Cash|Debt|Equity|Turnover|Period|Cycle|Collections|Disbursements|Inventory|Receivables|Payables|DSO|Working Capital|Sales)\b/i.test(
       line,
     );
 
-  if (!hasMathIndicators) return null;
+  if (!hasMathIndicators) return [];
 
   // Avoid trivial assignments without calculation (e.g. "let t = 1", "g = 0", "N = 5")
-  if (/^\s*[a-zA-Z_]\s*=\s*[0-9a-zA-Z_]\s*$/i.test(line.trim())) return null;
+  if (/^\s*[a-zA-Z_]\s*=\s*[0-9a-zA-Z_]\s*$/i.test(line.trim())) return [];
+
+  const results: NoteFormula[] = [];
 
   // 1. Check for inline math delimiters: $...=...$ or $$...=...$$
-  const mathDelimMatch = line.match(/\${1,2}([^$]+=[^$]+)\${1,2}/);
-  if (mathDelimMatch) {
-    const rawEquation = mathDelimMatch[1].trim();
-    const prefix = line.slice(0, mathDelimMatch.index).trim().replace(/[:\-–—]+$/, "").trim();
-    return {
-      name: "",
-      leadText: prefix.length > 0 ? sanitizeUniversalText(`${prefix}:`) : undefined,
-      latex: repairCorruptedLatex(cleanTypoString(rawEquation)).replace(/^\$+|\$+$/g, "").trim(),
-      description: undefined,
-      variables: [],
-    };
+  const mathDelimMatches = [...line.matchAll(/\${1,2}([^$]+=[^$]+)\${1,2}/g)];
+  if (mathDelimMatches.length > 0) {
+    for (const match of mathDelimMatches) {
+      const rawEquation = match[1].trim();
+      const prefix = line.slice(0, match.index).trim().replace(/[:\-–—]+$/, "").trim();
+      const cleaned = repairCorruptedLatex(cleanTypoString(rawEquation)).replace(/^\$+|\$+$/g, "").trim();
+      if (cleaned.length >= 3 && cleaned.includes("=")) {
+        results.push({
+          name: "",
+          leadText: prefix.length > 0 && prefix.length < 60 ? sanitizeUniversalText(`${prefix}:`) : undefined,
+          latex: formatAccountingFormula(cleaned),
+          description: undefined,
+          variables: [],
+        });
+      }
+    }
+    if (results.length > 0) return results;
   }
 
-  // 2. Prose equation pattern e.g. "DuPont Identity: ROE = Net Profit Margin * Asset Turnover * Equity Multiplier"
-  const colonIndex = line.indexOf(":");
-  let leadText: string | undefined = undefined;
-  let eqText = line;
+  // 2. Prose equation patterns: split by semicolon or newline if multiple equations exist
+  const subClauses = line.split(/[;\n]+/);
+  for (const clause of subClauses) {
+    if (!clause.includes("=")) continue;
 
-  if (colonIndex > 0) {
-    const beforeColon = line.slice(0, colonIndex).trim();
-    const afterColon = line.slice(colonIndex + 1).trim();
-    if (afterColon.includes("=")) {
-      leadText = beforeColon;
-      eqText = afterColon;
-    } else if (beforeColon.includes("=")) {
-      eqText = beforeColon;
-      leadText = undefined;
+    const colonIndex = clause.indexOf(":");
+    let leadText: string | undefined = undefined;
+    let eqText = clause;
+
+    if (colonIndex > 0) {
+      const beforeColon = clause.slice(0, colonIndex).trim();
+      const afterColon = clause.slice(colonIndex + 1).trim();
+      if (afterColon.includes("=")) {
+        leadText = beforeColon;
+        eqText = afterColon;
+      } else if (beforeColon.includes("=")) {
+        eqText = beforeColon;
+        leadText = undefined;
+      }
+    }
+
+    const cleanedEq = eqText
+      .replace(/^[-*•\d\.\s]+/, "") // remove leading bullet marks
+      .replace(/\s*\([^)]*\)\s*$/, "") // remove trailing parenthetical explanations
+      .replace(/[.;,]+$/, "") // remove trailing punctuation
+      .trim();
+
+    if (cleanedEq.length < 3 || !cleanedEq.includes("=")) continue;
+
+    const formatted = formatAccountingFormula(
+      repairCorruptedLatex(cleanTypoString(cleanedEq)).replace(/^\$+|\$+$/g, "").trim(),
+    );
+
+    if (formatted.length >= 3 && formatted.includes("=")) {
+      results.push({
+        name: "",
+        leadText: leadText ? sanitizeUniversalText(`${leadText}:`) : undefined,
+        latex: formatted,
+        description: undefined,
+        variables: [],
+      });
     }
   }
 
-  const cleanedEq = eqText
-    .replace(/^[-*•\d\.\s]+/, "") // remove leading bullet marks
-    .replace(/\s*\([^)]*\)\s*$/, "") // remove trailing parenthetical explanations
-    .replace(/[.;,]+$/, "") // remove trailing punctuation
-    .trim();
+  return results;
+}
 
-  if (cleanedEq.length < 3 || !cleanedEq.includes("=")) return null;
-
-  return {
-    name: "",
-    leadText: leadText ? sanitizeUniversalText(`${leadText}:`) : undefined,
-    latex: repairCorruptedLatex(cleanTypoString(cleanedEq)).replace(/^\$+|\$+$/g, "").trim(),
-    description: undefined,
-    variables: [],
-  };
+export function harvestEquationFromText(line: string): NoteFormula | null {
+  const formulas = harvestEquationsFromText(line);
+  return formulas.length > 0 ? formulas[0] : null;
 }
 
 export function applyHallucinationShield(
@@ -1047,6 +1102,15 @@ export function applyHallucinationShield(
     (/stock valuation|định giá cổ phiếu|dividend discount|gordon growth/i.test(rawSlideText) ||
       /stock valuation|định giá cổ phiếu/i.test(allTitlesText) ||
       /ddm|ritm|hạnh hạnh/i.test(combinedContext));
+
+  const isChapter26WorkingCapital =
+    !isWaccOrCostOfCapital &&
+    !isChapter10Historical &&
+    !isChapter11Portfolio &&
+    !isChapter9StockValuation &&
+    /chapter\s*26|short-term (financial )?planning|working capital|kế hoạch tài chính ngắn hạn|vốn lưu động|operating cycle|cash cycle|chu kỳ hoạt động|chu kỳ tiền mặt|cash budget|ngân sách tiền mặt|vòng quay hàng tồn kho|kỳ thu tiền bình quân|inventory turnover|receivables turnover|payables turnover|cash identity|nguồn và sử dụng tiền/i.test(
+      combinedContext,
+    );
 
   // Step 1: Consolidate fragmented sections universally into 3–5 canonical sections
   const consolidated = consolidateSectionsUniversally(
@@ -1102,19 +1166,30 @@ export function applyHallucinationShield(
 
     // 2b. Shield formulas at section top-level
     sec.formulas = sec.formulas.map((f) =>
-      shieldFormula(f, sec.titleVi, isChapter9StockValuation, isChapter10Historical, isChapter11Portfolio),
+      shieldFormula(
+        f,
+        sec.titleVi,
+        isChapter9StockValuation,
+        isChapter10Historical,
+        isChapter11Portfolio,
+        isChapter26WorkingCapital,
+      ),
     );
 
     // Universal Formula Harvester:
-    // If a section contains descriptive text or bullets with mathematical equations but formulas is empty,
-    // harvest equations and create boxed NoteFormula so formulas are NEVER omitted!
-    if (sec.formulas.length === 0) {
-      const candidates = [sec.coreStatement, sec.overview, ...sec.bulletPoints].filter(
-        (t): t is string => Boolean(t && t.includes("=")),
-      );
-      for (const cand of candidates) {
-        const harvested = harvestEquationFromText(cand);
-        if (harvested && !sec.formulas.some((f) => f.latex === harvested.latex)) {
+    // ALWAYS scan sec.coreStatement, sec.overview, and sec.bulletPoints
+    // Even if sec.formulas already contains formulas, harvest any calculation equations trapped in prose!
+    const candidates = [sec.coreStatement, sec.overview, ...sec.bulletPoints].filter(
+      (t): t is string => Boolean(t && t.includes("=")),
+    );
+    for (const cand of candidates) {
+      const harvestedList = harvestEquationsFromText(cand);
+      for (const harvested of harvestedList) {
+        const harvestedKey = normalizeFormulaKey(harvested.latex);
+        const alreadyExists = sec.formulas.some(
+          (f) => normalizeFormulaKey(f.latex) === harvestedKey || f.latex === harvested.latex,
+        );
+        if (!alreadyExists && harvestedKey) {
           sec.formulas.push(
             shieldFormula(
               harvested,
@@ -1122,6 +1197,7 @@ export function applyHallucinationShield(
               isChapter9StockValuation,
               isChapter10Historical,
               isChapter11Portfolio,
+              isChapter26WorkingCapital,
             ),
           );
         }
@@ -1143,17 +1219,23 @@ export function applyHallucinationShield(
             isChapter9StockValuation,
             isChapter10Historical,
             isChapter11Portfolio,
+            isChapter26WorkingCapital,
           ),
         );
 
         // Sub-section Formula Harvester:
-        if (sub.formulas.length === 0) {
-          const subCandidates = [sub.leadIn, ...sub.bulletPoints].filter(
-            (t): t is string => Boolean(t && t.includes("=")),
-          );
-          for (const cand of subCandidates) {
-            const harvested = harvestEquationFromText(cand);
-            if (harvested && !sub.formulas.some((f) => f.latex === harvested.latex)) {
+        // ALWAYS scan sub.leadIn and sub.bulletPoints
+        const subCandidates = [sub.leadIn, ...sub.bulletPoints].filter(
+          (t): t is string => Boolean(t && t.includes("=")),
+        );
+        for (const cand of subCandidates) {
+          const harvestedList = harvestEquationsFromText(cand);
+          for (const harvested of harvestedList) {
+            const harvestedKey = normalizeFormulaKey(harvested.latex);
+            const alreadyExists = sub.formulas.some(
+              (f) => normalizeFormulaKey(f.latex) === harvestedKey || f.latex === harvested.latex,
+            );
+            if (!alreadyExists && harvestedKey) {
               sub.formulas.push(
                 shieldFormula(
                   harvested,
@@ -1161,6 +1243,7 @@ export function applyHallucinationShield(
                   isChapter9StockValuation,
                   isChapter10Historical,
                   isChapter11Portfolio,
+                  isChapter26WorkingCapital,
                 ),
               );
             }
@@ -1593,6 +1676,218 @@ export function applyHallucinationShield(
             variables: [
               { symbol: "\\bar{R}_{\\text{geom}}", definition: "Tỷ suất sinh lời trung bình hình học (Geometric average return)" },
               { symbol: "\\bar{R}_{\\text{arith}}", definition: "Tỷ suất sinh lời trung bình số học (Arithmetic average return)" },
+            ],
+          }),
+        );
+      }
+    }
+  }
+
+  // Step 2g. Chapter 26 Working Capital & Short-Term Financial Planning Safeguards:
+  if (isChapter26WorkingCapital) {
+    // 1. Section A: Cash Identity & NWC
+    let cashSec = processed.find((sec) =>
+      /tiền mặt|cash|nguồn|sử dụng|sources|uses|working capital|vốn lưu động/i.test(sec.titleVi),
+    );
+    if (!cashSec && processed.length > 0) cashSec = processed[0];
+
+    if (cashSec) {
+      const allCashFormulas = [
+        ...cashSec.formulas,
+        ...(cashSec.subSections ? cashSec.subSections.flatMap((s) => s.formulas) : []),
+      ];
+
+      const hasCashIdentity = allCashFormulas.some((f) =>
+        /\\text\{Cash\}\s*=|Cash\s*=|Long-Term Debt/i.test(f.latex),
+      );
+
+      if (!hasCashIdentity) {
+        cashSec.formulas.unshift(
+          sanitizeFormula({
+            name: "",
+            leadText: "Đồng nhất thức tiền mặt (Cash Identity) từ Bảng cân đối kế toán:",
+            latex: "\\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - \\text{Net Working Capital (other than Cash)} - \\text{Fixed Assets}",
+            description: "Bắt nguồn từ bảng cân đối kế toán: Tiền mặt tăng khi Nợ dài hạn hoặc Vốn CSH tăng, và giảm khi NWC (ngoài tiền) hoặc Tài sản cố định tăng.",
+            variables: [
+              { symbol: "\\text{Cash}", definition: "Số dư tiền mặt của doanh nghiệp" },
+              { symbol: "\\text{Long-Term Debt}", definition: "Nợ dài hạn" },
+              { symbol: "\\text{Equity}", definition: "Vốn chủ sở hữu" },
+              { symbol: "\\text{Net Working Capital (other than Cash)}", definition: "Vốn lưu động ròng không bao gồm tiền mặt" },
+              { symbol: "\\text{Fixed Assets}", definition: "Tài sản cố định" },
+            ],
+          }),
+        );
+      }
+    }
+
+    // 2. Section B: Cycles & Turnover System (Inventory, Receivables, Payables, Operating & Cash Cycles)
+    let cyclesSec = processed.find((sec) =>
+      /chu kỳ|cycle|operating|hoạt động|vòng quay|turnover/i.test(sec.titleVi),
+    );
+    if (!cyclesSec && processed.length > 1) {
+      cyclesSec = processed[1];
+    }
+    if (!cyclesSec && processed.length > 0) cyclesSec = processed[0];
+
+    if (cyclesSec) {
+      const allCycleFormulas = [
+        ...cyclesSec.formulas,
+        ...(cyclesSec.subSections ? cyclesSec.subSections.flatMap((s) => s.formulas) : []),
+      ];
+
+      // 2a. Inventory Turnover & Period
+      const hasInventory = allCycleFormulas.some((f) =>
+        /Inventory Turnover|Vòng quay hàng tồn kho|COGS.*Average Inventory/i.test(f.latex),
+      );
+      if (!hasInventory) {
+        cyclesSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Vòng quay hàng tồn kho và Kỳ luân chuyển hàng tồn kho:",
+            latex: "\\text{Inventory Turnover} = \\frac{\\text{COGS}}{\\text{Average Inventory}}, \\quad \\text{Inventory Period} = \\frac{365}{\\text{Inventory Turnover}}",
+            description: "Đo lường tốc độ bán hàng và số ngày tồn kho bình quân trước khi bán.",
+            variables: [
+              { symbol: "\\text{Inventory Turnover}", definition: "Vòng quay hàng tồn kho" },
+              { symbol: "\\text{COGS}", definition: "Giá vốn hàng bán (Cost of Goods Sold)" },
+              { symbol: "\\text{Average Inventory}", definition: "Hàng tồn kho bình quân" },
+              { symbol: "\\text{Inventory Period}", definition: "Kỳ luân chuyển hàng tồn kho (số ngày lưu kho bình quân)" },
+            ],
+          }),
+        );
+      }
+
+      // 2b. Receivables Turnover & Period (DSO)
+      const hasReceivables = allCycleFormulas.some((f) =>
+        /Receivables Turnover|Vòng quay khoản phải thu|DSO|Kỳ thu tiền/i.test(f.latex),
+      );
+      if (!hasReceivables) {
+        cyclesSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Vòng quay khoản phải thu và Kỳ thu tiền bình quân (DSO):",
+            latex: "\\text{Receivables Turnover} = \\frac{\\text{Credit Sales}}{\\text{Average Accounts Receivable}}, \\quad \\text{Receivables Period} = \\frac{365}{\\text{Receivables Turnover}}",
+            description: "Đo lường hiệu quả thu hồi nợ và thời gian thu tiền bình quân từ khách hàng.",
+            variables: [
+              { symbol: "\\text{Receivables Turnover}", definition: "Vòng quay khoản phải thu" },
+              { symbol: "\\text{Credit Sales}", definition: "Doanh thu bán chịu (hoặc tổng doanh thu)" },
+              { symbol: "\\text{Average Accounts Receivable}", definition: "Khoản phải thu bình quân" },
+              { symbol: "\\text{Receivables Period}", definition: "Kỳ thu tiền bình quân (Days' Sales Outstanding - DSO)" },
+            ],
+          }),
+        );
+      }
+
+      // 2c. Payables Turnover & Period
+      const hasPayables = allCycleFormulas.some((f) =>
+        /Payables Turnover|Vòng quay khoản phải trả|Kỳ thanh toán/i.test(f.latex),
+      );
+      if (!hasPayables) {
+        cyclesSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Vòng quay khoản phải trả và Kỳ trả tiền bình quân:",
+            latex: "\\text{Payables Turnover} = \\frac{\\text{COGS}}{\\text{Average Accounts Payable}}, \\quad \\text{Payables Period} = \\frac{365}{\\text{Payables Turnover}}",
+            description: "Đo lường thời gian doanh nghiệp được nhà cung cấp cấp tín dụng thương mại.",
+            variables: [
+              { symbol: "\\text{Payables Turnover}", definition: "Vòng quay khoản phải trả" },
+              { symbol: "\\text{Average Accounts Payable}", definition: "Khoản phải trả bình quân" },
+              { symbol: "\\text{Payables Period}", definition: "Kỳ thanh toán bình quân (Days' Payables Outstanding)" },
+            ],
+          }),
+        );
+      }
+
+      // 2d. Operating Cycle & Cash Cycle
+      const hasCycles = allCycleFormulas.some((f) =>
+        /Operating Cycle|Cash Cycle|Chu kỳ hoạt động|Chu kỳ tiền mặt/i.test(f.latex),
+      );
+      if (!hasCycles) {
+        cyclesSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Chu kỳ hoạt động (Operating Cycle) và Chu kỳ tiền mặt (Cash Cycle):",
+            latex: "\\text{Operating Cycle} = \\text{Inventory Period} + \\text{Receivables Period}, \\quad \\text{Cash Cycle} = \\text{Operating Cycle} - \\text{Payables Period}",
+            description: "Chu kỳ tiền mặt đo lường khoảng cách thời gian từ lúc thực tế trả tiền nguyên vật liệu cho đến khi thu được tiền bán hàng.",
+            variables: [
+              { symbol: "\\text{Operating Cycle}", definition: "Chu kỳ hoạt động (từ lúc nhận hàng tồn kho đến khi thu tiền bán hàng)" },
+              { symbol: "\\text{Cash Cycle}", definition: "Chu kỳ luân chuyển tiền mặt (Cash Conversion Cycle)" },
+            ],
+          }),
+        );
+      }
+    }
+
+    // 3. Section C: Cash Budgeting Mechanics
+    let budgetSec = processed.find((sec) =>
+      /ngân sách|budget|dự toán|kế hoạch tài chính ngắn hạn|thu chi/i.test(sec.titleVi),
+    );
+    if (!budgetSec && processed.length > 2) {
+      budgetSec = processed[2];
+    }
+    if (!budgetSec && processed.length > 0) {
+      budgetSec = processed[processed.length - 1];
+    }
+
+    if (budgetSec) {
+      const allBudgetFormulas = [
+        ...budgetSec.formulas,
+        ...(budgetSec.subSections ? budgetSec.subSections.flatMap((s) => s.formulas) : []),
+      ];
+
+      // 3a. Cash Collections
+      const hasCollections = allBudgetFormulas.some((f) =>
+        /Collections|Cash Sales|Tiền thu/i.test(f.latex),
+      );
+      if (!hasCollections) {
+        budgetSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Dòng tiền thu từ bán hàng (Cash Collections):",
+            latex: "\\text{Collections}_t = \\text{Cash Sales}_t + \\sum (\\% \\text{ collected} \\times \\text{Sales}_{t-k})",
+            description: "Tiền thu trong kỳ t bao gồm tiền bán hàng thu ngay và thu hồi nợ từ doanh thu bán chịu các kỳ trước.",
+            variables: [
+              { symbol: "\\text{Collections}_t", definition: "Tổng tiền thu vào trong kỳ t" },
+              { symbol: "\\text{Cash Sales}_t", definition: "Doanh thu bán hàng thu tiền ngay trong kỳ t" },
+              { symbol: "\\text{Sales}_{t-k}", definition: "Doanh thu bán chịu các kỳ trước được thu tiền trong kỳ t" },
+            ],
+          }),
+        );
+      }
+
+      // 3b. Net Cash Flow & Ending Cash Balance
+      const hasNetCashFlow = allBudgetFormulas.some((f) =>
+        /Net Cash Flow|Ending Cash|Dòng tiền thuần|Số dư tiền cuối kỳ/i.test(f.latex),
+      );
+      if (!hasNetCashFlow) {
+        budgetSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Dòng tiền thuần và Số dư tiền mặt cuối kỳ:",
+            latex: "\\text{Net Cash Flow}_t = \\text{Cash Collections}_t - \\text{Cash Disbursements}_t, \\quad \\text{Ending Cash}_t = \\text{Beginning Cash}_t + \\text{Net Cash Flow}_t",
+            description: "Chênh lệch thu chi tiền mặt và tính toán số dư tiền mặt tại thời điểm cuối kỳ.",
+            variables: [
+              { symbol: "\\text{Net Cash Flow}_t", definition: "Dòng tiền thuần trong kỳ t" },
+              { symbol: "\\text{Cash Disbursements}_t", definition: "Tổng chi tiêu tiền mặt trong kỳ t (mua hàng, lương, thuế, đầu tư...)" },
+              { symbol: "\\text{Beginning Cash}_t, \\text{Ending Cash}_t", definition: "Số dư tiền mặt đầu kỳ và cuối kỳ" },
+            ],
+          }),
+        );
+      }
+
+      // 3c. Cumulative Surplus / (Deficit)
+      const hasCumulative = allBudgetFormulas.some((f) =>
+        /Cumulative Surplus|Thặng dư.*thâm hụt|Ending Cash.*Target/i.test(f.latex),
+      );
+      if (!hasCumulative) {
+        budgetSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Thặng dư / Thâm hụt tiền mặt tích lũy (Cumulative Surplus / Deficit):",
+            latex: "\\text{Cumulative Surplus / (Deficit)}_t = \\text{Ending Cash}_t - \\text{Target Minimum Cash Balance}",
+            description: "Nếu > 0: thặng dư tiền mặt có thể đầu tư ngắn hạn; nếu < 0: thâm hụt tiền mặt cần tài trợ bằng vay ngắn hạn.",
+            variables: [
+              { symbol: "\\text{Cumulative Surplus / (Deficit)}_t", definition: "Thặng dư hoặc thâm hụt tiền mặt tích lũy cuối kỳ" },
+              { symbol: "\\text{Target Minimum Cash Balance}", definition: "Mức dự trữ tiền mặt an toàn tối thiểu theo mục tiêu của doanh nghiệp" },
             ],
           }),
         );
