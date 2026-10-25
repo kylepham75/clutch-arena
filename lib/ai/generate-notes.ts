@@ -12,7 +12,7 @@ import type { SourceBlock } from "@/lib/schemas/ingestion";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { getGenerationModel, getGroqModel } from "./provider";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
-import { repairCorruptedLatex, ensureInlineMathDelimiters } from "@/lib/math/latex";
+import { repairCorruptedLatex, ensureInlineMathDelimiters, cleanVietnameseSigmaTypos } from "@/lib/math/latex";
 export { ensureInlineMathDelimiters } from "@/lib/math/latex";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 
@@ -208,9 +208,9 @@ const VIETNAMESE_GRAVE_MAP: Record<string, string> = {
   y: "ỳ", Y: "Ỳ",
 };
 
-function cleanTypoString(str: string): string {
+export function cleanTypoString(str: string): string {
   if (!str || typeof str !== "string") return str;
-  let s = str.normalize("NFC");
+  let s = cleanVietnameseSigmaTypos(str.normalize("NFC"));
 
   // Re-attach isolated or spaced combining diacritical marks to preceding letters and compose to NFC
   s = s.replace(/([\p{L}\p{M}]+)\s+([\u0300-\u036f]+)/gu, "$1$2").normalize("NFC");
@@ -426,17 +426,48 @@ function shieldFormula(
     }
   }
 
-  // 6. Chapter 10 Historical Risk & Return Variance Shield:
-  // Historical sample variance uses denominator strictly T - 1 (or n - 1). NEVER divide by T, NEVER use scenario probabilities P_i.
-  const isHistoricalVariance =
-    isChapter10 ||
-    /historical|mẫu lịch sử|sample variance|phương sai lịch sử/i.test(contextHint) ||
-    /s\^2\s*=|s\s*=\s*\\sqrt/i.test(latex);
+  // 6a. Chapter 10 Historical Arithmetic & Geometric Mean Safeguard:
+  // Arithmetic Mean ALWAYS divides by total periods T: \bar{R}_{\text{arith}} = \frac{1}{T}\sum R_t. NEVER divide Arithmetic Mean by T - 1!
+  const isArithmeticMean =
+    /arithmetic|số học|trung bình cộng|\\bar\{R\}_\{?\\text\{arith\}?\}?|\\bar\{R\}\s*=/i.test(latex) ||
+    (/arithmetic|số học|trung bình cộng/i.test(contextHint) && !/(variance|phương sai|độ lệch chuẩn|s\^2)/i.test(contextHint)) ||
+    (/\\bar\{R\}|\\sum.*R_t/i.test(latex) && !/\(R_t\s*-\s*\\bar\{R\}\)\^2|s\^2|s\s*=\s*\\sqrt/i.test(latex));
 
-  if (
-    isHistoricalVariance &&
-    (/variance|phương sai|độ lệch chuẩn|s\^2/i.test(contextHint) || /s\^2|\\bar\{R\}|R_t/i.test(latex))
-  ) {
+  if (isArithmeticMean) {
+    // The denominator MUST ALWAYS be T (or n). NEVER T - 1.
+    latex = latex
+      .replace(/\\frac\{1\}\{\s*T\s*-\s*1\s*\}/g, "\\frac{1}{T}")
+      .replace(/\{\s*T\s*-\s*1\s*\}/g, "{T}")
+      .replace(/\\frac\{1\}\{\s*n\s*-\s*1\s*\}/g, "\\frac{1}{n}")
+      .replace(/\{\s*n\s*-\s*1\s*\}/g, "{n}");
+  }
+
+  const isGeometricMean =
+    /geometric|hình học|\\bar\{R\}_\{?\\text\{geom\}?\}?|\\prod/i.test(latex) ||
+    /geometric|hình học/i.test(contextHint);
+
+  if (isGeometricMean) {
+    // The exponent is strictly 1/T (or 1/n), NEVER 1/(T - 1).
+    latex = latex
+      .replace(/\^\{\s*1\s*\/\s*\(?\s*T\s*-\s*1\s*\)?\s*\}/g, "^{1/T}")
+      .replace(/\^\{\s*1\s*\/\s*\(?\s*n\s*-\s*1\s*\)?\s*\}/g, "^{1/n}")
+      .replace(/1\s*\/\s*\(?\s*T\s*-\s*1\s*\)?/g, "1/T")
+      .replace(/1\s*\/\s*\(?\s*n\s*-\s*1\s*\)?/g, "1/n");
+  }
+
+  // 6b. Chapter 10 Historical Risk & Return Variance Shield:
+  // Historical sample variance uses denominator strictly T - 1 (or n - 1). NEVER divide by T, NEVER use scenario probabilities P_i.
+  // Bessel's correction T - 1 applies EXCLUSIVELY when calculating sample variance s^2 or standard deviation s with squared differences (R_t - \bar{R})^2.
+  // It must NEVER touch Arithmetic Mean or Geometric Mean!
+  const isHistoricalVariance =
+    !isArithmeticMean &&
+    (
+      (/historical|mẫu lịch sử|sample variance|phương sai lịch sử/i.test(contextHint) && /variance|phương sai|độ lệch chuẩn|s\^2/i.test(contextHint)) ||
+      /s\^2\s*=|s\s*=\s*\\sqrt\{s\^?2\}/i.test(latex) ||
+      (/\(R_t\s*-\s*\\bar\{R\}\)\^2/i.test(latex) && (isChapter10 || /variance|phương sai|độ lệch chuẩn|s\^2/i.test(contextHint)))
+    );
+
+  if (isHistoricalVariance) {
     // Intercept if probability P_i was hallucinated into historical sample variance
     if (/P_i|p_i|\\sum\s*P/i.test(latex)) {
       latex = "s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2, \\quad s = \\sqrt{s^2}";
@@ -448,8 +479,8 @@ function shieldFormula(
         { symbol: "\\bar{R}", definition: "Tỷ suất sinh lời trung bình số học của mẫu" },
         { symbol: "R_t", definition: "Tỷ suất sinh lời thực tế tại thời kỳ t" },
       ];
-    } else {
-      // Fix denominator T to T - 1 if divided by T without - 1
+    } else if (/\(R_t\s*-\s*\\bar\{R\}\)\^2/i.test(latex) || /s\^2/.test(latex)) {
+      // Fix denominator T to T - 1 ONLY for the variance part with squared deviations
       latex = latex.replace(/\\frac\{1\}\{T\}(?!\s*-\s*1)/g, "\\frac{1}{T - 1}");
       latex = latex.replace(/\{\s*T\s*\}(?!\s*-\s*1)/g, "{T - 1}");
       latex = latex.replace(/\\frac\{1\}\{n\}(?!\s*-\s*1)/g, "\\frac{1}{n - 1}");
@@ -568,6 +599,95 @@ function deduplicateSubSections(subSections: NoteSubSection[]): NoteSubSection[]
   }
 
   return deduplicated;
+}
+
+/**
+ * Normalizes a LaTeX formula string to a canonical key for equivalence checking.
+ */
+export function normalizeFormulaKey(latex: string): string {
+  if (!latex) return "";
+  return latex
+    .replace(/\\(left|right|quad|qquad|text|mathrm|displaystyle|mathbf)/g, "")
+    .replace(/[{}\s()_^\\]/g, "")
+    .toLowerCase();
+}
+
+/**
+ * Deduplicates a list of formula cards:
+ * 1. Removes identical or equivalent formulas based on normalized LaTeX.
+ * 2. Prunes any standalone standard deviation formula (\sigma_p = \sqrt{\sigma_p^2}, \sigma = \sqrt{\sigma^2}, s = \sqrt{s^2})
+ *    if an earlier formula card in the list already defined both variance and standard deviation.
+ */
+export function deduplicateFormulaList(formulas: NoteFormula[]): NoteFormula[] {
+  if (!formulas || formulas.length === 0) return [];
+  const result: NoteFormula[] = [];
+  const seenKeys = new Set<string>();
+
+  for (let i = 0; i < formulas.length; i++) {
+    const f = formulas[i];
+    const key = normalizeFormulaKey(f.latex);
+
+    // 1. Exact or normalized duplicate check
+    if (key && seenKeys.has(key)) {
+      continue;
+    }
+
+    // 2. Check if this is a standalone standard deviation formula that was already defined
+    // in an earlier formula card in the same list
+    const cleanLatex = f.latex.trim().replace(/\\(left|right)/g, "");
+    const isStandaloneStdDev =
+      /^\\sigma_p\s*=\s*\\sqrt\{\\sigma_p\^?2\}$/i.test(cleanLatex) ||
+      /^\\sigma\s*=\s*\\sqrt\{\\sigma\^?2\}$/i.test(cleanLatex) ||
+      /^s\s*=\s*\\sqrt\{s\^?2\}$/i.test(cleanLatex);
+
+    if (isStandaloneStdDev) {
+      const prevDefinesStdDev = result.some((prev) => {
+        const prevClean = prev.latex.replace(/\\(left|right)/g, "");
+        if (/\\sigma_p/i.test(f.latex)) {
+          return /\\sigma_p\^?2.*\\sqrt\{\\sigma_p\^?2\}|\\sigma_p\s*=\s*\\sqrt\{\\sigma_p\^?2\}/i.test(
+            prevClean,
+          );
+        }
+        if (/s\s*=\s*\\sqrt\{s\^?2\}/i.test(f.latex)) {
+          return /s\^?2.*\\sqrt\{s\^?2\}|s\s*=\s*\\sqrt\{s\^?2\}/i.test(prevClean);
+        }
+        if (/\\sigma\s*=\s*\\sqrt\{\\sigma\^?2\}/i.test(f.latex)) {
+          return /\\sigma\^?2.*\\sqrt\{\\sigma\^?2\}|\\sigma\s*=\s*\\sqrt\{\\sigma\^?2\}/i.test(
+            prevClean,
+          );
+        }
+        return false;
+      });
+
+      if (prevDefinesStdDev) {
+        continue;
+      }
+    }
+
+    seenKeys.add(key);
+    result.push(f);
+  }
+
+  return result;
+}
+
+/**
+ * Universal intra-section formula deduplicator:
+ * Normalizes formula latex and removes identical or equivalent formulas,
+ * pruning standalone redundant square root definitions across top-level formulas and subSections.
+ */
+export function deduplicateSectionFormulas(sec: NoteSection): NoteSection {
+  const dedupedTopFormulas = deduplicateFormulaList(sec.formulas || []);
+  const dedupedSubSections = (sec.subSections || []).map((sub) => ({
+    ...sub,
+    formulas: deduplicateFormulaList(sub.formulas || []),
+  }));
+
+  return {
+    ...sec,
+    formulas: dedupedTopFormulas,
+    subSections: dedupedSubSections.length > 0 ? dedupedSubSections : sec.subSections,
+  };
 }
 
 /**
@@ -1145,23 +1265,102 @@ export function applyHallucinationShield(
   // for Portfolio Return/Risk, Covariance/Correlation, CAPM, or Historical Variance,
   // populate them into the appropriate section.
   if (isChapter11Portfolio) {
-    // 1. Portfolio Expected Return & Portfolio Risk (2 assets)
-    const hasPortfolioRiskFormula = processed.some(
-      (sec) =>
-        sec.formulas.some((f) => /\\sigma_p\^?2|w_A\^2/i.test(f.latex)) ||
-        (sec.subSections &&
-          sec.subSections.some((sub) =>
-            sub.formulas.some((f) => /\\sigma_p\^?2|w_A\^2/i.test(f.latex)),
-          )),
-    );
+    // 1. Identify Section B (Scenario Return & Risk of Individual Assets) vs Section C (Portfolio Return & Risk)
+    const scenarioSec = processed.find((sec) => {
+      return (
+        /kịch bản|scenario|xác suất|probability|tài sản riêng|individual/i.test(sec.titleVi) ||
+        (/kỳ vọng.*phương sai|phương sai.*kịch bản|expected return/i.test(sec.titleVi) &&
+          !/portfolio|danh mục/i.test(sec.titleVi))
+      );
+    });
 
-    if (!hasPortfolioRiskFormula) {
-      let targetSec = processed.find((sec) => /portfolio|danh mục/i.test(sec.titleVi));
-      if (!targetSec && processed.length > 1) {
-        targetSec = processed[1]; // Typically Section B
+    let portfolioSec = processed.find((sec) => /portfolio|danh mục/i.test(sec.titleVi));
+    if (!portfolioSec) {
+      if (processed.length > 2 && processed[2] !== scenarioSec) {
+        portfolioSec = processed[2];
+      } else if (processed.length > 1 && processed[1] !== scenarioSec) {
+        portfolioSec = processed[1];
       }
-      if (targetSec) {
-        targetSec.formulas.push(
+    }
+
+    // 1a. Section B (Scenario Return & Risk of Individual Assets):
+    // Must contain:
+    // E[R] = \sum_{i=1}^n P_i R_i (or E[R_i] = \sum_{j=1}^n P_j R_{i,j})
+    // \sigma^2 = \sum_{i=1}^n P_i (R_i - E[R])^2, \quad \sigma = \sqrt{\sigma^2}
+    // NEVER inject Portfolio formulas (E[R_p], \sigma_p^2) into Section B!
+    if (scenarioSec) {
+      // Purge any portfolio formulas from Section B
+      scenarioSec.formulas = scenarioSec.formulas.filter(
+        (f) => !/E\[R_p\]|\\sigma_p\^?2|w_A\^2/i.test(f.latex),
+      );
+      if (scenarioSec.subSections) {
+        for (const sub of scenarioSec.subSections) {
+          sub.formulas = sub.formulas.filter(
+            (f) => !/E\[R_p\]|\\sigma_p\^?2|w_A\^2/i.test(f.latex),
+          );
+        }
+      }
+
+      const hasScenarioReturn =
+        scenarioSec.formulas.some((f) => /E\[R\]|\\sum.*P_i\s*R_i|\\sum.*P_j\s*R_\{?i/i.test(f.latex)) ||
+        (scenarioSec.subSections &&
+          scenarioSec.subSections.some((sub) =>
+            sub.formulas.some((f) => /E\[R\]|\\sum.*P_i\s*R_i|\\sum.*P_j\s*R_\{?i/i.test(f.latex)),
+          ));
+
+      if (!hasScenarioReturn) {
+        scenarioSec.formulas.unshift(
+          sanitizeFormula({
+            name: "",
+            leadText: "Tỷ suất sinh lời kỳ vọng theo kịch bản xác suất:",
+            latex: "E[R] = \\sum_{i=1}^n P_i R_i",
+            description: "Bình quân gia quyền tỷ suất sinh lời của tài sản theo xác suất kịch bản.",
+            variables: [
+              { symbol: "E[R]", definition: "Tỷ suất sinh lời kỳ vọng (Expected return)" },
+              { symbol: "P_i", definition: "Xác suất xảy ra kịch bản i (với $\\sum P_i = 1$)" },
+              { symbol: "R_i", definition: "Tỷ suất sinh lời của tài sản trong kịch bản i" },
+            ],
+          }),
+        );
+      }
+
+      const hasScenarioVar =
+        scenarioSec.formulas.some((f) => /\\sigma\^2\s*=|\\sum.*P_i.*\(R_i/i.test(f.latex)) ||
+        (scenarioSec.subSections &&
+          scenarioSec.subSections.some((sub) =>
+            sub.formulas.some((f) => /\\sigma\^2\s*=|\\sum.*P_i.*\(R_i/i.test(f.latex)),
+          ));
+
+      if (!hasScenarioVar) {
+        scenarioSec.formulas.push(
+          sanitizeFormula({
+            name: "",
+            leadText: "Phương sai và độ lệch chuẩn theo kịch bản xác suất:",
+            latex: "\\sigma^2 = \\sum_{i=1}^n P_i (R_i - E[R])^2, \\quad \\sigma = \\sqrt{\\sigma^2}",
+            description: "Đo lường tổng rủi ro của tài sản riêng lẻ theo xác suất kịch bản.",
+            variables: [
+              { symbol: "\\sigma^2, \\sigma", definition: "Phương sai và độ lệch chuẩn của tài sản" },
+            ],
+          }),
+        );
+      }
+    }
+
+    // 1b. Section C (Portfolio Return & Risk):
+    // Must contain:
+    // E[R_p] = w_A E[R_A] + w_B E[R_B]
+    // \sigma_p^2 = w_A^2 \sigma_A^2 + w_B^2 \sigma_B^2 + 2 w_A w_B \text{Cov}(R_A, R_B) = w_A^2 \sigma_A^2 + w_B^2 \sigma_B^2 + 2 w_A w_B \sigma_A \sigma_B \rho_{AB}, \quad \sigma_p = \sqrt{\sigma_p^2}
+    // If a Portfolio formula was already placed in Section C, ensure it is NEVER also pushed into Section B.
+    if (portfolioSec && portfolioSec !== scenarioSec) {
+      const hasPortfolioReturn =
+        portfolioSec.formulas.some((f) => /E\[R_p\]|w_A\s*E\[R_A\]/i.test(f.latex)) ||
+        (portfolioSec.subSections &&
+          portfolioSec.subSections.some((sub) =>
+            sub.formulas.some((f) => /E\[R_p\]|w_A\s*E\[R_A\]/i.test(f.latex)),
+          ));
+
+      if (!hasPortfolioReturn) {
+        portfolioSec.formulas.push(
           sanitizeFormula({
             name: "",
             leadText: "Tỷ suất sinh lời kỳ vọng của danh mục 2 tài sản:",
@@ -1173,10 +1372,22 @@ export function applyHallucinationShield(
               { symbol: "E[R_A], E[R_B]", definition: "Tỷ suất sinh lời kỳ vọng của tài sản A và B" },
             ],
           }),
+        );
+      }
+
+      const hasPortfolioRisk =
+        portfolioSec.formulas.some((f) => /\\sigma_p\^?2|w_A\^2/i.test(f.latex)) ||
+        (portfolioSec.subSections &&
+          portfolioSec.subSections.some((sub) =>
+            sub.formulas.some((f) => /\\sigma_p\^?2|w_A\^2/i.test(f.latex)),
+          ));
+
+      if (!hasPortfolioRisk) {
+        portfolioSec.formulas.push(
           sanitizeFormula({
             name: "",
             leadText: "Phương sai và độ lệch chuẩn của danh mục 2 tài sản:",
-            latex: "\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B) = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\sigma_A \\sigma_B \\rho_{AB}",
+            latex: "\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B) = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\sigma_A \\sigma_B \\rho_{AB}, \\quad \\sigma_p = \\sqrt{\\sigma_p^2}",
             description: "\\sigma_p = \\sqrt{\\sigma_p^2} đo lường tổng rủi ro của danh mục.",
             variables: [
               { symbol: "\\sigma_p^2, \\sigma_p", definition: "Phương sai và độ lệch chuẩn của danh mục" },
@@ -1184,13 +1395,6 @@ export function applyHallucinationShield(
               { symbol: "\\text{Cov}(R_A, R_B)", definition: "Hiệp phương sai giữa hai tài sản" },
               { symbol: "\\rho_{AB}", definition: "Hệ số tương quan giữa hai tài sản ($-1 \\le \\rho_{AB} \\le 1$)" },
             ],
-          }),
-          sanitizeFormula({
-            name: "",
-            leadText: "Độ lệch chuẩn danh mục:",
-            latex: "\\sigma_p = \\sqrt{\\sigma_p^2}",
-            description: "Căn bậc hai của phương sai danh mục đầu tư.",
-            variables: [],
           }),
         );
       }
@@ -1214,13 +1418,13 @@ export function applyHallucinationShield(
       let targetSec = processed.find((sec) =>
         /hiệp phương sai|covariance|tương quan|correlation/i.test(sec.titleVi),
       );
-      if (!targetSec && processed.length > 2) {
+      if (!targetSec && processed.length > 2 && processed[2] !== scenarioSec) {
         targetSec = processed[2]; // Typically Section C
       }
       if (!targetSec) {
-        targetSec = processed.find((sec) => /portfolio|danh mục/i.test(sec.titleVi)) ?? processed[0];
+        targetSec = portfolioSec && portfolioSec !== scenarioSec ? portfolioSec : processed[0];
       }
-      if (targetSec) {
+      if (targetSec && targetSec !== scenarioSec) {
         targetSec.formulas.push(
           sanitizeFormula({
             name: "",
@@ -1396,7 +1600,7 @@ export function applyHallucinationShield(
     }
   }
 
-  return processed;
+  return processed.map(deduplicateSectionFormulas);
 }
 
 function sanitizeSubSection(sub: NoteSubSection): NoteSubSection {

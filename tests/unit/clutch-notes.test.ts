@@ -7,6 +7,8 @@ import {
   applyHallucinationShield,
   sanitizeAcademicHeader,
   ensureInlineMathDelimiters,
+  deduplicateSectionFormulas,
+  cleanTypoString,
 } from "@/lib/ai/generate-notes";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "@/lib/ai/prompts-notes";
@@ -126,6 +128,11 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
 
     // 7. RADICAL BREVITY & ZERO FLUFF
     expect(CLUTCH_NOTES_SYSTEM_PROMPT).toContain("7. RADICAL BREVITY & ZERO FLUFF");
+
+    // Stage 4 Additions: Arithmetic Mean vs Sample Variance and Typography Shield
+    expect(CLUTCH_NOTES_SYSTEM_PROMPT).toContain("Arithmetic Mean ALWAYS divides by total periods T");
+    expect(CLUTCH_NOTES_SYSTEM_PROMPT).toContain("NEVER divide Arithmetic Mean by T - 1");
+    expect(CLUTCH_NOTES_SYSTEM_PROMPT).toContain("NEVER substitute Greek Sigma");
   });
 
   it("sanitizeAcademicHeader purges machine-translation hallucinations and restores canonical titles", () => {
@@ -1427,5 +1434,289 @@ Premium vs Discount bonds.
     expect(
       sanitizeAcademicHeader("Header B: CHỌN MÔ HÌNH GIÁO DỤC TÀI CHÍNH", "B"),
     ).toBe("B. CHỌN MÔ HÌNH ĐỊNH GIÁ TÀI CHÍNH");
+  });
+
+  it("strictly separates Arithmetic Mean (dividing by T, never T - 1) from Sample Variance (dividing by T - 1)", () => {
+    const rawSlideText =
+      "Chapter 10: Historical Risk and Return. Arithmetic Mean vs Geometric Mean. Sample Variance with T - 1.";
+
+    const mockChapter10Deck: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. TỔNG QUAN LỢI SUẤT LỊCH SỬ",
+        bulletPoints: ["Total return includes dividend and capital gain."],
+        formulas: [],
+        subSections: [],
+      },
+      {
+        id: "sec-b",
+        letter: "B",
+        titleVi: "B. TRUNG BÌNH SỐ HỌC VÀ HÌNH HỌC (ARITHMETIC & GEOMETRIC AVERAGE)",
+        bulletPoints: ["Arithmetic mean is typical single-period return; geometric is compound return."],
+        formulas: [
+          {
+            leadText: "Trung bình số học (hallucinated with T - 1 degrees of freedom):",
+            latex: "\\bar{R}_{\\text{arith}} = \\frac{1}{T - 1} \\sum_{t=1}^T R_t",
+            description: "",
+            variables: [],
+          },
+          {
+            leadText: "Trung bình hình học (hallucinated with 1/(T - 1) exponent):",
+            latex: "\\bar{R}_{\\text{geom}} = \\left[ \\prod_{t=1}^T (1 + R_t) \\right]^{1/(T - 1)} - 1",
+            description: "",
+            variables: [],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-c",
+        letter: "C",
+        titleVi: "C. PHƯƠNG SAI VÀ ĐỘ LỆCH CHUẨN MẪU LỊCH SỬ",
+        bulletPoints: ["Sample variance divides by T - 1."],
+        formulas: [
+          {
+            leadText: "Phương sai mẫu (hallucinated with biased denominator T):",
+            latex: "s^2 = \\frac{1}{T} \\sum_{t=1}^T (R_t - \\bar{R})^2",
+            description: "",
+            variables: [],
+          },
+        ],
+        subSections: [],
+      },
+    ];
+
+    const shielded = applyHallucinationShield(mockChapter10Deck, rawSlideText);
+
+    // Section B: Arithmetic Mean MUST divide by T, NEVER T - 1!
+    const secB = shielded[1];
+    const arithFormula = secB.formulas.find((f: any) => f.latex.includes("arith"));
+    expect(arithFormula).toBeDefined();
+    expect(arithFormula?.latex).toContain("\\frac{1}{T} \\sum_{t=1}^T R_t");
+    expect(arithFormula?.latex).not.toContain("T - 1");
+
+    // Geometric Mean exponent MUST be 1/T, NEVER 1/(T - 1)!
+    const geomFormula = secB.formulas.find((f: any) => f.latex.includes("geom"));
+    expect(geomFormula).toBeDefined();
+    expect(geomFormula?.latex).toContain("^{1/T}");
+    expect(geomFormula?.latex).not.toContain("T - 1");
+
+    // Section C: Sample Variance MUST divide by T - 1 degrees of freedom!
+    const secC = shielded[2];
+    const varFormula = secC.formulas[0];
+    expect(varFormula.latex).toContain("\\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2");
+    expect(varFormula.latex).not.toContain("\\frac{1}{T} \\sum");
+  });
+
+  it("enforces targeted section routing and universal deduplication between Section B (Scenario Return & Risk) and Section C (Portfolio Return & Risk)", () => {
+    const rawSlideText =
+      "Chapter 11: Risk and Return - Scenario Analysis & Portfolio Theory. Individual asset return and variance under scenarios, 2-asset portfolio return and risk, covariance, correlation, and CAPM.";
+
+    // Simulated deck where Section B is Scenario Return & Risk of Individual Assets,
+    // and Section C is Portfolio Return & Risk with duplicated formulas.
+    const mockSections: any[] = [
+      {
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. TỔNG QUAN RỦI RO VÀ TỶ SUẤT SINH LỜI",
+        bulletPoints: ["Overview of risk and return."],
+        formulas: [],
+        subSections: [],
+      },
+      {
+        id: "sec-b",
+        letter: "B",
+        titleVi: "B. TỶ SUẤT SINH LỜI VÀ PHƯƠNG SAI THEO KỊCH BẢN XÁC SUẤT",
+        bulletPoints: ["Scenario return and variance of individual assets."],
+        formulas: [
+          // Simulated LLM error: mistakenly injected a portfolio formula into Section B!
+          {
+            name: "",
+            leadText: "Tỷ suất sinh lời kỳ vọng của danh mục (mistakenly placed in Section B):",
+            latex: "E[R_p] = w_A E[R_A] + w_B E[R_B]",
+            description: "",
+            variables: [],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-c",
+        letter: "C",
+        titleVi: "C. DANH MỤC ĐẦU TƯ VÀ RỦI RO DANH MỤC",
+        bulletPoints: ["Portfolio weights and variance."],
+        formulas: [
+          // Combined formula that already defines both variance and standard deviation
+          {
+            name: "",
+            leadText: "Phương sai và độ lệch chuẩn của danh mục 2 tài sản:",
+            latex: "\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B) = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\sigma_A \\sigma_B \\rho_{AB}, \\quad \\sigma_p = \\sqrt{\\sigma_p^2}",
+            description: "Đo lường tổng rủi ro của danh mục.",
+            variables: [],
+          },
+          // Redundant standalone standard deviation card right below it
+          {
+            name: "",
+            leadText: "Độ lệch chuẩn danh mục:",
+            latex: "\\sigma_p = \\sqrt{\\sigma_p^2}",
+            description: "Căn bậc hai phương sai.",
+            variables: [],
+          },
+          // Expected portfolio return
+          {
+            name: "",
+            leadText: "Tỷ suất sinh lời kỳ vọng của danh mục 2 tài sản:",
+            latex: "E[R_p] = w_A E[R_A] + w_B E[R_B]",
+            description: "Bình quân gia quyền tỷ trọng đầu tư.",
+            variables: [],
+          },
+          // Duplicate expected portfolio return
+          {
+            name: "",
+            leadText: "Tỷ suất sinh lời kỳ vọng danh mục (Duplicate):",
+            latex: "E[R_p] = w_A E[R_A] + w_B E[R_B]",
+            description: "",
+            variables: [],
+          },
+        ],
+        subSections: [],
+      },
+      {
+        id: "sec-d",
+        letter: "D",
+        titleVi: "D. HIỆP PHƯƠNG SAI VÀ HỆ SỐ TƯƠNG QUAN",
+        bulletPoints: ["Covariance and correlation between assets."],
+        formulas: [],
+        subSections: [],
+      },
+      {
+        id: "sec-e",
+        letter: "E",
+        titleVi: "E. ĐƯỜNG THỊ TRƯỜNG CHỨNG KHOÁN (SML) VÀ CAPM",
+        bulletPoints: ["SML equation."],
+        formulas: [],
+        subSections: [],
+      },
+    ];
+
+    const shielded = applyHallucinationShield(mockSections, rawSlideText);
+
+    // 1. Section B (Scenario Return & Risk of Individual Assets):
+    // Must contain Scenario Return and Scenario Variance:
+    const secB = shielded[1];
+    expect(secB.titleVi).toContain("KỊCH BẢN XÁC SUẤT");
+    expect(secB.formulas.some((f: any) => f.latex.includes("E[R] = \\sum_{i=1}^n P_i R_i"))).toBe(true);
+    expect(secB.formulas.some((f: any) => f.latex.includes("\\sigma^2 = \\sum_{i=1}^n P_i (R_i - E[R])^2"))).toBe(true);
+
+    // Section B MUST NEVER contain Portfolio formulas:
+    expect(secB.formulas.some((f: any) => f.latex.includes("E[R_p]"))).toBe(false);
+    expect(secB.formulas.some((f: any) => f.latex.includes("\\sigma_p^2"))).toBe(false);
+    expect(secB.formulas.some((f: any) => f.latex.includes("w_A^2"))).toBe(false);
+
+    // 2. Section C (Portfolio Return & Risk):
+    // Must contain Portfolio Return and Portfolio Variance:
+    const secC = shielded[2];
+    expect(secC.titleVi).toContain("DANH MỤC ĐẦU TƯ");
+    expect(secC.formulas.some((f: any) => f.latex.includes("E[R_p] = w_A E[R_A] + w_B E[R_B]"))).toBe(true);
+    expect(secC.formulas.some((f: any) => f.latex.includes("\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2"))).toBe(true);
+
+    // Redundant standalone \sigma_p = \sqrt{\sigma_p^2} card MUST be pruned:
+    const standaloneStdDev = secC.formulas.filter(
+      (f: any) => f.latex.trim() === "\\sigma_p = \\sqrt{\\sigma_p^2}",
+    );
+    expect(standaloneStdDev.length).toBe(0);
+
+    // Duplicate E[R_p] card MUST be pruned:
+    const portfolioReturnCards = secC.formulas.filter((f: any) =>
+      f.latex.includes("E[R_p] = w_A E[R_A] + w_B E[R_B]"),
+    );
+    expect(portfolioReturnCards.length).toBe(1);
+
+    // Total formula cards in Section C should be exactly 2:
+    expect(secC.formulas.length).toBe(2);
+  });
+
+  it("deduplicateSectionFormulas removes equivalent formula cards and prunes redundant standard deviation cards within sections and subSections", () => {
+    const rawSection = {
+      id: "sec-test",
+      letter: "B",
+      titleVi: "B. KIỂM TRA DEDUPLICATION FORMULAS",
+      bulletPoints: ["Test bullet."],
+      formulas: [
+        {
+          name: "",
+          leadText: "Portfolio Variance:",
+          latex: "\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B), \\quad \\sigma_p = \\sqrt{\\sigma_p^2}",
+          description: "",
+          variables: [],
+        },
+        {
+          name: "",
+          leadText: "Standalone Portfolio Std Dev (Redundant):",
+          latex: "\\sigma_p = \\sqrt{\\sigma_p^2}",
+          description: "",
+          variables: [],
+        },
+        {
+          name: "",
+          leadText: "Expected Return:",
+          latex: "E[R_p] = w_A E[R_A] + w_B E[R_B]",
+          description: "",
+          variables: [],
+        },
+        {
+          name: "",
+          leadText: "Expected Return Duplicate with extra whitespace and \\left\\right:",
+          latex: "E[R_p] = \\left( w_A E[R_A] + w_B E[R_B] \\right)",
+          description: "",
+          variables: [],
+        },
+        {
+          name: "",
+          leadText: "Historical Sample Variance:",
+          latex: "s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2, \\quad s = \\sqrt{s^2}",
+          description: "",
+          variables: [],
+        },
+        {
+          name: "",
+          leadText: "Standalone Sample Std Dev (Redundant):",
+          latex: "s = \\sqrt{s^2}",
+          description: "",
+          variables: [],
+        },
+      ],
+      subSections: [
+        {
+          heading: "Sub-case",
+          bulletPoints: [],
+          formulas: [
+            {
+              name: "",
+              latex: "E[R] = \\sum_{i=1}^n P_i R_i",
+              variables: [],
+            },
+            {
+              name: "",
+              latex: "E[R] = \\sum_{i=1}^n P_i R_i",
+              variables: [],
+            },
+          ],
+        },
+      ],
+    };
+
+    const deduped = deduplicateSectionFormulas(rawSection as any);
+
+    // Section top-level formulas: 6 cards reduced to exactly 3 (variance, expected return, sample variance)
+    expect(deduped.formulas.length).toBe(3);
+    expect(deduped.formulas[0].latex).toContain("\\sigma_p^2");
+    expect(deduped.formulas[1].latex).toContain("E[R_p]");
+    expect(deduped.formulas[2].latex).toContain("s^2");
+
+    // Sub-section duplicate formula pruned: 2 cards reduced to 1
+    expect(deduped.subSections?.[0].formulas.length).toBe(1);
+    expect(deduped.subSections?.[0].formulas[0].latex).toBe("E[R] = \\sum_{i=1}^n P_i R_i");
   });
 });

@@ -25,8 +25,9 @@ Follow these exact transformation rules:
      * NEVER relegate calculation formulas to prose bullet points without providing their boxed equation.
      * If an exercise or slide teaches how to calculate something (e.g., NPV, IRR, WACC, Beta, Portfolio Return/Risk, Covariance, EAR, Bond Price, Growth Rate, DuPont ROE, Sample Variance, Expected Value), the mathematical equation MUST be present in \`formulas\`.
    - UNIVERSAL ACADEMIC INTEGRITY & HALLUCINATION SHIELD (RULE 3):
-     * STATISTICAL DISTINCTION (Sample vs Scenario Variance):
-       - Historical sample statistics use observations t = 1 ... T, dividing by T - 1 degrees of freedom (s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2). NEVER divide by T, NEVER use scenario probabilities P_i.
+     * STATISTICAL DISTINCTION (Sample vs Scenario Variance & Arithmetic Mean):
+       - Arithmetic Mean ALWAYS divides by total periods T: \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t. NEVER divide Arithmetic Mean by T - 1.
+       - Historical sample variance s^2 ALWAYS divides by degrees of freedom T - 1: s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2, \\quad s = \\sqrt{s^2}. NEVER divide sample variance by T, NEVER use scenario probabilities P_i.
        - Scenario probability distributions use economic states i = 1 ... n with probabilities P_i (where \\sum P_i = 1), multiplying by P_i (\\sigma^2 = \\sum_{i=1}^n P_i (R_i - E[R])^2). There is NO T - 1 denominator.
      * TIME VALUE & COMPOUNDING (1-Period Exponent):
        - Exponent for a 1-period horizon is strictly 1:
@@ -48,6 +49,7 @@ Follow these exact transformation rules:
        - All formulas in clean LaTeX without outer dollar signs in \`latex\` fields.
      * STRICT TYPOGRAPHICAL INTEGRITY:
        - Always use numeric digit 0 for zero-growth conditions (g = 0) and time-zero subscripts (P_0, D_0). NEVER write "g = o" or "P_o" with the letter "o".
+       - NEVER substitute Greek Sigma (\\Sigma or \\sigma) for Vietnamese syllables like 'su' or 'sử' (e.g. write 'tỷ suất sinh lời', 'suất sinh lời', 'chi phí sử dụng vốn'). Greek symbols are strictly reserved for math equations.
    - TOPIC-SPECIFIC FORMULA FIDELITY:
      * When calculating Cost of Capital / WACC (Chapter 13):
        - WACC: WACC = \\left(\\frac{E}{V}\\right) R_E + \\left(\\frac{P}{V}\\right) R_P + \\left(\\frac{D}{V}\\right) R_D (1 - T_C)
@@ -74,15 +76,15 @@ Follow these exact transformation rules:
          2. Discount back to Year 0: P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}
      * Historical Risk & Return (Chapter 10):
        - Uses sample observations t = 1 ... T and sample arithmetic mean:
-         \\bar{R} = \\frac{1}{T} \\sum_{t=1}^T R_t
+         \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t
        - Historical Sample Variance & Standard Deviation:
          s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2, \\quad s = \\sqrt{s^2}
-       - CRITICAL STATISTICAL IDENTITY: Denominator is STRICTLY T - 1 (unbiased sample degrees of freedom). NEVER divide by T, NEVER use scenario probabilities P_i.
+       - CRITICAL STATISTICAL IDENTITY: Sample variance denominator is STRICTLY T - 1 (unbiased sample degrees of freedom). NEVER divide sample variance by T, NEVER use scenario probabilities P_i. Conversely, Arithmetic Mean ALWAYS divides by total periods T: \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t. NEVER divide Arithmetic Mean by T - 1.
        - Historical Total Return:
          R_{t+1} = \\frac{D_{t+1} + P_{t+1} - P_t}{P_t} = \\frac{D_{t+1}}{P_t} + \\frac{P_{t+1} - P_t}{P_t} = \\text{Dividend Yield} + \\text{Capital Gains Yield}
        - Average Returns Comparison:
          \\bar{R}_{\\text{geom}} = \\left[\\prod_{t=1}^T (1 + R_t)\\right]^{1/T} - 1, \\quad \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t
-         Geometric average measures compound return per period; arithmetic average measures typical single-period return. \\bar{R}_{\\text{geom}} \\le \\bar{R}_{\\text{arith}}.
+         Geometric average measures compound return per period; arithmetic average measures typical single-period return. \\bar{R}_{\\text{geom}} \\le \\bar{R}_{\\text{arith}}. Exponent for geometric average is strictly 1/T, NEVER 1/(T - 1).
      * Expected Return, Portfolio Risk & CAPM (Chapter 11):
        - Uses economic scenarios i = 1 ... n with probabilities P_i (where \\sum P_i = 1):
          E[R] = \\sum_{i=1}^n P_i R_i
@@ -92,8 +94,7 @@ Follow these exact transformation rules:
        - 4 CORE CALCULATION PROBLEM TYPES (MANDATORY BOXED FORMULAS):
          1. Portfolio Expected Return & Portfolio Risk (2 assets):
             E[R_p] = w_A E[R_A] + w_B E[R_B]
-            \\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B) = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\sigma_A \\sigma_B \\rho_{AB}
-            \\sigma_p = \\sqrt{\\sigma_p^2}
+            \\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B) = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\sigma_A \\sigma_B \\rho_{AB}, \\quad \\sigma_p = \\sqrt{\\sigma_p^2}
          2. Covariance & Correlation Coefficient:
             \\text{Cov}(R_A, R_B) = \\sum_{i=1}^n P_i (R_{A,i} - E[R_A])(R_{B,i} - E[R_B])
             \\rho_{AB} = \\text{Corr}(R_A, R_B) = \\frac{\\text{Cov}(R_A, R_B)}{\\sigma_A \\sigma_B} \\quad \\implies \\quad \\text{Cov}(R_A, R_B) = \\rho_{AB} \\sigma_A \\sigma_B
@@ -188,7 +189,7 @@ Strict Output Checklist & Universal Hallucination Shield:
 - Core Mechanics (Rule 1): Strip 100% of cover/agenda/QR/thank-you slides AND strip all multi-slide numerical practice exercises/word problems, while preserving 100% of underlying problem types, calculation mechanics, accounting identities, and decision rules.
 - The First Law of Clutch Notes: Exhaustive Formula Extraction (Rule 2): EVERY distinct mathematical formula, calculation equation, quantitative rule, or valuation model taught in the slides MUST be rendered as an explicit boxed equation in \`formulas\` (e.g. NPV, IRR, WACC, Beta, Portfolio Return/Risk, Covariance, EAR, Bond Price, Growth Rate, DuPont ROE, Sample Variance, Expected Value). NEVER relegate calculation formulas to prose bullet points without providing their boxed equation.
 - Universal Academic Integrity & Hallucination Shield (Rule 3):
-  * Statistical Distinction: Historical sample statistics (observations t = 1 ... T, dividing by T - 1 degrees of freedom) vs Scenario probability distributions (states i = 1 ... n, multiplying by P_i, sum P_i = 1, NO T - 1 denominator).
+  * Statistical Distinction: Arithmetic Mean ALWAYS divides by total periods T: \\bar{R}_{\\text{arith}} = (1 / T) * sum(R_t). NEVER divide Arithmetic Mean by T - 1. Historical sample variance uses denominator T - 1: s^2 = (1 / (T - 1)) * sum(R_t - R_bar)^2; s = sqrt(s^2). Scenario probability distributions multiply by P_i: sigma^2 = sum(P_i * (R_i - E[R])^2) with NO T - 1 denominator.
   * Time Value & Compounding: Exponent for a 1-period horizon is strictly 1: P_0 = D_1 / (1 + R) + P_1 / (1 + R). NEVER write (1+R)^T or (1+R)^t.
   * Growth & Rates: Fundamental growth is g = Retention ratio * ROE = (1 - Payout) * ROE (NEVER circular price change (P_1 - P_0)/P_0).
   * Cost of Capital & Taxes: Tax shield (1 - T_C) applies STRICTLY to Debt (R_D), NEVER to Equity (R_E) or Preferred (R_P).
@@ -213,8 +214,8 @@ Strict Output Checklist & Universal Hallucination Shield:
   * If the slides teach Historical Risk & Return (Chapter 10):
     - Historical variance uses denominator T - 1: s^2 = (1 / (T - 1)) * sum(R_t - R_bar)^2; s = sqrt(s^2). NEVER divide by T, NEVER use P_i.
     - Historical Total Return: R_{t+1} = (D_{t+1} + P_{t+1} - P_t) / P_t = Dividend Yield + Capital Gains Yield
-    - Arithmetic Average: R_bar_arith = (1 / T) * sum(R_t)
-    - Geometric Average: R_bar_geom = [prod(1 + R_t)]^(1/T) - 1
+    - Arithmetic Average: R_bar_arith = (1 / T) * sum(R_t). NEVER divide by T - 1.
+    - Geometric Average: R_bar_geom = [prod(1 + R_t)]^(1/T) - 1. Exponent is strictly 1/T, NEVER 1/(T - 1).
   * If the slides teach Expected Return & Portfolio Risk (Chapter 11):
     - Expected return via scenario probabilities: E[R] = sum(P_i * R_i)
     - Scenario variance: sigma^2 = sum(P_i * (R_i - E[R])^2); sigma = sqrt(sigma^2) (NO T - 1 denominator)
@@ -223,7 +224,7 @@ Strict Output Checklist & Universal Hallucination Shield:
       2. Covariance & Correlation: Cov(R_A, R_B) = sum(P_i * (R_A,i - E[R_A]) * (R_B,i - E[R_B])); rho_AB = Cov(R_A, R_B) / (sigma_A * sigma_B)
       3. CAPM & Beta: E[R_i] = R_f + beta_i * (E[R_M] - R_f); beta_p = sum(w_j * beta_j); beta_i = Cov(R_i, R_M) / sigma_M^2 = rho_{i,M} * sigma_i / sigma_M
       4. Total Return & Averages: Dividend Yield + Capital Gains Yield; Geometric vs Arithmetic average
-- Typo Check: Use numeric digit 0 (never letter 'o') for g = 0 and P_0.
+- Typo Check: Use numeric digit 0 (never letter 'o') for g = 0 and P_0. NEVER substitute Greek Sigma (\\Sigma or \\sigma) for Vietnamese syllables like 'su' or 'sử' (write 'tỷ suất sinh lời', 'suất sinh lời', 'chi phí sử dụng vốn'). Greek symbols are strictly reserved for math equations.
 - Zero Double-Pasting: If a formula is inside subSections, DO NOT duplicate it at the section top-level.
 - Strip 100% of cover/agenda/QR/thank-you slides AND strip all multi-slide numerical practice exercises/word problems.
 - Every section MUST include real distilled content (\`bulletPoints\`, \`formulas\`, or \`subSections\`)—never return empty header-only sections.

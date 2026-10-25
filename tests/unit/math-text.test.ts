@@ -7,6 +7,8 @@ import {
   splitMathBlocks,
   repairCorruptedLatex,
   ensureInlineMathDelimiters,
+  cleanVietnameseSigmaTypos,
+  cleanTypoString,
 } from "@/lib/math/latex";
 import { formatTextWithMath } from "@/lib/notes/export-pdf";
 
@@ -684,4 +686,51 @@ describe("Universal Multi-Discipline LaTeX Sanitization & KaTeX Rendering", () =
     }
   });
 });
+
+describe("Vietnamese typography and Greek Sigma sanitization", () => {
+  it("restores corrupted Sigma in place of Vietnamese words/syllables: 'suất sinh lời', 'sử dụng vốn', and 'tỷ suất'", () => {
+    // 1. "$\Sigma$ất sinh lời" -> "suất sinh lời"
+    expect(cleanVietnameseSigmaTypos("$\\Sigma$ất sinh lời")).toBe("suất sinh lời");
+    expect(repairCorruptedLatex("$\\Sigma$ất sinh lời")).toBe("suất sinh lời");
+
+    // 2. "\Sigma ất sinh lời" & "Σất sinh lời" -> "suất sinh lời"
+    expect(cleanVietnameseSigmaTypos("\\Sigma ất sinh lời")).toBe("suất sinh lời");
+    expect(cleanVietnameseSigmaTypos("Σất sinh lời")).toBe("suất sinh lời");
+
+    // 3. "chi phí $\Sigma$ dụng vốn" -> "chi phí sử dụng vốn"
+    expect(cleanVietnameseSigmaTypos("chi phí $\\Sigma$ dụng vốn")).toBe("chi phí sử dụng vốn");
+    expect(repairCorruptedLatex("chi phí $\\Sigma$ dụng vốn")).toBe("chi phí sử dụng vốn");
+    expect(cleanVietnameseSigmaTypos("chi phí Σ dụng vốn")).toBe("chi phí sử dụng vốn");
+    expect(cleanVietnameseSigmaTypos("chi phí \\Sigma dụng vốn")).toBe("chi phí sử dụng vốn");
+    expect(cleanVietnameseSigmaTypos("chi phí $\\Sigma$ử dụng vốn")).toBe("chi phí sử dụng vốn");
+
+    // 4. "tỷ $\Sigma$ất" & "tỷ $\Sigma$" -> "tỷ suất"
+    expect(cleanVietnameseSigmaTypos("tỷ $\\Sigma$ất")).toBe("tỷ suất");
+    expect(cleanVietnameseSigmaTypos("tỷ $\\Sigma$")).toBe("tỷ suất");
+    expect(cleanVietnameseSigmaTypos("tỷ \\Sigma ất")).toBe("tỷ suất");
+    expect(cleanVietnameseSigmaTypos("tỷ Σ")).toBe("tỷ suất");
+    expect(cleanVietnameseSigmaTypos("Tỷ $\\Sigma$ất")).toBe("Tỷ suất");
+
+    // 5. Common Vietnamese noun phrases: "sự kiện", "sự cố", "sự biến", "sự thay", "sự khác"
+    expect(cleanVietnameseSigmaTypos("$\\Sigma$ kiện")).toBe("sự kiện");
+    expect(cleanVietnameseSigmaTypos("\\Sigma kiện")).toBe("sự kiện");
+    expect(cleanVietnameseSigmaTypos("$\\Sigma$ cố")).toBe("sự cố");
+    expect(cleanVietnameseSigmaTypos("$\\Sigma$ biến")).toBe("sự biến");
+    expect(cleanVietnameseSigmaTypos("$\\Sigma$ thay")).toBe("sự thay");
+    expect(cleanVietnameseSigmaTypos("$\\Sigma$ khác")).toBe("sự khác");
+
+    // 6. Generic cleanTypoString alias matches
+    expect(cleanTypoString("$\\Sigma$ất sinh lời")).toBe("suất sinh lời");
+    expect(cleanTypoString("chi phí $\\Sigma$ dụng vốn")).toBe("chi phí sử dụng vốn");
+  });
+
+  it("preserves genuine mathematical Sigma summation notation without corrupting math equations", () => {
+    const mathFormula = "\\sum_{i=1}^n P_i (R_i - E[R])^2";
+    expect(repairCorruptedLatex(mathFormula)).toBe(mathFormula);
+
+    const sigmaMath = "\\Sigma_{i=1}^n P_i";
+    expect(repairCorruptedLatex(sigmaMath)).toBe(sigmaMath);
+  });
+});
+
 

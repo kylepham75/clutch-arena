@@ -13,13 +13,79 @@ export function escapeHtml(text: string): string {
 }
 
 /**
+ * Sanitizes corrupted Vietnamese typography where Greek Sigma (\Sigma, $\Sigma$, Σ)
+ * was erroneously inserted in place of Vietnamese words/syllables like "su", "sử", "suất", "sự".
+ */
+export function cleanVietnameseSigmaTypos(text: string): string {
+  if (!text || typeof text !== "string") return text;
+  let s = text;
+
+  // 1. "tỷ \Sigma ất" -> "tỷ suất", "Tỷ \Sigma ất" -> "Tỷ suất"
+  s = s.replace(/\b(tỷ|Tỷ|TỶ)\s*(?:\$?\\Sigma\$?|Σ)\s*([ấẤ]t)\b/g, (_m, t) => {
+    return t === "TỶ" ? "TỶ SUẤT" : t === "Tỷ" ? "Tỷ suất" : "tỷ suất";
+  });
+
+  // 2. "tỷ \Sigma" -> "tỷ suất", "Tỷ \Sigma" -> "Tỷ suất" (avoid matching math expressions like tỷ \Sigma_{i=1})
+  s = s.replace(/\b(tỷ|Tỷ|TỶ)\s*(?:\$?\\Sigma\$?|Σ)(?![a-zA-Z0-9_^=])/g, (_m, t) => {
+    return t === "TỶ" ? "TỶ SUẤT" : t === "Tỷ" ? "Tỷ suất" : "tỷ suất";
+  });
+
+  // 3. "\Sigma ất" -> "suất", "$\Sigma$ất" -> "suất", "Σất" -> "suất"
+  s = s.replace(/(?:\$?\\Sigma\$?|Σ)\s*([ấẤ]t)\b/g, (_m, at) => {
+    return at === "ẤT" ? "suất" : "suất";
+  });
+
+  // 4. "\Sigma dụng" / "\Sigma sử dụng" / "$\Sigma$ dụng" -> "sử dụng"
+  s = s.replace(/(?:\$?\\Sigma\$?|Σ)\s*(?:dụng|ử\s*dụng)\b/gi, "sử dụng");
+
+  // 5. "\Sigma kiện" -> "sự kiện"
+  s = s.replace(/(?:\$?\\Sigma\$?|Σ)\s*kiện\b/gi, "sự kiện");
+
+  // 6. "\Sigma cố" -> "sự cố"
+  s = s.replace(/(?:\$?\\Sigma\$?|Σ)\s*cố(?![a-zA-Z\u00C0-\u1EF9])/gi, "sự cố");
+
+  // 7. "\Sigma biến" -> "sự biến"
+  s = s.replace(/(?:\$?\\Sigma\$?|Σ)\s*biến\b/gi, "sự biến");
+
+  // 8. "\Sigma thay" -> "sự thay"
+  s = s.replace(/(?:\$?\\Sigma\$?|Σ)\s*thay\b/gi, "sự thay");
+
+  // 9. "\Sigma khác" -> "sự khác"
+  s = s.replace(/(?:\$?\\Sigma\$?|Σ)\s*khác\b/gi, "sự khác");
+
+  // 10. Generic fallback: if \Sigma or $\Sigma$ or Σ is followed directly (or with whitespace)
+  // by a lowercase Vietnamese accented character, e.g. "$\Sigma$ử", "\Sigmaất", "Σuất", etc.
+  s = s.replace(/(?:\$?\\Sigma\$?|Σ)\s*([a-zàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵ][a-zà-ỹ]*)/gi, (_m, tail) => {
+    if (/^[ửừữự]/.test(tail)) {
+      return `s${tail}`;
+    }
+    if (/^[ấ]/.test(tail)) {
+      return `su${tail}`;
+    }
+    if (/^u[ấ]/i.test(tail)) {
+      return `s${tail}`;
+    }
+    if (/^dụng/i.test(tail)) {
+      return `sử ${tail}`;
+    }
+    return `su${tail}`;
+  });
+
+  return s;
+}
+
+export function cleanTypoString(str: string): string {
+  return cleanVietnameseSigmaTypos(str);
+}
+
+/**
  * Repairs LaTeX strings that were corrupted by JSON escape sequence parsing or LLM output
  * (e.g. \beta -> \b (0x08) + eta -> " eta", \times -> \t (0x09) + imes -> " imes").
  */
 export function repairCorruptedLatex(text: string): string {
   if (!text) return "";
 
-  let s = text;
+  let s = cleanVietnameseSigmaTypos(text);
 
   // 1. Repair explicit ASCII control characters from JSON string parsing
   // \a = 0x07 (bell), \b = 0x08 (backspace), \t = 0x09 (tab), \f = 0x0c (form feed), \r = 0x0d (carriage return)
