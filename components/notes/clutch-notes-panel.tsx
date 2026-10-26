@@ -29,6 +29,7 @@ import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 import {
   extractSlidesInBrowser,
   ClientSlideExtractionError,
+  type ExtractedSlideDeck,
 } from "@/lib/notes/client-extract-slides";
 import type { ClutchNote } from "@/lib/schemas/notes";
 
@@ -37,6 +38,7 @@ export function ClutchNotesPanel() {
   const { tier, isPaidTier, isCramPassOrAbove, isProOrAbove, setTier } = useUserTier();
 
   const [note, setNote] = useState<ClutchNote | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [focus, setFocus] = useState("");
   const [loading, setLoading] = useState(false);
@@ -68,6 +70,7 @@ export function ClutchNotesPanel() {
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
       setError(null);
+      setWarnings([]);
       if (!acceptedFiles || acceptedFiles.length === 0) return;
 
       // Free Tier Gate: trigger Before/After modal if not on a paid tier
@@ -116,6 +119,7 @@ export function ClutchNotesPanel() {
 
     setLoading(true);
     setError(null);
+    setWarnings([]);
     setProgressStep("Extracting slide text & mathematical notation locally...");
 
     const progressTimers = [
@@ -142,11 +146,7 @@ export function ClutchNotesPanel() {
     }, 120_000); // 2 minutes matching serverless maxDuration
 
     try {
-      let extracted: {
-        fileName: string;
-        slideCount: number;
-        sources: any[];
-      } | null = null;
+      let extracted: ExtractedSlideDeck | null = null;
       let useMultipartFallback = false;
 
       try {
@@ -204,6 +204,7 @@ export function ClutchNotesPanel() {
           fileName: extracted.fileName,
           slideCount: extracted.slideCount,
           sources: extracted.sources,
+          warnings: extracted.warnings,
           focus: focus.trim() || undefined,
         });
       } else {
@@ -262,6 +263,11 @@ export function ClutchNotesPanel() {
       }
 
       setNote(data.note);
+      if (Array.isArray(data.warnings) && data.warnings.length > 0) {
+        setWarnings(data.warnings);
+      } else {
+        setWarnings([]);
+      }
       setDailyUsage((prev) => prev + 1);
       setSelectedFile(null);
     } catch (err: any) {
@@ -291,6 +297,7 @@ export function ClutchNotesPanel() {
   const handleLoadSample = () => {
     setNote(SAMPLE_CLUTCH_NOTE);
     setError(null);
+    setWarnings([]);
   };
 
   const handleUpgradeFromModal = () => {
@@ -299,7 +306,38 @@ export function ClutchNotesPanel() {
 
   // If a note has been generated, render the high-retention note view
   if (note) {
-    return <NoteRenderer note={note} onReset={() => setNote(null)} />;
+    return (
+      <div className="w-full max-w-4xl mx-auto space-y-4">
+        {warnings && warnings.length > 0 && (
+          <div
+            role="alert"
+            className="bg-[#fffbeb] border border-[#fde68a] rounded-2xl p-4 sm:p-5 text-[#92400e] shadow-xs space-y-2.5 animate-in fade-in duration-200"
+          >
+            <div className="flex items-center gap-2 font-bold text-sm sm:text-base text-[#b45309]">
+              <AlertCircle size={18} className="text-[#d97706] flex-shrink-0" />
+              <span>Some slides could not be read</span>
+            </div>
+            <ul className="list-disc list-inside space-y-1 text-xs sm:text-sm text-[#92400e] pl-1">
+              {warnings.map((warn, index) => (
+                <li key={index} className="leading-relaxed">
+                  {warn}
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs sm:text-sm text-[#b45309] font-medium pt-2 border-t border-[#fde68a]">
+              Formulas shown as images on these slides may be missing from this note — check the original slides.
+            </p>
+          </div>
+        )}
+        <NoteRenderer
+          note={note}
+          onReset={() => {
+            setNote(null);
+            setWarnings([]);
+          }}
+        />
+      </div>
+    );
   }
 
   return (

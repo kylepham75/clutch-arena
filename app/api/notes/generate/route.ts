@@ -7,7 +7,11 @@ import { parseSlideDeck } from "@/lib/notes/parse-slides";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { isAllowedOrigin } from "@/lib/utils";
-import { MAX_FILE_BYTES } from "@/lib/ingestion/limits";
+import {
+  MAX_FILE_BYTES,
+  MAX_EXTRACTED_CHARACTERS,
+  MAX_PDF_PAGES,
+} from "@/lib/ingestion/limits";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 
 export const runtime = "nodejs";
@@ -93,12 +97,17 @@ export async function POST(request: NextRequest) {
     let fileName = "lecture-slides.pptx";
     let slideCount = 1;
     let sources: SourceBlock[] = [];
+    let warnings: string[] = [];
     let focus: string | undefined;
+    let parsedDeck: Awaited<ReturnType<typeof parseSlideDeck>> | undefined;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await request.formData();
       const file = formData.get("file");
-      focus = (formData.get("focus") as string) || undefined;
+      const rawFocus = formData.get("focus");
+      if (typeof rawFocus === "string" && rawFocus.trim()) {
+        focus = rawFocus.trim().slice(0, 300);
+      }
 
       if (!file || !(file instanceof File)) {
         return jsonResponse(
@@ -126,24 +135,140 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const parsedDeck = await parseSlideDeck(file);
+      parsedDeck = await parseSlideDeck(file);
       fileName = parsedDeck.fileName;
       slideCount = parsedDeck.slideCount;
       sources = parsedDeck.sources;
+      warnings = parsedDeck.warnings || [];
     } else if (contentType.includes("application/json")) {
       const jsonBody = await request.json();
-      fileName = jsonBody.fileName || "lecture-slides.pdf";
-      focus = jsonBody.focus;
+      fileName =
+        typeof jsonBody?.fileName === "string" && jsonBody.fileName.trim()
+          ? jsonBody.fileName.trim()
+          : "lecture-slides.pdf";
 
-      if (Array.isArray(jsonBody.sources) && jsonBody.sources.length > 0) {
-        sources = jsonBody.sources;
-        slideCount = jsonBody.slideCount || jsonBody.sources.length;
-      } else if (typeof jsonBody.slidesText === "string" && jsonBody.slidesText.trim()) {
+      if (typeof jsonBody?.focus === "string") {
+        const trimmed = jsonBody.focus.trim();
+        focus = trimmed ? trimmed.slice(0, 300) : undefined;
+      } else if (jsonBody?.focus !== undefined && jsonBody?.focus !== null) {
+        return jsonResponse(
+          {
+            ok: false,
+            error: {
+              code: "INVALID_SLIDES_PAYLOAD",
+              message: "Focus must be a string if provided.",
+            },
+          },
+          400,
+        );
+      }
+
+      if (Array.isArray(jsonBody?.warnings)) {
+        warnings = (jsonBody.warnings as unknown[])
+          .filter((w: unknown): w is string => typeof w === "string")
+          .slice(0, 20)
+          .map((w: string) => w.slice(0, 300));
+      }
+
+      if (jsonBody?.sources !== undefined) {
+        if (!Array.isArray(jsonBody.sources) || jsonBody.sources.length === 0) {
+          return jsonResponse(
+            {
+              ok: false,
+              error: {
+                code: "INVALID_SLIDES_PAYLOAD",
+                message: "JSON payload must include slide text or sources.",
+              },
+            },
+            400,
+          );
+        }
+
+        const isValidSources = jsonBody.sources.every(
+          (item: unknown) =>
+            Boolean(item) &&
+            typeof item === "object" &&
+            !Array.isArray(item) &&
+            typeof (item as any).label === "string" &&
+            typeof (item as any).text === "string" &&
+            ((item as any).id === undefined || typeof (item as any).id === "string"),
+        );
+
+        if (!isValidSources) {
+          return jsonResponse(
+            {
+              ok: false,
+              error: {
+                code: "INVALID_SLIDES_PAYLOAD",
+                message: "Each source item must be an object with string label and text.",
+              },
+            },
+            400,
+          );
+        }
+
+        if (
+          jsonBody.sources.length > MAX_PDF_PAGES ||
+          (typeof jsonBody.slideCount === "number" && jsonBody.slideCount > MAX_PDF_PAGES)
+        ) {
+          return jsonResponse(
+            {
+              ok: false,
+              error: {
+                code: "TOO_MANY_PAGES",
+                message: `Upload at most ${MAX_PDF_PAGES} slides at a time.`,
+              },
+            },
+            413,
+          );
+        }
+
+        const totalCharacters = jsonBody.sources.reduce(
+          (sum: number, s: any) => sum + s.text.length,
+          0,
+        );
+        if (totalCharacters > MAX_EXTRACTED_CHARACTERS) {
+          return jsonResponse(
+            {
+              ok: false,
+              error: {
+                code: "TOO_MUCH_TEXT",
+                message: `The slide deck exceeds the ${MAX_EXTRACTED_CHARACTERS.toLocaleString()} character limit. Please split it by lecture topic.`,
+              },
+            },
+            413,
+          );
+        }
+
+        sources = jsonBody.sources.map((s: any, idx: number) => ({
+          id: typeof s.id === "string" && s.id.trim() ? s.id.trim() : `slide-${idx + 1}`,
+          label: s.label,
+          text: s.text,
+        }));
+        slideCount =
+          typeof jsonBody.slideCount === "number" && jsonBody.slideCount > 0
+            ? jsonBody.slideCount
+            : sources.length;
+      } else if (typeof jsonBody?.slidesText === "string" && jsonBody.slidesText.trim()) {
+        const trimmedText = jsonBody.slidesText.trim();
+        if (trimmedText.length > MAX_EXTRACTED_CHARACTERS) {
+          return jsonResponse(
+            {
+              ok: false,
+              error: {
+                code: "TOO_MUCH_TEXT",
+                message: `The slide deck exceeds the ${MAX_EXTRACTED_CHARACTERS.toLocaleString()} character limit. Please split it by lecture topic.`,
+              },
+            },
+            413,
+          );
+        }
+
         sources = [
           {
             id: "slide-1",
             label: "Slide 1",
-            text: jsonBody.slidesText.trim(),
+            text: trimmedText,
           },
         ];
         slideCount = 1;
@@ -178,11 +303,19 @@ export async function POST(request: NextRequest) {
       slideCount,
       sources,
       focus,
+      ...(parsedDeck
+        ? {
+            ommlEquations: parsedDeck.ommlEquations,
+            ocrEquations: parsedDeck.ocrEquations,
+            formulaInventory: parsedDeck.formulaInventory,
+          }
+        : {}),
     });
 
     return jsonResponse({
       ok: true,
       note,
+      warnings,
     });
   } catch (error) {
     if (error instanceof IngestionError) {

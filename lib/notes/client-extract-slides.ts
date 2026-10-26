@@ -4,6 +4,7 @@ import {
   MAX_EXTRACTED_CHARACTERS,
   MAX_PDF_PAGES,
 } from "@/lib/ingestion/limits";
+import { extractSlideXmlText } from "@/lib/ingestion/parse-pptx";
 
 export interface ExtractedSlideDeck {
   fileName: string;
@@ -38,48 +39,6 @@ export class ClientSlideExtractionError extends Error {
   }
 }
 
-function decodeXmlEntities(text: string): string {
-  return text
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
-      String.fromCharCode(parseInt(hex, 16)),
-    );
-}
-
-function extractSlideXmlText(xml: string): string {
-  if (!xml) return "";
-
-  const paragraphMatches = xml.match(/<a:p[\s>][\s\S]*?<\/a:p>/gi) || [xml];
-  const paragraphTexts: string[] = [];
-
-  for (const para of paragraphMatches) {
-    const textMatches = para.match(
-      /<(?:a|m):t(?:\s[^>]*)?>([\s\S]*?)<\/(?:a|m):t>/gi,
-    );
-    if (!textMatches) continue;
-
-    const lineText = textMatches
-      .map((tag) => {
-        const inner = tag
-          .replace(/^<(?:a|m):t(?:\s[^>]*)?>/i, "")
-          .replace(/<\/(?:a|m):t>$/i, "");
-        return decodeXmlEntities(inner);
-      })
-      .join("");
-
-    const trimmed = lineText.trim();
-    if (trimmed) {
-      paragraphTexts.push(trimmed);
-    }
-  }
-
-  return paragraphTexts.join("\n");
-}
 
 async function extractPptxSlides(
   fileName: string,

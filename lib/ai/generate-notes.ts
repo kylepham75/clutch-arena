@@ -7,14 +7,72 @@ import {
   type NoteFormula,
   type NoteSection,
   type NoteSubSection,
+  type KeyTakeawaysItem,
+  type FormulaLedgerEntry,
+  type GroundedBullet,
+  type SynthesisResult,
+  type SynthesisSection,
+  type SynthesisFormula,
+  type SynthesisSubSection,
+  type SynthesisTakeawayItem,
+  type SynthesisOmittedFormula,
+  type ExtractedSlideClaim,
+  type ExtractionResult,
+  synthesisSchema,
+  extractionSchema,
 } from "@/lib/schemas/notes";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
+import type {
+  OcrTranscribedEquation,
+  OmmlTranscribedEquation,
+} from "@/lib/ingestion/parse-pptx";
+import {
+  buildFormulaInventory,
+  buildMergedFormulaLedger,
+  mergeFormulaLedger,
+  type FormulaInventoryItem,
+} from "@/lib/notes/formula-inventory";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { getGenerationModel, getGroqModel } from "./provider";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
-import { repairCorruptedLatex, ensureInlineMathDelimiters, cleanVietnameseSigmaTypos, formatAccountingFormula } from "@/lib/math/latex";
+import {
+  repairCorruptedLatex,
+  ensureInlineMathDelimiters,
+  cleanVietnameseSigmaTypos,
+  formatAccountingFormula,
+} from "@/lib/math/latex";
+import {
+  runVerificationGate,
+  applyMarkPolicyAndGate,
+  buildTargetedRepairPrompt,
+  executeVerificationPipeline,
+  type VerificationGateOptions,
+  type VerificationGateResult,
+  type VerificationPipelineReport,
+  type TargetedRepairPromptInput,
+} from "@/lib/notes/verification-gate";
 export { ensureInlineMathDelimiters } from "@/lib/math/latex";
-import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
+
+export {
+  runVerificationGate,
+  applyMarkPolicyAndGate,
+  buildTargetedRepairPrompt,
+  executeVerificationPipeline,
+  type VerificationGateOptions,
+  type VerificationGateResult,
+  type VerificationPipelineReport,
+  type TargetedRepairPromptInput,
+};
+
+export {
+  extractionSchema,
+  synthesisSchema,
+  type FormulaLedgerEntry,
+  type SynthesisResult,
+  type SynthesisSection,
+  type SynthesisFormula,
+  type ExtractionResult,
+} from "@/lib/schemas/notes";
 
 /**
  * Strict LLM generation schema where EVERY property is REQUIRED (no .optional() or .default()).
@@ -178,6 +236,21 @@ export interface GenerateClutchNoteOptions {
   focus?: string;
   modelOverride?: LanguageModel;
   signal?: AbortSignal;
+  ommlEquations?: OmmlTranscribedEquation[];
+  ocrEquations?: OcrTranscribedEquation[];
+  formulaInventory?: FormulaInventoryItem[];
+  formulaLedger?: FormulaLedgerEntry[];
+  skipChunkExtraction?: boolean;
+  enableVerifierLlm?: boolean;
+  verifierModel?: LanguageModel;
+  repairModel?: LanguageModel;
+  repairFn?: (
+    repairPrompt: string,
+    signal?: AbortSignal,
+  ) => Promise<SynthesisSection[] | NoteSection[]>;
+  skipVerifierLlm?: boolean;
+  maxRepairAttempts?: number;
+  throwOnContradictedFormula?: boolean;
 }
 
 export function sanitizeUniversalText(str: string): string {
@@ -185,18 +258,45 @@ export function sanitizeUniversalText(str: string): string {
   return ensureInlineMathDelimiters(repairCorruptedLatex(cleanTypoString(str)));
 }
 
-function sanitizeFormula(f: NoteFormula): NoteFormula {
+export function sanitizeFormula(f: NoteFormula): NoteFormula {
+  const isDirectLedgerInjected =
+    f.formulaRefs &&
+    f.formulaRefs.length === 1 &&
+    (!f.derivedFrom || f.derivedFrom.length === 0);
+
   return {
     ...f,
     name: f.name ? sanitizeUniversalText(f.name) : "",
     leadText: f.leadText ? sanitizeUniversalText(f.leadText) : undefined,
-    latex: repairCorruptedLatex(cleanTypoString(f.latex)).replace(/^\$+|\$+$/g, "").trim(),
+    latex: isDirectLedgerInjected
+      ? f.latex.replace(/^\$+|\$+$/g, "").trim()
+      : repairCorruptedLatex(cleanTypoString(f.latex)).replace(/^\$+|\$+$/g, "").trim(),
     description: f.description ? sanitizeUniversalText(f.description) : undefined,
     variables: (f.variables ?? []).map((v) => ({
       symbol: cleanTypoString(repairCorruptedLatex(v.symbol)).replace(/^\$+|\$+$/g, "").trim(),
       definition: sanitizeUniversalText(v.definition),
     })),
+    formulaRefs: f.formulaRefs ? [...f.formulaRefs] : undefined,
+    derivedFrom: f.derivedFrom ? [...f.derivedFrom] : undefined,
+    slide: f.slide,
+    origin: f.origin,
+    confidence: f.confidence,
   };
+}
+
+/**
+ * Backward-compatible alias for sanitizeFormula. Purely typographical/delimiter sanitization.
+ * Never rewrites math tokens, denominators, exponents, or tax shields.
+ */
+export function shieldFormula(
+  f: NoteFormula,
+  _contextHint?: string,
+  _isStockValuation: boolean = true,
+  _isChapter10: boolean = false,
+  _isChapter11: boolean = false,
+  _isChapter26: boolean = false,
+): NoteFormula {
+  return sanitizeFormula(f);
 }
 
 const VIETNAMESE_GRAVE_MAP: Record<string, string> = {
@@ -210,7 +310,24 @@ const VIETNAMESE_GRAVE_MAP: Record<string, string> = {
 
 export function cleanTypoString(str: string): string {
   if (!str || typeof str !== "string") return str;
-  let s = cleanVietnameseSigmaTypos(str.normalize("NFC"));
+
+  // Protect math spans ($...$, $$...$$, \[...\], \(...\)) from Vietnamese accent composition
+  const mathPlaceholders: string[] = [];
+  let s = str.replace(/(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\(.*?\\\)|\$[^$\n]+?\$)/g, (match) => {
+    const idx = mathPlaceholders.length;
+    mathPlaceholders.push(match);
+    return `___MATH_SPAN_${idx}___`;
+  });
+
+  // Protect backslash commands (\command) from accent composition
+  const cmdPlaceholders: string[] = [];
+  s = s.replace(/\\([a-zA-Z]+)/g, (match) => {
+    const idx = cmdPlaceholders.length;
+    cmdPlaceholders.push(match);
+    return `___CMD_SPAN_${idx}___`;
+  });
+
+  s = cleanVietnameseSigmaTypos(s.normalize("NFC"));
 
   // Re-attach isolated or spaced combining diacritical marks to preceding letters and compose to NFC
   s = s.replace(/([\p{L}\p{M}]+)\s+([\u0300-\u036f]+)/gu, "$1$2").normalize("NFC");
@@ -223,9 +340,12 @@ export function cleanTypoString(str: string): string {
     .replace(/vố[\x60'\u00B4]\s*n/gi, "vốn")
     .replace(/phiế[\x60'\u00B4]\s*u/gi, "phiếu");
 
-  // Compose floating backtick after unaccented/circumflex vowel inside words to grave accent (e.g. nhiê` u -> nhiều)
-  s = s.replace(/([aăâeêioôơuưyAĂÂEÊIOÔƠUƯY])[\x60'\u00B4]\s*([a-zA-Z\u00C0-\u1EF9])/gu, (_match, v, next) => {
-    return (VIETNAMESE_GRAVE_MAP[v] || v) + next;
+  // Protect English possessives and contractions (e.g. share's, company's, firm's, don't, it's, we'll, etc.)
+  const engPlaceholders: string[] = [];
+  s = s.replace(/\b([a-zA-Z]+)'(s|t|d|ll|ve|re|m)\b/gi, (match) => {
+    const idx = engPlaceholders.length;
+    engPlaceholders.push(match);
+    return `___ENG_POSS_${idx}___`;
   });
 
   // Strip stray floating backticks or acute accents right after already toned vowels inside words (e.g. đề`u -> đều)
@@ -240,7 +360,30 @@ export function cleanTypoString(str: string): string {
     "$1$2",
   );
 
+  // Compose floating backtick/acute ONLY on words that contain genuine Vietnamese diacritics / circumflex / horn / breve (ăâêôơưđ)
+  const VIETNAMESE_DIACRITICS_REGEX =
+    /[ăâêôơưđĂÂÊÔƠƯĐàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵÀÁẢÃẠẰẮẲẴẶẦẤẨẪẬÈÉẺẼẸỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌỒỐỔỖỘỜỚỞỠỢÙÚỦŨỤỪỨỬỮỰỲÝỶỸỴ]/u;
+
+  s = s.replace(/[\p{L}\p{M}]+[\x60'\u00B4][\p{L}\p{M}]+/gu, (word) => {
+    if (!VIETNAMESE_DIACRITICS_REGEX.test(word)) {
+      return word;
+    }
+    return word.replace(
+      /([aăâeêioôơuưyAĂÂEÊIOÔƠUƯY])[\x60'\u00B4]\s*([a-zA-Z\u00C0-\u1EF9])/gu,
+      (_match, v, next) => (VIETNAMESE_GRAVE_MAP[v] || v) + next,
+    );
+  });
+
   s = s.normalize("NFC");
+
+  // Restore English possessives
+  s = s.replace(/___ENG_POSS_(\d+)___/g, (_m, idx) => engPlaceholders[Number(idx)] ?? _m);
+
+  // Restore backslash commands
+  s = s.replace(/___CMD_SPAN_(\d+)___/g, (_m, idx) => cmdPlaceholders[Number(idx)] ?? _m);
+
+  // Restore math spans
+  s = s.replace(/___MATH_SPAN_(\d+)___/g, (_m, idx) => mathPlaceholders[Number(idx)] ?? _m);
 
   return s
     .replace(/\b([gG])\s*=\s*[oO]\b/g, "$1 = 0")
@@ -251,19 +394,13 @@ export function cleanTypoString(str: string): string {
     .replace(/\bR_o\b/g, "R_0")
     .replace(/\bP_\{o\}\b/g, "P_{0}")
     .replace(/\bD_\{o\}\b/g, "D_{0}")
-    .replace(/\bR_\{o\}\b/g, "R_{0}")
-    // One-year holding period exponent: (1+R)^T or (1+R)^t -> 1+R
-    .replace(/\\frac\{\s*D_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{D_1}{1 + R}")
-    .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{P_1}{1 + R}")
-    .replace(/\\frac\{\s*D_?1\s*\}\{\s*\(1\s*\+\s*R_?p\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{D_1}{1 + R_p}")
-    .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*R_?p\)\s*\^\s*\{?[Tt1]\}?\s*\}/g, "\\frac{P_1}{1 + R_p}");
+    .replace(/\bR_\{o\}\b/g, "R_{0}");
 }
-
 
 export function sanitizeAcademicHeader(
   rawTitle: string,
   letter: string,
-  isStockValuation: boolean = true,
+  _isStockValuation: boolean = false,
 ): string {
   let title = rawTitle.trim();
 
@@ -272,48 +409,13 @@ export function sanitizeAcademicHeader(
     .replace(/^(header\s+[a-z0-9]+[:\s\-]+|section\s+[a-z0-9]+[:\s\-]+|[a-z0-9]+[\.\:\-]\s*)/i, "")
     .trim();
 
-  // 1. Purge absurd machine translations
+  // Purge absurd machine translations (keep only multi-word gibberish phrases)
   title = title
-    .replace(/giáo dục/gi, "ĐỊNH GIÁ")
     .replace(/cứu trợ chứng khoán/gi, "CỔ PHIẾU")
-    .replace(/cứu trợ/gi, "CỔ PHIẾU ƯU ĐÃI")
     .replace(/hạnh hạnh/gi, "TĂNG TRƯỞNG ĐỀU")
     .replace(/ritm không đổi/gi, "MÔ HÌNH KHÔNG TĂNG TRƯỞNG")
     .replace(/ritm/gi, "DDM")
-    .replace(/bổ trợ hợp tác/gi, "CỔ PHIẾU ƯU ĐÃI HOÃN TRẢ")
-    .replace(/bổ trợ/gi, "HOÃN TRẢ");
-
-  const lower = title.toLowerCase();
-
-  // 2. If the topic is Cost of Capital / WACC, Cost of Debt, Cost of Equity, Flotation Costs, etc.,
-  // or if explicitly not Stock Valuation, preserve the clean uppercase topic title with letter prefix!
-  const isNonStockTopic =
-    !isStockValuation ||
-    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn|cost of debt|chi phí nợ|cost of equity|chi phí.*cổ phần|chi phí.*chủ sở hữu|cost of preferred|chi phí.*(cổ phiếu )?ưu đãi|flotation|chi phí phát hành|divisional risk|rủi ro bộ phận|capital structure|cơ cấu vốn|pure play|subjective approach|capital budgeting|ngân sách vốn|sml|capm|risk|return|rủi ro|tỷ suất sinh lời|lợi suất|portfolio|danh mục|beta|covariance|hiệp phương sai|correlation|tương quan|variance|phương sai|độ lệch chuẩn|historical|thống kê|kinh tế|economics|accounting|kế toán|tài chính|statistics|probability|xác suất|toán|math|stem|operations|vận hành|physics|chemistry|cung|cầu|supply|demand|gdp|lạm phát|inflation/i.test(
-      lower,
-    );
-
-  if (isNonStockTopic) {
-    const cleanStripped = title.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
-    return `${letter}. ${cleanStripped.toUpperCase()}`;
-  }
-
-  // 3. Map directly to canonical academic headers for Corporate Finance (Stock Valuation / DDM)
-  if (/nguyên lý|fundamental.*principle/i.test(lower) || (/cơ bản/i.test(lower) && !/vốn|nợ|wacc/i.test(lower))) {
-    return `${letter}. NGUYÊN LÝ CƠ BẢN`;
-  }
-  if (/preference|preferred|ưu đãi|ưu tiên|cứu trợ|bổ trợ/i.test(lower) && !/cost|chi phí|nợ|debt|wacc|vốn/i.test(lower)) {
-    return `${letter}. VALUE OF PREFERENCE SHARE`;
-  }
-  if (/parameter|tham số|finding g|finding r/i.test(lower) || (/growth rate|discount rate|lợi suất/i.test(lower) && !/debt|equity|wacc|vốn/i.test(lower))) {
-    return `${letter}. PARAMETERS IN DIVIDEND DISCOUNT MODEL`;
-  }
-  if (/ddm|dividend discount|gordon|ritm|hạnh hạnh/i.test(lower) || (/tăng trưởng đều|không tăng trưởng|differential/i.test(lower) && !/wacc|vốn/i.test(lower))) {
-    return `${letter}. DDM (DIVIDEND DISCOUNT MODEL)`;
-  }
-  if (/công thức tổng quát|one-period|định giá|chọn mô hình/i.test(lower) && !/wacc|chi phí/i.test(lower)) {
-    return `${letter}. CÔNG THỨC TỔNG QUÁT`;
-  }
+    .replace(/bổ trợ hợp tác/gi, "CỔ PHIẾU ƯU ĐÃI HOÃN TRẢ");
 
   const cleanStripped = title.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
   return `${letter}. ${cleanStripped.toUpperCase()}`;
@@ -322,262 +424,157 @@ export function sanitizeAcademicHeader(
 export function sanitizeSubSectionHeading(heading: string): string {
   let h = heading.trim();
   h = h
-    .replace(/giáo dục/gi, "Định giá")
     .replace(/cứu trợ chứng khoán/gi, "Cổ phiếu")
-    .replace(/cứu trợ/gi, "Cổ phiếu ưu đãi")
     .replace(/hạnh hạnh/gi, "Tăng trưởng đều")
     .replace(/ritm không đổi/gi, "Không tăng trưởng")
     .replace(/ritm/gi, "DDM")
-    .replace(/bổ trợ hợp tác/gi, "Cổ phiếu ưu đãi hoãn trả")
-    .replace(/bổ trợ/gi, "Hoãn trả");
+    .replace(/bổ trợ hợp tác/gi, "Cổ phiếu ưu đãi hoãn trả");
   return cleanTypoString(h);
 }
 
-function shieldFormula(
-  f: NoteFormula,
-  contextHint: string,
-  isStockValuation: boolean = true,
-  isChapter10: boolean = false,
-  isChapter11: boolean = false,
-  isChapter26: boolean = false,
-): NoteFormula {
-  let latex = formatAccountingFormula(cleanTypoString(f.latex).replace(/^\$+|\$+$/g, "").trim());
-  let leadText = f.leadText ? sanitizeUniversalText(f.leadText) : undefined;
-  let description = f.description ? sanitizeUniversalText(f.description) : undefined;
-  let variables = (f.variables ?? []).map((v) => ({
-    symbol: cleanTypoString(repairCorruptedLatex(v.symbol)).replace(/^\$+|\$+$/g, "").trim(),
-    definition: sanitizeUniversalText(v.definition),
-  }));
+/**
+ * Non-mutating formula linter that returns warning strings when suspicious mathematical
+ * or financial formula patterns are detected.
+ */
+export function lintFormula(f: NoteFormula, contextHint?: string): string[] {
+  const warnings: string[] = [];
+  const latex = f.latex ?? "";
+  const hint = contextHint ?? "";
 
-  // 1. One-period valuation formula exponent error:
-  // e.g. P_0 = D_1 / (1+R)^T + P_1 / (1+R)^T -> P_0 = D_1 / (1+R) + P_1 / (1+R)
-  const isOnePeriodFormula =
+  // 1. Growing perpetuity with R + g or r + g in denominator
+  const growingPerpetuityAddition =
+    /\\frac\{[^{}]+\}\{\s*(?:[RrKk]|R_[Ee])\s*\+\s*g\s*\}|\/\s*\(\s*(?:[RrKk]|R_[Ee])\s*\+\s*g\s*\)/i.test(
+      latex,
+    );
+  if (growingPerpetuityAddition) {
+    warnings.push(
+      "Growing perpetuity formula has addition (R + g) in denominator instead of subtraction (R - g).",
+    );
+  }
+
+  // 2. (1 - T_C) attached to R_E or R_P inside a WACC equation
+  // (do NOT flag M&M Proposition II R_E = R_A + (R_A - R_D)(D/E)(1 - T_C))
+  const isWaccContext =
+    /wacc|chi phí (sử dụng )?vốn bình quân/i.test(latex) ||
+    /wacc|chi phí (sử dụng )?vốn bình quân/i.test(hint);
+  const isMMProposition =
+    /R_A|R_U|R_0|proposition|m&m/i.test(latex) ||
+    /proposition|m&m/i.test(hint);
+
+  if (isWaccContext && !isMMProposition) {
+    const hasEquityTaxShield =
+      /(?:R_[Ee]|R_[Pp])\s*\(1\s*-\s*T_C\)/.test(latex) ||
+      /\(1\s*-\s*T_C\)\s*(?:R_[Ee]|R_[Pp])/.test(latex) ||
+      /w_[Ee]\s*R_[Ee]\s*\(1\s*-\s*T_C\)/.test(latex) ||
+      /w_[Pp]\s*R_[Pp]\s*\(1\s*-\s*T_C\)/.test(latex) ||
+      /\\left\(\\frac\{[EP]\}\{V\}\\right\)\s*R_[EP]\s*\(1\s*-\s*T_C\)/.test(latex) ||
+      /\(\\frac\{[EP]\}\{V\}\)\s*R_[EP]\s*\(1\s*-\s*T_C\)/.test(latex);
+
+    if (hasEquityTaxShield) {
+      warnings.push(
+        "Tax shield (1 - T_C) incorrectly attached to cost of equity (R_E) or preferred stock (R_P) in WACC equation.",
+      );
+    }
+  }
+
+  // 3. 1-period holding formula (D_1 and P_1 without \sum) using exponent ^T or ^t
+  const isOnePeriod =
     /D_?1/i.test(latex) &&
     /P_?1/i.test(latex) &&
     !/\\sum/i.test(latex);
+  const hasOnePeriodExponent =
+    /\(1\s*\+\s*[^)]+\)\s*\^\s*\{?[Tt]\}?/.test(latex);
 
-  if (isOnePeriodFormula) {
-    latex = latex
-      .replace(/\\frac\{\s*D_?1\s*\}\{\s*\(1\s*\+\s*([RrKk]|R_[epdEPD])\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{D_1}{1 + $1}")
-      .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*([RrKk]|R_[epdEPD])\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{P_1}{1 + $1}")
-      .replace(/\\frac\{\s*D_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{D_1}{1 + R}")
-      .replace(/\\frac\{\s*P_?1\s*\}\{\s*\(1\s*\+\s*R\)\s*\^\s*\{?[Tt1]\}?\s*\}/gi, "\\frac{P_1}{1 + R}");
-    if (/\(1\s*\+\s*R\)\s*\^\s*\{?[Tt]\}?/i.test(latex)) {
-      latex = "P_0 = \\frac{D_1}{1 + R} + \\frac{P_1}{1 + R}";
-    }
+  if (isOnePeriod && hasOnePeriodExponent) {
+    warnings.push(
+      "1-period holding formula contains multi-period exponent (^T or ^t).",
+    );
   }
 
-  // 2. Intercept circular/hallucinated growth rate substitution (e.g. g = (P1 - P0)/P0):
-  // g must be retention ratio * ROE, never circular price change (P1 - P0)/P0
-  const isSolvingForGrowthRate =
-    /finding.*growth|growth.*rate|\(g\)/i.test(contextHint) ||
-    /^\s*g\s*=/i.test(latex);
-  const isPriceAppreciationFormula =
-    /(\\frac\{\s*P_?1\s*-\s*P_?0\s*\}\{\s*P_?0\s*\}|\(P_?1\s*-\s*P_?0\)\s*\/\s*P_?0|\\Delta P)/i.test(
+  // 4. Growth rate g = defined via circular price change (P_1 - P_0)/P_0 or \Delta P / P_0
+  const isSolvingForGrowth =
+    /^\s*g\s*=/i.test(latex) ||
+    (/finding.*growth|growth.*rate|\(g\)/i.test(hint) && /\bg\s*=/.test(latex));
+  const isCircularPriceAppreciation =
+    /\\frac\{\s*P_?1\s*-\s*P_?0\s*\}\{\s*P_?0\s*\}|\(?\s*P_?1\s*-\s*P_?0\s*\)?\s*\/\s*P_?0|\\Delta\s*P\s*\/\s*P_?0|\\frac\{\s*\\Delta\s*P\s*\}\{\s*P_?0\s*\}/i.test(
       latex,
     );
 
-  if (isSolvingForGrowthRate && isPriceAppreciationFormula) {
-    latex = "g = \\text{Retention ratio} \\times \\text{Return on retained earnings (ROE)}";
-    leadText = "Fundamental accounting formula for sustainable dividend growth:";
-    description = "Growth rate is driven by reinvestment policy and ROE, NOT circular price changes.";
-    variables = [
-      {
-        symbol: "\\text{Retention ratio}",
-        definition: "Proportion of net earnings retained in the business = 1 - Dividend Payout Ratio",
-      },
-      {
-        symbol: "\\text{ROE}",
-        definition: "Return on equity earned on retained earnings",
-      },
-    ];
-  }
-
-  // 3. Growing Perpetuity Denominator: Ensure denominator is r - g or R - g, never r + g or R + g
-  latex = latex
-    .replace(/\\frac\{((?:[^{}]|\{[^{}]*\})+)\}\{\s*([RrKk]|R_[Ee])\s*\+\s*g\s*\}/g, "\\frac{$1}{$2 - g}")
-    .replace(/\/\s*\(\s*([RrKk]|R_[Ee])\s*\+\s*g\s*\)/g, "/ ($1 - g)");
-
-  // 4. WACC Tax Shield: Ensure (1 - T_C) applies STRICTLY to Debt R_D, NEVER to Equity R_E or Preferred R_P
-  if (/WACC/i.test(latex) || /chi phí (sử dụng )?vốn bình quân/i.test(contextHint)) {
-    latex = latex
-      .replace(/\\left\(\\frac\{E\}\{V\}\\right\)\s*R_E\s*\(1\s*-\s*T_C\)/g, "\\left(\\frac{E}{V}\\right) R_E")
-      .replace(/\(\\frac\{E\}\{V\}\)\s*R_E\s*\(1\s*-\s*T_C\)/g, "\\left(\\frac{E}{V}\\right) R_E")
-      .replace(/w_E\s*R_E\s*\(1\s*-\s*T_C\)/g, "w_E R_E")
-      .replace(/\\left\(\\frac\{P\}\{V\}\\right\)\s*R_P\s*\(1\s*-\s*T_C\)/g, "\\left(\\frac{P}{V}\\right) R_P")
-      .replace(/\(\\frac\{P\}\{V\}\)\s*R_P\s*\(1\s*-\s*T_C\)/g, "\\left(\\frac{P}{V}\\right) R_P")
-      .replace(/w_P\s*R_P\s*\(1\s*-\s*T_C\)/g, "w_P R_P");
-  }
-  if (/R_E\s*=/i.test(latex) && !/WACC/i.test(latex)) {
-    latex = latex.replace(/\(1\s*-\s*T_C\)/g, "").trim();
-  }
-  if (/R_P\s*=/i.test(latex) && !/WACC/i.test(latex)) {
-    latex = latex.replace(/\(1\s*-\s*T_C\)/g, "").trim();
-  }
-
-  // 5. Underbraced decomposition for Required Return R (Stock Valuation only, don't overwrite R_E or other returns)
-  if (isStockValuation) {
-    if (
-      /R\s*=\s*(\\frac\{D_?1\}\{P_?0\}|\(D_?1\/P_?0\))\s*\+\s*g/i.test(latex) &&
-      !latex.includes("underbrace") &&
-      !/R_?[EePpDd]/i.test(latex)
-    ) {
-      latex =
-        "R = \\underbrace{\\frac{D_1}{P_0}}_{\\text{Dividend Yield}} + \\underbrace{g}_{\\text{Capital Gains Yield}}";
-    }
-  }
-
-  // 6a. Chapter 10 Historical Arithmetic & Geometric Mean Safeguard:
-  // Arithmetic Mean ALWAYS divides by total periods T: \bar{R}_{\text{arith}} = \frac{1}{T}\sum R_t. NEVER divide Arithmetic Mean by T - 1!
-  const isArithmeticMean =
-    /arithmetic|số học|trung bình cộng|\\bar\{R\}_\{?\\text\{arith\}?\}?|\\bar\{R\}\s*=/i.test(latex) ||
-    (/arithmetic|số học|trung bình cộng/i.test(contextHint) && !/(variance|phương sai|độ lệch chuẩn|s\^2)/i.test(contextHint)) ||
-    (/\\bar\{R\}|\\sum.*R_t/i.test(latex) && !/\(R_t\s*-\s*\\bar\{R\}\)\^2|s\^2|s\s*=\s*\\sqrt/i.test(latex));
-
-  if (isArithmeticMean) {
-    // The denominator MUST ALWAYS be T (or n). NEVER T - 1.
-    latex = latex
-      .replace(/\\frac\{1\}\{\s*T\s*-\s*1\s*\}/g, "\\frac{1}{T}")
-      .replace(/\{\s*T\s*-\s*1\s*\}/g, "{T}")
-      .replace(/\\frac\{1\}\{\s*n\s*-\s*1\s*\}/g, "\\frac{1}{n}")
-      .replace(/\{\s*n\s*-\s*1\s*\}/g, "{n}");
-  }
-
-  const isGeometricMean =
-    /geometric|hình học|\\bar\{R\}_\{?\\text\{geom\}?\}?|\\prod/i.test(latex) ||
-    /geometric|hình học/i.test(contextHint);
-
-  if (isGeometricMean) {
-    // The exponent is strictly 1/T (or 1/n), NEVER 1/(T - 1).
-    latex = latex
-      .replace(/\^\{\s*1\s*\/\s*\(?\s*T\s*-\s*1\s*\)?\s*\}/g, "^{1/T}")
-      .replace(/\^\{\s*1\s*\/\s*\(?\s*n\s*-\s*1\s*\)?\s*\}/g, "^{1/n}")
-      .replace(/1\s*\/\s*\(?\s*T\s*-\s*1\s*\)?/g, "1/T")
-      .replace(/1\s*\/\s*\(?\s*n\s*-\s*1\s*\)?/g, "1/n");
-  }
-
-  // 6b. Chapter 10 Historical Risk & Return Variance Shield:
-  // Historical sample variance uses denominator strictly T - 1 (or n - 1). NEVER divide by T, NEVER use scenario probabilities P_i.
-  // Bessel's correction T - 1 applies EXCLUSIVELY when calculating sample variance s^2 or standard deviation s with squared differences (R_t - \bar{R})^2.
-  // It must NEVER touch Arithmetic Mean or Geometric Mean!
-  const isHistoricalVariance =
-    !isArithmeticMean &&
-    (
-      (/historical|mẫu lịch sử|sample variance|phương sai lịch sử/i.test(contextHint) && /variance|phương sai|độ lệch chuẩn|s\^2/i.test(contextHint)) ||
-      /s\^2\s*=|s\s*=\s*\\sqrt\{s\^?2\}/i.test(latex) ||
-      (/\(R_t\s*-\s*\\bar\{R\}\)\^2/i.test(latex) && (isChapter10 || /variance|phương sai|độ lệch chuẩn|s\^2/i.test(contextHint)))
+  if (isSolvingForGrowth && isCircularPriceAppreciation) {
+    warnings.push(
+      "Growth rate g is defined via circular price change ((P_1 - P_0)/P_0) instead of sustainable reinvestment policy.",
     );
-
-  if (isHistoricalVariance) {
-    // Intercept if probability P_i was hallucinated into historical sample variance
-    if (/P_i|p_i|\\sum\s*P/i.test(latex)) {
-      latex = "s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2, \\quad s = \\sqrt{s^2}";
-      leadText = "Phương sai và độ lệch chuẩn mẫu lịch sử (mẫu số strictly T - 1, không dùng xác suất P_i):";
-      description = "Mẫu số là T - 1 để ước lượng không chệch cho phương sai tổng thể.";
-      variables = [
-        { symbol: "s^2, s", definition: "Phương sai mẫu và độ lệch chuẩn mẫu lịch sử" },
-        { symbol: "T", definition: "Số thời kỳ quan sát trong chuỗi dữ liệu lịch sử" },
-        { symbol: "\\bar{R}", definition: "Tỷ suất sinh lời trung bình số học của mẫu" },
-        { symbol: "R_t", definition: "Tỷ suất sinh lời thực tế tại thời kỳ t" },
-      ];
-    } else if (/\(R_t\s*-\s*\\bar\{R\}\)\^2/i.test(latex) || /s\^2/.test(latex)) {
-      // Fix denominator T to T - 1 ONLY for the variance part with squared deviations
-      latex = latex.replace(/\\frac\{1\}\{T\}(?!\s*-\s*1)/g, "\\frac{1}{T - 1}");
-      latex = latex.replace(/\{\s*T\s*\}(?!\s*-\s*1)/g, "{T - 1}");
-      latex = latex.replace(/\\frac\{1\}\{n\}(?!\s*-\s*1)/g, "\\frac{1}{n - 1}");
-      latex = latex.replace(/\{\s*n\s*\}(?!\s*-\s*1)/g, "{n - 1}");
-    }
   }
 
-  // 7. Chapter 11 Scenario Probability Variance Shield:
-  // Expected return & portfolio scenario variance uses \sum P_i (R_i - E[R])^2. NO T - 1 denominator!
-  const isScenarioVariance =
-    isChapter11 ||
-    /scenario|kịch bản|xác suất|probability/i.test(contextHint) ||
-    /\\sigma\^2\s*=|\\sigma\s*=\s*\\sqrt/i.test(latex);
+  // 5. Arithmetic mean \bar{R} divided by T - 1 or n - 1
+  const isArithmeticMean =
+    (/\\bar\{R\}|arithmetic|số học/i.test(latex) ||
+      (/arithmetic|số học|trung bình cộng/i.test(hint) &&
+        !/variance|phương sai|độ lệch chuẩn|s\^2/i.test(hint))) &&
+    !/\(R_t\s*-\s*\\bar\{R\}\)\^2|s\^2/i.test(latex);
 
-  if (
-    isScenarioVariance &&
-    (/variance|phương sai|độ lệch chuẩn|\\sigma/i.test(contextHint) || /\\sigma\^2|P_i/i.test(latex))
-  ) {
-    // Intercept if divided by T - 1 or n - 1 or T in scenario variance
-    const isDividedBySample =
-      /\\frac\{1\}\{[TnN]\s*-\s*1\}|\/\s*\(?[TnN]\s*-\s*1\)?|\\frac\{1\}\{[TnN]\}|\/\s*\(?[TnN]\)?/i.test(
-        latex,
+  const dividesBySampleMinusOne =
+    /\\frac\{1\}\{\s*[Tn]\s*-\s*1\s*\}|\/\s*\(?\s*[Tn]\s*-\s*1\s*\)?/.test(latex);
+
+  if (isArithmeticMean && dividesBySampleMinusOne) {
+    warnings.push(
+      "Arithmetic mean is divided by T - 1 or n - 1 instead of total periods T or n.",
+    );
+  }
+
+  // 6. Sample variance s^2 (squared deviations without P_i) divided by T instead of T - 1, or mixed with P_i
+  const isHistoricalSampleVar =
+    /s\^2/i.test(latex) ||
+    (/\(R_t\s*-\s*\\bar\{R\}\)\^2/i.test(latex) && !/P_i|p_i/i.test(latex));
+
+  if (isHistoricalSampleVar) {
+    const dividesByTOnly =
+      /\\frac\{1\}\{\s*[Tn]\s*\}(?!\s*-\s*1)|\/\s*[Tn](?![A-Za-z0-9_\-\s]*-\s*1)/.test(latex);
+    if (dividesByTOnly) {
+      warnings.push(
+        "Sample variance s^2 is divided by T or n instead of Bessel-corrected T - 1 or n - 1.",
       );
-
-    if (isDividedBySample) {
-      latex = "\\sigma^2 = \\sum_{i=1}^n P_i (R_i - E[R])^2, \\quad \\sigma = \\sqrt{\\sigma^2}";
-      leadText = "Phương sai và độ lệch chuẩn theo kịch bản xác suất (trọng số P_i, không chia cho T - 1):";
-      description = "Phương sai kịch bản được tính bằng tổng gia quyền theo xác suất P_i.";
-      variables = [
-        { symbol: "\\sigma^2, \\sigma", definition: "Phương sai và độ lệch chuẩn theo kịch bản xác suất" },
-        { symbol: "P_i", definition: "Xác suất xảy ra kịch bản kinh tế i" },
-        { symbol: "R_i", definition: "Tỷ suất sinh lời trong kịch bản i" },
-        { symbol: "E[R]", definition: "Tỷ suất sinh lời kỳ vọng" },
-      ];
+    }
+    if (/P_i|p_i/i.test(latex)) {
+      warnings.push(
+        "Sample variance s^2 erroneously includes scenario probability P_i.",
+      );
     }
   }
 
-  // 8. Chapter 26 Working Capital & Cash Identity Safeguard:
-  if (
-    /\\text\{Cash\}|^\s*Cash\s*=/i.test(latex) &&
-    /Debt/i.test(latex) &&
-    (/Equity/i.test(latex) || /Fixed Assets/i.test(latex) || /NWC/i.test(latex) || /Working Capital/i.test(latex))
-  ) {
-    const usesExcludingCash = /excluding/i.test(latex);
-    const nwcPart = /\\text\{NWC\}|NWC\b/i.test(latex) && !/Net Working Capital/i.test(latex)
-      ? "\\text{NWC}"
-      : usesExcludingCash
-        ? "\\text{Net Working Capital (excluding Cash)}"
-        : "\\text{Net Working Capital (other than Cash)}";
-    latex = `\\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - ${nwcPart} - \\text{Fixed Assets}`;
-    leadText = leadText || "Đồng nhất thức tiền mặt (Cash Identity) từ Bảng cân đối kế toán:";
-    description = description || "Tiền mặt = Nợ dài hạn + Vốn CSH - Vốn lưu động ròng (ngoài tiền mặt) - Tài sản cố định.";
-    if (!variables || variables.length === 0) {
-      variables = [
-        { symbol: "\\text{Cash}", definition: "Số dư tiền mặt của doanh nghiệp" },
-        { symbol: "\\text{Long-Term Debt}", definition: "Nợ dài hạn" },
-        { symbol: "\\text{Equity}", definition: "Vốn chủ sở hữu" },
-        { symbol: nwcPart, definition: "Vốn lưu động ròng (loại trừ tiền mặt)" },
-        { symbol: "\\text{Fixed Assets}", definition: "Tài sản cố định" },
-      ];
-    }
-  } else if (/^\s*(?:\\text\{)?NWC(?:\})?\s*=/i.test(latex) && /Current/i.test(latex)) {
-    latex = "\\text{NWC} = \\text{Current Assets} - \\text{Current Liabilities}";
+  // 7. Scenario variance \sigma^2 with P_i also divided by T or T - 1
+  const isScenarioVariance =
+    (/\\sigma\^2|\\sigma\b/i.test(latex) || /scenario|kịch bản/i.test(hint)) &&
+    /P_i|p_i/i.test(latex);
+  const dividesBySample =
+    /\\frac\{1\}\{\s*[Tn]\s*(?:-\s*1)?\s*\}|\/\s*\(?\s*[Tn]\s*(?:-\s*1)?\s*\)?/.test(latex);
+
+  if (isScenarioVariance && dividesBySample) {
+    warnings.push(
+      "Scenario variance sigma^2 with probability weights P_i is also divided by sample size T or T - 1.",
+    );
   }
 
-  return {
-    ...f,
-    latex,
-    leadText,
-    description,
-    variables,
-  };
+  return warnings;
 }
 
 /**
- * Prunes specific Case 1 & Case 2 formulas from Section C top-level
- * so that equations are not rendered twice (once at top-level and again in subSections).
+ * Removes a top-level formula if an equivalent formula already exists inside sec.subSections.
  */
 function deduplicateSectionC(sec: NoteSection): NoteSection {
-  const isSectionC = /DDM|DIVIDEND DISCOUNT|CỔ TỨC/i.test(sec.titleVi);
-  if (!isSectionC || !sec.subSections || sec.subSections.length === 0) {
+  if (!sec.subSections || sec.subSections.length === 0) {
     return sec;
   }
-
-  const filteredFormulas = sec.formulas.filter((f) => {
-    const isPerpetuityOnly =
-      /\\frac\{\s*D\s*\}\{\s*R\s*\}$/.test(f.latex.trim()) && !f.latex.includes("\\sum");
-    const isGordonOnly =
-      /\\frac\{\s*D_?1\s*\}\{\s*R\s*-\s*g\s*\}$/.test(f.latex.trim()) && !f.latex.includes("\\sum");
-    const isTerminalValue = /P_?N\s*=/i.test(f.latex);
-    return !isPerpetuityOnly && !isGordonOnly && !isTerminalValue;
-  });
-
+  const subKeys = new Set<string>();
+  for (const sub of sec.subSections) {
+    for (const f of sub.formulas) {
+      const k = normalizeFormulaKey(f.latex);
+      if (k) subKeys.add(k);
+    }
+  }
   return {
     ...sec,
-    formulas: filteredFormulas,
+    formulas: sec.formulas.filter((f) => !subKeys.has(normalizeFormulaKey(f.latex))),
   };
 }
 
@@ -614,6 +611,18 @@ function deduplicateSubSections(subSections: NoteSubSection[]): NoteSubSection[]
             existing.bulletPoints.push(bp);
           }
         }
+        if (sub.groundedBullets && sub.groundedBullets.length > 0) {
+          if (!existing.groundedBullets) existing.groundedBullets = [];
+          for (const gb of sub.groundedBullets) {
+            if (
+              !existing.groundedBullets.some(
+                (egb) => egb.text === gb.text && egb.slide === gb.slide,
+              )
+            ) {
+              existing.groundedBullets.push(gb);
+            }
+          }
+        }
         for (const f of sub.formulas) {
           if (!existing.formulas.some((ef) => ef.latex === f.latex)) {
             existing.formulas.push(f);
@@ -630,22 +639,72 @@ function deduplicateSubSections(subSections: NoteSubSection[]): NoteSubSection[]
   return deduplicated;
 }
 
+function stripOuterParens(expr: string): string {
+  let s = expr;
+  while (s.startsWith("(") && s.endsWith(")")) {
+    let depth = 0;
+    let matchedEnd = false;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === "(") depth++;
+      else if (s[i] === ")") {
+        depth--;
+        if (depth === 0) {
+          matchedEnd = (i === s.length - 1);
+          break;
+        }
+      }
+    }
+    if (matchedEnd) {
+      s = s.slice(1, -1);
+    } else {
+      break;
+    }
+  }
+  return s;
+}
+
 /**
- * Normalizes a LaTeX formula string to a canonical key for equivalence checking.
+ * Structure-preserving formula key normalizer for equivalence and deduplication checking.
+ * Strips display/spacing commands (\left, \right, \quad, \qquad, \displaystyle, \mathbf, \mathrm, \text)
+ * and whitespace, normalizes {x} single-token braces to x, and lowercases.
+ * PRESERVES structural operators: ^, _, /, +, -, (, ), \frac, \sum, \sqrt, \prod.
  */
 export function normalizeFormulaKey(latex: string): string {
-  if (!latex) return "";
-  return latex
-    .replace(/\\(left|right|quad|qquad|text|mathrm|displaystyle|mathbf)/g, "")
-    .replace(/[{}\s()_^\\]/g, "")
-    .toLowerCase();
+  if (!latex || typeof latex !== "string") return "";
+
+  let s = latex.trim().replace(/^\$+|\$+$/g, "").trim();
+
+  // Strip font/text wrappers: \text{foo} -> foo, \mathrm{foo} -> foo, \mathbf{foo} -> foo
+  s = s.replace(/\\(?:text|mathrm|mathbf)\{([^{}]+)\}/g, "$1");
+
+  // Strip standalone display/spacing commands
+  s = s.replace(/\\(left|right)\./g, "");
+  s = s.replace(/\\(left|right|quad|qquad|displaystyle|mathbf|mathrm|text)\b/g, "");
+
+  // Strip whitespace
+  s = s.replace(/\s+/g, "");
+
+  // Strip outer enclosing parentheses from entire formula or on either side of '='
+  if (s.includes("=")) {
+    const parts = s.split("=");
+    s = parts.map((part) => stripOuterParens(part)).join("=");
+  } else {
+    s = stripOuterParens(s);
+  }
+
+  // Normalize single-token braces: {x} -> x (e.g. P_{0} -> P_0, (1+R)^{t} -> (1+R)^t, {1} -> 1)
+  while (/\{([a-zA-Z0-9])\}/.test(s)) {
+    s = s.replace(/\{([a-zA-Z0-9])\}/g, "$1");
+  }
+
+  return s.toLowerCase();
 }
 
 /**
  * Deduplicates a list of formula cards:
  * 1. Removes identical or equivalent formulas based on normalized LaTeX.
- * 2. Prunes any standalone standard deviation formula (\sigma_p = \sqrt{\sigma_p^2}, \sigma = \sqrt{\sigma^2}, s = \sqrt{s^2})
- *    if an earlier formula card in the list already defined both variance and standard deviation.
+ * 2. Prunes standalone redundant standard deviation formulas (\sigma_p = \sqrt{\sigma_p^2}, s = \sqrt{s^2})
+ *    if an earlier formula card in the list already defined variance and standard deviation.
  */
 export function deduplicateFormulaList(formulas: NoteFormula[]): NoteFormula[] {
   if (!formulas || formulas.length === 0) return [];
@@ -703,14 +762,25 @@ export function deduplicateFormulaList(formulas: NoteFormula[]): NoteFormula[] {
 /**
  * Universal intra-section formula deduplicator:
  * Normalizes formula latex and removes identical or equivalent formulas,
- * pruning standalone redundant square root definitions across top-level formulas and subSections.
+ * pruning top-level formulas that already exist in subSections.
  */
 export function deduplicateSectionFormulas(sec: NoteSection): NoteSection {
-  const dedupedTopFormulas = deduplicateFormulaList(sec.formulas || []);
   const dedupedSubSections = (sec.subSections || []).map((sub) => ({
     ...sub,
     formulas: deduplicateFormulaList(sub.formulas || []),
   }));
+
+  const subFormulaKeys = new Set<string>();
+  for (const sub of dedupedSubSections) {
+    for (const f of sub.formulas) {
+      const key = normalizeFormulaKey(f.latex);
+      if (key) subFormulaKeys.add(key);
+    }
+  }
+
+  const dedupedTopFormulas = deduplicateFormulaList(sec.formulas || []).filter(
+    (f) => !subFormulaKeys.has(normalizeFormulaKey(f.latex)),
+  );
 
   return {
     ...sec,
@@ -722,6 +792,7 @@ export function deduplicateSectionFormulas(sec: NoteSection): NoteSection {
 /**
  * Consolidates fragmented sections (e.g. when an LLM outputs 8–10 sections by splitting
  * every case and parameter into separate top-level sections) into the canonical 5 sections.
+ * Never drops sections or formulas!
  */
 function consolidateFragmentedSections(
   sections: NoteSection[],
@@ -761,6 +832,46 @@ function consolidateFragmentedSections(
   let sectionC: NoteSection | null = null;
   let sectionD: NoteSection | null = null;
   let sectionE: NoteSection | null = null;
+  const unmatchedSections: NoteSection[] = [];
+
+  function mergeIntoSection(target: NoteSection, sec: NoteSection) {
+    if (sec.bulletPoints && sec.bulletPoints.length > 0) {
+      target.bulletPoints.push(...sec.bulletPoints);
+    }
+    if (sec.groundedBullets && sec.groundedBullets.length > 0) {
+      target.groundedBullets = [
+        ...(target.groundedBullets || []),
+        ...sec.groundedBullets,
+      ];
+    }
+    if (sec.formulas && sec.formulas.length > 0) {
+      target.formulas.push(...sec.formulas);
+    }
+    if (sec.subSections && sec.subSections.length > 0) {
+      target.subSections = [...(target.subSections || []), ...sec.subSections];
+    }
+    if (sec.sourceSlides && sec.sourceSlides.length > 0) {
+      const combined = new Set([...(target.sourceSlides || []), ...sec.sourceSlides]);
+      target.sourceSlides = Array.from(combined).sort((a, b) => a - b);
+    }
+    if (sec.keyTakeaways) {
+      if (!target.keyTakeaways) {
+        target.keyTakeaways = { ...sec.keyTakeaways };
+      } else {
+        target.keyTakeaways = {
+          ...target.keyTakeaways,
+          items: [
+            ...(target.keyTakeaways.items || []),
+            ...(sec.keyTakeaways.items || []),
+          ],
+          summaryPoints: [
+            ...(target.keyTakeaways.summaryPoints || []),
+            ...(sec.keyTakeaways.summaryPoints || []),
+          ],
+        };
+      }
+    }
+  }
 
   for (const sec of sections) {
     const title = sec.titleVi.toLowerCase();
@@ -768,12 +879,14 @@ function consolidateFragmentedSections(
     // Section A: Fundamental Principle
     if (/nguyên lý|cơ bản|fundamental.*principle/i.test(title)) {
       if (!sectionA) sectionA = { ...sec };
+      else mergeIntoSection(sectionA, sec);
       continue;
     }
 
     // Section B: One-Period Formula
-    if (/công thức tổng quát|tổng quát|one-period|đầu tư trong 1 năm|giáo dục/i.test(title)) {
+    if (/công thức tổng quát|tổng quát|one-period|đầu tư trong 1 năm/i.test(title)) {
       if (!sectionB) sectionB = { ...sec };
+      else mergeIntoSection(sectionB, sec);
       continue;
     }
 
@@ -789,7 +902,7 @@ function consolidateFragmentedSections(
         sectionD = {
           ...sec,
           titleVi: "D. PARAMETERS IN DIVIDEND DISCOUNT MODEL",
-          formulas: [],
+          formulas: [...sec.formulas],
           subSections:
             sec.subSections && sec.subSections.length > 0
               ? [...sec.subSections]
@@ -797,23 +910,15 @@ function consolidateFragmentedSections(
                   {
                     heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
                     bulletPoints: [...sec.bulletPoints],
+                    groundedBullets: sec.groundedBullets
+                      ? [...sec.groundedBullets]
+                      : undefined,
                     formulas: [...sec.formulas],
                   },
                 ],
         };
       } else {
-        if (sec.subSections && sec.subSections.length > 0) {
-          sectionD.subSections = [...(sectionD.subSections || []), ...sec.subSections];
-        } else {
-          sectionD.subSections = [
-            ...(sectionD.subSections || []),
-            {
-              heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
-              bulletPoints: [...sec.bulletPoints],
-              formulas: [...sec.formulas],
-            },
-          ];
-        }
+        mergeIntoSection(sectionD, sec);
       }
       continue;
     }
@@ -826,39 +931,27 @@ function consolidateFragmentedSections(
           /preference|preferred|ưu đãi|ưu tiên|cứu trợ|bổ trợ/i.test(sub.heading),
         ))
     ) {
-      const isDeferredSection = /deferred|hoãn trả|bổ trợ/i.test(title);
-
       if (!sectionE) {
         sectionE = {
           ...sec,
           titleVi: "E. VALUE OF PREFERENCE SHARE",
-          formulas: isDeferredSection ? [] : sec.formulas,
+          formulas: [...sec.formulas],
           subSections:
             sec.subSections && sec.subSections.length > 0
               ? [...sec.subSections]
-              : isDeferredSection
-                ? [
-                    {
-                      heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
-                      bulletPoints: [...sec.bulletPoints],
-                      formulas: [...sec.formulas],
-                    },
-                  ]
-                : [],
+              : [
+                  {
+                    heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
+                    bulletPoints: [...sec.bulletPoints],
+                    groundedBullets: sec.groundedBullets
+                      ? [...sec.groundedBullets]
+                      : undefined,
+                    formulas: [...sec.formulas],
+                  },
+                ],
         };
       } else {
-        if (sec.subSections && sec.subSections.length > 0) {
-          sectionE.subSections = [...(sectionE.subSections || []), ...sec.subSections];
-        } else {
-          sectionE.subSections = [
-            ...(sectionE.subSections || []),
-            {
-              heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
-              bulletPoints: [...sec.bulletPoints],
-              formulas: [...sec.formulas],
-            },
-          ];
-        }
+        mergeIntoSection(sectionE, sec);
       }
       continue;
     }
@@ -872,54 +965,32 @@ function consolidateFragmentedSections(
         /\\sum|D_?1\s*\/\s*\(R\s*-\s*g\)|D\s*\/\s*R/i.test(f.latex),
       )
     ) {
-      const isStandaloneCase =
-        /case\s*[123]|zero growth|constant growth|không tăng trưởng|ritm|hạnh hạnh/i.test(title);
-
       if (!sectionC) {
         sectionC = {
           ...sec,
           titleVi: "C. DDM (DIVIDEND DISCOUNT MODEL)",
-          formulas: isStandaloneCase
-            ? [
-                {
-                  name: "",
-                  latex: "P_0 = \\sum_{t=1}^{\\infty} \\frac{D_t}{(1 + R)^t}",
-                  variables: [],
-                },
-              ]
-            : sec.formulas,
+          formulas: [...sec.formulas],
           subSections:
             sec.subSections && sec.subSections.length > 0
               ? [...sec.subSections]
-              : isStandaloneCase
-                ? [
-                    {
-                      heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
-                      bulletPoints: [...sec.bulletPoints],
-                      formulas: [...sec.formulas],
-                    },
-                  ]
-                : [],
+              : [
+                  {
+                    heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
+                    bulletPoints: [...sec.bulletPoints],
+                    groundedBullets: sec.groundedBullets
+                      ? [...sec.groundedBullets]
+                      : undefined,
+                    formulas: [...sec.formulas],
+                  },
+                ],
         };
       } else {
-        if (sec.subSections && sec.subSections.length > 0) {
-          sectionC.subSections = [...(sectionC.subSections || []), ...sec.subSections];
-        } else {
-          sectionC.subSections = [
-            ...(sectionC.subSections || []),
-            {
-              heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
-              bulletPoints: [...sec.bulletPoints],
-              formulas: [...sec.formulas],
-            },
-          ];
-        }
-        if (sec.keyTakeaways && !sectionC.keyTakeaways) {
-          sectionC.keyTakeaways = sec.keyTakeaways;
-        }
+        mergeIntoSection(sectionC, sec);
       }
       continue;
     }
+
+    unmatchedSections.push(sec);
   }
 
   const result: NoteSection[] = [];
@@ -929,12 +1000,61 @@ function consolidateFragmentedSections(
   if (sectionD) result.push(sectionD);
   if (sectionE) result.push(sectionE);
 
+  for (const unmatched of unmatchedSections) {
+    if (result.length < 5) {
+      result.push(unmatched);
+    } else {
+      const lastSection = result[result.length - 1];
+      const extraSubHeading = unmatched.titleVi.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
+      const newSub: NoteSubSection = {
+        heading: extraSubHeading,
+        leadIn: unmatched.overview || undefined,
+        bulletPoints: [...unmatched.bulletPoints],
+        groundedBullets: unmatched.groundedBullets
+          ? [...unmatched.groundedBullets]
+          : undefined,
+        formulas: [...unmatched.formulas],
+      };
+      if (unmatched.subSections && unmatched.subSections.length > 0) {
+        lastSection.subSections = [
+          ...(lastSection.subSections || []),
+          newSub,
+          ...unmatched.subSections,
+        ];
+      } else {
+        lastSection.subSections = [...(lastSection.subSections || []), newSub];
+      }
+      if (unmatched.keyTakeaways) {
+        if (!lastSection.keyTakeaways) {
+          lastSection.keyTakeaways = { ...unmatched.keyTakeaways };
+        } else {
+          lastSection.keyTakeaways = {
+            ...lastSection.keyTakeaways,
+            items: [
+              ...(lastSection.keyTakeaways.items || []),
+              ...(unmatched.keyTakeaways.items || []),
+            ],
+            summaryPoints: [
+              ...(lastSection.keyTakeaways.summaryPoints || []),
+              ...(unmatched.keyTakeaways.summaryPoints || []),
+            ],
+          };
+        }
+      }
+      if (unmatched.sourceSlides && unmatched.sourceSlides.length > 0) {
+        const combined = new Set([...(lastSection.sourceSlides || []), ...unmatched.sourceSlides]);
+        lastSection.sourceSlides = Array.from(combined).sort((a, b) => a - b);
+      }
+    }
+  }
+
   return result.length >= 3 ? result : sections;
 }
 
 /**
  * Universally consolidates sections into strictly 3–5 canonical sections (A through E)
  * across any course or academic discipline (Finance, Economics, Accounting, Statistics, STEM).
+ * Preserves keyTakeaways items, summaryPoints, and sourceSlides from merged extra sections.
  */
 function consolidateSectionsUniversally(
   sections: NoteSection[],
@@ -965,10 +1085,34 @@ function consolidateSectionsUniversally(
         heading: extraSubHeading,
         leadIn: extraSec.overview || undefined,
         bulletPoints: [...extraSec.bulletPoints],
+        groundedBullets: extraSec.groundedBullets
+          ? [...extraSec.groundedBullets]
+          : undefined,
         formulas: [...extraSec.formulas],
       });
       if (extraSec.subSections && extraSec.subSections.length > 0) {
         mergedSubSections.push(...extraSec.subSections);
+      }
+      if (extraSec.keyTakeaways) {
+        if (!baseSectionE.keyTakeaways) {
+          baseSectionE.keyTakeaways = { ...extraSec.keyTakeaways };
+        } else {
+          baseSectionE.keyTakeaways = {
+            ...baseSectionE.keyTakeaways,
+            items: [
+              ...(baseSectionE.keyTakeaways.items || []),
+              ...(extraSec.keyTakeaways.items || []),
+            ],
+            summaryPoints: [
+              ...(baseSectionE.keyTakeaways.summaryPoints || []),
+              ...(extraSec.keyTakeaways.summaryPoints || []),
+            ],
+          };
+        }
+      }
+      if (extraSec.sourceSlides && extraSec.sourceSlides.length > 0) {
+        const combined = new Set([...(baseSectionE.sourceSlides || []), ...extraSec.sourceSlides]);
+        baseSectionE.sourceSlides = Array.from(combined).sort((a, b) => a - b);
       }
     }
 
@@ -1072,6 +1216,11 @@ export function harvestEquationFromText(line: string): NoteFormula | null {
   return formulas.length > 0 ? formulas[0] : null;
 }
 
+/**
+ * Universal Post-Processing Shield:
+ * Ensures clean typography, KaTeX delimiters, and structure consolidation.
+ * Never authors academic content, never rewrites formula semantics, and never drops sections.
+ */
 export function applyHallucinationShield(
   sections: NoteSection[],
   rawSlideText: string = "",
@@ -1083,34 +1232,11 @@ export function applyHallucinationShield(
   const isWaccOrCostOfCapital =
     /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn/i.test(combinedContext);
 
-  const isChapter10Historical =
-    !isWaccOrCostOfCapital &&
-    /chapter\s*10|historical.*(risk|return)|lợi suất lịch sử|phương sai lịch sử|sample variance|geometric average|arithmetic average|blume|holding period/i.test(
-      combinedContext,
-    );
-
-  const isChapter11Portfolio =
-    !isWaccOrCostOfCapital &&
-    /chapter\s*11|portfolio|danh mục|capm|sml|expected return|kịch bản|xác suất|covariance|hiệp phương sai|correlation|hệ số tương quan|beta\b|rủi ro hệ thống|systematic risk/i.test(
-      combinedContext,
-    );
-
   const isChapter9StockValuation =
     !isWaccOrCostOfCapital &&
-    !isChapter10Historical &&
-    !isChapter11Portfolio &&
     (/stock valuation|định giá cổ phiếu|dividend discount|gordon growth/i.test(rawSlideText) ||
       /stock valuation|định giá cổ phiếu/i.test(allTitlesText) ||
       /ddm|ritm|hạnh hạnh/i.test(combinedContext));
-
-  const isChapter26WorkingCapital =
-    !isWaccOrCostOfCapital &&
-    !isChapter10Historical &&
-    !isChapter11Portfolio &&
-    !isChapter9StockValuation &&
-    /chapter\s*26|short-term (financial )?planning|working capital|kế hoạch tài chính ngắn hạn|vốn lưu động|operating cycle|cash cycle|chu kỳ hoạt động|chu kỳ tiền mặt|cash budget|ngân sách tiền mặt|vòng quay hàng tồn kho|kỳ thu tiền bình quân|inventory turnover|receivables turnover|payables turnover|cash identity|nguồn và sử dụng tiền/i.test(
-      combinedContext,
-    );
 
   // Step 1: Consolidate fragmented sections universally into 3–5 canonical sections
   const consolidated = consolidateSectionsUniversally(
@@ -1119,7 +1245,7 @@ export function applyHallucinationShield(
     isChapter9StockValuation,
   );
 
-  // Step 2: Apply fine-grained formula, header, and content shields
+  // Step 2: Apply fine-grained formula and header sanitization
   const processed = consolidated.map((sec, idx) => {
     const sequentialLetter = String.fromCharCode(65 + idx);
 
@@ -1132,7 +1258,16 @@ export function applyHallucinationShield(
       sec.coreStatement = sanitizeUniversalText(sec.coreStatement);
     if (sec.overview)
       sec.overview = sanitizeUniversalText(sec.overview);
-    sec.bulletPoints = sec.bulletPoints.map(sanitizeUniversalText);
+    sec.bulletPoints = Array.isArray(sec.bulletPoints)
+      ? sec.bulletPoints.map(sanitizeUniversalText)
+      : [];
+    if (sec.groundedBullets) {
+      sec.groundedBullets = sec.groundedBullets.map((gb) => ({
+        text: sanitizeUniversalText(gb.text),
+        slide: gb.slide,
+        evidence: gb.evidence,
+      }));
+    }
 
     if (sec.keyTakeaways) {
       if (sec.keyTakeaways.title) {
@@ -1142,6 +1277,8 @@ export function applyHallucinationShield(
         sec.keyTakeaways.items = sec.keyTakeaways.items.map((item) => ({
           point: sanitizeUniversalText(item.point),
           subBullets: (item.subBullets ?? []).map(sanitizeUniversalText),
+          slide: item.slide,
+          evidence: item.evidence,
         }));
       }
       if (sec.keyTakeaways.boundaryConditions) {
@@ -1164,47 +1301,10 @@ export function applyHallucinationShield(
       );
     }
 
-    // 2b. Shield formulas at section top-level
-    sec.formulas = sec.formulas.map((f) =>
-      shieldFormula(
-        f,
-        sec.titleVi,
-        isChapter9StockValuation,
-        isChapter10Historical,
-        isChapter11Portfolio,
-        isChapter26WorkingCapital,
-      ),
-    );
+    // 2b. Sanitize formulas at section top-level (purely typographical / delimiter)
+    sec.formulas = sec.formulas.map(sanitizeFormula);
 
-    // Universal Formula Harvester:
-    // ALWAYS scan sec.coreStatement, sec.overview, and sec.bulletPoints
-    // Even if sec.formulas already contains formulas, harvest any calculation equations trapped in prose!
-    const candidates = [sec.coreStatement, sec.overview, ...sec.bulletPoints].filter(
-      (t): t is string => Boolean(t && t.includes("=")),
-    );
-    for (const cand of candidates) {
-      const harvestedList = harvestEquationsFromText(cand);
-      for (const harvested of harvestedList) {
-        const harvestedKey = normalizeFormulaKey(harvested.latex);
-        const alreadyExists = sec.formulas.some(
-          (f) => normalizeFormulaKey(f.latex) === harvestedKey || f.latex === harvested.latex,
-        );
-        if (!alreadyExists && harvestedKey) {
-          sec.formulas.push(
-            shieldFormula(
-              harvested,
-              sec.titleVi,
-              isChapter9StockValuation,
-              isChapter10Historical,
-              isChapter11Portfolio,
-              isChapter26WorkingCapital,
-            ),
-          );
-        }
-      }
-    }
-
-    // 2c. Shield sub-sections
+    // 2c. Sanitize sub-sections
     if (sec.subSections) {
       sec.subSections = deduplicateSubSections(sec.subSections);
       sec.subSections = sec.subSections.map((sub) => {
@@ -1212,687 +1312,42 @@ export function applyHallucinationShield(
         if (sub.leadIn)
           sub.leadIn = sanitizeUniversalText(sub.leadIn);
         sub.bulletPoints = sub.bulletPoints.map(sanitizeUniversalText);
-        sub.formulas = sub.formulas.map((f) =>
-          shieldFormula(
-            f,
-            `${sec.titleVi} ${sub.heading}`,
-            isChapter9StockValuation,
-            isChapter10Historical,
-            isChapter11Portfolio,
-            isChapter26WorkingCapital,
-          ),
-        );
-
-        // Sub-section Formula Harvester:
-        // ALWAYS scan sub.leadIn and sub.bulletPoints
-        const subCandidates = [sub.leadIn, ...sub.bulletPoints].filter(
-          (t): t is string => Boolean(t && t.includes("=")),
-        );
-        for (const cand of subCandidates) {
-          const harvestedList = harvestEquationsFromText(cand);
-          for (const harvested of harvestedList) {
-            const harvestedKey = normalizeFormulaKey(harvested.latex);
-            const alreadyExists = sub.formulas.some(
-              (f) => normalizeFormulaKey(f.latex) === harvestedKey || f.latex === harvested.latex,
-            );
-            if (!alreadyExists && harvestedKey) {
-              sub.formulas.push(
-                shieldFormula(
-                  harvested,
-                  `${sec.titleVi} ${sub.heading}`,
-                  isChapter9StockValuation,
-                  isChapter10Historical,
-                  isChapter11Portfolio,
-                  isChapter26WorkingCapital,
-                ),
-              );
-            }
-          }
+        if (sub.groundedBullets) {
+          sub.groundedBullets = sub.groundedBullets.map((gb) => ({
+            text: sanitizeUniversalText(gb.text),
+            slide: gb.slide,
+            evidence: gb.evidence,
+          }));
         }
-
-        if (isChapter9StockValuation) {
-          // Case 3 (Differential Growth) Terminal Value PN injection
-          const isDifferentialGrowth =
-            /case\s*3|differential|non-?constant|tăng trưởng (không đều|khác biệt|nhiều giai đoạn)/i.test(
-              sub.heading,
-            );
-          if (isDifferentialGrowth) {
-            const hasTerminalFormula = sub.formulas.some((f) =>
-              /P_?N\s*=|\\frac\{\s*D_?\{?N\+1\}?|\(1\s*\+\s*g\)\}/i.test(f.latex),
-            );
-            if (!hasTerminalFormula) {
-              sub.formulas.push({
-                name: "",
-                leadText: "Terminal Value calculation at Year N:",
-                latex: "P_N = \\frac{D_{N+1}}{R - g} = \\frac{D_N \\cdot (1 + g)}{R - g}",
-                description:
-                  "$P_N$ represents the present value of the constant growth perpetuity at the end of Year $N$.",
-                variables: [
-                  {
-                    symbol: "P_N",
-                    definition: "Terminal price of the stock at Year N",
-                  },
-                  {
-                    symbol: "D_{N+1}",
-                    definition: "First dividend in the constant growth stage ($D_N \\times (1 + g)$)",
-                  },
-                ],
-              });
-            }
-          }
-
-          // Finding R decomposition injection
-          const isFindingR = /finding.*(discount rate|required return|\(R\))/i.test(sub.heading);
-          if (isFindingR) {
-            const hasYieldDefinitions = sub.bulletPoints.some((bp) =>
-              /dividend yield/i.test(bp),
-            );
-            if (!hasYieldDefinitions) {
-              sub.bulletPoints.unshift(
-                "Dividend Yield (Lợi suất cổ tức) $= \\frac{D_1}{P_0}$: Expected annual dividend divided by current stock price (tested independently).",
-                "Capital Gains Yield (Lợi suất tăng vốn) $= g$: The rate at which the stock price increases over time.",
-              );
-            }
-          }
-        }
-
+        sub.formulas = sub.formulas.map(sanitizeFormula);
         return sub;
       });
     }
 
-    // 2d. Section C top-level deduplication (no double-pasting with subSections)
+    // 2d. Section C top-level deduplication against subSections (structure-preserving)
     if (isChapter9StockValuation) {
       sec = deduplicateSectionC(sec);
-    }
-
-    // 2e. Section E (Preference Share / Deferred Preferred Stock)
-    if (isChapter9StockValuation) {
-      const isPreferredStock = /preference|preferred|ưu đãi/i.test(sec.titleVi);
-      const mentionsDeferredPerpetuity =
-        /novaco|beginning \d+ years|deferred|hoãn trả|year 11|year 12|delay/i.test(
-          normSlideText,
-        );
-
-      if (isPreferredStock && mentionsDeferredPerpetuity && sec.subSections) {
-        const hasDeferred = sec.subSections.some((sub) =>
-          /deferred|hoãn trả|delayed/i.test(sub.heading),
-        );
-        if (!hasDeferred) {
-          sec.subSections.push({
-            heading: "Deferred Preferred Stock (Cổ phiếu ưu đãi hoãn trả)",
-            leadIn: "When dividends begin at Year t (delayed perpetuity):",
-            bulletPoints: [
-              "Step 1: Calculate the price at Year $t-1$ (one year before first dividend): $P_{t-1} = \\frac{D_t}{R_p}$",
-              "Step 2: Discount $P_{t-1}$ back to Year 0: $P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}$",
-            ],
-            formulas: [
-              {
-                name: "",
-                leadText: "Two-step deferred perpetuity valuation:",
-                latex: "P_{t-1} = \\frac{D_t}{R_p} \\implies P_0 = \\frac{P_{t-1}}{(1 + R_p)^{t-1}}",
-                description:
-                  "Find the price one period before the first dividend payment, then discount back to today.",
-                variables: [],
-              },
-            ],
-          });
-        }
-      }
     }
 
     return sec;
   });
 
-  // Step 2f. Chapter 10 & 11 Core Formula Safeguards:
-  // If the slides cover Risk & Return (Chapters 10 & 11) and the AI omitted boxed formulas
-  // for Portfolio Return/Risk, Covariance/Correlation, CAPM, or Historical Variance,
-  // populate them into the appropriate section.
-  if (isChapter11Portfolio) {
-    // 1. Identify Section B (Scenario Return & Risk of Individual Assets) vs Section C (Portfolio Return & Risk)
-    const scenarioSec = processed.find((sec) => {
-      return (
-        /kịch bản|scenario|xác suất|probability|tài sản riêng|individual/i.test(sec.titleVi) ||
-        (/kỳ vọng.*phương sai|phương sai.*kịch bản|expected return/i.test(sec.titleVi) &&
-          !/portfolio|danh mục/i.test(sec.titleVi))
-      );
-    });
-
-    let portfolioSec = processed.find((sec) => /portfolio|danh mục/i.test(sec.titleVi));
-    if (!portfolioSec) {
-      if (processed.length > 2 && processed[2] !== scenarioSec) {
-        portfolioSec = processed[2];
-      } else if (processed.length > 1 && processed[1] !== scenarioSec) {
-        portfolioSec = processed[1];
-      }
+  // Step 3: Collect non-mutating lint warnings across all sections and subSections
+  const warnings: string[] = [];
+  for (const sec of processed) {
+    for (const f of sec.formulas) {
+      warnings.push(...lintFormula(f, sec.titleVi));
     }
-
-    // 1a. Section B (Scenario Return & Risk of Individual Assets):
-    // Must contain:
-    // E[R] = \sum_{i=1}^n P_i R_i (or E[R_i] = \sum_{j=1}^n P_j R_{i,j})
-    // \sigma^2 = \sum_{i=1}^n P_i (R_i - E[R])^2, \quad \sigma = \sqrt{\sigma^2}
-    // NEVER inject Portfolio formulas (E[R_p], \sigma_p^2) into Section B!
-    if (scenarioSec) {
-      // Purge any portfolio formulas from Section B
-      scenarioSec.formulas = scenarioSec.formulas.filter(
-        (f) => !/E\[R_p\]|\\sigma_p\^?2|w_A\^2/i.test(f.latex),
-      );
-      if (scenarioSec.subSections) {
-        for (const sub of scenarioSec.subSections) {
-          sub.formulas = sub.formulas.filter(
-            (f) => !/E\[R_p\]|\\sigma_p\^?2|w_A\^2/i.test(f.latex),
-          );
+    if (sec.subSections) {
+      for (const sub of sec.subSections) {
+        for (const f of sub.formulas) {
+          warnings.push(...lintFormula(f, `${sec.titleVi} ${sub.heading}`));
         }
       }
-
-      const hasScenarioReturn =
-        scenarioSec.formulas.some((f) => /E\[R\]|\\sum.*P_i\s*R_i|\\sum.*P_j\s*R_\{?i/i.test(f.latex)) ||
-        (scenarioSec.subSections &&
-          scenarioSec.subSections.some((sub) =>
-            sub.formulas.some((f) => /E\[R\]|\\sum.*P_i\s*R_i|\\sum.*P_j\s*R_\{?i/i.test(f.latex)),
-          ));
-
-      if (!hasScenarioReturn) {
-        scenarioSec.formulas.unshift(
-          sanitizeFormula({
-            name: "",
-            leadText: "Tỷ suất sinh lời kỳ vọng theo kịch bản xác suất:",
-            latex: "E[R] = \\sum_{i=1}^n P_i R_i",
-            description: "Bình quân gia quyền tỷ suất sinh lời của tài sản theo xác suất kịch bản.",
-            variables: [
-              { symbol: "E[R]", definition: "Tỷ suất sinh lời kỳ vọng (Expected return)" },
-              { symbol: "P_i", definition: "Xác suất xảy ra kịch bản i (với $\\sum P_i = 1$)" },
-              { symbol: "R_i", definition: "Tỷ suất sinh lời của tài sản trong kịch bản i" },
-            ],
-          }),
-        );
-      }
-
-      const hasScenarioVar =
-        scenarioSec.formulas.some((f) => /\\sigma\^2\s*=|\\sum.*P_i.*\(R_i/i.test(f.latex)) ||
-        (scenarioSec.subSections &&
-          scenarioSec.subSections.some((sub) =>
-            sub.formulas.some((f) => /\\sigma\^2\s*=|\\sum.*P_i.*\(R_i/i.test(f.latex)),
-          ));
-
-      if (!hasScenarioVar) {
-        scenarioSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Phương sai và độ lệch chuẩn theo kịch bản xác suất:",
-            latex: "\\sigma^2 = \\sum_{i=1}^n P_i (R_i - E[R])^2, \\quad \\sigma = \\sqrt{\\sigma^2}",
-            description: "Đo lường tổng rủi ro của tài sản riêng lẻ theo xác suất kịch bản.",
-            variables: [
-              { symbol: "\\sigma^2, \\sigma", definition: "Phương sai và độ lệch chuẩn của tài sản" },
-            ],
-          }),
-        );
-      }
-    }
-
-    // 1b. Section C (Portfolio Return & Risk):
-    // Must contain:
-    // E[R_p] = w_A E[R_A] + w_B E[R_B]
-    // \sigma_p^2 = w_A^2 \sigma_A^2 + w_B^2 \sigma_B^2 + 2 w_A w_B \text{Cov}(R_A, R_B) = w_A^2 \sigma_A^2 + w_B^2 \sigma_B^2 + 2 w_A w_B \sigma_A \sigma_B \rho_{AB}, \quad \sigma_p = \sqrt{\sigma_p^2}
-    // If a Portfolio formula was already placed in Section C, ensure it is NEVER also pushed into Section B.
-    if (portfolioSec && portfolioSec !== scenarioSec) {
-      const hasPortfolioReturn =
-        portfolioSec.formulas.some((f) => /E\[R_p\]|w_A\s*E\[R_A\]/i.test(f.latex)) ||
-        (portfolioSec.subSections &&
-          portfolioSec.subSections.some((sub) =>
-            sub.formulas.some((f) => /E\[R_p\]|w_A\s*E\[R_A\]/i.test(f.latex)),
-          ));
-
-      if (!hasPortfolioReturn) {
-        portfolioSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Tỷ suất sinh lời kỳ vọng của danh mục 2 tài sản:",
-            latex: "E[R_p] = w_A E[R_A] + w_B E[R_B]",
-            description: "Tỷ suất sinh lời kỳ vọng của danh mục là bình quân gia quyền theo tỷ trọng đầu tư.",
-            variables: [
-              { symbol: "E[R_p]", definition: "Tỷ suất sinh lời kỳ vọng của danh mục (Portfolio expected return)" },
-              { symbol: "w_A, w_B", definition: "Tỷ trọng vốn đầu tư vào tài sản A và B ($w_A + w_B = 1$)" },
-              { symbol: "E[R_A], E[R_B]", definition: "Tỷ suất sinh lời kỳ vọng của tài sản A và B" },
-            ],
-          }),
-        );
-      }
-
-      const hasPortfolioRisk =
-        portfolioSec.formulas.some((f) => /\\sigma_p\^?2|w_A\^2/i.test(f.latex)) ||
-        (portfolioSec.subSections &&
-          portfolioSec.subSections.some((sub) =>
-            sub.formulas.some((f) => /\\sigma_p\^?2|w_A\^2/i.test(f.latex)),
-          ));
-
-      if (!hasPortfolioRisk) {
-        portfolioSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Phương sai và độ lệch chuẩn của danh mục 2 tài sản:",
-            latex: "\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B) = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\sigma_A \\sigma_B \\rho_{AB}, \\quad \\sigma_p = \\sqrt{\\sigma_p^2}",
-            description: "\\sigma_p = \\sqrt{\\sigma_p^2} đo lường tổng rủi ro của danh mục.",
-            variables: [
-              { symbol: "\\sigma_p^2, \\sigma_p", definition: "Phương sai và độ lệch chuẩn của danh mục" },
-              { symbol: "\\sigma_A, \\sigma_B", definition: "Độ lệch chuẩn riêng của tài sản A và B" },
-              { symbol: "\\text{Cov}(R_A, R_B)", definition: "Hiệp phương sai giữa hai tài sản" },
-              { symbol: "\\rho_{AB}", definition: "Hệ số tương quan giữa hai tài sản ($-1 \\le \\rho_{AB} \\le 1$)" },
-            ],
-          }),
-        );
-      }
-    }
-
-    // 2. Covariance & Correlation Coefficient
-    const hasCovarianceFormula = processed.some(
-      (sec) =>
-        sec.formulas.some((f) =>
-          /\\sum.*P_i.*R_\{?A\}?|\\text\{Corr\}\(R_A,\s*R_B\)/i.test(f.latex),
-        ) ||
-        (sec.subSections &&
-          sec.subSections.some((sub) =>
-            sub.formulas.some((f) =>
-              /\\sum.*P_i.*R_\{?A\}?|\\text\{Corr\}\(R_A,\s*R_B\)/i.test(f.latex),
-            ),
-          )),
-    );
-
-    if (!hasCovarianceFormula) {
-      let targetSec = processed.find((sec) =>
-        /hiệp phương sai|covariance|tương quan|correlation/i.test(sec.titleVi),
-      );
-      if (!targetSec && processed.length > 2 && processed[2] !== scenarioSec) {
-        targetSec = processed[2]; // Typically Section C
-      }
-      if (!targetSec) {
-        targetSec = portfolioSec && portfolioSec !== scenarioSec ? portfolioSec : processed[0];
-      }
-      if (targetSec && targetSec !== scenarioSec) {
-        targetSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Hiệp phương sai theo các kịch bản xác suất:",
-            latex: "\\text{Cov}(R_A, R_B) = \\sum_{i=1}^n P_i (R_{A,i} - E[R_A])(R_{B,i} - E[R_B])",
-            description: "Đo lường mức độ đồng biến thiên giữa lợi suất của hai tài sản.",
-            variables: [
-              { symbol: "\\text{Cov}(R_A, R_B)", definition: "Hiệp phương sai giữa tài sản A và B" },
-              { symbol: "P_i", definition: "Xác suất kịch bản i" },
-              { symbol: "R_{A,i}, R_{B,i}", definition: "Lợi suất của A và B trong kịch bản i" },
-            ],
-          }),
-          sanitizeFormula({
-            name: "",
-            leadText: "Hệ số tương quan và mối quan hệ với hiệp phương sai:",
-            latex: "\\rho_{AB} = \\text{Corr}(R_A, R_B) = \\frac{\\text{Cov}(R_A, R_B)}{\\sigma_A \\sigma_B} \\quad \\implies \\quad \\text{Cov}(R_A, R_B) = \\rho_{AB} \\sigma_A \\sigma_B",
-            description: "Hệ số tương quan chuẩn hóa hiệp phương sai về đoạn [-1, 1].",
-            variables: [
-              { symbol: "\\rho_{AB}", definition: "Hệ số tương quan (Correlation coefficient)" },
-            ],
-          }),
-        );
-      }
-    }
-
-    // 3. CAPM / SML & Beta
-    const hasCapmFormula = processed.some(
-      (sec) =>
-        sec.formulas.some((f) => /R_f\s*\+\s*\\beta|\\beta_p\s*=/i.test(f.latex)) ||
-        (sec.subSections &&
-          sec.subSections.some((sub) =>
-            sub.formulas.some((f) => /R_f\s*\+\s*\\beta|\\beta_p\s*=/i.test(f.latex)),
-          )),
-    );
-
-    if (!hasCapmFormula) {
-      let targetSec = processed.find((sec) =>
-        /capm|sml|thị trường chứng khoán|beta/i.test(sec.titleVi),
-      );
-      if (!targetSec && processed.length > 3) {
-        targetSec = processed[processed.length - 1]; // Typically Section E
-      }
-      if (targetSec) {
-        targetSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Mô hình định giá tài sản vốn (CAPM / SML):",
-            latex: "E[R_i] = R_f + \\beta_i (E[R_M] - R_f)",
-            description: "Tỷ suất sinh lời đòi hỏi của tài sản i dựa trên rủi ro hệ thống beta.",
-            variables: [
-              { symbol: "E[R_i]", definition: "Tỷ suất sinh lời đòi hỏi của tài sản i" },
-              { symbol: "R_f", definition: "Lãi suất phi rủi ro (Risk-free rate)" },
-              { symbol: "\\beta_i", definition: "Hệ số beta đo lường rủi ro hệ thống của tài sản i" },
-              { symbol: "E[R_M] - R_f", definition: "Phần bù rủi ro thị trường (Market risk premium)" },
-            ],
-          }),
-          sanitizeFormula({
-            name: "",
-            leadText: "Hệ số Beta danh mục và công thức xác định Beta:",
-            latex: "\\beta_p = \\sum_{j=1}^m w_j \\beta_j = w_A \\beta_A + w_B \\beta_B, \\quad \\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2} = \\frac{\\rho_{i,M}\\sigma_i}{\\sigma_M}",
-            description: "Beta danh mục là bình quân gia quyền các beta thành phần.",
-            variables: [
-              { symbol: "\\beta_p", definition: "Hệ số beta của danh mục đầu tư" },
-              { symbol: "\\sigma_M^2", definition: "Phương sai của danh mục thị trường" },
-            ],
-          }),
-        );
-      }
     }
   }
-
-  if (isChapter10Historical) {
-    // Historical Sample Variance
-    const hasHistoricalVariance = processed.some(
-      (sec) =>
-        sec.formulas.some((f) => /s\^2|T\s*-\s*1/i.test(f.latex)) ||
-        (sec.subSections &&
-          sec.subSections.some((sub) =>
-            sub.formulas.some((f) => /s\^2|T\s*-\s*1/i.test(f.latex)),
-          )),
-    );
-
-    if (!hasHistoricalVariance) {
-      let targetSec = processed.find((sec) =>
-        /phương sai|độ lệch chuẩn|variance|standard deviation/i.test(sec.titleVi),
-      );
-      if (!targetSec && processed.length > 2) {
-        targetSec = processed[2]; // Typically Section C
-      }
-      if (!targetSec) targetSec = processed[0];
-      if (targetSec) {
-        targetSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Phương sai và độ lệch chuẩn mẫu lịch sử (mẫu số strictly T - 1):",
-            latex: "s^2 = \\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2, \\quad s = \\sqrt{s^2}",
-            description: "Khi ước lượng phương sai mẫu từ chuỗi dữ liệu lịch sử, bắt buộc chia cho T - 1.",
-            variables: [
-              { symbol: "s^2, s", definition: "Phương sai mẫu và độ lệch chuẩn mẫu lịch sử" },
-              { symbol: "T", definition: "Số thời kỳ quan sát trong mẫu" },
-              { symbol: "\\bar{R}", definition: "Trung bình số học của các tỷ suất sinh lời lịch sử" },
-              { symbol: "R_t", definition: "Tỷ suất sinh lời thực tế tại thời kỳ t" },
-            ],
-          }),
-        );
-      }
-    }
-
-    // Historical Total Return
-    const hasTotalReturn = processed.some(
-      (sec) =>
-        sec.formulas.some((f) => /D_?\{?t\+1\}?|P_?\{?t\+1\}?|Dividend Yield/i.test(f.latex)) ||
-        (sec.subSections &&
-          sec.subSections.some((sub) =>
-            sub.formulas.some((f) => /D_?\{?t\+1\}?|P_?\{?t\+1\}?|Dividend Yield/i.test(f.latex)),
-          )),
-    );
-
-    if (!hasTotalReturn) {
-      let targetSec = processed.find((sec) =>
-        /tổng quan|lợi suất|return/i.test(sec.titleVi),
-      );
-      if (!targetSec) targetSec = processed[0];
-      if (targetSec) {
-        targetSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Tổng tỷ suất sinh lời lịch sử:",
-            latex: "R_{t+1} = \\frac{D_{t+1} + P_{t+1} - P_t}{P_t} = \\text{Dividend Yield} + \\text{Capital Gains Yield}",
-            description: "Tổng lợi suất bao gồm lợi suất cổ tức và lợi suất tăng vốn.",
-            variables: [
-              { symbol: "R_{t+1}", definition: "Tổng tỷ suất sinh lời ở thời kỳ t+1" },
-              { symbol: "D_{t+1}", definition: "Cổ tức nhận được ở thời kỳ t+1" },
-              { symbol: "P_t, P_{t+1}", definition: "Giá cổ phiếu tại đầu kỳ và cuối kỳ" },
-            ],
-          }),
-        );
-      }
-    }
-
-    // Geometric vs Arithmetic Average
-    const hasAverages = processed.some(
-      (sec) =>
-        sec.formulas.some((f) => /\\prod|\\bar\{R\}_\{?\\text\{(geom|arith)\}\}?/i.test(f.latex)) ||
-        (sec.subSections &&
-          sec.subSections.some((sub) =>
-            sub.formulas.some((f) => /\\prod|\\bar\{R\}_\{?\\text\{(geom|arith)\}\}?/i.test(f.latex)),
-          )),
-    );
-
-    if (!hasAverages) {
-      let targetSec = processed.find((sec) =>
-        /trung bình|average|hình học|số học/i.test(sec.titleVi),
-      );
-      if (!targetSec && processed.length > 1) {
-        targetSec = processed[1]; // Typically Section B
-      }
-      if (!targetSec) targetSec = processed[0];
-      if (targetSec) {
-        targetSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Trung bình hình học và trung bình số học:",
-            latex: "\\bar{R}_{\\text{geom}} = \\left[\\prod_{t=1}^T (1 + R_t)\\right]^{1/T} - 1, \\quad \\bar{R}_{\\text{arith}} = \\frac{1}{T} \\sum_{t=1}^T R_t",
-            description: "Trung bình hình học đo lường tăng trưởng kép thực tế qua các năm; luôn nhỏ hơn hoặc bằng trung bình số học.",
-            variables: [
-              { symbol: "\\bar{R}_{\\text{geom}}", definition: "Tỷ suất sinh lời trung bình hình học (Geometric average return)" },
-              { symbol: "\\bar{R}_{\\text{arith}}", definition: "Tỷ suất sinh lời trung bình số học (Arithmetic average return)" },
-            ],
-          }),
-        );
-      }
-    }
-  }
-
-  // Step 2g. Chapter 26 Working Capital & Short-Term Financial Planning Safeguards:
-  if (isChapter26WorkingCapital) {
-    // 1. Section A: Cash Identity & NWC
-    let cashSec = processed.find((sec) =>
-      /tiền mặt|cash|nguồn|sử dụng|sources|uses|working capital|vốn lưu động/i.test(sec.titleVi),
-    );
-    if (!cashSec && processed.length > 0) cashSec = processed[0];
-
-    if (cashSec) {
-      const allCashFormulas = [
-        ...cashSec.formulas,
-        ...(cashSec.subSections ? cashSec.subSections.flatMap((s) => s.formulas) : []),
-      ];
-
-      const hasCashIdentity = allCashFormulas.some((f) =>
-        /\\text\{Cash\}\s*=|Cash\s*=|Long-Term Debt/i.test(f.latex),
-      );
-
-      if (!hasCashIdentity) {
-        cashSec.formulas.unshift(
-          sanitizeFormula({
-            name: "",
-            leadText: "Đồng nhất thức tiền mặt (Cash Identity) từ Bảng cân đối kế toán:",
-            latex: "\\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} - \\text{Net Working Capital (other than Cash)} - \\text{Fixed Assets}",
-            description: "Bắt nguồn từ bảng cân đối kế toán: Tiền mặt tăng khi Nợ dài hạn hoặc Vốn CSH tăng, và giảm khi NWC (ngoài tiền) hoặc Tài sản cố định tăng.",
-            variables: [
-              { symbol: "\\text{Cash}", definition: "Số dư tiền mặt của doanh nghiệp" },
-              { symbol: "\\text{Long-Term Debt}", definition: "Nợ dài hạn" },
-              { symbol: "\\text{Equity}", definition: "Vốn chủ sở hữu" },
-              { symbol: "\\text{Net Working Capital (other than Cash)}", definition: "Vốn lưu động ròng không bao gồm tiền mặt" },
-              { symbol: "\\text{Fixed Assets}", definition: "Tài sản cố định" },
-            ],
-          }),
-        );
-      }
-    }
-
-    // 2. Section B: Cycles & Turnover System (Inventory, Receivables, Payables, Operating & Cash Cycles)
-    let cyclesSec = processed.find((sec) =>
-      /chu kỳ|cycle|operating|hoạt động|vòng quay|turnover/i.test(sec.titleVi),
-    );
-    if (!cyclesSec && processed.length > 1) {
-      cyclesSec = processed[1];
-    }
-    if (!cyclesSec && processed.length > 0) cyclesSec = processed[0];
-
-    if (cyclesSec) {
-      const allCycleFormulas = [
-        ...cyclesSec.formulas,
-        ...(cyclesSec.subSections ? cyclesSec.subSections.flatMap((s) => s.formulas) : []),
-      ];
-
-      // 2a. Inventory Turnover & Period
-      const hasInventory = allCycleFormulas.some((f) =>
-        /Inventory Turnover|Vòng quay hàng tồn kho|COGS.*Average Inventory/i.test(f.latex),
-      );
-      if (!hasInventory) {
-        cyclesSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Vòng quay hàng tồn kho và Kỳ luân chuyển hàng tồn kho:",
-            latex: "\\text{Inventory Turnover} = \\frac{\\text{COGS}}{\\text{Average Inventory}}, \\quad \\text{Inventory Period} = \\frac{365}{\\text{Inventory Turnover}}",
-            description: "Đo lường tốc độ bán hàng và số ngày tồn kho bình quân trước khi bán.",
-            variables: [
-              { symbol: "\\text{Inventory Turnover}", definition: "Vòng quay hàng tồn kho" },
-              { symbol: "\\text{COGS}", definition: "Giá vốn hàng bán (Cost of Goods Sold)" },
-              { symbol: "\\text{Average Inventory}", definition: "Hàng tồn kho bình quân" },
-              { symbol: "\\text{Inventory Period}", definition: "Kỳ luân chuyển hàng tồn kho (số ngày lưu kho bình quân)" },
-            ],
-          }),
-        );
-      }
-
-      // 2b. Receivables Turnover & Period (DSO)
-      const hasReceivables = allCycleFormulas.some((f) =>
-        /Receivables Turnover|Vòng quay khoản phải thu|DSO|Kỳ thu tiền/i.test(f.latex),
-      );
-      if (!hasReceivables) {
-        cyclesSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Vòng quay khoản phải thu và Kỳ thu tiền bình quân (DSO):",
-            latex: "\\text{Receivables Turnover} = \\frac{\\text{Credit Sales}}{\\text{Average Accounts Receivable}}, \\quad \\text{Receivables Period} = \\frac{365}{\\text{Receivables Turnover}}",
-            description: "Đo lường hiệu quả thu hồi nợ và thời gian thu tiền bình quân từ khách hàng.",
-            variables: [
-              { symbol: "\\text{Receivables Turnover}", definition: "Vòng quay khoản phải thu" },
-              { symbol: "\\text{Credit Sales}", definition: "Doanh thu bán chịu (hoặc tổng doanh thu)" },
-              { symbol: "\\text{Average Accounts Receivable}", definition: "Khoản phải thu bình quân" },
-              { symbol: "\\text{Receivables Period}", definition: "Kỳ thu tiền bình quân (Days' Sales Outstanding - DSO)" },
-            ],
-          }),
-        );
-      }
-
-      // 2c. Payables Turnover & Period
-      const hasPayables = allCycleFormulas.some((f) =>
-        /Payables Turnover|Vòng quay khoản phải trả|Kỳ thanh toán/i.test(f.latex),
-      );
-      if (!hasPayables) {
-        cyclesSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Vòng quay khoản phải trả và Kỳ trả tiền bình quân:",
-            latex: "\\text{Payables Turnover} = \\frac{\\text{COGS}}{\\text{Average Accounts Payable}}, \\quad \\text{Payables Period} = \\frac{365}{\\text{Payables Turnover}}",
-            description: "Đo lường thời gian doanh nghiệp được nhà cung cấp cấp tín dụng thương mại.",
-            variables: [
-              { symbol: "\\text{Payables Turnover}", definition: "Vòng quay khoản phải trả" },
-              { symbol: "\\text{Average Accounts Payable}", definition: "Khoản phải trả bình quân" },
-              { symbol: "\\text{Payables Period}", definition: "Kỳ thanh toán bình quân (Days' Payables Outstanding)" },
-            ],
-          }),
-        );
-      }
-
-      // 2d. Operating Cycle & Cash Cycle
-      const hasCycles = allCycleFormulas.some((f) =>
-        /Operating Cycle|Cash Cycle|Chu kỳ hoạt động|Chu kỳ tiền mặt/i.test(f.latex),
-      );
-      if (!hasCycles) {
-        cyclesSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Chu kỳ hoạt động (Operating Cycle) và Chu kỳ tiền mặt (Cash Cycle):",
-            latex: "\\text{Operating Cycle} = \\text{Inventory Period} + \\text{Receivables Period}, \\quad \\text{Cash Cycle} = \\text{Operating Cycle} - \\text{Payables Period}",
-            description: "Chu kỳ tiền mặt đo lường khoảng cách thời gian từ lúc thực tế trả tiền nguyên vật liệu cho đến khi thu được tiền bán hàng.",
-            variables: [
-              { symbol: "\\text{Operating Cycle}", definition: "Chu kỳ hoạt động (từ lúc nhận hàng tồn kho đến khi thu tiền bán hàng)" },
-              { symbol: "\\text{Cash Cycle}", definition: "Chu kỳ luân chuyển tiền mặt (Cash Conversion Cycle)" },
-            ],
-          }),
-        );
-      }
-    }
-
-    // 3. Section C: Cash Budgeting Mechanics
-    let budgetSec = processed.find((sec) =>
-      /ngân sách|budget|dự toán|kế hoạch tài chính ngắn hạn|thu chi/i.test(sec.titleVi),
-    );
-    if (!budgetSec && processed.length > 2) {
-      budgetSec = processed[2];
-    }
-    if (!budgetSec && processed.length > 0) {
-      budgetSec = processed[processed.length - 1];
-    }
-
-    if (budgetSec) {
-      const allBudgetFormulas = [
-        ...budgetSec.formulas,
-        ...(budgetSec.subSections ? budgetSec.subSections.flatMap((s) => s.formulas) : []),
-      ];
-
-      // 3a. Cash Collections
-      const hasCollections = allBudgetFormulas.some((f) =>
-        /Collections|Cash Sales|Tiền thu/i.test(f.latex),
-      );
-      if (!hasCollections) {
-        budgetSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Dòng tiền thu từ bán hàng (Cash Collections):",
-            latex: "\\text{Collections}_t = \\text{Cash Sales}_t + \\sum (\\% \\text{ collected} \\times \\text{Sales}_{t-k})",
-            description: "Tiền thu trong kỳ t bao gồm tiền bán hàng thu ngay và thu hồi nợ từ doanh thu bán chịu các kỳ trước.",
-            variables: [
-              { symbol: "\\text{Collections}_t", definition: "Tổng tiền thu vào trong kỳ t" },
-              { symbol: "\\text{Cash Sales}_t", definition: "Doanh thu bán hàng thu tiền ngay trong kỳ t" },
-              { symbol: "\\text{Sales}_{t-k}", definition: "Doanh thu bán chịu các kỳ trước được thu tiền trong kỳ t" },
-            ],
-          }),
-        );
-      }
-
-      // 3b. Net Cash Flow & Ending Cash Balance
-      const hasNetCashFlow = allBudgetFormulas.some((f) =>
-        /Net Cash Flow|Ending Cash|Dòng tiền thuần|Số dư tiền cuối kỳ/i.test(f.latex),
-      );
-      if (!hasNetCashFlow) {
-        budgetSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Dòng tiền thuần và Số dư tiền mặt cuối kỳ:",
-            latex: "\\text{Net Cash Flow}_t = \\text{Cash Collections}_t - \\text{Cash Disbursements}_t, \\quad \\text{Ending Cash}_t = \\text{Beginning Cash}_t + \\text{Net Cash Flow}_t",
-            description: "Chênh lệch thu chi tiền mặt và tính toán số dư tiền mặt tại thời điểm cuối kỳ.",
-            variables: [
-              { symbol: "\\text{Net Cash Flow}_t", definition: "Dòng tiền thuần trong kỳ t" },
-              { symbol: "\\text{Cash Disbursements}_t", definition: "Tổng chi tiêu tiền mặt trong kỳ t (mua hàng, lương, thuế, đầu tư...)" },
-              { symbol: "\\text{Beginning Cash}_t, \\text{Ending Cash}_t", definition: "Số dư tiền mặt đầu kỳ và cuối kỳ" },
-            ],
-          }),
-        );
-      }
-
-      // 3c. Cumulative Surplus / (Deficit)
-      const hasCumulative = allBudgetFormulas.some((f) =>
-        /Cumulative Surplus|Thặng dư.*thâm hụt|Ending Cash.*Target/i.test(f.latex),
-      );
-      if (!hasCumulative) {
-        budgetSec.formulas.push(
-          sanitizeFormula({
-            name: "",
-            leadText: "Thặng dư / Thâm hụt tiền mặt tích lũy (Cumulative Surplus / Deficit):",
-            latex: "\\text{Cumulative Surplus / (Deficit)}_t = \\text{Ending Cash}_t - \\text{Target Minimum Cash Balance}",
-            description: "Nếu > 0: thặng dư tiền mặt có thể đầu tư ngắn hạn; nếu < 0: thâm hụt tiền mặt cần tài trợ bằng vay ngắn hạn.",
-            variables: [
-              { symbol: "\\text{Cumulative Surplus / (Deficit)}_t", definition: "Thặng dư hoặc thâm hụt tiền mặt tích lũy cuối kỳ" },
-              { symbol: "\\text{Target Minimum Cash Balance}", definition: "Mức dự trữ tiền mặt an toàn tối thiểu theo mục tiêu của doanh nghiệp" },
-            ],
-          }),
-        );
-      }
-    }
+  if (warnings.length > 0) {
+    console.warn("[ClutchNotes][lint]", warnings);
   }
 
   return processed.map(deduplicateSectionFormulas);
@@ -1904,6 +1359,13 @@ function sanitizeSubSection(sub: NoteSubSection): NoteSubSection {
     heading: sanitizeSubSectionHeading(sub.heading),
     leadIn: sub.leadIn ? sanitizeUniversalText(sub.leadIn) : undefined,
     bulletPoints: (sub.bulletPoints ?? []).map(sanitizeUniversalText),
+    groundedBullets: sub.groundedBullets
+      ? sub.groundedBullets.map((gb) => ({
+          text: sanitizeUniversalText(gb.text),
+          slide: gb.slide,
+          evidence: gb.evidence,
+        }))
+      : undefined,
     formulas: (sub.formulas ?? []).map(sanitizeFormula),
   };
 }
@@ -1922,6 +1384,13 @@ function sanitizeSectionLatex(section: NoteSection): NoteSection {
       ? sanitizeUniversalText(section.overview)
       : "",
     bulletPoints: (section.bulletPoints ?? []).map(sanitizeUniversalText),
+    groundedBullets: section.groundedBullets
+      ? section.groundedBullets.map((gb) => ({
+          text: sanitizeUniversalText(gb.text),
+          slide: gb.slide,
+          evidence: gb.evidence,
+        }))
+      : undefined,
     formulas: (section.formulas ?? []).map(sanitizeFormula),
     subSections: (section.subSections ?? []).map(sanitizeSubSection),
     keyTakeaways: section.keyTakeaways
@@ -1931,6 +1400,8 @@ function sanitizeSectionLatex(section: NoteSection): NoteSection {
           items: (section.keyTakeaways.items ?? []).map((item) => ({
             point: sanitizeUniversalText(item.point),
             subBullets: (item.subBullets ?? []).map(sanitizeUniversalText),
+            slide: item.slide,
+            evidence: item.evidence,
           })),
           modelSelectionRule: section.keyTakeaways.modelSelectionRule
             ? sanitizeUniversalText(section.keyTakeaways.modelSelectionRule)
@@ -2082,6 +1553,332 @@ function buildMarkdownNote(note: Omit<ClutchNote, "rawMarkdown">): string {
   return parts.join("\n").trim();
 }
 
+export function injectLedgerFormulasById(
+  sections: NoteSection[],
+  ledger: FormulaLedgerEntry[],
+): { sections: NoteSection[]; placedIds: Set<string> } {
+  const placedIds = new Set<string>();
+  if (!ledger || ledger.length === 0) {
+    return { sections, placedIds };
+  }
+
+  const ledgerMap = new Map<string, FormulaLedgerEntry>();
+  const ledgerKeyMap = new Map<string, FormulaLedgerEntry>();
+
+  for (const entry of ledger) {
+    const normId = entry.id.trim().toUpperCase();
+    ledgerMap.set(normId, entry);
+
+    const latexKey = normalizeFormulaKey(entry.latex);
+    if (latexKey && !ledgerKeyMap.has(latexKey)) {
+      ledgerKeyMap.set(latexKey, entry);
+    }
+    const rawKey = normalizeFormulaKey(entry.raw);
+    if (rawKey && !ledgerKeyMap.has(rawKey)) {
+      ledgerKeyMap.set(rawKey, entry);
+    }
+  }
+
+  const definedSymbols = new Set<string>();
+
+  function processFormula(formula: NoteFormula): NoteFormula {
+    const f: NoteFormula = {
+      ...formula,
+      variables: formula.variables ? [...formula.variables] : [],
+    };
+
+    const refs = (f.formulaRefs || [])
+      .map((r) => r.trim().toUpperCase())
+      .filter(Boolean);
+    const derived = (f.derivedFrom || [])
+      .map((r) => r.trim().toUpperCase())
+      .filter(Boolean);
+
+    const validRefs = refs
+      .map((id) => ledgerMap.get(id))
+      .filter((e): e is FormulaLedgerEntry => Boolean(e));
+
+    const validDerived = derived
+      .map((id) => ledgerMap.get(id)?.id)
+      .filter((id): id is string => Boolean(id));
+
+    // Case 1: Direct Ledger Injection (formulaRefs non-empty and derivedFrom empty)
+    if (validRefs.length > 0 && validDerived.length === 0) {
+      if (validRefs.length === 1) {
+        const entry = validRefs[0];
+        placedIds.add(entry.id);
+        f.latex = entry.latex;
+        f.formulaRefs = [entry.id];
+        f.derivedFrom = [];
+        f.slide = f.slide ?? entry.slide;
+        f.origin = entry.origin;
+        f.confidence = entry.confidence;
+
+        if (
+          (!f.variables || f.variables.length === 0) &&
+          entry.variables &&
+          entry.variables.length > 0
+        ) {
+          const newVars = entry.variables.filter(
+            (v) => !definedSymbols.has(v.symbol.trim()),
+          );
+          f.variables = newVars.map((v) => ({ ...v }));
+        }
+      } else {
+        // 2+ valid ledger entries referenced in formulaRefs
+        for (const e of validRefs) {
+          placedIds.add(e.id);
+        }
+        f.formulaRefs = validRefs.map((e) => e.id);
+        f.derivedFrom = [];
+        f.slide = f.slide ?? validRefs[0].slide;
+        f.origin = validRefs[0].origin;
+        f.latex = validRefs.map((e) => e.latex).join(", \\quad ");
+      }
+    } else if (validDerived.length > 0) {
+      // Case 2: Derived Formula (derivedFrom non-empty)
+      for (const id of validDerived) {
+        placedIds.add(id);
+      }
+      f.derivedFrom = validDerived;
+      f.formulaRefs = [];
+      f.origin = "derived";
+      const parentSlide = ledgerMap.get(validDerived[0])?.slide;
+      f.slide = f.slide ?? parentSlide;
+    } else {
+      // Case 3: Fallback Normalized Key Match
+      const normKey = normalizeFormulaKey(f.latex);
+      const matchedEntry = normKey ? ledgerKeyMap.get(normKey) : undefined;
+      if (matchedEntry) {
+        placedIds.add(matchedEntry.id);
+        f.formulaRefs = [matchedEntry.id];
+        f.derivedFrom = [];
+        f.latex = matchedEntry.latex;
+        f.slide = f.slide ?? matchedEntry.slide;
+        f.origin = matchedEntry.origin;
+        f.confidence = matchedEntry.confidence;
+
+        if (
+          (!f.variables || f.variables.length === 0) &&
+          matchedEntry.variables &&
+          matchedEntry.variables.length > 0
+        ) {
+          const newVars = matchedEntry.variables.filter(
+            (v) => !definedSymbols.has(v.symbol.trim()),
+          );
+          f.variables = newVars.map((v) => ({ ...v }));
+        }
+      }
+    }
+
+    if (f.variables) {
+      for (const v of f.variables) {
+        if (v.symbol.trim()) {
+          definedSymbols.add(v.symbol.trim());
+        }
+      }
+    }
+
+    return f;
+  }
+
+  const processedSections = sections.map((sec) => ({
+    ...sec,
+    formulas: (sec.formulas || []).map(processFormula),
+    subSections: (sec.subSections || []).map((sub) => ({
+      ...sub,
+      formulas: (sub.formulas || []).map(processFormula),
+    })),
+  }));
+
+  return { sections: processedSections, placedIds };
+}
+
+export function mapSynthesisSection(
+  sec: SynthesisSection,
+  index: number,
+  ledger?: FormulaLedgerEntry[],
+): NoteSection {
+  const sequentialLetter = String.fromCharCode(65 + index);
+  const strippedTitle = sec.titleVi.trim().replace(/^[A-Z0-9]+\.\s+/i, "");
+  const prefixedTitle = `${sequentialLetter}. ${strippedTitle}`;
+
+  const mapFormula = (f: SynthesisFormula): NoteFormula => ({
+    name: "",
+    leadText: f.leadText.trim() || undefined,
+    latex: f.latex.trim(),
+    description: f.description.trim() || undefined,
+    variables: (f.variables ?? [])
+      .map((v) => ({
+        symbol: v.symbol.trim(),
+        definition: v.definition.trim(),
+      }))
+      .filter((v) => v.symbol.length > 0 && v.definition.length > 0),
+    formulaRefs: f.formulaRefs ? f.formulaRefs.map((r) => r.trim()).filter(Boolean) : [],
+    derivedFrom: f.derivedFrom ? f.derivedFrom.map((r) => r.trim()).filter(Boolean) : [],
+  });
+
+  const takeawayItems: KeyTakeawaysItem[] = (sec.takeaways ?? [])
+    .map((t) => ({
+      point: t.point.trim(),
+      subBullets: (t.subBullets ?? []).map((sb) => sb.trim()).filter(Boolean),
+      slide: t.slide,
+      evidence: t.evidence.trim() || undefined,
+    }))
+    .filter((t) => t.point.length > 0);
+
+  const groundedBullets: GroundedBullet[] = (sec.bullets ?? [])
+    .map((b) => ({
+      text: b.text.trim(),
+      slide: b.slide,
+      evidence: b.evidence.trim(),
+    }))
+    .filter((b) => b.text.length > 0);
+
+  const bulletPoints = groundedBullets.map((b) => b.text);
+
+  const mappedSubSections: NoteSubSection[] = (sec.subSections ?? [])
+    .map((sub) => {
+      const subGroundedBullets: GroundedBullet[] = (sub.bullets ?? [])
+        .map((b) => ({
+          text: b.text.trim(),
+          slide: b.slide,
+          evidence: b.evidence.trim(),
+        }))
+        .filter((b) => b.text.length > 0);
+
+      return {
+        heading: sub.heading.trim(),
+        leadIn: sub.leadIn.trim() || undefined,
+        bulletPoints: subGroundedBullets.map((b) => b.text),
+        groundedBullets:
+          subGroundedBullets.length > 0 ? subGroundedBullets : undefined,
+        formulas: (sub.formulas ?? []).map(mapFormula).filter((f) => f.latex.length > 0),
+      };
+    })
+    .filter(
+      (sub) =>
+        sub.heading.length > 0 &&
+        (sub.bulletPoints.length > 0 ||
+          sub.formulas.length > 0 ||
+          Boolean(sub.leadIn)),
+    );
+
+  let noteSection: NoteSection = {
+    id: `sec-${sequentialLetter.toLowerCase()}-${index + 1}`,
+    letter: sequentialLetter,
+    titleVi: prefixedTitle,
+    titleEn: "",
+    coreStatement: sec.coreStatement.trim() || undefined,
+    overview: sec.overview.trim(),
+    bulletPoints,
+    groundedBullets: groundedBullets.length > 0 ? groundedBullets : undefined,
+    formulas: (sec.formulas ?? []).map(mapFormula).filter((f) => f.latex.length > 0),
+    subSections: mappedSubSections,
+    keyTakeaways:
+      takeawayItems.length > 0
+        ? {
+            title: "KEY TAKEAWAYS",
+            items: takeawayItems,
+            summaryPoints: [],
+          }
+        : null,
+    sourceSlides: sec.sourceSlides,
+  };
+
+  if (ledger && ledger.length > 0) {
+    const res = injectLedgerFormulasById([noteSection], ledger);
+    noteSection = res.sections[0];
+  }
+
+  return sanitizeSectionLatex(noteSection);
+}
+
+function normalizeToSynthesisSection(sec: any): SynthesisSection {
+  const bullets = Array.isArray(sec.bullets)
+    ? sec.bullets.map((b: any) =>
+        typeof b === "string"
+          ? { text: b, slide: sec.sourceSlides?.[0] ?? 1, evidence: b }
+          : {
+              text: b.text || "",
+              slide: b.slide ?? (sec.sourceSlides?.[0] ?? 1),
+              evidence: b.evidence || "",
+            },
+      )
+    : Array.isArray(sec.bulletPoints)
+      ? sec.bulletPoints.map((bp: string) => ({
+          text: bp,
+          slide: sec.sourceSlides?.[0] ?? 1,
+          evidence: bp,
+        }))
+      : [];
+
+  const subSections: SynthesisSubSection[] = Array.isArray(sec.subSections)
+    ? sec.subSections.map((sub: any) => ({
+        heading: sub.heading || "",
+        leadIn: sub.leadIn || "",
+        bullets: Array.isArray(sub.bullets)
+          ? sub.bullets.map((b: any) =>
+              typeof b === "string"
+                ? { text: b, slide: sec.sourceSlides?.[0] ?? 1, evidence: b }
+                : {
+                    text: b.text || "",
+                    slide: b.slide ?? (sec.sourceSlides?.[0] ?? 1),
+                    evidence: b.evidence || "",
+                  },
+            )
+          : Array.isArray(sub.bulletPoints)
+            ? sub.bulletPoints.map((bp: string) => ({
+                text: bp,
+                slide: sec.sourceSlides?.[0] ?? 1,
+                evidence: bp,
+              }))
+            : [],
+        formulas: (sub.formulas || []).map((f: any) => ({
+          formulaRefs: Array.isArray(f.formulaRefs) ? f.formulaRefs : [],
+          derivedFrom: Array.isArray(f.derivedFrom) ? f.derivedFrom : [],
+          leadText: f.leadText || "",
+          latex: f.latex || "",
+          description: f.description || "",
+          variables: Array.isArray(f.variables) ? f.variables : [],
+        })),
+      }))
+    : [];
+
+  const formulas: SynthesisFormula[] = (sec.formulas || []).map((f: any) => ({
+    formulaRefs: Array.isArray(f.formulaRefs) ? f.formulaRefs : [],
+    derivedFrom: Array.isArray(f.derivedFrom) ? f.derivedFrom : [],
+    leadText: f.leadText || "",
+    latex: f.latex || "",
+    description: f.description || "",
+    variables: Array.isArray(f.variables) ? f.variables : [],
+  }));
+
+  const takeaways: SynthesisTakeawayItem[] = Array.isArray(sec.takeaways)
+    ? sec.takeaways.map((t: any) => ({
+        point: t.point || "",
+        subBullets: Array.isArray(t.subBullets) ? t.subBullets : [],
+        slide: t.slide ?? (sec.sourceSlides?.[0] ?? 1),
+        evidence: t.evidence || t.point || "",
+      }))
+    : [];
+
+  return {
+    letter: sec.letter || "A",
+    titleVi: sec.titleVi || "",
+    coreStatement: sec.coreStatement || "",
+    overview: sec.overview || "",
+    bullets,
+    formulas,
+    subSections,
+    takeaways,
+    sourceSlides:
+      Array.isArray(sec.sourceSlides) && sec.sourceSlides.length > 0
+        ? sec.sourceSlides
+        : [1],
+  };
+}
+
 function mapGeneratedSection(
   sec: GeneratedClutchNote["sections"][number],
   index: number,
@@ -2176,28 +1973,77 @@ export async function generateClutchNote(
 
   try {
     model = options.modelOverride ?? getGenerationModel("notes");
+    if (!model) {
+      throw new IngestionError(
+        "AI_NOT_CONFIGURED",
+        "Clutch Notes AI is temporarily unavailable (AI provider not configured).",
+        503,
+      );
+    }
   } catch (err) {
-    // If running in an unconfigured environment or tests without API keys, fallback to sample note
-    console.warn("[generateClutchNote] AI model not configured, using fallback synthesis.", err);
-    return {
-      ...SAMPLE_CLUTCH_NOTE,
-      id: noteId,
-      createdAt: new Date().toISOString(),
-      originalFileName: options.fileName,
-      originalSlideCount: options.slideCount,
-    };
+    if (err instanceof IngestionError) {
+      throw err;
+    }
+    throw new IngestionError(
+      "AI_NOT_CONFIGURED",
+      "Clutch Notes AI is temporarily unavailable (AI provider not configured).",
+      503,
+    );
   }
 
+  // Step 1: Obtain ledger and extractedClaims
+  let ledger: FormulaLedgerEntry[] = [];
+  let extractedClaims: ExtractedSlideClaim[] = [];
+
+  if (options.formulaLedger) {
+    ledger = options.formulaLedger;
+    extractedClaims = [];
+  } else {
+    try {
+      const mergedResult = await buildMergedFormulaLedger({
+        sources: options.sources,
+        ommlEquations: options.ommlEquations,
+        ocrEquations: options.ocrEquations,
+        model: options.skipChunkExtraction ? undefined : model,
+        signal: options.signal,
+      });
+      ledger = mergedResult.ledger;
+      extractedClaims = mergedResult.claims;
+    } catch (err) {
+      console.warn(
+        "[generateClutchNote] buildMergedFormulaLedger failed, falling back to deterministic inventory:",
+        err,
+      );
+      const deterministicInventory =
+        options.formulaInventory ??
+        buildFormulaInventory({
+          sources: options.sources,
+          ommlEquations: options.ommlEquations,
+          ocrEquations: options.ocrEquations,
+        });
+      ledger = mergeFormulaLedger({
+        deterministicInventory,
+        sources: options.sources,
+      });
+      extractedClaims = [];
+    }
+  }
+
+  // Step 2: Build the prompt
   const prompt = buildNotesPrompt({
     fileName: options.fileName,
     slides: options.sources.map((s) => ({ label: s.label, text: s.text })),
     focus: options.focus,
+    formulaLedger: ledger,
+    extractedClaims,
   });
 
   const isGroqPrimary = Boolean(
     process.env.GROQ_API_KEY && process.env.AI_PROVIDER?.trim().toLowerCase() === "groq",
   );
   const primaryMaxTokens = isGroqPrimary ? 4_096 : 8_192;
+
+  let lastMeta: any = null;
 
   const synthesizeWithModel = async (
     targetModel: LanguageModel,
@@ -2220,11 +2066,11 @@ export async function generateClutchNote(
         ? AbortSignal.any([options.signal, timeoutController.signal])
         : timeoutController?.signal ?? options.signal;
 
-    let object: GeneratedClutchNote;
+    let resObject: any;
     try {
       const res = await generateObject({
         model: targetModel,
-        schema: generatedClutchNoteSchema,
+        schema: synthesisSchema,
         system: CLUTCH_NOTES_SYSTEM_PROMPT,
         prompt,
         abortSignal: combinedSignal,
@@ -2238,17 +2084,22 @@ export async function generateClutchNote(
           },
         },
       });
-      object = res.object;
+      resObject = res.object;
     } finally {
       if (timer) clearTimeout(timer);
     }
 
-    const mapped = object.sections
-      .map(mapGeneratedSection)
+    const rawSections = Array.isArray(resObject?.sections) ? resObject.sections : [];
+    const normalizedSections: SynthesisSection[] = rawSections.map(
+      normalizeToSynthesisSection,
+    );
+
+    const mapped = normalizedSections
+      .map((sec, idx) => mapSynthesisSection(sec, idx, ledger))
       .filter(sectionHasSubstantiveContent)
       .map((sec, idx) => {
         const seqLetter = String.fromCharCode(65 + idx);
-        const stripped = sec.titleVi.replace(/^[A-Z0-9]+\.\s+/i, "");
+        const stripped = sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, "");
         return {
           ...sec,
           id: `sec-${seqLetter.toLowerCase()}-${idx + 1}`,
@@ -2265,11 +2116,10 @@ export async function generateClutchNote(
       );
     }
 
-    lastMeta = object;
+    lastMeta = resObject;
     return mapped;
   };
 
-  let lastMeta: GeneratedClutchNote | null = null;
   let populatedSections: NoteSection[];
   const fallback = !options.modelOverride ? getGroqModel() : null;
   const hasDistinctFallback = Boolean(fallback && fallback !== model);
@@ -2294,7 +2144,7 @@ export async function generateClutchNote(
 
   const meta = lastMeta!;
 
-  // Normalize noise reduction rate: if LLM returns a fraction like 0.81 instead of 81, scale to percentage
+  // Normalize noise reduction rate
   let noiseRate = meta.noiseReductionRate ?? 85;
   if (noiseRate > 0 && noiseRate <= 1) {
     noiseRate = Math.round(noiseRate * 100);
@@ -2302,20 +2152,91 @@ export async function generateClutchNote(
     noiseRate = Math.min(98, Math.max(20, Math.round(noiseRate)));
   }
 
+  // Step 4: Run injectLedgerFormulasById, applyHallucinationShield, and re-verify injectLedgerFormulasById
+  const { sections: initialInjected } = injectLedgerFormulasById(
+    populatedSections,
+    ledger,
+  );
   const rawSlideText = options.sources.map((s) => s.text).join("\n");
-  const shieldedSections = applyHallucinationShield(populatedSections, rawSlideText);
+  const shieldedSections = applyHallucinationShield(initialInjected, rawSlideText);
+  const { sections: preGateSections } = injectLedgerFormulasById(
+    shieldedSections,
+    ledger,
+  );
+
+  const rawOmitted: SynthesisOmittedFormula[] = Array.isArray(meta?.omitted)
+    ? meta.omitted
+    : [];
+
+  // Step 4.4: Verification Gate, Targeted Repair Loop (max 1), and MARK Policy
+  const gateResult = await runVerificationGate({
+    sections: preGateSections,
+    sources: options.sources,
+    ledger,
+    omitted: rawOmitted,
+    options: {
+      enableVerifierLlm: options.enableVerifierLlm,
+      verifierModel: options.verifierModel,
+      repairModel: options.repairModel,
+      repairFn: options.repairFn,
+      skipVerifierLlm: options.skipVerifierLlm,
+      maxRepairAttempts: options.maxRepairAttempts ?? 1,
+      throwOnContradictedFormula: options.throwOnContradictedFormula ?? true,
+      signal: options.signal,
+    },
+  });
+
+  const finalSections = gateResult.sections;
+  const finalPlacedIds = new Set(gateResult.verification.placedFormulaIds);
+
+  // Step 5: Compute omitted: merge valid LLM omitted entries with any remaining unplaced ledger entries
+  const ledgerIdSet = new Set(ledger.map((e) => e.id));
+  const omittedResult: SynthesisOmittedFormula[] = [];
+  const omittedSeen = new Set<string>();
+
+  for (const item of rawOmitted) {
+    if (
+      item &&
+      typeof item.formulaId === "string" &&
+      ledgerIdSet.has(item.formulaId) &&
+      !finalPlacedIds.has(item.formulaId) &&
+      !omittedSeen.has(item.formulaId)
+    ) {
+      omittedResult.push({
+        formulaId: item.formulaId,
+        reason:
+          typeof item.reason === "string" && item.reason.trim()
+            ? item.reason.trim()
+            : "Omitted by synthesis",
+      });
+      omittedSeen.add(item.formulaId);
+    }
+  }
+
+  for (const entry of ledger) {
+    if (!finalPlacedIds.has(entry.id) && !omittedSeen.has(entry.id)) {
+      omittedResult.push({
+        formulaId: entry.id,
+        reason: "Uncaptured source formula",
+      });
+      omittedSeen.add(entry.id);
+    }
+  }
 
   const finalNote: ClutchNote = {
     id: noteId,
-    title: sanitizeUniversalText(meta.title.trim()),
-    subject: sanitizeUniversalText(meta.subject.trim()),
+    title: sanitizeUniversalText((meta.title || "").trim()),
+    subject: sanitizeUniversalText((meta.subject || "").trim()),
     createdAt: new Date().toISOString(),
     originalFileName: options.fileName,
     originalSlideCount: options.slideCount,
     estimatedDistilledPages: meta.estimatedDistilledPages || 3,
     noiseReductionRate: noiseRate,
-    executiveSummary: sanitizeUniversalText(meta.executiveSummary.trim()),
-    sections: shieldedSections,
+    executiveSummary: sanitizeUniversalText((meta.executiveSummary || "").trim()),
+    sections: finalSections,
+    formulaLedger: ledger.length > 0 ? ledger : undefined,
+    omitted: omittedResult.length > 0 ? omittedResult : undefined,
+    verification: gateResult.verification,
   };
 
   finalNote.rawMarkdown = buildMarkdownNote(finalNote);

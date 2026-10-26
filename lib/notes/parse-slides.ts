@@ -2,8 +2,17 @@ import "@/lib/polyfills/pdf-node-polyfills";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { MAX_FILE_BYTES, MAX_EXTRACTED_CHARACTERS } from "@/lib/ingestion/limits";
 import { parsePdf } from "@/lib/ingestion/parse-pdf";
-import { parsePptx } from "@/lib/ingestion/parse-pptx";
+import {
+  parsePptx,
+  type OcrTranscribedEquation,
+  type OmmlTranscribedEquation,
+  type ParsePptxOptions,
+} from "@/lib/ingestion/parse-pptx";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
+import {
+  buildFormulaInventory,
+  type FormulaInventoryItem,
+} from "./formula-inventory";
 
 export interface ParsedSlideDeck {
   fileName: string;
@@ -12,6 +21,9 @@ export interface ParsedSlideDeck {
   sources: SourceBlock[];
   warnings: string[];
   characterCount: number;
+  ocrEquations?: OcrTranscribedEquation[];
+  ommlEquations?: OmmlTranscribedEquation[];
+  formulaInventory: FormulaInventoryItem[];
 }
 
 export function validateSlideFile(file: File): "pdf" | "pptx" {
@@ -59,9 +71,19 @@ export function validateSlideFile(file: File): "pdf" | "pptx" {
 
 export async function parseSlideDeck(
   file: File,
-  signal?: AbortSignal,
+  signalOrOptions?: AbortSignal | ParsePptxOptions,
 ): Promise<ParsedSlideDeck> {
   const format = validateSlideFile(file);
+
+  let signal: AbortSignal | undefined;
+  if (signalOrOptions) {
+    if (signalOrOptions instanceof AbortSignal || "aborted" in signalOrOptions) {
+      signal = signalOrOptions as AbortSignal;
+    } else {
+      signal = signalOrOptions.signal;
+    }
+  }
+
   signal?.throwIfAborted();
 
   const bytes = Buffer.from(await file.arrayBuffer());
@@ -74,12 +96,16 @@ export async function parseSlideDeck(
   let sources: SourceBlock[];
   let slideCount: number;
   let warnings: string[] = [];
+  let ocrEquations: OcrTranscribedEquation[] | undefined;
+  let ommlEquations: OmmlTranscribedEquation[] | undefined;
 
   if (format === "pptx") {
-    const parsed = await parsePptx(bytes, signal);
+    const parsed = await parsePptx(bytes, signalOrOptions);
     sources = parsed.sources;
     slideCount = parsed.pageCount;
     warnings = parsed.warnings;
+    ocrEquations = parsed.ocrEquations;
+    ommlEquations = parsed.ommlEquations;
   } else {
     // format === "pdf"
     const parsed = await parsePdf(bytes, signal ?? new AbortController().signal);
@@ -111,6 +137,12 @@ export async function parseSlideDeck(
     );
   }
 
+  const formulaInventory = buildFormulaInventory({
+    sources,
+    ommlEquations,
+    ocrEquations,
+  });
+
   return {
     fileName,
     format,
@@ -118,5 +150,12 @@ export async function parseSlideDeck(
     sources,
     warnings,
     characterCount,
+    formulaInventory,
+    ...(format === "pptx"
+      ? {
+          ocrEquations: ocrEquations ?? [],
+          ommlEquations: ommlEquations ?? [],
+        }
+      : {}),
   };
 }
