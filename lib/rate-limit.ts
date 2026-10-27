@@ -18,6 +18,10 @@ if (hasUpstashConfig) {
   } catch {
     redis = null;
   }
+} else if (process.env.NODE_ENV === "production") {
+  console.warn(
+    "[Security Warning] UPSTASH_REDIS_REST_URL/TOKEN not configured. Distributed rate limiting is degraded to in-memory fallback.",
+  );
 }
 
 // Tier-specific Upstash limiters

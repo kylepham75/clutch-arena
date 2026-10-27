@@ -27,13 +27,27 @@ export function isAuthorizedForNotes(tierString?: string | null): boolean {
 }
 
 /**
+ * Determines if x-test-tier client override is permitted.
+ * Strictly limited to development, automated test suites, or explicit operator opt-in.
+ * In production, client headers can NEVER bypass authentication without explicit opt-in.
+ */
+export function isTestTierAllowed(): boolean {
+  return (
+    process.env.NODE_ENV === "development" ||
+    process.env.NODE_ENV === "test" ||
+    process.env.ALLOW_TEST_TIER_OVERRIDE === "true"
+  );
+}
+
+/**
  * Validates that an incoming request is from an authenticated user
  * with an active paid subscription (Cram Pass, Pro, or Tutor).
  */
 export async function verifyProAccess(request: Request): Promise<ProVerificationResult> {
-  const testTierHeader = request.headers.get("x-test-tier");
+  const testTierAllowed = isTestTierAllowed();
+  const testTierHeader = testTierAllowed ? request.headers.get("x-test-tier") : null;
 
-  // 1. If explicit client/test tier header is passed (early-access testing & client tier state)
+  // 1. If explicit client/test tier header is passed (early-access testing & client tier state in dev/test)
   if (testTierHeader) {
     const isAuthTier = isAuthorizedForNotes(testTierHeader);
     if (!isAuthTier) {

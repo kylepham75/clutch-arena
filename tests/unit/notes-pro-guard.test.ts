@@ -80,4 +80,43 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
     expect(resultTutor.authorized).toBe(true);
     expect(resultTutor.tier).toBe("tutor");
   });
+
+  describe("Security: Production Paywall & Header Bypass Prevention", () => {
+    it("strictly ignores x-test-tier header in production to prevent paywall/auth bypass", async () => {
+      vi.stubEnv("NODE_ENV", "production");
+      delete process.env.ALLOW_TEST_TIER_OVERRIDE;
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "pro",
+        },
+      });
+
+      const result = await verifyProAccess(req);
+      expect(result.authorized).toBe(false);
+      expect(result.reason).toBe("UNAUTHENTICATED");
+      expect(result.message).toContain("Authentication required");
+
+      vi.unstubAllEnvs();
+    });
+
+    it("allows x-test-tier override in production ONLY when ALLOW_TEST_TIER_OVERRIDE is explicitly true", async () => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("ALLOW_TEST_TIER_OVERRIDE", "true");
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "pro",
+        },
+      });
+
+      const result = await verifyProAccess(req);
+      expect(result.authorized).toBe(true);
+      expect(result.tier).toBe("pro");
+
+      vi.unstubAllEnvs();
+    });
+  });
 });

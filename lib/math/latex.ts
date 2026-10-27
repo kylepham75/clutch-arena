@@ -303,6 +303,7 @@ export function renderKatexSafe(tex: string, displayMode: boolean): string {
       displayMode,
       throwOnError: false,
       output: "htmlAndMathml",
+      trust: false,
     });
   } catch {
     return `<span class="katex-fallback">${escapeHtml(tex)}</span>`;

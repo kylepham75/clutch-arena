@@ -19,9 +19,18 @@ export type AuthVerificationResult =
       devMode: boolean;
     };
 
+export function isTestTierAllowed(): boolean {
+  return (
+    process.env.NODE_ENV === "development" ||
+    process.env.NODE_ENV === "test" ||
+    process.env.ALLOW_TEST_TIER_OVERRIDE === "true"
+  );
+}
+
 export async function verifyAuthToken(request: Request): Promise<AuthVerificationResult> {
   const isConfigured = isSupabaseServerConfigured();
-  const testTierHeader = request.headers.get("x-test-tier");
+  const testTierAllowed = isTestTierAllowed();
+  const testTierHeader = testTierAllowed ? request.headers.get("x-test-tier") : null;
   const normalizedTestTier = testTierHeader ? normalizeTier(testTierHeader) : null;
   const isAuthorizedTestTier = Boolean(normalizedTestTier && normalizedTestTier !== "contender");
 
