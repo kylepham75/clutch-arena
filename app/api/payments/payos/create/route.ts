@@ -73,10 +73,16 @@ export async function POST(request: Request) {
     const origin =
       request.headers.get("origin") || new URL(request.url).origin;
 
+    const authHeader = request.headers.get("authorization");
+    const userToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice(7).trim()
+      : undefined;
+
     const payment = await createPayosPaymentLink({
       planId: planId as PayosPlanId,
       origin,
       userId,
+      userToken,
     });
 
     return NextResponse.json({ ok: true, payment });

@@ -52,12 +52,18 @@ export async function POST(request: Request) {
     }
 
     if (code === "00" && webhookData.orderCode) {
+      if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+        console.error(
+          "[PayOS Webhook] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is missing in environment variables! Without this key, RLS will block background webhook fulfillment.",
+        );
+      }
       const orderCode = Number(webhookData.orderCode);
       const amount = Number(webhookData.amount);
-      await fulfillPayosOrder({
+      const res = await fulfillPayosOrder({
         orderCode,
         amount: Number.isFinite(amount) ? amount : undefined,
       });
+      console.log("[PayOS Webhook] Fulfillment result for order", orderCode, res);
     }
 
     return NextResponse.json({ error: 0, message: "Ok", data: null });

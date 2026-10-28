@@ -12,6 +12,7 @@ export interface CreatePayosPaymentLinkInput {
   planId: PayosPlanId;
   origin: string;
   userId?: string;
+  userToken?: string;
 }
 
 export interface PayosPaymentLinkResult {
@@ -39,6 +40,7 @@ export interface FulfillPayosOrderParams {
   orderCode: number;
   amount?: number;
   fallbackUserId?: string;
+  userToken?: string;
 }
 
 export interface FulfillPayosOrderResult {
@@ -250,9 +252,9 @@ export async function createPayosPaymentLink(
 
   if (input.userId) {
     try {
-      const supabase = getSupabaseServerClient();
+      const supabase = getSupabaseServerClient(input.userToken);
       if (supabase) {
-        await supabase.from("user_subscriptions").upsert({
+        const { error: upsertErr } = await supabase.from("user_subscriptions").upsert({
           id: `payos_${orderCode}`,
           user_id: input.userId,
           tier: input.planId,
@@ -263,9 +265,12 @@ export async function createPayosPaymentLink(
           status: "pending",
           expires_at: calculateTierExpiration(input.planId),
         });
+        if (upsertErr) {
+          console.error("[PayOS] Failed to insert pending subscription:", upsertErr);
+        }
       }
-    } catch {
-      // Ignore DB errors safely if table is not migrated yet
+    } catch (dbErr) {
+      console.error("[PayOS] DB exception inserting pending subscription:", dbErr);
     }
   }
 
@@ -402,7 +407,7 @@ export async function fulfillPayosOrder(
   let resolvedUserId: string | null = null;
   let resolvedTier: PayosPlanId | null = null;
 
-  const supabase = getSupabaseServerClient();
+  const supabase = getSupabaseServerClient(params.userToken);
   if (supabase) {
     try {
       const { data: sub } = await supabase

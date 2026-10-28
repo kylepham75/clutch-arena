@@ -39,6 +39,11 @@ export async function POST(request: Request) {
 
     const info = await getPayosPaymentInfo(orderCodeNum);
 
+    const authHeader = request.headers.get("authorization");
+    const userToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice(7).trim()
+      : undefined;
+
     if (info.status === "PAID") {
       const result = await fulfillPayosOrder({
         orderCode: orderCodeNum,
@@ -48,6 +53,7 @@ export async function POST(request: Request) {
           : typeof body.userId === "string" && body.userId.trim()
             ? body.userId.trim()
             : undefined,
+        userToken,
       });
 
       return NextResponse.json({
