@@ -313,8 +313,16 @@ export function setStoredUserTier(tier: UserTier, expiresAt?: string | null): vo
       }),
     );
 
-    // Never allow client-side code to self-upgrade paid tiers in Supabase.
+    // Never allow client-side code to overwrite an active paid tier with contender
     if (tier === "contender") {
+      const currentTier = localStorage.getItem(USER_TIER_STORAGE_KEY);
+      const currentExpires = localStorage.getItem(USER_TIER_EXPIRES_KEY);
+      if (currentTier && currentTier !== "contender") {
+        if (!currentExpires || new Date(currentExpires).getTime() > Date.now()) {
+          // Active unexpired paid tier; do not downgrade client-side
+          return;
+        }
+      }
       void syncUserTierToCloud("contender", null);
     }
   } catch {
@@ -358,6 +366,26 @@ export async function syncUserTierToCloud(
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) return false;
+
+    // Guard: Prevent downgrading if cloud profile currently has an active unexpired paid tier
+    const { data: currentProfile } = await supabase
+      .from("profiles")
+      .select("tier, tier_expires_at")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (currentProfile?.tier && currentProfile.tier !== "contender") {
+      if (currentProfile.tier_expires_at) {
+        const expMs = new Date(currentProfile.tier_expires_at).getTime();
+        if (!isNaN(expMs) && expMs > Date.now()) {
+          // Cloud subscription is still active; block downgrade
+          return false;
+        }
+      } else {
+        // Non-expiring manual grant; block downgrade
+        return false;
+      }
+    }
 
     const now = new Date().toISOString();
     const payload = {

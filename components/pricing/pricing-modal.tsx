@@ -251,8 +251,10 @@ export function PricingModal({
   const handleSelectPlan = (plan: PlanPricing) => {
     if (plan.comingSoon || plan.id === "tutor") return;
     if (plan.id === "contender") {
-      setTier("contender");
       onClose();
+      return;
+    }
+    if (plan.id === "cram_pass" && (tier === "pro" || tier === "tutor")) {
       return;
     }
     if (plan.id === "cram_pass" || plan.id === "pro") {
@@ -797,6 +799,30 @@ export function PricingModal({
             {PRICING_PLANS.map((plan) => {
               const isCurrent = tier === plan.id;
               const isRecommended = plan.recommended;
+              const isIncluded =
+                (plan.id === "contender" && tier !== "contender") ||
+                (plan.id === "cram_pass" && (tier === "pro" || tier === "tutor"));
+              const isButtonDisabled = isCurrent || Boolean(plan.comingSoon) || isIncluded;
+
+              const buttonLabel = plan.comingSoon
+                ? isVi
+                  ? "Sắp ra mắt"
+                  : "Coming Soon"
+                : isCurrent
+                  ? isVi
+                    ? "Đang sử dụng"
+                    : "Current Tier"
+                  : plan.id === "contender"
+                    ? isVi
+                      ? "Gói cơ bản"
+                      : "Included"
+                    : plan.id === "cram_pass" && (tier === "pro" || tier === "tutor")
+                      ? isVi
+                        ? "Đã có trong gói Pro"
+                        : "Included in Pro"
+                      : isVi
+                        ? "Mở khóa ngay"
+                        : "Unlock Now";
 
               return (
                 <div
@@ -897,29 +923,19 @@ export function PricingModal({
 
                   <Button
                     onClick={() => handleSelectPlan(plan)}
-                    disabled={isCurrent || Boolean(plan.comingSoon)}
-                    variant={isRecommended ? "dark" : "outline"}
-                    className={`w-full text-xs font-bold py-2.5 rounded-xl mt-2 transition-all shadow-xs cursor-pointer ${
-                      isRecommended
+                    disabled={isButtonDisabled}
+                    variant={isRecommended && !isButtonDisabled ? "dark" : "outline"}
+                    className={`w-full text-xs font-bold py-2.5 rounded-xl mt-2 transition-all shadow-xs ${
+                      isButtonDisabled
+                        ? "opacity-60 cursor-not-allowed bg-stone-100 dark:bg-stone-800 text-stone-500 border-stone-200 dark:border-stone-700"
+                        : "cursor-pointer"
+                    } ${
+                      isRecommended && !isButtonDisabled
                         ? "bg-amber-600 hover:bg-amber-700 text-white shadow-sm"
                         : ""
                     }`}
                   >
-                    {plan.comingSoon
-                      ? isVi
-                        ? "Sắp ra mắt"
-                        : "Coming Soon"
-                      : isCurrent
-                        ? isVi
-                          ? "Đang sử dụng"
-                          : "Current Tier"
-                        : plan.id === "contender"
-                          ? isVi
-                            ? "Sử dụng miễn phí"
-                            : "Start Free"
-                          : isVi
-                            ? "Mở khóa ngay"
-                            : "Unlock Now"}
+                    {buttonLabel}
                   </Button>
                 </div>
               );
