@@ -43,7 +43,11 @@ export async function POST(request: Request) {
       const result = await fulfillPayosOrder({
         orderCode: orderCodeNum,
         amount: info.amount,
-        fallbackUserId: auth.authenticated ? auth.user.id : undefined,
+        fallbackUserId: auth.authenticated
+          ? auth.user.id
+          : typeof body.userId === "string" && body.userId.trim()
+            ? body.userId.trim()
+            : undefined,
       });
 
       return NextResponse.json({

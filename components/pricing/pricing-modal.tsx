@@ -125,7 +125,7 @@ export function PricingModal({
         const res = await fetch("/api/payments/payos/create", {
           method: "POST",
           headers,
-          body: JSON.stringify({ planId: plan.id }),
+          body: JSON.stringify({ planId: plan.id, userId: user?.id }),
         });
 
         const data = await res.json().catch(() => null);
@@ -214,7 +214,7 @@ export function PricingModal({
         const res = await fetch("/api/payments/payos/verify", {
           method: "POST",
           headers,
-          body: JSON.stringify({ orderCode: payosOrder.orderCode }),
+          body: JSON.stringify({ orderCode: payosOrder.orderCode, userId: user?.id }),
         });
 
         if (!res.ok) return;
@@ -312,7 +312,7 @@ export function PricingModal({
           const res = await fetch("/api/payments/payos/verify", {
             method: "POST",
             headers,
-            body: JSON.stringify({ orderCode: payosOrder.orderCode }),
+            body: JSON.stringify({ orderCode: payosOrder.orderCode, userId: user?.id }),
           });
           const data = await res.json().catch(() => null);
           if (data?.paid === true) {
@@ -356,25 +356,10 @@ export function PricingModal({
     }
   };
 
-  const bankAccount = "0388291888";
-  const bankName = "MBBank (Ngân hàng Quân Đội)";
-  const accountHolder = "CLUTCH ARENA VN";
-
-  const fallbackTransferNote = useMemo(() => {
-    return selectedPlan
-      ? `CLUTCH ${selectedPlan.id.toUpperCase()} ${Math.random().toString(36).substring(2, 7).toUpperCase()}`
-      : "CLUTCH CRAM 8888";
-  }, [selectedPlan?.id]);
-
-  const displayAccountNumber = payosOrder?.accountNumber || bankAccount;
-  const displayAccountName = payosOrder?.accountName || accountHolder;
-  const displayTransferNote = payosOrder?.description || fallbackTransferNote;
-
-  const vietQrUrl = selectedPlan
-    ? `https://img.vietqr.io/image/MB-${bankAccount}-compact2.png?amount=${selectedPlan.priceVnd}&addInfo=${encodeURIComponent(
-        displayTransferNote,
-      )}&accountName=${encodeURIComponent(accountHolder)}`
-    : "";
+  const displayBankName = payosOrder ? "MBBank (Napas 24/7)" : "Ngân hàng liên kết PayOS";
+  const displayAccountNumber = payosOrder?.accountNumber || "";
+  const displayAccountName = payosOrder?.accountName || "PayOS VietQR";
+  const displayTransferNote = payosOrder?.description || "";
 
   return (
     <Dialog
@@ -540,14 +525,42 @@ export function PricingModal({
                         {isVi ? "Vui lòng đợi giây lát" : "Please wait a moment"}
                       </span>
                     </div>
-                  ) : (
+                  ) : payosOrder ? (
                     /* eslint-disable-next-line @next/next/no-img-element */
                     <img
-                      src={payosOrder?.vietQrImageUrl || vietQrUrl}
+                      src={payosOrder.vietQrImageUrl}
                       alt="VietQR Payment Code"
                       className="w-56 h-auto rounded-lg border border-stone-100 dark:border-stone-800"
                       loading="lazy"
                     />
+                  ) : authRequiredForPayment ? (
+                    <div className="w-56 h-56 flex flex-col items-center justify-center rounded-lg border border-dashed border-amber-300 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/20 p-4 text-center">
+                      <Users size={32} className="text-amber-600 mb-2" />
+                      <span className="text-xs font-bold text-amber-900 dark:text-amber-200">
+                        {isVi ? "Yêu cầu đăng nhập" : "Sign in required"}
+                      </span>
+                      <span className="text-[11px] text-stone-500 mt-1 mb-3">
+                        {isVi ? "Đăng nhập để tạo mã QR gắn liền tài khoản của bạn" : "Sign in to generate your personal payment QR"}
+                      </span>
+                      <Button
+                        onClick={() => openAuthDialog(isVi ? "Đăng nhập để thanh toán gói học" : "Sign in to complete checkout")}
+                        className="text-xs py-1.5 px-3 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg cursor-pointer"
+                      >
+                        {isVi ? "Đăng nhập ngay" : "Sign in now"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="w-56 h-56 flex flex-col items-center justify-center rounded-lg border border-dashed border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-900/20 p-4 text-center">
+                      <span className="text-xs font-semibold text-stone-700 dark:text-stone-300 mb-2">
+                        {verificationError || (isVi ? "Chưa tải được mã VietQR" : "Could not load VietQR")}
+                      </span>
+                      <Button
+                        onClick={() => selectedPlan && createPayosOrder(selectedPlan)}
+                        className="text-xs py-1.5 px-3 bg-stone-800 dark:bg-stone-200 text-white dark:text-stone-900 rounded-lg cursor-pointer"
+                      >
+                        {isVi ? "Tải lại mã" : "Retry"}
+                      </Button>
+                    </div>
                   )}
 
                   <span className="text-[11px] text-stone-500 mt-2 flex items-center gap-1">
@@ -575,7 +588,7 @@ export function PricingModal({
                   <div className="p-3 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800 space-y-2 text-xs">
                     <div className="flex justify-between items-center">
                       <span className="text-stone-500">Ngân hàng:</span>
-                      <span className="font-semibold">{bankName}</span>
+                      <span className="font-semibold">{displayBankName}</span>
                     </div>
 
                     <div className="flex justify-between items-center">

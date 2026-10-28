@@ -44,17 +44,48 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
     };
   }
 
+  let token: string | null = null;
   const authHeader = request.headers.get("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return {
-      authenticated: false,
-      isGuest: true,
-      tier: isAuthorizedTestTier ? (normalizedTestTier as UserTier) : "guest",
-      devMode: false,
-    };
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    token = authHeader.replace(/^Bearer\s+/i, "").trim();
   }
 
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) {
+    const cookieHeader = request.headers.get("cookie");
+    if (cookieHeader) {
+      const parts = cookieHeader.split(";");
+      for (const part of parts) {
+        const [rawKey, ...rawVal] = part.trim().split("=");
+        if (rawKey && rawKey.includes("-auth-token")) {
+          const val = decodeURIComponent(rawVal.join("="));
+          try {
+            const parsed = JSON.parse(val);
+            if (parsed && typeof parsed.access_token === "string") {
+              token = parsed.access_token;
+              break;
+            }
+            if (Array.isArray(parsed) && parsed[0]?.access_token) {
+              token = parsed[0].access_token;
+              break;
+            }
+          } catch {
+            // Check if base64 encoded
+            try {
+              const decoded = Buffer.from(val, "base64").toString("utf-8");
+              const parsed = JSON.parse(decoded);
+              if (parsed?.access_token) {
+                token = parsed.access_token;
+                break;
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+    }
+  }
+
   if (!token) {
     return {
       authenticated: false,
