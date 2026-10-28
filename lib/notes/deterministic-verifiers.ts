@@ -4,6 +4,7 @@ import {
   type NoteFormula,
   type NoteSection,
   type SynthesisOmittedFormula,
+  type NoteOmittedFormula,
 } from "@/lib/schemas/notes";
 import {
   convertUnicodeMath,
@@ -17,6 +18,8 @@ export interface FormulaCoverageResult {
   uncapturedIds: string[];
   coverageRatio: number;
   duplicateOmittedIds: string[];
+  omittedByRuleIds: string[];
+  uncapturedErrorIds: string[];
 }
 
 export interface EvidenceQuoteMatchResult {
@@ -89,8 +92,32 @@ export interface DeterministicVerificationReport {
   };
 }
 
-const DUPLICATE_REDUNDANT_REASON_REGEX =
-  /\b(duplicate|redundant|same as|already (?:covered|included|placed)|identical|trùng|tương đương)\b/i;
+export const DUPLICATE_REDUNDANT_REASON_REGEX =
+  /\b(duplicate|redundant|same as|already (?:covered|included|placed|captured)|identical|equivalent|trùng|tương đương)\b/i;
+
+export const OMITTED_BY_RULE_REASON_REGEX =
+  /\b(duplicate|redundant|same as|already (?:covered|included|placed|captured)|identical|equivalent|trùng|tương đương|intermediate|derivation|rearrangement|rearranged|step|algebraic|simplified|expanded|derived|sub-step|biến đổi|trung gian|rút gọn|exercise|drill|example|numerical|plug-in|plugin|worked|practice|calculation|number|sample|illustration|bài tập|ví dụ|thay số)\b/i;
+
+function hasNumericPlugIns(entry: FormulaLedgerEntry): boolean {
+  const text = `${entry.raw} ${entry.latex}`;
+  return /\d+\s*[\+\-\*\/]\s*\d+|\(\s*\d+/.test(text) || (text.match(/\d+(?:\.\d+)?/g) || []).length >= 2;
+}
+
+function extractLhsVariable(latexOrRaw: string): string | null {
+  if (!latexOrRaw) return null;
+  const match = latexOrRaw.match(/^(.*?)(?<![<>!])=(?![=>])/);
+  if (!match) return null;
+  const lhs = match[1].trim();
+  const symbols = extractFormulaSymbols(lhs);
+  if (symbols.length > 0) {
+    return symbols[0].toLowerCase();
+  }
+  const cleaned = lhs
+    .replace(/\\text\{([^}]+)\}|\\mathrm\{([^}]+)\}/g, "$1$2")
+    .replace(/[^a-zA-Z0-9_]/g, "")
+    .trim();
+  return cleaned ? cleaned.toLowerCase() : null;
+}
 
 /**
  * Verifies formula coverage across note sections against the authoritative formula ledger.
@@ -98,7 +125,7 @@ const DUPLICATE_REDUNDANT_REASON_REGEX =
 export function verifyFormulaCoverage(
   sections: NoteSection[],
   ledger: FormulaLedgerEntry[],
-  omitted?: SynthesisOmittedFormula[],
+  omitted?: (SynthesisOmittedFormula | NoteOmittedFormula)[],
 ): FormulaCoverageResult {
   const placedFormulas: NoteFormula[] = [];
   for (const sec of sections) {
@@ -173,6 +200,121 @@ export function verifyFormulaCoverage(
     .filter((entry) => !placedSet.has(entry.id))
     .map((entry) => entry.id);
 
+  // Track placed slide numbers
+  const placedSlideNumbers = new Set<number>();
+  for (const entry of ledger) {
+    if (placedSet.has(entry.id)) {
+      placedSlideNumbers.add(entry.slide);
+    }
+  }
+  for (const pf of placedFormulas) {
+    if (pf.slide) {
+      placedSlideNumbers.add(pf.slide);
+    }
+  }
+
+  // Track placed formulas per slide
+  const placedFormulasBySlide = new Map<
+    number,
+    Array<{ latex: string; raw?: string; evidence?: string; label?: string }>
+  >();
+  const recordPlacedFormula = (slide: number, pf: { latex: string; raw?: string; evidence?: string; label?: string }) => {
+    if (!placedFormulasBySlide.has(slide)) {
+      placedFormulasBySlide.set(slide, []);
+    }
+    placedFormulasBySlide.get(slide)!.push(pf);
+  };
+
+  for (const entry of ledger) {
+    if (placedSet.has(entry.id)) {
+      recordPlacedFormula(entry.slide, entry);
+    }
+  }
+  for (const pf of placedFormulas) {
+    if (pf.slide && pf.latex) {
+      recordPlacedFormula(pf.slide, pf);
+    }
+  }
+
+  const isIntermediateRearrangement = (
+    entry: FormulaLedgerEntry,
+  ): boolean => {
+    const entryText = `${entry.label || ""} ${entry.evidence || ""} ${entry.raw || ""}`;
+    if (
+      /\b(intermediate|derivation|rearrangement|rearranged|step|sub-step|biến đổi|trung gian|rút gọn)\b/i.test(
+        entryText,
+      )
+    ) {
+      return true;
+    }
+
+    const entryLhs = extractLhsVariable(entry.latex) || extractLhsVariable(entry.raw);
+    if (!entryLhs) return false;
+
+    const placedOnSlide = placedFormulasBySlide.get(entry.slide) || [];
+    if (placedOnSlide.length === 0) return false;
+
+    const entryRhsSymbols = extractFormulaSymbols(
+      (entry.latex || entry.raw || "").replace(/^[^=]+=\s*/, ""),
+    ).filter((s) => !/^\d+$/.test(s));
+
+    for (const placed of placedOnSlide) {
+      const placedLhs =
+        extractLhsVariable(placed.latex) || extractLhsVariable(placed.raw || "");
+      if (placedLhs !== entryLhs) continue;
+
+      if (entryRhsSymbols.length === 0) return true;
+
+      const placedSymbols = new Set(
+        extractFormulaSymbols(placed.latex).concat(
+          extractFormulaSymbols(placed.raw || ""),
+        ),
+      );
+
+      const allRhsInPlaced = entryRhsSymbols.every((s) =>
+        placedSymbols.has(s),
+      );
+      if (allRhsInPlaced) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  // Classify unplaced entries into omittedByRuleIds vs uncapturedErrorIds
+  const omittedByRuleIds: string[] = [];
+  const uncapturedErrorIds: string[] = [];
+
+  for (const entry of ledger) {
+    if (placedSet.has(entry.id)) continue;
+
+    const om = Array.isArray(omitted)
+      ? omitted.find((o) => o && o.formulaId === entry.id)
+      : undefined;
+
+    const isExplicitOmittedByRule =
+      om &&
+      ((om as any).status === "omitted_by_rule" ||
+        (om.reason && OMITTED_BY_RULE_REASON_REGEX.test(om.reason)));
+
+    const isExerciseRule =
+      Boolean(entry.isExerciseOnly) &&
+      (hasNumericPlugIns(entry) || placedSlideNumbers.has(entry.slide));
+
+    const isRearrangementRule = isIntermediateRearrangement(entry);
+
+    if (
+      isExplicitOmittedByRule ||
+      isExerciseRule ||
+      isRearrangementRule
+    ) {
+      omittedByRuleIds.push(entry.id);
+    } else {
+      uncapturedErrorIds.push(entry.id);
+    }
+  }
+
   const coverageRatio =
     ledger.length === 0 ? 1 : placedIds.length / ledger.length;
 
@@ -182,6 +324,8 @@ export function verifyFormulaCoverage(
     uncapturedIds,
     coverageRatio,
     duplicateOmittedIds,
+    omittedByRuleIds,
+    uncapturedErrorIds,
   };
 }
 
@@ -1051,7 +1195,7 @@ export function runDeterministicVerifiers(input: {
   sections: NoteSection[];
   sources: SourceBlock[];
   ledger: FormulaLedgerEntry[];
-  omitted?: SynthesisOmittedFormula[];
+  omitted?: (SynthesisOmittedFormula | NoteOmittedFormula)[];
 }): DeterministicVerificationReport {
   const coverage = verifyFormulaCoverage(
     input.sections,
@@ -1110,9 +1254,9 @@ export function runDeterministicVerifiers(input: {
   const symbolsPassed = allUngroundedSymbols.size === 0;
 
   const warnings: string[] = [];
-  if (coverage.uncapturedIds.length > 0) {
+  if (coverage.uncapturedErrorIds.length > 0) {
     warnings.push(
-      `Uncaptured formula IDs: ${coverage.uncapturedIds.join(", ")}`,
+      `Uncaptured formula IDs: ${coverage.uncapturedErrorIds.join(", ")}`,
     );
   }
   if (evidence.failedBullets.length > 0) {

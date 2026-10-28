@@ -449,4 +449,212 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
     expect(uncaptured[0].slide).toBe(15);
     expect(uncaptured[0].reason).toBe("Moved to supplementary appendix");
   });
+
+  describe("Regression Tests: Bug 1 & Bug 4 (Suppression of omitted_by_rule formulas & formula card CSS)", () => {
+    it("suppresses status: 'omitted_by_rule' formulas from both 'Uncaptured Source Formulas' and warning banner while displaying status: 'uncaptured_error'", () => {
+      const noteWithMixedOmitted: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        verification: {
+          status: "marked",
+          repairAttempted: false,
+          coverageRatio: 0.5,
+          totalLedgerFormulas: 3,
+          placedFormulaIds: ["F1"],
+          omittedByRuleFormulaIds: ["F2"],
+          uncapturedFormulaIds: ["F3"],
+          unsupportedClaimsRemoved: 0,
+          needsReviewCount: 0,
+          contradictedFormulaCount: 0,
+          evidenceMatchRatio: 1,
+          numberGroundingPassed: true,
+          ungroundedNumbers: [],
+          symbolGroundingPassed: true,
+          ungroundedSymbols: [],
+          claimVerdicts: [],
+          formulaResults: [],
+          warnings: ["Uncaptured formula IDs: F3"],
+          divergenceNotices: [],
+        },
+        formulaLedger: [
+          {
+            id: "F1",
+            slide: 4,
+            raw: "P0 = D1/(1+R)",
+            latex: "P_0 = \\frac{D_1}{1 + R}",
+            variables: [],
+            origin: "omml",
+          },
+          {
+            id: "F2",
+            slide: 5,
+            raw: "R = (D1/P0) + g",
+            latex: "R = \\frac{D_1}{P_0} + g",
+            label: "Intermediate Derivation",
+            variables: [],
+            origin: "text",
+          },
+          {
+            id: "F3",
+            slide: 10,
+            raw: "WACC = (E/V)*Re + (D/V)*Rd*(1-Tc)",
+            latex: "\\text{WACC} = \\frac{E}{V} R_e + \\frac{D}{V} R_d (1 - T_c)",
+            label: "Cost of Capital",
+            variables: [],
+            origin: "text",
+          },
+        ],
+        omitted: [
+          {
+            formulaId: "F2",
+            status: "omitted_by_rule",
+            reason: "Intermediate derivation rearrangement step",
+          },
+          {
+            formulaId: "F3",
+            status: "uncaptured_error",
+            reason: "Unplaced core syllabus formula",
+          },
+        ],
+      };
+
+      // 1. getUncapturedFormulas should filter out F2 (omitted_by_rule) and keep F3 (uncaptured_error)
+      const uncaptured = getUncapturedFormulas(noteWithMixedOmitted);
+      expect(uncaptured).toHaveLength(1);
+      expect(uncaptured[0].id).toBe("F3");
+      expect(uncaptured.some((item) => item.id === "F2")).toBe(false);
+
+      // 2. generateClutchNotePdfHtml HTML output checks
+      const html = generateClutchNotePdfHtml(noteWithMixedOmitted);
+
+      // The uncaptured section must contain F3 but must NOT contain F2
+      expect(html).toContain("pdf-uncaptured-section");
+      expect(html).toContain("Uncaptured Source Formulas");
+      expect(html).toContain("F3");
+      expect(html).toContain("Cost of Capital");
+      expect(html).toContain("Unplaced core syllabus formula");
+      expect(html).not.toContain("Intermediate Derivation");
+      expect(html).not.toContain("Intermediate derivation rearrangement step");
+
+      // The warning banner must show F3
+      expect(html).toContain("pdf-warning-banner");
+      expect(html).toContain("Uncaptured formula IDs: F3");
+    });
+
+    it("suppresses the entire uncaptured section and uncaptured warning banner when ALL unplaced formulas are omitted_by_rule", () => {
+      const noteAllOmittedByRule: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        verification: {
+          status: "passed",
+          repairAttempted: false,
+          coverageRatio: 0.5,
+          totalLedgerFormulas: 2,
+          placedFormulaIds: ["F1"],
+          omittedByRuleFormulaIds: ["F2"],
+          uncapturedFormulaIds: [],
+          unsupportedClaimsRemoved: 0,
+          needsReviewCount: 0,
+          contradictedFormulaCount: 0,
+          evidenceMatchRatio: 1,
+          numberGroundingPassed: true,
+          ungroundedNumbers: [],
+          symbolGroundingPassed: true,
+          ungroundedSymbols: [],
+          claimVerdicts: [],
+          formulaResults: [],
+          warnings: ["Uncaptured formula IDs: F2"], // stale warning should be suppressed
+          divergenceNotices: [],
+        },
+        formulaLedger: [
+          {
+            id: "F1",
+            slide: 4,
+            raw: "P0 = D1/(1+R)",
+            latex: "P_0 = \\frac{D_1}{1 + R}",
+            variables: [],
+            origin: "omml",
+          },
+          {
+            id: "F2",
+            slide: 5,
+            raw: "R = (D1/P0) + g",
+            latex: "R = \\frac{D_1}{P_0} + g",
+            label: "Intermediate Derivation",
+            variables: [],
+            origin: "text",
+          },
+        ],
+        omitted: [
+          {
+            formulaId: "F2",
+            status: "omitted_by_rule",
+            reason: "Duplicate rearrangement identity",
+          },
+        ],
+      };
+
+      const uncaptured = getUncapturedFormulas(noteAllOmittedByRule);
+      expect(uncaptured).toHaveLength(0);
+
+      const html = generateClutchNotePdfHtml(noteAllOmittedByRule);
+      expect(html).not.toContain("<section class=\"pdf-uncaptured-section\">");
+      expect(html).not.toContain("Formula Omitted");
+      expect(html).not.toContain("The following formulas appeared in the lecture slides");
+      expect(html).not.toContain("<h3 class=\"pdf-uncaptured-title\">Uncaptured Source Formulas</h3>");
+      expect(html).not.toContain("Uncaptured formula IDs");
+    });
+
+    it("ensures .pdf-formula-card CSS uses white-space: normal and overflow-wrap: break-word without overflow-x: auto", () => {
+      const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE);
+
+      // Verify .pdf-formula-card CSS rule block
+      const formulaCardCssMatch = html.match(/\.pdf-formula-card\s*\{([^}]+)\}/);
+      expect(formulaCardCssMatch).toBeDefined();
+      const cssRules = formulaCardCssMatch![1];
+
+      expect(cssRules).toContain("white-space: normal");
+      expect(cssRules).toContain("overflow-wrap: break-word");
+      expect(cssRules).toContain("word-break: break-word");
+      expect(cssRules).not.toContain("overflow-x: auto");
+      expect(cssRules).not.toContain("overflow-x: scroll");
+    });
+
+    it("renders all terms of long accounting formulas (Cash Identity) including 'Fixed Assets' without clipping", () => {
+      const longFormulaNote: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        sections: [
+          {
+            id: "sec-long-formula",
+            letter: "A",
+            titleVi: "A. CƠ CHẾ DÒNG TIỀN THEO BẢNG CÂN ĐỐI KẾ TOÁN",
+            titleEn: "Cash Identity from Balance Sheet",
+            overview: "Đồng nhất thức tiền mặt phân rã chi tiết nguồn và sử dụng vốn.",
+            bulletPoints: [],
+            subSections: [],
+            sourceSlides: [10],
+            formulas: [
+              {
+                name: "Full Balance Sheet Cash Identity",
+                latex:
+                  "\\text{Cash} = \\text{Long-Term Debt} + \\text{Equity} + \\text{Current Liabilities} - \\text{Other (non-cash) Current Assets} - \\text{Fixed Assets}",
+                variables: [],
+                slide: 10,
+                status: "verified",
+              },
+            ],
+          },
+        ],
+      };
+
+      const html = generateClutchNotePdfHtml(longFormulaNote);
+
+      expect(html).toContain("pdf-formula-card");
+      expect(html).toContain("Cash");
+      expect(html).toContain("Long-Term Debt");
+      expect(html).toContain("Equity");
+      expect(html).toContain("Current Liabilities");
+      expect(html).toContain("Other (non-cash) Current Assets");
+      expect(html).toContain("Fixed Assets");
+    });
+  });
 });
+

@@ -32,6 +32,8 @@ import {
   type UserTier,
 } from "@/lib/pricing/tiers";
 
+import { cleanAuthUrlFromBrowserHistory } from "@/lib/auth/clean-url";
+
 export type AccountTier = "guest" | "free" | "pro" | UserTier;
 
 export interface AuthContextType {
@@ -153,6 +155,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    // Safety cleanup timeout for any lingering auth hashes/codes in the URL
+    const safetyCleanupTimer = setTimeout(() => {
+      cleanAuthUrlFromBrowserHistory();
+    }, 1500);
+
     // Get initial session
     supabase.auth
       .getSession()
@@ -161,12 +168,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const currentUser = session?.user ?? null;
         setUser(currentUser);
         setLoading(false);
+        cleanAuthUrlFromBrowserHistory();
         if (currentUser) {
           await handleAuthLibrarySync(currentUser);
         }
       })
       .catch(() => {
         setLoading(false);
+        cleanAuthUrlFromBrowserHistory();
       });
 
     // Listen to changes
@@ -179,8 +188,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
 
       if (event === "SIGNED_IN" && currentUser) {
+        cleanAuthUrlFromBrowserHistory();
         await handleAuthLibrarySync(currentUser);
       } else if (event === "SIGNED_OUT") {
+        cleanAuthUrlFromBrowserHistory();
         clearSessionLibrary();
         clearSessionHistory();
         clearSessionMastery();
@@ -189,6 +200,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
+      clearTimeout(safetyCleanupTimer);
       subscription.unsubscribe();
     };
   }, [isConfigured]);

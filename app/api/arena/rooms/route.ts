@@ -2,7 +2,16 @@ import { NextResponse } from "next/server";
 import { createRoom, getAllRooms, generateRoomCode } from "@/lib/multiplayer/room-manager";
 import { createRoomSchema } from "@/lib/schemas/multiplayer";
 import { getPartyHost } from "@/lib/multiplayer/party-config";
+import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { getMaxArenaPlayersForTier, type UserTier } from "@/lib/pricing/tiers";
 import PartySocket from "partysocket";
+
+async function resolveServerTier(req: Request): Promise<{ userId?: string; tier: UserTier }> {
+  const auth = await verifyAuthToken(req);
+  const tier: UserTier = auth.tier === "guest" ? "contender" : auth.tier;
+  const userId = auth.authenticated ? auth.user.id : undefined;
+  return { userId, tier };
+}
 
 export async function GET() {
   const partyHost = getPartyHost();
@@ -37,6 +46,17 @@ export async function POST(req: Request) {
       );
     }
 
+    const resolved = await resolveServerTier(req);
+    const tierCap = getMaxArenaPlayersForTier(resolved.tier);
+    const effectiveHostTier: UserTier =
+      resolved.userId || resolved.tier !== "contender"
+        ? resolved.tier
+        : "contender";
+    const effectiveMaxPlayers = Math.min(
+      parsed.data.maxPlayers ?? tierCap,
+      tierCap,
+    );
+
     const partyHost = getPartyHost();
     if (partyHost) {
       const code = generateRoomCode();
@@ -51,7 +71,11 @@ export async function POST(req: Request) {
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(parsed.data),
+            body: JSON.stringify({
+              ...parsed.data,
+              hostTier: effectiveHostTier,
+              maxPlayers: effectiveMaxPlayers,
+            }),
           },
         );
 
@@ -64,7 +88,11 @@ export async function POST(req: Request) {
       }
     }
 
-    const { room, hostPlayer } = createRoom(parsed.data);
+    const { room, hostPlayer } = createRoom({
+      ...parsed.data,
+      hostTier: effectiveHostTier,
+      maxPlayers: effectiveMaxPlayers,
+    });
 
     return NextResponse.json(
       {

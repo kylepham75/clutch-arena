@@ -64,6 +64,30 @@ export type RevealedFeedback = {
   citation?: string;
 };
 
+export type ArenaQuestionStat = {
+  questionId: string;
+  questionNumber: number;
+  questionText: string;
+  topic?: string;
+  citation?: string;
+  correctIndex: number;
+  totalAttempts: number;
+  correctCount: number;
+  missedCount: number;
+  missedPercent: number;
+  optionCounts: [number, number, number, number];
+  mostCommonWrongOption: number | null;
+};
+
+export type ArenaClassAnalytics = {
+  totalPlayers: number;
+  totalQuestions: number;
+  averageAccuracyPercent: number;
+  earlyEliminatedCount: number;
+  earlyEliminatedNicknames: string[];
+  questionStats: ArenaQuestionStat[];
+};
+
 export type ArenaRoomState = {
   code: string;
   title: string;
@@ -81,6 +105,8 @@ export type ArenaRoomState = {
   maxPlayers?: number;
   mode: "exact" | "variants";
   packId: string;
+  hostTier?: "contender" | "cram_pass" | "pro" | "tutor";
+  classAnalytics?: ArenaClassAnalytics | null;
   podium: {
     first: ArenaPlayer | null;
     second: ArenaPlayer | null;
@@ -99,6 +125,7 @@ export const createRoomSchema = z
     mode: z.enum(["exact", "variants"]).default("exact"),
     pack: studyPackSchema.optional(),
     maxPlayers: z.number().int().min(2).max(100).optional(),
+    hostTier: z.enum(["contender", "cram_pass", "pro", "tutor"]).optional(),
   })
   .refine((data) => !!(data.hostNickname || data.nickname), {
     message: "Nickname is required.",
@@ -110,6 +137,7 @@ export const createRoomSchema = z
     mode: data.mode,
     pack: data.pack,
     maxPlayers: data.maxPlayers,
+    hostTier: data.hostTier,
   }));
 
 export type CreateRoomInput = z.infer<typeof createRoomSchema>;

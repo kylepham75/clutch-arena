@@ -7,13 +7,16 @@ import {
   type BotProfile,
 } from "./bot-ai";
 import type {
+  ArenaClassAnalytics,
   ArenaPlayer,
+  ArenaQuestionStat,
   ArenaRoomState,
   MultiplayerQuestion,
   RevealedFeedback,
   RoomStatus,
 } from "@/lib/schemas/multiplayer";
 import type { QuestionItem, StudyPack } from "@/lib/schemas/question";
+import { getMaxArenaPlayersForTier, type UserTier } from "@/lib/pricing/tiers";
 
 export const IDLE_ROOM_TIMEOUT_MS = 90_000; // Auto-close idle rooms after 90 seconds
 
@@ -21,6 +24,7 @@ export type ServerRoom = {
   code: string;
   title: string;
   hostId: string;
+  hostTier: UserTier;
   status: RoomStatus;
   mode: "exact" | "variants";
   pack: StudyPack;
@@ -36,6 +40,9 @@ export type ServerRoom = {
   countdownTimeout: NodeJS.Timeout | null;
   idleTimeout: NodeJS.Timeout | null;
   subscribers: Set<(state: ArenaRoomState) => void>;
+  idleListeners: Set<() => void>;
+  roundHistory: Record<number, Record<string, { selected: number | null; correct: boolean }>>;
+  earlyEliminatedIds: Set<string>;
   createdAt: string;
   maxPlayers: number;
   lastActiveAt: number;
@@ -55,6 +62,17 @@ export function deleteRoom(code: string): boolean {
   if (!room) return false;
   clearTimers(room);
   if (room.idleTimeout) clearTimeout(room.idleTimeout);
+
+  room.idleListeners.forEach((cb) => {
+    try {
+      cb();
+    } catch {
+      // ignore callback error
+    }
+  });
+
+  room.subscribers.clear();
+  room.idleListeners.clear();
   rooms.delete(code.toUpperCase());
   return true;
 }
@@ -172,6 +190,8 @@ export function getClientState(
     maxPlayers: room.maxPlayers,
     mode: room.mode,
     packId: room.pack.id,
+    hostTier: room.hostTier,
+    classAnalytics: computeClassAnalytics(room),
     podium: room.podium,
   };
 }
@@ -183,6 +203,7 @@ export function createRoom(params: {
   mode?: "exact" | "variants";
   pack?: StudyPack;
   maxPlayers?: number;
+  hostTier?: UserTier;
 }): { room: ServerRoom; hostPlayer: ArenaPlayer } {
   let code = generateRoomCode();
   while (rooms.has(code)) {
@@ -205,12 +226,31 @@ export function createRoom(params: {
   };
 
   const pack = params.pack || mockMicroeconomics;
+  const hostTier: UserTier = params.hostTier || "contender";
+
+  let maxPlayers: number;
+  if (params.hostTier !== undefined) {
+    const tierCap = getMaxArenaPlayersForTier(params.hostTier);
+    maxPlayers =
+      params.maxPlayers !== undefined
+        ? Math.min(params.maxPlayers, tierCap)
+        : tierCap;
+  } else {
+    maxPlayers = params.maxPlayers ?? getMaxArenaPlayersForTier("contender");
+  }
+
+  let mode = params.mode || "exact";
+  if (params.hostTier === "contender") {
+    mode = "exact";
+  }
+
   const room: ServerRoom = {
     code,
     title: params.title?.trim() || `${pack.title} Arena`,
     hostId: hostPlayer.id,
+    hostTier,
     status: "lobby",
-    mode: params.mode || "exact",
+    mode,
     pack,
     currentQuestionIndex: -1,
     totalQuestions: pack.questions.length,
@@ -226,8 +266,11 @@ export function createRoom(params: {
     countdownTimeout: null,
     idleTimeout: null,
     subscribers: new Set(),
+    idleListeners: new Set(),
+    roundHistory: {},
+    earlyEliminatedIds: new Set(),
     createdAt: new Date().toISOString(),
-    maxPlayers: params.maxPlayers || 8,
+    maxPlayers,
     lastActiveAt: Date.now(),
     podium: null,
   };
@@ -375,6 +418,7 @@ export function startRound(room: ServerRoom, questionIndex: number) {
       p.lastAnswer = null;
     } else {
       p.status = "eliminated";
+      p.lastAnswer = null;
     }
   });
 
@@ -485,8 +529,122 @@ function handleRoundTimeout(room: ServerRoom) {
   endRound(room);
 }
 
+export function finishQuestionRound(room: ServerRoom) {
+  const qIdx = room.currentQuestionIndex;
+  if (qIdx < 0 || qIdx >= room.pack.questions.length) return;
+
+  if (!room.roundHistory[qIdx]) {
+    room.roundHistory[qIdx] = {};
+  }
+
+  Object.values(room.players).forEach((player) => {
+    if (player.lastAnswer !== null || player.lives > 0) {
+      room.roundHistory[qIdx][player.id] = {
+        selected: player.lastAnswer?.selected ?? null,
+        correct: Boolean(player.lastAnswer?.correct),
+      };
+    }
+
+    if (player.lives === 0 && qIdx + 1 < 5) {
+      room.earlyEliminatedIds.add(player.id);
+    }
+  });
+}
+
+export function computeClassAnalytics(room: ServerRoom): ArenaClassAnalytics {
+  const questionStats: ArenaQuestionStat[] = [];
+  let allTotalAttempts = 0;
+  let allCorrectCount = 0;
+
+  room.pack.questions.forEach((qItem, idx) => {
+    const historyForQ = room.roundHistory[idx];
+    const hasHistory = Boolean(
+      historyForQ && Object.keys(historyForQ).length > 0,
+    );
+    const isPlayed =
+      room.status === "podium"
+        ? hasHistory
+        : idx <= room.currentQuestionIndex && hasHistory;
+
+    if (!isPlayed || !historyForQ) return;
+
+    const isVariant = room.mode === "variants" && qItem.conceptVariant;
+    const questionText = isVariant
+      ? qItem.conceptVariant.question
+      : qItem.question;
+    const correctIndex = isVariant
+      ? qItem.conceptVariant.correctIndex
+      : qItem.correctIndex;
+    const meta = room.pack.metadata[qItem.id];
+
+    const attempts = Object.values(historyForQ);
+    const totalAttempts = attempts.length;
+    const correctCount = attempts.filter((a) => a.correct).length;
+    const missedCount = totalAttempts - correctCount;
+    const missedPercent =
+      totalAttempts > 0 ? Math.round((missedCount / totalAttempts) * 100) : 0;
+
+    const optionCounts: [number, number, number, number] = [0, 0, 0, 0];
+    attempts.forEach((a) => {
+      if (a.selected !== null && a.selected >= 0 && a.selected <= 3) {
+        optionCounts[a.selected] += 1;
+      }
+    });
+
+    let mostCommonWrongOption: number | null = null;
+    let maxWrongCount = 0;
+    for (let opt = 0; opt < 4; opt++) {
+      if (opt !== correctIndex && optionCounts[opt] > maxWrongCount) {
+        maxWrongCount = optionCounts[opt];
+        mostCommonWrongOption = opt;
+      }
+    }
+
+    allTotalAttempts += totalAttempts;
+    allCorrectCount += correctCount;
+
+    questionStats.push({
+      questionId: qItem.id,
+      questionNumber: idx + 1,
+      questionText,
+      topic: meta?.topic,
+      citation: meta?.citation,
+      correctIndex,
+      totalAttempts,
+      correctCount,
+      missedCount,
+      missedPercent,
+      optionCounts,
+      mostCommonWrongOption,
+    });
+  });
+
+  const averageAccuracyPercent =
+    allTotalAttempts > 0
+      ? Math.round((allCorrectCount / allTotalAttempts) * 100)
+      : 0;
+
+  const earlyEliminatedNicknames: string[] = [];
+  room.earlyEliminatedIds.forEach((id) => {
+    const p = room.players[id];
+    if (p) {
+      earlyEliminatedNicknames.push(p.nickname);
+    }
+  });
+
+  return {
+    totalPlayers: Object.keys(room.players).length,
+    totalQuestions: room.pack.questions.length,
+    averageAccuracyPercent,
+    earlyEliminatedCount: earlyEliminatedNicknames.length,
+    earlyEliminatedNicknames,
+    questionStats,
+  };
+}
+
 export function endRound(room: ServerRoom) {
   clearTimers(room);
+  finishQuestionRound(room);
 
   room.status = "feedback";
   room.feedbackDeadline = Date.now() + 4_000;
@@ -506,6 +664,9 @@ export function endRound(room: ServerRoom) {
 
 export function endMatch(room: ServerRoom) {
   clearTimers(room);
+  if (room.currentQuestionIndex >= 0 && !room.roundHistory[room.currentQuestionIndex]) {
+    finishQuestionRound(room);
+  }
   room.status = "podium";
 
   const ranked = Object.values(room.players).sort((a, b) => {
@@ -537,6 +698,8 @@ export function rematch(code: string, hostId: string): boolean {
   room.roundDeadline = 0;
   room.feedbackDeadline = 0;
   room.countdownEndsAt = 0;
+  room.roundHistory = {};
+  room.earlyEliminatedIds.clear();
 
   Object.values(room.players).forEach((p) => {
     p.score = 0;
@@ -571,5 +734,18 @@ export function subscribeToRoom(
   room.subscribers.add(callback);
   return () => {
     room.subscribers.delete(callback);
+  };
+}
+
+export function subscribeToRoomIdleDisconnect(
+  code: string,
+  callback: () => void,
+): () => void {
+  const room = getRoom(code);
+  if (!room) return () => {};
+
+  room.idleListeners.add(callback);
+  return () => {
+    room.idleListeners.delete(callback);
   };
 }

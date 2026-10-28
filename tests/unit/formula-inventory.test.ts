@@ -16,8 +16,10 @@ import {
   mergeFormulaLedger,
   buildMergedFormulaLedger,
   isFormulaGroundedOnSlide,
+  extractTextFormulas,
   type FormulaInventoryItem,
 } from "@/lib/notes/formula-inventory";
+import { normalizePdfArrowSymbols } from "@/lib/ingestion/parse-pdf";
 import { parseSlideDeck } from "@/lib/notes/parse-slides";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 import type {
@@ -38,24 +40,29 @@ vi.mock("ai", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/ingestion/parse-pdf", () => ({
-  parsePdf: vi.fn().mockResolvedValue({
-    pageCount: 2,
-    sources: [
-      {
-        id: "page-1",
-        label: "Page 1",
-        text: "Net Working Capital = Current Assets - Current Liabilities\nThis is sufficient text to meet the minimum character threshold.",
-      },
-      {
-        id: "page-2",
-        label: "Page 2",
-        text: "P₀ = D₁ / (R − g)\nThis is sufficient text to meet the minimum character threshold.",
-      },
-    ],
-    warnings: [],
-  }),
-}));
+vi.mock("@/lib/ingestion/parse-pdf", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/ingestion/parse-pdf")>();
+  return {
+    ...actual,
+    parsePdf: vi.fn().mockResolvedValue({
+      pageCount: 2,
+      sources: [
+        {
+          id: "page-1",
+          label: "Page 1",
+          text: "Net Working Capital = Current Assets - Current Liabilities\nThis is sufficient text to meet the minimum character threshold.",
+        },
+        {
+          id: "page-2",
+          label: "Page 2",
+          text: "P₀ = D₁ / (R − g)\nThis is sufficient text to meet the minimum character threshold.",
+        },
+      ],
+      warnings: [],
+    }),
+  };
+});
 
 vi.mock("@/lib/ingestion/parse-pptx", async (importOriginal) => {
   const actual =
@@ -1057,4 +1064,86 @@ describe("Stage 3.2: Chunked Extraction Pass & Merged Formula Ledger", () => {
     });
   });
 });
+
+describe("Regression Tests: Bug 2 & Bug 3 (normalizePdfArrowSymbols, extractTextFormulas arrow-only lines, convertUnicodeMath)", () => {
+  describe("normalizePdfArrowSymbols", () => {
+    it("maps Private Use Area Wingdings/Symbol arrow codepoints (\\uF0AD, \\uF0AF, \\uF0E1, \\uF0E2) to ↑ and ↓", () => {
+      // \uF0AD, \uF0E1 -> ↑
+      expect(normalizePdfArrowSymbols("\uF0AD")).toBe("↑");
+      expect(normalizePdfArrowSymbols("\uF0E1")).toBe("↑");
+      // \uF0AF, \uF0E2 -> ↓
+      expect(normalizePdfArrowSymbols("\uF0AF")).toBe("↓");
+      expect(normalizePdfArrowSymbols("\uF0E2")).toBe("↓");
+
+      const rawPuaText =
+        "Activities \uF0AD cash => \uF0AD Cash inflow; Activities \uF0AF cash => \uF0AF Cash outflow";
+      const normalized = normalizePdfArrowSymbols(rawPuaText);
+      expect(normalized).toBe(
+        "Activities ↑ cash => ↑ Cash inflow; Activities ↓ cash => ↓ Cash outflow",
+      );
+    });
+
+    it("maps horizontal arrow codepoints (\\uF0E0, \\uF0DF, \\uF0DC) to →, ←, ⇒", () => {
+      expect(normalizePdfArrowSymbols("\uF0E0")).toBe("→");
+      expect(normalizePdfArrowSymbols("\uF0DF")).toBe("←");
+      expect(normalizePdfArrowSymbols("\uF0DC")).toBe("⇒");
+    });
+  });
+
+  describe("extractTextFormulas arrow line handling", () => {
+    it("does NOT split arrow-only lines ('Activities ↑ cash => ↑ Cash inflow') on the = inside => into broken formulas", () => {
+      const arrowLine = "Activities ↑ cash => ↑ Cash inflow";
+      const results = extractTextFormulas(arrowLine);
+
+      // Should not extract anything because this is an arrow relation without standalone '='
+      expect(results).toEqual([]);
+    });
+
+    it("does NOT extract broken '= >' formula when arrow lines are interspersed with real formulas", () => {
+      const text = [
+        "Operating Activities:",
+        "Activities ↑ cash => ↑ Cash inflow",
+        "Activities ↓ cash => ↓ Cash outflow",
+        "Net Working Capital = Current Assets - Current Liabilities",
+      ].join("\n");
+
+      const results = extractTextFormulas(text);
+      expect(results).toHaveLength(1);
+      expect(results[0].raw).toBe(
+        "Net Working Capital = Current Assets - Current Liabilities",
+      );
+      expect(results[0].latex).toBe(
+        "\\text{Net Working Capital} = \\text{Current Assets} - \\text{Current Liabilities}",
+      );
+
+      // None of the extracted results should have broken '= >' or arrow LHS
+      for (const res of results) {
+        expect(res.raw).not.toContain("= >");
+        expect(res.latex).not.toContain("= >");
+        expect(res.raw).not.toContain("Activities ↑ cash");
+      }
+    });
+  });
+
+  describe("convertUnicodeMath arrow and implication conversions", () => {
+    it("converts ↑, ↓, →, ←, => into \\uparrow, \\downarrow, \\rightarrow, \\leftarrow, \\implies", () => {
+      const input = "Activities ↑ cash => ↑ Cash inflow";
+      const converted = convertUnicodeMath(input);
+
+      expect(converted).toContain("\\uparrow");
+      expect(converted).toContain("\\implies");
+      expect(converted).not.toContain("=>");
+      expect(converted).not.toContain("↑");
+
+      const arrowsInput = "A ↓ B → C ← D ⇒ E";
+      const arrowsConverted = convertUnicodeMath(arrowsInput);
+
+      expect(arrowsConverted).toContain("\\downarrow");
+      expect(arrowsConverted).toContain("\\rightarrow");
+      expect(arrowsConverted).toContain("\\leftarrow");
+      expect(arrowsConverted).toContain("\\implies");
+    });
+  });
+});
+
 

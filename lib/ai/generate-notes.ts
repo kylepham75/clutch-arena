@@ -16,6 +16,8 @@ import {
   type SynthesisSubSection,
   type SynthesisTakeawayItem,
   type SynthesisOmittedFormula,
+  type NoteOmittedFormula,
+  type FormulaOmissionStatus,
   type ExtractedSlideClaim,
   type ExtractionResult,
   synthesisSchema,
@@ -33,6 +35,7 @@ import {
   type FormulaInventoryItem,
 } from "@/lib/notes/formula-inventory";
 import { IngestionError } from "@/lib/ingestion/errors";
+import { OMITTED_BY_RULE_REASON_REGEX } from "@/lib/notes/deterministic-verifiers";
 import { getGenerationModel, getGroqModel } from "./provider";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
 import {
@@ -1129,7 +1132,7 @@ function consolidateSectionsUniversally(
  * when an LLM relegated an equation to text.
  */
 export function harvestEquationsFromText(line: string): NoteFormula[] {
-  if (!line || typeof line !== "string" || !line.includes("=")) return [];
+  if (!line || typeof line !== "string" || !/(?<![<>!])=(?![=>])/.test(line)) return [];
 
   // Indicators that text contains a quantitative, financial, or valuation formula
   const hasMathIndicators =
@@ -1142,16 +1145,18 @@ export function harvestEquationsFromText(line: string): NoteFormula[] {
   // Avoid trivial assignments without calculation (e.g. "let t = 1", "g = 0", "N = 5")
   if (/^\s*[a-zA-Z_]\s*=\s*[0-9a-zA-Z_]\s*$/i.test(line.trim())) return [];
 
+  const normalizedLine = line.replace(/=>/g, "\\implies ");
   const results: NoteFormula[] = [];
 
   // 1. Check for inline math delimiters: $...=...$ or $$...=...$$
-  const mathDelimMatches = [...line.matchAll(/\${1,2}([^$]+=[^$]+)\${1,2}/g)];
+  const mathDelimMatches = [...normalizedLine.matchAll(/\${1,2}([^$]+)\${1,2}/g)];
   if (mathDelimMatches.length > 0) {
     for (const match of mathDelimMatches) {
       const rawEquation = match[1].trim();
-      const prefix = line.slice(0, match.index).trim().replace(/[:\-–—]+$/, "").trim();
+      if (!/(?<![<>!])=(?![=>])/.test(rawEquation)) continue;
+      const prefix = normalizedLine.slice(0, match.index).trim().replace(/[:\-–—]+$/, "").trim();
       const cleaned = repairCorruptedLatex(cleanTypoString(rawEquation)).replace(/^\$+|\$+$/g, "").trim();
-      if (cleaned.length >= 3 && cleaned.includes("=")) {
+      if (cleaned.length >= 3 && /(?<![<>!])=(?![=>])/.test(cleaned)) {
         results.push({
           name: "",
           leadText: prefix.length > 0 && prefix.length < 60 ? sanitizeUniversalText(`${prefix}:`) : undefined,
@@ -1165,9 +1170,9 @@ export function harvestEquationsFromText(line: string): NoteFormula[] {
   }
 
   // 2. Prose equation patterns: split by semicolon or newline if multiple equations exist
-  const subClauses = line.split(/[;\n]+/);
+  const subClauses = normalizedLine.split(/[;\n]+/);
   for (const clause of subClauses) {
-    if (!clause.includes("=")) continue;
+    if (!/(?<![<>!])=(?![=>])/.test(clause)) continue;
 
     const colonIndex = clause.indexOf(":");
     let leadText: string | undefined = undefined;
@@ -1176,10 +1181,10 @@ export function harvestEquationsFromText(line: string): NoteFormula[] {
     if (colonIndex > 0) {
       const beforeColon = clause.slice(0, colonIndex).trim();
       const afterColon = clause.slice(colonIndex + 1).trim();
-      if (afterColon.includes("=")) {
+      if (/(?<![<>!])=(?![=>])/.test(afterColon)) {
         leadText = beforeColon;
         eqText = afterColon;
-      } else if (beforeColon.includes("=")) {
+      } else if (/(?<![<>!])=(?![=>])/.test(beforeColon)) {
         eqText = beforeColon;
         leadText = undefined;
       }
@@ -1191,13 +1196,13 @@ export function harvestEquationsFromText(line: string): NoteFormula[] {
       .replace(/[.;,]+$/, "") // remove trailing punctuation
       .trim();
 
-    if (cleanedEq.length < 3 || !cleanedEq.includes("=")) continue;
+    if (cleanedEq.length < 3 || !/(?<![<>!])=(?![=>])/.test(cleanedEq)) continue;
 
     const formatted = formatAccountingFormula(
       repairCorruptedLatex(cleanTypoString(cleanedEq)).replace(/^\$+|\$+$/g, "").trim(),
     );
 
-    if (formatted.length >= 3 && formatted.includes("=")) {
+    if (formatted.length >= 3 && /(?<![<>!])=(?![=>])/.test(formatted)) {
       results.push({
         name: "",
         leadText: leadText ? sanitizeUniversalText(`${leadText}:`) : undefined,
@@ -2191,7 +2196,10 @@ export async function generateClutchNote(
 
   // Step 5: Compute omitted: merge valid LLM omitted entries with any remaining unplaced ledger entries
   const ledgerIdSet = new Set(ledger.map((e) => e.id));
-  const omittedResult: SynthesisOmittedFormula[] = [];
+  const omittedByRuleIds = new Set(gateResult.verification.omittedByRuleFormulaIds || []);
+  const uncapturedErrorIds = new Set(gateResult.verification.uncapturedFormulaIds || []);
+
+  const omittedResult: NoteOmittedFormula[] = [];
   const omittedSeen = new Set<string>();
 
   for (const item of rawOmitted) {
@@ -2202,12 +2210,24 @@ export async function generateClutchNote(
       !finalPlacedIds.has(item.formulaId) &&
       !omittedSeen.has(item.formulaId)
     ) {
+      const reason =
+        typeof item.reason === "string" && item.reason.trim()
+          ? item.reason.trim()
+          : "Omitted by synthesis";
+
+      const isRule =
+        omittedByRuleIds.has(item.formulaId) ||
+        OMITTED_BY_RULE_REASON_REGEX.test(reason) ||
+        !uncapturedErrorIds.has(item.formulaId);
+
+      const status: FormulaOmissionStatus = isRule
+        ? "omitted_by_rule"
+        : "uncaptured_error";
+
       omittedResult.push({
         formulaId: item.formulaId,
-        reason:
-          typeof item.reason === "string" && item.reason.trim()
-            ? item.reason.trim()
-            : "Omitted by synthesis",
+        reason,
+        status,
       });
       omittedSeen.add(item.formulaId);
     }
@@ -2215,9 +2235,24 @@ export async function generateClutchNote(
 
   for (const entry of ledger) {
     if (!finalPlacedIds.has(entry.id) && !omittedSeen.has(entry.id)) {
+      const isOmittedByRule = omittedByRuleIds.has(entry.id);
+      const isUncapturedError = uncapturedErrorIds.has(entry.id);
+      const status: FormulaOmissionStatus =
+        isOmittedByRule || !isUncapturedError
+          ? "omitted_by_rule"
+          : "uncaptured_error";
+
+      const reason =
+        status === "omitted_by_rule"
+          ? (entry.isExerciseOnly
+              ? "Appeared solely in a practice exercise or worked example"
+              : "Intermediate derivation or redundant identity omitted by rule")
+          : "Uncaptured source formula";
+
       omittedResult.push({
         formulaId: entry.id,
-        reason: "Uncaptured source formula",
+        reason,
+        status,
       });
       omittedSeen.add(entry.id);
     }

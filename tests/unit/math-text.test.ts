@@ -10,6 +10,7 @@ import {
   cleanVietnameseSigmaTypos,
   cleanTypoString,
   formatAccountingFormula,
+  wrapBareEnglishInLatex,
 } from "@/lib/math/latex";
 import { formatTextWithMath } from "@/lib/notes/export-pdf";
 
@@ -835,5 +836,152 @@ describe("formatAccountingFormula & Cash Identity KaTeX formatting (Chapter 26)"
     );
   });
 });
+
+describe("Regression Tests: Bug 2 & Bug 3 (Multi-word English phrases, Currency dollar escaping, Unicode arrows)", () => {
+  describe("Multi-word English phrases wrapping in \\text{...}", () => {
+    it("preserves spaces and wraps multi-word English phrases with => converted to \\implies", () => {
+      const phrase = "Increase Current Assets => Decrease Use of Cash";
+      const wrapped = wrapBareEnglishInLatex(phrase);
+      expect(wrapped).toContain("\\text{Increase Current Assets}");
+      expect(wrapped).toContain("\\implies");
+      expect(wrapped).toContain("\\text{Decrease Use of Cash}");
+      expect(wrapped).not.toContain("IncreaseCurrent Assets");
+      expect(wrapped).not.toContain("IncreaseCurrent");
+      expect(wrapped).not.toContain("DecreaseUse");
+
+      // Verify KaTeX rendering produces valid html and no error
+      const html = renderKatexSafe(wrapped, true);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("wraps arrow implication formula 'Activities ↑ cash => ↑ Cash inflow'", () => {
+      const phrase = "Activities ↑ cash => ↑ Cash inflow";
+      const wrapped = wrapBareEnglishInLatex(phrase);
+      expect(wrapped).toContain("\\text{Activities}");
+      expect(wrapped).toContain("\\uparrow");
+      expect(wrapped).toContain("\\text{cash}");
+      expect(wrapped).toContain("\\implies");
+      expect(wrapped).toContain("\\text{Cash inflow}");
+
+      // Verify KaTeX rendering
+      const html = renderKatexSafe(wrapped, true);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("wraps 'Accounts Receivable period' without mashing words", () => {
+      const phrase = "Accounts Receivable period";
+      const wrapped = wrapBareEnglishInLatex(phrase);
+      expect(wrapped).toBe("\\text{Accounts Receivable period}");
+      expect(wrapped).not.toContain("AccountsReceivable");
+      expect(wrapped).not.toContain("Receivableperiod");
+
+      const html = renderKatexSafe(wrapped, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("wraps \"Last quarter's sales\" without mashing words", () => {
+      const phrase = "Last quarter's sales";
+      const wrapped = wrapBareEnglishInLatex(phrase);
+      expect(wrapped).toBe("\\text{Last quarter's sales}");
+      expect(wrapped).not.toContain("Lastquarter'ssales");
+      expect(wrapped).not.toContain("Lastquarter");
+
+      const html = renderKatexSafe(wrapped, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("wraps parenthetical 'Other (non-cash) Current Assets' cleanly", () => {
+      const phrase = "Other (non-cash) Current Assets";
+      const wrapped = wrapBareEnglishInLatex(phrase);
+      expect(wrapped).toBe("\\text{Other (non-cash) Current Assets}");
+
+      const fullFormula =
+        "Cash = Long-Term Debt + Equity + Current Liabilities - Other (non-cash) Current Assets - Fixed Assets";
+      const formatted = formatAccountingFormula(fullFormula);
+      expect(formatted).toContain("\\text{Other (non-cash) Current Assets}");
+      expect(formatted).toContain("\\text{Fixed Assets}");
+
+      const html = renderKatexSafe(formatted, true);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+  });
+
+  describe("Literal currency dollar signs inside math strings", () => {
+    it("escapes literal dollar signs inside math mode without KaTeX error", () => {
+      const mathWithDollar = "\\text{Accounts Receivable} = $100 \\text{ million}";
+      const html = renderKatexSafe(mathWithDollar, false);
+
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+      expect(html).toContain("100");
+      expect(html).toContain("$");
+    });
+
+    it("tokenizes math string with embedded currency dollar without premature closure and renders cleanly", () => {
+      const text = "$\\text{Accounts Receivable} = $100 \\text{ million}$";
+      const tokens = tokenizeMath(text);
+
+      expect(tokens).toHaveLength(1);
+      expect(tokens[0].type).toBe("inline-math");
+      expect(tokens[0].value).toContain("\\text{Accounts Receivable}");
+      expect(tokens[0].value).toContain("100 \\text{ million}");
+
+      const html = renderKatexSafe(tokens[0].value, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("escapes multiple currency dollar amounts in math expressions", () => {
+      const expr = "\\text{Cash} = $500 + $200 = $700";
+      const html = renderKatexSafe(expr, true);
+
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+  });
+
+  describe("Unicode arrows conversion and rendering", () => {
+    it("converts Unicode arrows (↑, ↓, →, ←, ⇒) to LaTeX commands", () => {
+      const input = "A ↑ B ↓ C → D ← E ⇒ F";
+      const wrapped = wrapBareEnglishInLatex(input);
+
+      expect(wrapped).toContain("\\uparrow");
+      expect(wrapped).toContain("\\downarrow");
+      expect(wrapped).toContain("\\rightarrow");
+      expect(wrapped).toContain("\\leftarrow");
+      expect(wrapped).toContain("\\implies");
+
+      const html = renderKatexSafe(wrapped, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("converts ASCII => to \\implies and renders in KaTeX", () => {
+      const input = "X => Y";
+      const wrapped = wrapBareEnglishInLatex(input);
+
+      expect(wrapped).toContain("\\implies");
+      const html = renderKatexSafe(wrapped, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+  });
+});
+
 
 

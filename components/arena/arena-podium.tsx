@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Trophy,
@@ -14,9 +14,104 @@ import {
   Copy,
   Check,
   Share2,
+  BarChart3,
+  Download,
+  AlertTriangle,
 } from "lucide-react";
-import type { ArenaPlayer, ArenaRoomState } from "@/lib/schemas/multiplayer";
+import type { ArenaPlayer, ArenaQuestionStat, ArenaRoomState } from "@/lib/schemas/multiplayer";
 import { Button } from "@/components/ui/button";
+import {
+  copyTextWithFallback,
+  downloadTextFile,
+  slugify,
+} from "@/lib/game/pack-transfer";
+
+const OPTION_LETTERS = ["A", "B", "C", "D"] as const;
+
+function escapeCsvCell(raw: unknown): string {
+  const val = String(raw ?? "");
+  // Neutralise spreadsheet formula injection (OWASP CSV injection guidance).
+  const sanitized = /^[=+\-@\t\r]/.test(val) ? `'${val}` : val;
+  return /[",\r\n]/.test(sanitized) ? `"${sanitized.replace(/"/g, '""')}"` : sanitized;
+}
+
+/**
+ * Builds a two-section Gradebook CSV string containing:
+ * 1. Player rankings (Rank, Nickname, Score XP, Best Streak, Lives Remaining, Status)
+ * 2. Per-question class diagnostics (Question #, Topic, Question, Total Attempts, Correct, Missed, Missed %, Top Wrong Option)
+ */
+export function buildClassGradebookCsv(room: ArenaRoomState): string {
+  const rankings = room.podium?.rankings?.length
+    ? room.podium.rankings
+    : Object.values(room.players || {});
+
+  const playerHeaders = [
+    "Rank",
+    "Nickname",
+    "Score XP",
+    "Best Streak",
+    "Lives Remaining",
+    "Status",
+  ];
+
+  const playerRows = rankings.map((p, idx) => [
+    idx + 1,
+    p.nickname,
+    p.score,
+    p.bestStreak,
+    p.lives,
+    p.status,
+  ]);
+
+  const questionHeaders = [
+    "Question #",
+    "Topic",
+    "Question",
+    "Total Attempts",
+    "Correct",
+    "Missed",
+    "Missed %",
+    "Top Wrong Option",
+  ];
+
+  const sortedStats: ArenaQuestionStat[] = room.classAnalytics?.questionStats
+    ? [...room.classAnalytics.questionStats].sort(
+        (a, b) => b.missedPercent - a.missedPercent || a.questionNumber - b.questionNumber,
+      )
+    : [];
+
+  const questionRows = sortedStats.map((stat) => {
+    const topWrong =
+      stat.mostCommonWrongOption !== null &&
+      stat.mostCommonWrongOption >= 0 &&
+      stat.mostCommonWrongOption < OPTION_LETTERS.length
+        ? `Option ${OPTION_LETTERS[stat.mostCommonWrongOption]}`
+        : "None";
+
+    return [
+      stat.questionNumber,
+      stat.topic || stat.citation || "",
+      stat.questionText,
+      stat.totalAttempts,
+      stat.correctCount,
+      stat.missedCount,
+      `${stat.missedPercent}%`,
+      topWrong,
+    ];
+  });
+
+  const lines = [
+    playerHeaders.map(escapeCsvCell).join(","),
+    ...playerRows.map((row) => row.map(escapeCsvCell).join(",")),
+    "",
+    questionHeaders.map(escapeCsvCell).join(","),
+    ...questionRows.map((row) => row.map(escapeCsvCell).join(",")),
+  ];
+
+  return lines.join("\r\n");
+}
+
+export const exportClassGradebookCsv = buildClassGradebookCsv;
 
 export function ArenaPodium({
   room,
@@ -32,13 +127,30 @@ export function ArenaPodium({
   onLeave: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const isHost = currentPlayer.isHost;
+  const isHost = Boolean(currentPlayer.isHost);
   const podium = room.podium;
-  const rankings = podium?.rankings || Object.values(room.players);
+  const rankings = podium?.rankings?.length
+    ? podium.rankings
+    : Object.values(room.players || {});
   const winner = podium?.first;
 
-  const copyScoreboard = () => {
-    if (typeof window === "undefined") return;
+  const classAnalytics = room.classAnalytics;
+  const hasAnalytics = Boolean(
+    classAnalytics && classAnalytics.questionStats && classAnalytics.questionStats.length > 0,
+  );
+
+  // Visible to Host by default, or expandable by any player via toggle button
+  const [analyticsExpanded, setAnalyticsExpanded] = useState<boolean | null>(null);
+  const isAnalyticsVisible =
+    hasAnalytics && (analyticsExpanded !== null ? analyticsExpanded : isHost);
+
+  const sortedQuestionStats: ArenaQuestionStat[] = classAnalytics?.questionStats
+    ? [...classAnalytics.questionStats].sort(
+        (a, b) => b.missedPercent - a.missedPercent || a.questionNumber - b.questionNumber,
+      )
+    : [];
+
+  const copyScoreboard = async () => {
     const lines = [
       `🏆 Clutch Arena Match: ${room.title}`,
       `Code: ${room.code} · ${room.totalQuestions} Questions`,
@@ -51,10 +163,11 @@ export function ArenaPodium({
       `My Stats: ${currentPlayer.score} XP · ${currentPlayer.bestStreak} Best Streak`,
       "Play live study battles at Clutch Arena!",
     ];
-    navigator.clipboard.writeText(lines.join("\n")).then(() => {
+    const success = await copyTextWithFallback(lines.join("\n"));
+    if (success) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    }
   };
 
   // Trigger confetti for the match finish
@@ -166,6 +279,121 @@ export function ArenaPodium({
           </div>
         </div>
 
+        {/* Post-Match Class Analytics Dashboard */}
+        {isAnalyticsVisible && classAnalytics && (
+          <div
+            className="class-analytics-dashboard"
+            data-testid="class-analytics-dashboard"
+          >
+            <div className="analytics-header">
+              <div className="analytics-title-group">
+                <BarChart3 size={20} className="analytics-icon" />
+                <div>
+                  <h3 className="analytics-title">Post-Match Class Analytics</h3>
+                  <p className="analytics-subtitle">
+                    Diagnostic breakdown of student comprehension and high-priority re-teach topics.
+                  </p>
+                </div>
+              </div>
+
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="export-gradebook-btn"
+                className="export-gradebook-btn"
+                onClick={() => {
+                  const fileName = `${slugify(room.title)}-gradebook-${room.code}.csv`;
+                  downloadTextFile(fileName, buildClassGradebookCsv(room), "text/csv");
+                }}
+              >
+                <Download size={15} />
+                <span>Export Gradebook CSV</span>
+              </Button>
+            </div>
+
+            {/* Diagnostic Alert Banner if early eliminations occurred */}
+            {classAnalytics.earlyEliminatedCount > 0 && (
+              <div
+                className="early-elimination-alert"
+                data-testid="early-elimination-alert"
+              >
+                <AlertTriangle size={18} className="alert-icon" />
+                <span>
+                  ⚠️ {classAnalytics.earlyEliminatedCount} student(s) (
+                  {classAnalytics.earlyEliminatedNicknames.join(", ")}) lost all 3 hearts before Round 5.
+                </span>
+              </div>
+            )}
+
+            {/* Summary KPI Strip */}
+            <div className="analytics-kpi-strip" data-testid="analytics-kpi-strip">
+              <div className="analytics-kpi-card">
+                <span className="kpi-label">Class Average Accuracy</span>
+                <strong className="kpi-value">{classAnalytics.averageAccuracyPercent}%</strong>
+              </div>
+              <div className="analytics-kpi-card">
+                <span className="kpi-label">Total Players</span>
+                <strong className="kpi-value">{classAnalytics.totalPlayers}</strong>
+              </div>
+              <div className="analytics-kpi-card">
+                <span className="kpi-label">Total Questions</span>
+                <strong className="kpi-value">{classAnalytics.totalQuestions}</strong>
+              </div>
+            </div>
+
+            {/* Missed-Question Diagnostic Breakdown */}
+            <div className="missed-questions-list" data-testid="missed-questions-list">
+              <div className="missed-questions-header">
+                <h4>Missed Questions Diagnostic (Sorted Worst First)</h4>
+              </div>
+              <div className="missed-questions-items">
+                {sortedQuestionStats.map((stat) => {
+                  const isNeedsReteach = stat.missedPercent >= 50;
+                  const trapLetter =
+                    stat.mostCommonWrongOption !== null &&
+                    stat.mostCommonWrongOption >= 0 &&
+                    stat.mostCommonWrongOption < OPTION_LETTERS.length
+                      ? OPTION_LETTERS[stat.mostCommonWrongOption]
+                      : null;
+
+                  return (
+                    <div
+                      key={stat.questionId || stat.questionNumber}
+                      className={`question-stat-row ${isNeedsReteach ? "question-stat-reteach" : ""}`}
+                      data-testid={`question-stat-${stat.questionNumber}`}
+                    >
+                      <div className="question-stat-main">
+                        <div className="question-stat-tags">
+                          <span className="question-num-tag">Q{stat.questionNumber}</span>
+                          {(stat.topic || stat.citation) && (
+                            <span className="question-topic-pill">
+                              {stat.topic || stat.citation}
+                            </span>
+                          )}
+                          {isNeedsReteach && (
+                            <span className="needs-reteach-badge">Needs Re-Teach</span>
+                          )}
+                          {trapLetter && (
+                            <span className="top-trap-badge">
+                              Top trap: Option {trapLetter}
+                            </span>
+                          )}
+                        </div>
+                        <p className="question-stat-text">{stat.questionText}</p>
+                      </div>
+                      <div className="question-stat-meta">
+                        <span className={`missed-badge ${isNeedsReteach ? "missed-badge-high" : ""}`}>
+                          {stat.missedPercent}% missed ({stat.missedCount}/{stat.totalAttempts})
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Actions row */}
         <div className="podium-actions-row">
           {isHost ? (
@@ -178,6 +406,22 @@ export function ArenaPodium({
               <span className="live-pulse" />
               <span>Waiting for host to rematch…</span>
             </div>
+          )}
+
+          {hasAnalytics && (
+            <Button
+              variant="outline"
+              data-testid="toggle-analytics-btn"
+              onClick={() =>
+                setAnalyticsExpanded((prev) =>
+                  prev !== null ? !prev : !isHost,
+                )
+              }
+              className="toggle-analytics-btn"
+            >
+              <BarChart3 size={16} />
+              <span>{isAnalyticsVisible ? "Hide Class Analytics" : "View Class Analytics"}</span>
+            </Button>
           )}
 
           <Button

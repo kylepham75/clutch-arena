@@ -67,6 +67,13 @@ export function formatTextWithMath(text: string): string {
         return `<div class="pdf-display-math">${renderKatexSafe(token.value, true)}</div>`;
       }
       if (token.type === "inline-math") {
+        if (
+          (token.value.trim() === "→" || token.value.trim() === "\\rightarrow") &&
+          text.includes("→") &&
+          !text.includes("\\rightarrow")
+        ) {
+          return "→";
+        }
         return `<span class="pdf-inline-math">${renderKatexSafe(token.value, false)}</span>`;
       }
       return escapeHtml(token.value);
@@ -129,13 +136,13 @@ export function renderDivergenceNoticeHtml(notice: TextbookDivergenceNotice): st
     const lecturerCol = notice.lecturerForm
       ? `<div class="pdf-form-col">
           <div class="pdf-form-col-title">Lecturer's Form</div>
-          <div class="pdf-form-math">${renderKatexSafe(notice.lecturerForm, true)}</div>
+          <div class="pdf-form-math pdf-divergence-eq-box">${renderKatexSafe(notice.lecturerForm, true)}</div>
         </div>`
       : "";
     const textbookCol = notice.textbookForm
       ? `<div class="pdf-form-col">
           <div class="pdf-form-col-title">Standard Textbook Form</div>
-          <div class="pdf-form-math">${renderKatexSafe(notice.textbookForm, true)}</div>
+          <div class="pdf-form-math pdf-divergence-eq-box">${renderKatexSafe(notice.textbookForm, true)}</div>
         </div>`
       : "";
 
@@ -324,11 +331,21 @@ function getUnattachedDivergenceNotices(note: ClutchNote): {
 }
 
 export function getUncapturedFormulas(note: ClutchNote): UncapturedFormulaItem[] {
-  const omittedMap = new Map<string, string>();
+  const omittedByRuleSet = new Set<string>(
+    note.verification?.omittedByRuleFormulaIds || [],
+  );
+
+  const omittedMap = new Map<string, { reason: string; status?: string }>();
   if (note.omitted) {
     for (const o of note.omitted) {
-      if (o.formulaId) {
-        omittedMap.set(o.formulaId, o.reason);
+      if (o && o.formulaId) {
+        omittedMap.set(o.formulaId, {
+          reason: o.reason,
+          status: (o as any).status,
+        });
+        if ((o as any).status === "omitted_by_rule") {
+          omittedByRuleSet.add(o.formulaId);
+        }
       }
     }
   }
@@ -356,38 +373,60 @@ export function getUncapturedFormulas(note: ClutchNote): UncapturedFormulaItem[]
     }
   }
 
-  const uncapturedIds = new Set<string>();
+  const targetUncapturedIds = new Set<string>();
 
+  // 1. Explicit uncaptured IDs from verification gate (minus any marked omitted_by_rule)
   if (note.verification?.uncapturedFormulaIds) {
     for (const id of note.verification.uncapturedFormulaIds) {
-      uncapturedIds.add(id);
-    }
-  }
-
-  if (note.omitted) {
-    for (const o of note.omitted) {
-      if (o.formulaId) {
-        uncapturedIds.add(o.formulaId);
+      if (!omittedByRuleSet.has(id)) {
+        targetUncapturedIds.add(id);
       }
     }
   }
 
-  if (note.formulaLedger) {
-    for (const entry of note.formulaLedger) {
-      if (!placedIds.has(entry.id)) {
-        uncapturedIds.add(entry.id);
+  // 2. Formulas explicitly marked as uncaptured_error in omitted[]
+  if (note.omitted) {
+    for (const o of note.omitted) {
+      if (
+        o &&
+        o.formulaId &&
+        (o as any).status === "uncaptured_error" &&
+        !omittedByRuleSet.has(o.formulaId)
+      ) {
+        targetUncapturedIds.add(o.formulaId);
+      }
+    }
+  }
+
+  // 3. Fallback compatibility: If verification is not provided (e.g. mock note without verification gate),
+  // include unplaced formulas from omitted or ledger that are not omitted_by_rule
+  if (!note.verification) {
+    if (note.omitted) {
+      for (const o of note.omitted) {
+        if (o && o.formulaId && !omittedByRuleSet.has(o.formulaId)) {
+          targetUncapturedIds.add(o.formulaId);
+        }
+      }
+    }
+    if (note.formulaLedger) {
+      for (const entry of note.formulaLedger) {
+        if (!placedIds.has(entry.id) && !omittedByRuleSet.has(entry.id)) {
+          targetUncapturedIds.add(entry.id);
+        }
       }
     }
   }
 
   const items: UncapturedFormulaItem[] = [];
 
-  for (const id of uncapturedIds) {
+  for (const id of targetUncapturedIds) {
+    if (omittedByRuleSet.has(id)) continue;
+
     const ledger = ledgerMap.get(id);
-    const omittedReason = omittedMap.get(id);
+    const omittedEntry = omittedMap.get(id);
 
     const reason =
-      omittedReason ||
+      omittedEntry?.reason ||
       (ledger?.isExerciseOnly
         ? "Appeared solely in a practice exercise or worked example"
         : ledger?.evidence
@@ -474,12 +513,18 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
   const uncapturedFormulas = getUncapturedFormulas(note);
 
   let warningBannerHtml = "";
-  if (note.verification?.warnings && note.verification.warnings.length > 0) {
-    const warningsList = note.verification.warnings
+  const rawWarnings = note.verification?.warnings || [];
+  const displayWarnings =
+    uncapturedFormulas.length === 0
+      ? rawWarnings.filter((w) => !w.startsWith("Uncaptured formula IDs:"))
+      : rawWarnings;
+
+  if (displayWarnings.length > 0) {
+    const warningsList = displayWarnings
       .map((w) => `<li>${formatTextWithMath(w)}</li>`)
       .join("");
-    const countLabel = `${note.verification.warnings.length} ${
-      note.verification.warnings.length === 1 ? "Notice" : "Notices"
+    const countLabel = `${displayWarnings.length} ${
+      displayWarnings.length === 1 ? "Notice" : "Notices"
     }`;
 
     warningBannerHtml = `
@@ -1031,10 +1076,46 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
       font-size: 14.5px;
       color: #111827;
       max-width: 100%;
-      overflow-x: auto;
+      white-space: normal;
+      overflow-wrap: break-word;
+      word-break: break-word;
+      box-sizing: border-box;
     }
-    .pdf-formula-card .katex-display {
+    .pdf-divergence-eq-box {
+      white-space: normal;
+      overflow-wrap: break-word;
+      word-break: break-word;
+      max-width: 100%;
+      box-sizing: border-box;
+    }
+    .pdf-formula-card .katex-display,
+    .pdf-divergence-eq-box .katex-display,
+    .pdf-uncaptured-math .katex-display {
       margin: 2px 0;
+      white-space: normal !important;
+      overflow-x: visible !important;
+      overflow-y: visible !important;
+    }
+    .pdf-formula-card .katex-display > .katex,
+    .pdf-divergence-eq-box .katex-display > .katex,
+    .pdf-uncaptured-math .katex-display > .katex {
+      white-space: normal !important;
+      text-align: center;
+      display: inline-block;
+      max-width: 100%;
+    }
+    .pdf-formula-card .katex,
+    .pdf-divergence-eq-box .katex,
+    .pdf-uncaptured-math .katex {
+      white-space: normal !important;
+      overflow-wrap: break-word;
+    }
+    .pdf-formula-card .katex .base,
+    .pdf-divergence-eq-box .katex .base,
+    .pdf-uncaptured-math .katex .base {
+      white-space: normal !important;
+      display: inline-block;
+      max-width: 100%;
     }
     .pdf-formula-desc {
       font-size: 13.5px;
@@ -1326,6 +1407,11 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
       border: 1px solid #e2e8f0;
       border-radius: 4px;
       text-align: center;
+      white-space: normal;
+      overflow-wrap: break-word;
+      word-break: break-word;
+      max-width: 100%;
+      box-sizing: border-box;
     }
     .pdf-uncaptured-reason {
       font-size: 11.5px;

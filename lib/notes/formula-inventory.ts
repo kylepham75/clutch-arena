@@ -8,6 +8,7 @@ import {
   formatAccountingFormula,
   repairCorruptedLatex,
   isLikelyInlineMath,
+  wrapBareEnglishInLatex,
 } from "@/lib/math/latex";
 import {
   extractionSchema,
@@ -140,6 +141,15 @@ const UNICODE_MATH_SYMBOLS: Record<string, string> = {
   "∫": "\\int ",
   "∂": "\\partial ",
   "∞": "\\infty ",
+  "↑": " \\uparrow ",
+  "↓": " \\downarrow ",
+  "→": " \\rightarrow ",
+  "←": " \\leftarrow ",
+  "⇒": " \\implies ",
+  "⇐": " \\impliedby ",
+  "⇔": " \\iff ",
+  "⇑": " \\Uparrow ",
+  "⇓": " \\Downarrow ",
 };
 
 /**
@@ -162,6 +172,11 @@ export function convertUnicodeMath(text: string): string {
   for (const [sym, repl] of Object.entries(UNICODE_MATH_SYMBOLS)) {
     s = s.replaceAll(sym, repl);
   }
+
+  // Convert ASCII implication and arrow tokens
+  s = s.replace(/(?<![<>])=>/g, " \\implies ");
+  s = s.replace(/(?<!<)->/g, " \\rightarrow ");
+  s = s.replace(/<-(?!>)/g, " \\leftarrow ");
 
   return s;
 }
@@ -258,6 +273,7 @@ export function cleanLatexEquation(rawEq: string): string {
   let s = convertUnicodeMath(rawEq);
   s = repairCorruptedLatex(s);
   s = formatAccountingFormula(s);
+  s = wrapBareEnglishInLatex(s);
 
   // Wrap common multi-word finance & accounting phrases in \text{...} if not already wrapped
   s = s.replace(
@@ -440,7 +456,7 @@ export function extractTextFormulas(
       .replace(/\$\$[\s\S]*?\$\$/g, "")
       .replace(/(?<!\$)\$(?!\$)[^\$\n]+?\$(?!\$)/g, "")
       .trim();
-    if (!textWithoutMathDelimiters.includes("=")) {
+    if (!/(?<![<>!])=(?![=>])/.test(textWithoutMathDelimiters)) {
       continue;
     }
 
@@ -454,17 +470,18 @@ export function extractTextFormulas(
       clause = clause.replace(/^[•\-\*\u2022\u25E6\u25AA\u25CF]\s*/, "");
       clause = clause.replace(/^\d+[\.\)]\s*/, "");
 
-      // If clause contains '='
-      if (!clause.includes("=")) continue;
+      // If clause contains standalone '=' (ignore =>, <=, >=, !=)
+      if (!/(?<![<>!])=(?![=>])/.test(clause)) continue;
 
       // Check if clause has leading label before colon where '=' is after colon
       // e.g. "Constant growth model: P_0 = D_1 / (R - g)"
       // e.g. "Exercise 1: Use P_0 = D_1 / (R - g) to find price"
       const colonIdx = clause.indexOf(":");
-      const eqIdx = clause.indexOf("=");
-      if (colonIdx !== -1 && colonIdx < eqIdx) {
+      const eqMatch = clause.match(/(?<![<>!])=(?![=>])/);
+      const eqIdx = eqMatch ? eqMatch.index! : -1;
+      if (colonIdx !== -1 && eqIdx !== -1 && colonIdx < eqIdx) {
         const beforeColon = clause.slice(0, colonIdx).trim();
-        if (!beforeColon.includes("=")) {
+        if (!/(?<![<>!])=(?![=>])/.test(beforeColon)) {
           clause = clause.slice(colonIdx + 1).trim();
         }
       }
@@ -472,8 +489,8 @@ export function extractTextFormulas(
       // Convert Unicode math on clause before splitting and regex parsing
       const unicodeConvertedClause = convertUnicodeMath(clause);
 
-      // Split around '='
-      const eqParts = unicodeConvertedClause.split("=");
+      // Split around standalone '=' (ignore =>, <=, >=, !=)
+      const eqParts = unicodeConvertedClause.split(/(?<![<>!])=(?![=>])/);
       if (eqParts.length < 2) continue;
 
       let rawLhs = eqParts[0].trim();

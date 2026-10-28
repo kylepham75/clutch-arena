@@ -1,4 +1,10 @@
-import { getRoom, getClientState, subscribeToRoom } from "@/lib/multiplayer/room-manager";
+import {
+  getRoom,
+  getClientState,
+  subscribeToRoom,
+  subscribeToRoomIdleDisconnect,
+  IDLE_ROOM_TIMEOUT_MS,
+} from "@/lib/multiplayer/room-manager";
 
 export const dynamic = "force-dynamic";
 
@@ -19,12 +25,41 @@ export async function GET(
 
   const stream = new ReadableStream({
     start(controller) {
+      let isClosed = false;
+      let heartbeatInterval: NodeJS.Timeout | null = null;
+      let unsubscribe: () => void = () => {};
+      let unsubscribeIdle: () => void = () => {};
+
+      const cleanup = () => {
+        if (isClosed) return;
+        isClosed = true;
+        if (heartbeatInterval) {
+          clearInterval(heartbeatInterval);
+          heartbeatInterval = null;
+        }
+        unsubscribe();
+        unsubscribeIdle();
+        try {
+          controller.close();
+        } catch {}
+      };
+
+      const handleIdleDisconnect = () => {
+        if (isClosed) return;
+        try {
+          const payload = `event: idle_disconnect\ndata: ${JSON.stringify({ reason: "idle_timeout", timeoutMs: IDLE_ROOM_TIMEOUT_MS })}\n\n`;
+          controller.enqueue(encoder.encode(payload));
+        } catch {}
+        cleanup();
+      };
+
       // Send initial state immediately
       const initialPayload = `data: ${JSON.stringify(getClientState(room))}\n\n`;
       controller.enqueue(encoder.encode(initialPayload));
 
       // Subscribe to all subsequent room updates
-      const unsubscribe = subscribeToRoom(code, (state) => {
+      unsubscribe = subscribeToRoom(code, (state) => {
+        if (isClosed) return;
         try {
           const payload = `data: ${JSON.stringify(state)}\n\n`;
           controller.enqueue(encoder.encode(payload));
@@ -33,21 +68,32 @@ export async function GET(
         }
       });
 
+      // Subscribe to idle disconnect notification
+      unsubscribeIdle = subscribeToRoomIdleDisconnect(code, () => {
+        handleIdleDisconnect();
+      });
+
       // Keepalive heartbeat every 15 seconds
-      const heartbeatInterval = setInterval(() => {
+      heartbeatInterval = setInterval(() => {
+        if (isClosed) return;
+        const currentRoom = getRoom(code);
+        if (
+          !currentRoom ||
+          Date.now() - currentRoom.lastActiveAt >= IDLE_ROOM_TIMEOUT_MS
+        ) {
+          handleIdleDisconnect();
+          return;
+        }
+
         try {
           controller.enqueue(encoder.encode(": ping\n\n"));
         } catch {
-          clearInterval(heartbeatInterval);
+          cleanup();
         }
       }, 15_000);
 
       req.signal.addEventListener("abort", () => {
-        clearInterval(heartbeatInterval);
-        unsubscribe();
-        try {
-          controller.close();
-        } catch {}
+        cleanup();
       });
     },
   });

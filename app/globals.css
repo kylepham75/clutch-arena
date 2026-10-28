@@ -46,8 +46,12 @@ body {
 }
 button,
 a,
-input {
+input,
+.btn,
+.answer,
+.arena-option-btn {
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 button {
   font: inherit;
@@ -1282,6 +1286,8 @@ svg {
   min-height: 54px;
   font-size: 12px;
   color: #636f55;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 .answer > kbd {
   height: 27px;
@@ -1442,6 +1448,50 @@ svg {
 }
 .katex-display {
   margin: 0.2em 0 !important;
+}
+/* Note Formula Line Wrapping (Screen & Print KaTeX wrapping without horizontal scrollbars) */
+.note-formula-wrap {
+  white-space: normal !important;
+  overflow-wrap: break-word !important;
+  word-break: break-word !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+.note-formula-wrap .katex-display {
+  margin: 2px 0 !important;
+  white-space: normal !important;
+  overflow-x: visible !important;
+  overflow-y: visible !important;
+}
+.note-formula-wrap .katex-display > .katex {
+  white-space: normal !important;
+  text-align: center !important;
+  display: inline-block !important;
+  max-width: 100% !important;
+}
+.note-formula-wrap .katex {
+  white-space: normal !important;
+  overflow-wrap: break-word !important;
+}
+.note-formula-wrap .katex .base {
+  white-space: normal !important;
+  display: inline-block !important;
+  max-width: 100% !important;
+}
+
+@media print {
+  .note-formula-wrap,
+  .note-formula-wrap .katex-display,
+  .note-formula-wrap .katex-display > .katex,
+  .note-formula-wrap .katex,
+  .note-formula-wrap .katex .base {
+    white-space: normal !important;
+    overflow-x: visible !important;
+    overflow-y: visible !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important;
+    max-width: 100% !important;
+  }
 }
 .citation {
   display: flex;
@@ -5946,6 +5996,36 @@ svg {
     border-radius: 16px !important;
   }
 }
+
+/* ==========================================================================
+   Mobile Webview & Touch QA Rules (Zalo, Facebook Messenger, iOS Webviews)
+   - Zero 300ms tap delay and eliminate accidental double-tap zoom during rapid 15s answers
+   - Enforce 48px min touch target on mobile viewports and 100dvh safe-area support
+   ========================================================================== */
+
+button,
+.btn,
+.answer,
+.arena-option-btn {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 768px) {
+  .answer,
+  .arena-option-btn {
+    min-height: 48px;
+  }
+
+  .app-shell,
+  .arena-container,
+  .quiz-container,
+  .session-card {
+    min-height: 100dvh;
+    min-height: -webkit-fill-available;
+  }
+}
+
 
 
 

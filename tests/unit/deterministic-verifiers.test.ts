@@ -686,4 +686,249 @@ describe("Deterministic Verifiers", () => {
       expect(report.summary.warnings.length).toBeGreaterThan(0);
     });
   });
+
+  describe("Regression Tests: Bug 1 (omittedByRuleIds vs uncapturedErrorIds in verifyFormulaCoverage & runDeterministicVerifiers)", () => {
+    it("distinguishes omittedByRuleIds (status: 'omitted_by_rule', intermediate derivation rearrangements, duplicate identities, numerical exercise drills) vs uncapturedErrorIds", () => {
+      const testLedger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 3,
+          raw: "P_0 = D_1 / (R - g)",
+          latex: "P_0 = \\frac{D_1}{R - g}",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F2",
+          slide: 3,
+          raw: "R - g = D_1 / P_0",
+          latex: "R - g = \\frac{D_1}{P_0}",
+          origin: "text",
+          label: "Intermediate derivation rearrangement",
+          variables: [],
+        },
+        {
+          id: "F3",
+          slide: 4,
+          raw: "NWC = CA - CL",
+          latex: "\\text{NWC} = \\text{CA} - \\text{CL}",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F4",
+          slide: 3,
+          raw: "P_0 = 2.50 / (0.10 - 0.05) = $50",
+          latex: "P_0 = \\frac{2.50}{0.10 - 0.05} = 50",
+          origin: "text",
+          isExerciseOnly: true,
+          variables: [],
+        },
+        {
+          id: "F5",
+          slide: 6,
+          raw: "WACC = (E/V)*Re + (D/V)*Rd*(1-Tc)",
+          latex: "\\text{WACC} = \\frac{E}{V} R_e + \\frac{D}{V} R_d (1 - T_c)",
+          origin: "text",
+          variables: [],
+        },
+      ];
+
+      const sections: NoteSection[] = [
+        createTestSection({
+          letter: "A",
+          titleVi: "ĐỊNH GIÁ",
+          sourceSlides: [3],
+          formulas: [
+            createTestFormula({
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              slide: 3,
+              formulaRefs: ["F1"],
+            }),
+          ],
+        }),
+      ];
+
+      const omitted: any[] = [
+        {
+          formulaId: "F2",
+          status: "omitted_by_rule",
+          reason: "Intermediate derivation rearrangement of Gordon Growth Model",
+        },
+        {
+          formulaId: "F3",
+          reason: "Duplicate identity already covered in section",
+        },
+        // F4 is exercise drill with isExerciseOnly: true and numeric plug-ins on placed slide 3
+        {
+          formulaId: "F5",
+          status: "uncaptured_error",
+          reason: "Accidentally uncaptured formula",
+        },
+      ];
+
+      const coverage = verifyFormulaCoverage(sections, testLedger, omitted);
+
+      expect(coverage.placedIds).toEqual(["F1"]);
+      expect(coverage.omittedByRuleIds).toContain("F2");
+      expect(coverage.omittedByRuleIds).toContain("F3");
+      expect(coverage.omittedByRuleIds).toContain("F4");
+      expect(coverage.uncapturedErrorIds).toEqual(["F5"]);
+      expect(coverage.uncapturedErrorIds).not.toContain("F2");
+      expect(coverage.uncapturedErrorIds).not.toContain("F3");
+      expect(coverage.uncapturedErrorIds).not.toContain("F4");
+    });
+
+    it("does NOT emit 'Uncaptured formula IDs' warning when all unplaced formulas are omitted_by_rule", () => {
+      const testLedger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 3,
+          raw: "P_0 = D_1 / (R - g)",
+          latex: "P_0 = \\frac{D_1}{R - g}",
+          origin: "text",
+          variables: [],
+          evidence: "P_0 = D_1 / (R - g)",
+        },
+        {
+          id: "F2",
+          slide: 3,
+          raw: "R = (D_1 / P_0) + g",
+          latex: "R = \\frac{D_1}{P_0} + g",
+          origin: "text",
+          variables: [],
+          evidence: "R = (D_1 / P_0) + g",
+        },
+      ];
+
+      const sections: NoteSection[] = [
+        createTestSection({
+          letter: "A",
+          titleVi: "ĐỊNH GIÁ",
+          sourceSlides: [3],
+          groundedBullets: [
+            {
+              text: "Mô hình DGM",
+              slide: 3,
+              evidence: "Dividend Discount Model: P_0 = D_1 / (R - g).",
+            },
+          ],
+          formulas: [
+            createTestFormula({
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              slide: 3,
+              formulaRefs: ["F1"],
+            }),
+          ],
+          keyTakeaways: {
+            title: "KEY TAKEAWAYS",
+            items: [
+              createTestTakeawayItem({
+                point: "Dividend Discount Model",
+                slide: 3,
+                evidence: "Dividend Discount Model: P_0 = D_1 / (R - g).",
+              }),
+            ],
+            summaryPoints: [],
+          },
+        }),
+      ];
+
+      const omitted: any[] = [
+        {
+          formulaId: "F2",
+          status: "omitted_by_rule",
+          reason: "Intermediate algebraic derivation rearrangement step",
+        },
+      ];
+
+      const report = runDeterministicVerifiers({
+        sections,
+        sources: sampleSources,
+        ledger: testLedger,
+        omitted,
+      });
+
+      expect(report.coverage.omittedByRuleIds).toEqual(["F2"]);
+      expect(report.coverage.uncapturedErrorIds).toEqual([]);
+      const hasUncapturedWarning = report.summary.warnings.some((w) =>
+        w.startsWith("Uncaptured formula IDs"),
+      );
+      expect(hasUncapturedWarning).toBe(false);
+    });
+
+    it("DOES emit 'Uncaptured formula IDs' warning only for uncaptured_error formulas", () => {
+      const testLedger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 3,
+          raw: "P_0 = D_1 / (R - g)",
+          latex: "P_0 = \\frac{D_1}{R - g}",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F2",
+          slide: 3,
+          raw: "R = (D_1 / P_0) + g",
+          latex: "R = \\frac{D_1}{P_0} + g",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F3",
+          slide: 5,
+          raw: "P_0 = D / R",
+          latex: "P_0 = \\frac{D}{R}",
+          origin: "text",
+          variables: [],
+        },
+      ];
+
+      const sections: NoteSection[] = [
+        createTestSection({
+          letter: "A",
+          titleVi: "ĐỊNH GIÁ",
+          sourceSlides: [3],
+          formulas: [
+            createTestFormula({
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              slide: 3,
+              formulaRefs: ["F1"],
+            }),
+          ],
+        }),
+      ];
+
+      const omitted: any[] = [
+        {
+          formulaId: "F2",
+          status: "omitted_by_rule",
+          reason: "Duplicate identity",
+        },
+        {
+          formulaId: "F3",
+          status: "uncaptured_error",
+          reason: "Failed to place core formula",
+        },
+      ];
+
+      const report = runDeterministicVerifiers({
+        sections,
+        sources: sampleSources,
+        ledger: testLedger,
+        omitted,
+      });
+
+      expect(report.coverage.omittedByRuleIds).toEqual(["F2"]);
+      expect(report.coverage.uncapturedErrorIds).toEqual(["F3"]);
+
+      const uncapturedWarning = report.summary.warnings.find((w) =>
+        w.startsWith("Uncaptured formula IDs"),
+      );
+      expect(uncapturedWarning).toBeDefined();
+      expect(uncapturedWarning).toBe("Uncaptured formula IDs: F3");
+      expect(uncapturedWarning).not.toContain("F2");
+    });
+  });
 });

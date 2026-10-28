@@ -177,10 +177,10 @@ export function SoloEngine({
     return list;
   }, [libraryItems, pack, document]);
 
-  // Auto-load pack if URL contains #pack=<token>
+  // Auto-load pack if URL contains #pack=<token> or ?pack=<token>
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const token = readShareToken(window.location.hash);
+    const token = readShareToken(window.location.hash, window.location.search);
     if (!token) return;
     void decodeSharedPack(token)
       .then((sharedPack) => {
@@ -197,10 +197,13 @@ export function SoloEngine({
           pack: sharedPack,
           document: doc,
         });
+        const searchParams = new URLSearchParams(window.location.search);
+        searchParams.delete("pack");
+        const cleanSearch = searchParams.toString() ? `?${searchParams.toString()}` : "";
         window.history.replaceState(
           null,
           "",
-          window.location.pathname + window.location.search,
+          window.location.pathname + cleanSearch,
         );
       })
       .catch((err) => {

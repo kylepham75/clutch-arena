@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   X,
   Check,
@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   Clock,
   Layers3,
+  Loader2,
 } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,21 @@ import {
   type PlanPricing,
 } from "@/lib/pricing/tiers";
 import { useUserTier } from "@/hooks/use-user-tier";
+import { useAuth } from "@/lib/auth/context";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+
+export interface PayosCheckoutData {
+  orderCode: number;
+  amount: number;
+  description: string;
+  bin: string;
+  accountNumber: string;
+  accountName: string;
+  checkoutUrl: string;
+  qrCode: string;
+  status: string;
+  vietQrImageUrl: string;
+}
 
 export function PricingModal({
   open,
@@ -40,6 +56,8 @@ export function PricingModal({
 }) {
   const { language } = useLanguage();
   const { tier, setTier, referrals, daysRemaining, refreshTier } = useUserTier();
+  const { user, session, openAuthModal } = useAuth();
+  const openAuthDialog = openAuthModal;
 
   const [currency, setCurrency] = useState<"vnd" | "usd">(() =>
     language === "vi" ? "vnd" : "usd",
@@ -51,6 +69,11 @@ export function PricingModal({
   const [verificationError, setVerificationError] = useState<string | null>(null);
   const [earlyContact, setEarlyContact] = useState("");
   const [intentSubmitted, setIntentSubmitted] = useState(false);
+
+  const [payosOrder, setPayosOrder] = useState<PayosCheckoutData | null>(null);
+  const [creatingOrder, setCreatingOrder] = useState(false);
+  const [authRequiredForPayment, setAuthRequiredForPayment] = useState(false);
+  const isCreatingRef = useRef(false);
 
   const isVi = language === "vi" || currency === "vnd";
 
@@ -73,6 +96,158 @@ export function PricingModal({
     }).catch(() => {});
   };
 
+  const createPayosOrder = useCallback(
+    async (plan: PlanPricing) => {
+      if (plan.id !== "cram_pass" && plan.id !== "pro") return;
+      if (isCreatingRef.current) return;
+      isCreatingRef.current = true;
+      setCreatingOrder(true);
+      setVerificationError(null);
+      setAuthRequiredForPayment(false);
+
+      try {
+        let token = session?.access_token;
+        if (!token) {
+          const supabase = getSupabaseBrowserClient();
+          if (supabase) {
+            const { data } = await supabase.auth.getSession();
+            token = data.session?.access_token;
+          }
+        }
+
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+
+        const res = await fetch("/api/payments/payos/create", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ planId: plan.id }),
+        });
+
+        const data = await res.json().catch(() => null);
+
+        if (res.status === 401 || data?.error === "AUTH_REQUIRED") {
+          setAuthRequiredForPayment(true);
+          return;
+        }
+
+        if (res.ok && data?.ok && data.payment) {
+          setPayosOrder(data.payment);
+          setAuthRequiredForPayment(false);
+        } else {
+          setVerificationError(
+            data?.message ||
+              (isVi
+                ? "Không thể khởi tạo thanh toán PayOS. Vui lòng thử lại sau."
+                : "Failed to initialize PayOS payment. Please try again later."),
+          );
+        }
+      } catch (err) {
+        console.error("PayOS create error:", err);
+        setVerificationError(
+          isVi
+            ? "Lỗi kết nối khi khởi tạo thanh toán. Vui lòng thử lại."
+            : "Network error when creating payment. Please try again.",
+        );
+      } finally {
+        setCreatingOrder(false);
+        isCreatingRef.current = false;
+      }
+    },
+    [session?.access_token, isVi],
+  );
+
+  useEffect(() => {
+    if (!open) {
+      setPayosOrder(null);
+      setCreatingOrder(false);
+      setAuthRequiredForPayment(false);
+      return;
+    }
+
+    if (
+      currency === "vnd" &&
+      selectedPlan &&
+      (selectedPlan.id === "cram_pass" || selectedPlan.id === "pro")
+    ) {
+      if (payosOrder && payosOrder.orderCode) {
+        return;
+      }
+      void createPayosOrder(selectedPlan);
+    } else {
+      setPayosOrder(null);
+      setCreatingOrder(false);
+      setAuthRequiredForPayment(false);
+    }
+  }, [open, currency, selectedPlan?.id, user?.id, payosOrder, createPayosOrder]);
+
+  // Automatic 4-second Polling for PayOS transaction confirmation
+  useEffect(() => {
+    if (!open || !payosOrder?.orderCode || paymentSuccess) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const verifyOrder = async () => {
+      try {
+        let token = session?.access_token;
+        if (!token) {
+          const supabase = getSupabaseBrowserClient();
+          if (supabase) {
+            const { data } = await supabase.auth.getSession();
+            token = data.session?.access_token;
+          }
+        }
+
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+
+        const res = await fetch("/api/payments/payos/verify", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ orderCode: payosOrder.orderCode }),
+        });
+
+        if (!res.ok) return;
+
+        const data = await res.json().catch(() => null);
+
+        if (data?.paid === true && isMounted) {
+          await refreshTier();
+          setPaymentSuccess(true);
+          setTimeout(() => {
+            if (isMounted) {
+              onClose();
+              setSelectedPlan(null);
+              setPayosOrder(null);
+              setPaymentSuccess(false);
+            }
+          }, 2000);
+        }
+      } catch {
+        // Ignore background polling network hiccups
+      }
+    };
+
+    const interval = setInterval(() => {
+      void verifyOrder();
+    }, 4000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [open, payosOrder?.orderCode, paymentSuccess, session?.access_token, refreshTier, onClose]);
+
   const handleSelectPlan = (plan: PlanPricing) => {
     if (plan.comingSoon || plan.id === "tutor") return;
     if (plan.id === "contender") {
@@ -84,6 +259,9 @@ export function PricingModal({
       sendSmokeTestTelemetry(plan.id, "plan_selected");
     }
     setSelectedPlan(plan);
+    setPayosOrder(null);
+    setCreatingOrder(false);
+    setAuthRequiredForPayment(false);
     setPaymentSuccess(false);
     setVerificationError(null);
     setEarlyContact("");
@@ -109,19 +287,67 @@ export function PricingModal({
     }
     setSimulating(true);
     setVerificationError(null);
+
     try {
+      let isPaid = false;
+
+      if (payosOrder?.orderCode) {
+        let token = session?.access_token;
+        if (!token) {
+          const supabase = getSupabaseBrowserClient();
+          if (supabase) {
+            const { data } = await supabase.auth.getSession();
+            token = data.session?.access_token;
+          }
+        }
+
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+
+        try {
+          const res = await fetch("/api/payments/payos/verify", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ orderCode: payosOrder.orderCode }),
+          });
+          const data = await res.json().catch(() => null);
+          if (data?.paid === true) {
+            isPaid = true;
+          }
+        } catch {
+          // Fall through to refreshTier
+        }
+      }
+
+      if (isPaid) {
+        await refreshTier();
+        setPaymentSuccess(true);
+        setTimeout(() => {
+          onClose();
+          setSelectedPlan(null);
+          setPayosOrder(null);
+          setPaymentSuccess(false);
+        }, 2000);
+        return;
+      }
+
       const updated = await refreshTier();
       if (updated === selectedPlan.id || updated === "pro" || updated === "cram_pass") {
         setPaymentSuccess(true);
         setTimeout(() => {
           onClose();
           setSelectedPlan(null);
+          setPayosOrder(null);
           setPaymentSuccess(false);
         }, 2000);
       } else {
         setVerificationError(
           isVi
-            ? "Hệ thống chưa ghi nhận giao dịch của bạn. Vui lòng đăng nhập và hoàn tất chuyển khoản đúng nội dung, hoặc liên hệ hỗ trợ."
+            ? "Hệ thống chưa ghi nhận giao dịch của bạn. Vui lòng hoàn tất chuyển khoản đúng nội dung, hoặc liên hệ hỗ trợ."
             : "Payment not yet confirmed by the server. Please ensure you are signed in and have completed checkout.",
         );
       }
@@ -130,16 +356,23 @@ export function PricingModal({
     }
   };
 
-  const transferNote = selectedPlan
-    ? `CLUTCH ${selectedPlan.id.toUpperCase()} ${Math.random().toString(36).substring(2, 7).toUpperCase()}`
-    : "CLUTCH CRAM 8888";
   const bankAccount = "0388291888";
   const bankName = "MBBank (Ngân hàng Quân Đội)";
   const accountHolder = "CLUTCH ARENA VN";
 
+  const fallbackTransferNote = useMemo(() => {
+    return selectedPlan
+      ? `CLUTCH ${selectedPlan.id.toUpperCase()} ${Math.random().toString(36).substring(2, 7).toUpperCase()}`
+      : "CLUTCH CRAM 8888";
+  }, [selectedPlan?.id]);
+
+  const displayAccountNumber = payosOrder?.accountNumber || bankAccount;
+  const displayAccountName = payosOrder?.accountName || accountHolder;
+  const displayTransferNote = payosOrder?.description || fallbackTransferNote;
+
   const vietQrUrl = selectedPlan
     ? `https://img.vietqr.io/image/MB-${bankAccount}-compact2.png?amount=${selectedPlan.priceVnd}&addInfo=${encodeURIComponent(
-        transferNote,
+        displayTransferNote,
       )}&accountName=${encodeURIComponent(accountHolder)}`
     : "";
 
@@ -233,11 +466,44 @@ export function PricingModal({
           <div className="checkout-view bg-stone-50 dark:bg-stone-900/60 p-5 rounded-2xl border border-stone-200 dark:border-stone-800">
             <button
               type="button"
-              onClick={() => setSelectedPlan(null)}
+              onClick={() => {
+                setSelectedPlan(null);
+                setPayosOrder(null);
+                setCreatingOrder(false);
+                setAuthRequiredForPayment(false);
+                setVerificationError(null);
+              }}
               className="text-xs font-semibold text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 mb-3 flex items-center gap-1"
             >
               ← {isVi ? "Quay lại danh sách gói" : "Back to all plans"}
             </button>
+
+            {/* Authentication Callout Banner */}
+            {authRequiredForPayment && (
+              <div className="mb-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-200 flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 text-xs font-semibold">
+                  <Users size={18} className="text-amber-600 shrink-0" />
+                  <span>
+                    {isVi
+                      ? "Vui lòng đăng nhập hoặc tạo tài khoản để kích hoạt gói học tự động vào tài khoản của bạn."
+                      : "Please sign in or create an account to automatically link this purchase to your profile."}
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  onClick={() =>
+                    openAuthDialog(
+                      isVi
+                        ? "Đăng nhập để tiến hành thanh toán và kích hoạt gói học"
+                        : "Sign in to complete checkout and activate pass",
+                    )
+                  }
+                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs px-3.5 py-2 rounded-lg shrink-0 cursor-pointer shadow-xs whitespace-nowrap"
+                >
+                  {isVi ? "Đăng nhập / Tạo tài khoản ngay" : "Sign in / Create Account"}
+                </Button>
+              </div>
+            )}
 
             {paymentSuccess ? (
               <div className="text-center py-8">
@@ -261,16 +527,32 @@ export function PricingModal({
                       Quét mã VietQR (MoMo, ZaloPay, Mọi Ngân Hàng)
                     </span>
                   </div>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={vietQrUrl}
-                    alt="VietQR Payment Code"
-                    className="w-56 h-auto rounded-lg border border-stone-100 dark:border-stone-800"
-                    loading="lazy"
-                  />
+
+                  {creatingOrder ? (
+                    <div className="w-56 h-56 flex flex-col items-center justify-center rounded-lg border border-dashed border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-stone-900/40 p-4 text-center">
+                      <Loader2 size={32} className="text-amber-600 animate-spin mb-3" />
+                      <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                        {isVi
+                          ? "Đang khởi tạo mã VietQR định danh từ PayOS..."
+                          : "Creating identified PayOS VietQR..."}
+                      </span>
+                      <span className="text-[11px] text-stone-400 dark:text-stone-500 mt-1">
+                        {isVi ? "Vui lòng đợi giây lát" : "Please wait a moment"}
+                      </span>
+                    </div>
+                  ) : (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={payosOrder?.vietQrImageUrl || vietQrUrl}
+                      alt="VietQR Payment Code"
+                      className="w-56 h-auto rounded-lg border border-stone-100 dark:border-stone-800"
+                      loading="lazy"
+                    />
+                  )}
+
                   <span className="text-[11px] text-stone-500 mt-2 flex items-center gap-1">
                     <Clock size={12} />
-                    Xác nhận tự động trong 3 giây
+                    {isVi ? "Xác nhận tự động trong 3 giây" : "Auto-verified in 3 seconds"}
                   </span>
                 </div>
 
@@ -278,7 +560,10 @@ export function PricingModal({
                   <div className="p-3 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800">
                     <div className="text-xs text-stone-500 font-medium">Gói đăng ký</div>
                     <div className="text-base font-bold text-amber-700 dark:text-amber-400">
-                      {selectedPlan.nameVi} · {selectedPlan.priceVndFormatted}
+                      {selectedPlan.nameVi} ·{" "}
+                      {payosOrder
+                        ? `${payosOrder.amount.toLocaleString("vi-VN")}đ`
+                        : selectedPlan.priceVndFormatted}
                       {selectedPlan.cycle === "semester"
                         ? " / 4 tháng"
                         : selectedPlan.cycle === "monthly"
@@ -297,37 +582,45 @@ export function PricingModal({
                       <span className="text-stone-500">Số tài khoản:</span>
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono font-bold text-stone-900 dark:text-stone-100">
-                          {bankAccount}
+                          {displayAccountNumber}
                         </span>
                         <button
                           type="button"
-                          onClick={() => handleCopy(bankAccount, "acc")}
-                          className="p-1 hover:bg-stone-100 dark:hover:bg-stone-800 rounded text-stone-500"
+                          onClick={() => handleCopy(displayAccountNumber, "acc")}
+                          className="p-1 hover:bg-stone-100 dark:hover:bg-stone-800 rounded text-stone-500 cursor-pointer"
                           title="Sao chép số tài khoản"
                         >
-                          {copiedField === "acc" ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                          {copiedField === "acc" ? (
+                            <Check size={12} className="text-emerald-600" />
+                          ) : (
+                            <Copy size={12} />
+                          )}
                         </button>
                       </div>
                     </div>
 
                     <div className="flex justify-between items-center">
                       <span className="text-stone-500">Chủ tài khoản:</span>
-                      <span className="font-semibold">{accountHolder}</span>
+                      <span className="font-semibold">{displayAccountName}</span>
                     </div>
 
                     <div className="flex justify-between items-center pt-1 border-t border-stone-100 dark:border-stone-800">
                       <span className="text-stone-500">Nội dung chuyển khoản:</span>
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono font-bold text-amber-600 dark:text-amber-400">
-                          {transferNote}
+                          {displayTransferNote}
                         </span>
                         <button
                           type="button"
-                          onClick={() => handleCopy(transferNote, "note")}
-                          className="p-1 hover:bg-stone-100 dark:hover:bg-stone-800 rounded text-stone-500"
+                          onClick={() => handleCopy(displayTransferNote, "note")}
+                          className="p-1 hover:bg-stone-100 dark:hover:bg-stone-800 rounded text-stone-500 cursor-pointer"
                           title="Sao chép nội dung"
                         >
-                          {copiedField === "note" ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                          {copiedField === "note" ? (
+                            <Check size={12} className="text-emerald-600" />
+                          ) : (
+                            <Copy size={12} />
+                          )}
                         </button>
                       </div>
                     </div>
@@ -339,13 +632,30 @@ export function PricingModal({
                     </div>
                   )}
 
-                  <Button
-                    onClick={handleVerifyPayment}
-                    disabled={simulating}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl shadow-sm"
-                  >
-                    {simulating ? "Đang kiểm tra xác thực giao dịch..." : "Kiểm tra trạng thái thanh toán"}
-                  </Button>
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      onClick={handleVerifyPayment}
+                      disabled={simulating}
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl shadow-sm cursor-pointer"
+                    >
+                      {simulating
+                        ? "Đang kiểm tra xác thực giao dịch..."
+                        : "Kiểm tra trạng thái thanh toán"}
+                    </Button>
+
+                    {payosOrder?.checkoutUrl && (
+                      <a
+                        href={payosOrder.checkoutUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold py-2 px-3 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-200 transition-colors shadow-xs"
+                      >
+                        <span>Mở cổng thanh toán PayOS</span>
+                        <ExternalLink size={14} />
+                      </a>
+                    )}
+                  </div>
+
                   <p className="text-[11px] text-center text-stone-500">
                     Bảo mật 100% · Hệ thống tự động kích hoạt sau khi ngân hàng xác nhận giao dịch.
                   </p>
@@ -370,7 +680,9 @@ export function PricingModal({
                     </span>
                   </div>
                   <div className="text-xs text-stone-500 mt-1">
-                    {selectedPlan.cycle === "one_time" ? "One-time purchase · No subscription" : "Billed automatically"}
+                    {selectedPlan.cycle === "one_time"
+                      ? "One-time purchase · No subscription"
+                      : "Billed automatically"}
                   </div>
                 </div>
 
@@ -388,7 +700,7 @@ export function PricingModal({
                 <Button
                   onClick={handleVerifyPayment}
                   disabled={simulating}
-                  className="w-full bg-stone-900 dark:bg-amber-500 dark:text-stone-950 text-white hover:bg-stone-800 font-bold py-3 rounded-xl shadow-sm flex items-center justify-center gap-2"
+                  className="w-full bg-stone-900 dark:bg-amber-500 dark:text-stone-950 text-white hover:bg-stone-800 font-bold py-3 rounded-xl shadow-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {simulating ? "Verifying payment status..." : "Verify Payment / Check Status"}
                   <ExternalLink size={15} />
@@ -436,7 +748,9 @@ export function PricingModal({
                           type="text"
                           value={earlyContact}
                           onChange={(e) => setEarlyContact(e.target.value)}
-                          placeholder={isVi ? "Zalo / Số ĐT / Email của bạn" : "Your Zalo / Phone / Email"}
+                          placeholder={
+                            isVi ? "Zalo / Số ĐT / Email của bạn" : "Your Zalo / Phone / Email"
+                          }
                           maxLength={160}
                           className="flex-1 px-3 py-1.5 text-xs bg-white dark:bg-stone-950 border border-stone-200 dark:border-stone-700 rounded-lg text-stone-900 dark:text-stone-100 placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-amber-500"
                         />
@@ -519,22 +833,38 @@ export function PricingModal({
                         </span>
                         <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wide">
                           {plan.cycle === "free"
-                            ? isVi ? "/ Vĩnh viễn" : "/ Forever"
+                            ? isVi
+                              ? "/ Vĩnh viễn"
+                              : "/ Forever"
                             : plan.cycle === "one_time"
-                              ? isVi ? "/ 7 ngày" : "/ 7 days"
+                              ? isVi
+                                ? "/ 7 ngày"
+                                : "/ 7 days"
                               : plan.cycle === "semester"
-                                ? isVi ? "/ 4 tháng" : "/ 4 months"
-                                : isVi ? "/ Tháng" : "/ Month"}
+                                ? isVi
+                                  ? "/ 4 tháng"
+                                  : "/ 4 months"
+                                : isVi
+                                  ? "/ Tháng"
+                                  : "/ Month"}
                         </span>
                       </div>
                       <div className="text-[10px] text-stone-500 dark:text-stone-400 font-medium mt-0.5">
                         {plan.cycle === "free"
-                          ? isVi ? "Không cần tài khoản thẻ" : "No credit card required"
+                          ? isVi
+                            ? "Không cần tài khoản thẻ"
+                            : "No credit card required"
                           : plan.cycle === "one_time"
-                            ? isVi ? "Mua 1 lần · Không gia hạn" : "One-time pass · No renew"
+                            ? isVi
+                              ? "Mua 1 lần · Không gia hạn"
+                              : "One-time pass · No renew"
                             : plan.cycle === "semester"
-                              ? isVi ? "Trọn kỳ học (tiết kiệm 25%)" : "Full semester pass (save 25%)"
-                              : isVi ? "Hủy đăng ký bất cứ lúc nào" : "Cancel anytime"}
+                              ? isVi
+                                ? "Trọn kỳ học (tiết kiệm 25%)"
+                                : "Full semester pass (save 25%)"
+                              : isVi
+                                ? "Hủy đăng ký bất cứ lúc nào"
+                                : "Cancel anytime"}
                       </div>
                     </div>
 
@@ -542,7 +872,10 @@ export function PricingModal({
                     <ul className="space-y-2 text-xs text-stone-600 dark:text-stone-300 mb-4">
                       {(isVi ? plan.featuresVi : plan.featuresEn).map((feat, i) => (
                         <li key={i} className="flex items-start gap-1.5 leading-snug">
-                          <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                          <Check
+                            size={14}
+                            className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5"
+                          />
                           <span>{feat}</span>
                         </li>
                       ))}
@@ -553,19 +886,27 @@ export function PricingModal({
                     onClick={() => handleSelectPlan(plan)}
                     disabled={isCurrent || Boolean(plan.comingSoon)}
                     variant={isRecommended ? "dark" : "outline"}
-                    className={`w-full text-xs font-bold py-2.5 rounded-xl mt-2 transition-all shadow-xs ${
+                    className={`w-full text-xs font-bold py-2.5 rounded-xl mt-2 transition-all shadow-xs cursor-pointer ${
                       isRecommended
                         ? "bg-amber-600 hover:bg-amber-700 text-white shadow-sm"
                         : ""
                     }`}
                   >
                     {plan.comingSoon
-                      ? isVi ? "Sắp ra mắt" : "Coming Soon"
+                      ? isVi
+                        ? "Sắp ra mắt"
+                        : "Coming Soon"
                       : isCurrent
-                        ? isVi ? "Đang sử dụng" : "Current Tier"
+                        ? isVi
+                          ? "Đang sử dụng"
+                          : "Current Tier"
                         : plan.id === "contender"
-                          ? isVi ? "Sử dụng miễn phí" : "Start Free"
-                          : isVi ? "Mở khóa ngay" : "Unlock Now"}
+                          ? isVi
+                            ? "Sử dụng miễn phí"
+                            : "Start Free"
+                          : isVi
+                            ? "Mở khóa ngay"
+                            : "Unlock Now"}
                   </Button>
                 </div>
               );

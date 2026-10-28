@@ -61,8 +61,18 @@ export async function POST(
     }
 
     if (Object.keys(room.players).length >= (room.maxPlayers || 8)) {
+      const maxPlayers = room.maxPlayers || 8;
+      const hostTier = room.hostTier || "contender";
       return NextResponse.json(
-        { ok: false, error: { message: `Arena room "${code}" is full (maximum ${room.maxPlayers || 8} players).` } },
+        {
+          ok: false,
+          error: {
+            code: "ROOM_FULL",
+            message: `Arena room "${code}" is full (maximum ${maxPlayers} players for ${hostTier} tier).`,
+            maxPlayers,
+            hostTier,
+          },
+        },
         { status: 403 },
       );
     }

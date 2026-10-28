@@ -533,4 +533,158 @@ describe("NoteRenderer Component Integration", () => {
     expect(html).toContain("Slide 16");
     expect(html).toContain("Appeared solely in footnote of slide 16");
   });
+
+  describe("Regression Tests: Bug 1 (Suppression of omitted_by_rule formulas in NoteRenderer)", () => {
+    it("suppresses formulas with status: 'omitted_by_rule' (or in omittedByRuleFormulaIds) from Uncaptured Source Formulas section while displaying status: 'uncaptured_error'", () => {
+      const noteMixedOmitted: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        verification: {
+          status: "marked",
+          repairAttempted: false,
+          coverageRatio: 0.5,
+          totalLedgerFormulas: 3,
+          placedFormulaIds: ["F1"],
+          omittedByRuleFormulaIds: ["F2"],
+          uncapturedFormulaIds: ["F3"],
+          unsupportedClaimsRemoved: 0,
+          needsReviewCount: 0,
+          contradictedFormulaCount: 0,
+          evidenceMatchRatio: 1,
+          numberGroundingPassed: true,
+          ungroundedNumbers: [],
+          symbolGroundingPassed: true,
+          ungroundedSymbols: [],
+          claimVerdicts: [],
+          formulaResults: [],
+          warnings: ["Uncaptured formula IDs: F3"],
+          divergenceNotices: [],
+        },
+        formulaLedger: [
+          {
+            id: "F1",
+            slide: 4,
+            raw: "P0 = D1/(1+R)",
+            latex: "P_0 = \\frac{D_1}{1 + R}",
+            variables: [],
+            origin: "omml",
+          },
+          {
+            id: "F2",
+            slide: 5,
+            raw: "R = (D1/P0) + g",
+            latex: "R = \\frac{D_1}{P_0} + g",
+            label: "Intermediate Rearrangement",
+            variables: [],
+            origin: "text",
+          },
+          {
+            id: "F3",
+            slide: 10,
+            raw: "WACC = (E/V)*Re + (D/V)*Rd*(1-Tc)",
+            latex: "\\text{WACC} = \\frac{E}{V} R_e + \\frac{D}{V} R_d (1 - T_c)",
+            label: "Firm Cost of Capital",
+            variables: [],
+            origin: "text",
+          },
+        ],
+        omitted: [
+          {
+            formulaId: "F2",
+            status: "omitted_by_rule",
+            reason: "Intermediate derivation rearrangement step",
+          },
+          {
+            formulaId: "F3",
+            status: "uncaptured_error",
+            reason: "Core syllabus equation unplaced",
+          },
+        ],
+      };
+
+      const html = renderToStaticMarkup(
+        React.createElement(NoteRenderer, {
+          note: noteMixedOmitted,
+          onReset: () => {},
+        }),
+      );
+
+      // Section must render for F3
+      expect(html).toContain("Uncaptured Source Formulas");
+      expect(html).toContain("1 Formula Omitted");
+      expect(html).toContain("F3");
+      expect(html).toContain("Firm Cost of Capital");
+      expect(html).toContain("Core syllabus equation unplaced");
+
+      // Must suppress F2 (omitted_by_rule)
+      expect(html).not.toContain("Intermediate Rearrangement");
+      expect(html).not.toContain("Intermediate derivation rearrangement step");
+
+      // Warning banner shows F3
+      expect(html).toContain("Uncaptured formula IDs: F3");
+    });
+
+    it("suppresses the entire uncaptured section and uncaptured warning banner when ALL unplaced formulas are omitted_by_rule", () => {
+      const noteAllOmittedByRule: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        verification: {
+          status: "passed",
+          repairAttempted: false,
+          coverageRatio: 0.5,
+          totalLedgerFormulas: 2,
+          placedFormulaIds: ["F1"],
+          omittedByRuleFormulaIds: ["F2"],
+          uncapturedFormulaIds: [],
+          unsupportedClaimsRemoved: 0,
+          needsReviewCount: 0,
+          contradictedFormulaCount: 0,
+          evidenceMatchRatio: 1,
+          numberGroundingPassed: true,
+          ungroundedNumbers: [],
+          symbolGroundingPassed: true,
+          ungroundedSymbols: [],
+          claimVerdicts: [],
+          formulaResults: [],
+          warnings: ["Uncaptured formula IDs: F2"], // stale warning should be suppressed
+          divergenceNotices: [],
+        },
+        formulaLedger: [
+          {
+            id: "F1",
+            slide: 4,
+            raw: "P0 = D1/(1+R)",
+            latex: "P_0 = \\frac{D_1}{1 + R}",
+            variables: [],
+            origin: "omml",
+          },
+          {
+            id: "F2",
+            slide: 5,
+            raw: "R = (D1/P0) + g",
+            latex: "R = \\frac{D_1}{P_0} + g",
+            label: "Intermediate Rearrangement",
+            variables: [],
+            origin: "text",
+          },
+        ],
+        omitted: [
+          {
+            formulaId: "F2",
+            status: "omitted_by_rule",
+            reason: "Duplicate rearrangement identity",
+          },
+        ],
+      };
+
+      const html = renderToStaticMarkup(
+        React.createElement(NoteRenderer, {
+          note: noteAllOmittedByRule,
+          onReset: () => {},
+        }),
+      );
+
+      // Section and warning banner must be completely suppressed
+      expect(html).not.toContain("Uncaptured Source Formulas");
+      expect(html).not.toContain("Uncaptured formula IDs");
+    });
+  });
 });

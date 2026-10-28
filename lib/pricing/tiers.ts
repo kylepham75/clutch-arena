@@ -41,7 +41,7 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     canDebriefWithCoach: true,
     canExportCheatSheet: true,
     canHostArenaRemix: true,
-    maxArenaPlayers: 16,
+    maxArenaPlayers: 15,
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
     maxNotesPerDay: 30,
@@ -55,7 +55,7 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     canDebriefWithCoach: true,
     canExportCheatSheet: true,
     canHostArenaRemix: true,
-    maxArenaPlayers: 16,
+    maxArenaPlayers: 15,
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
     maxNotesPerDay: 30,
@@ -69,12 +69,16 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     canDebriefWithCoach: true,
     canExportCheatSheet: true,
     canHostArenaRemix: true,
-    maxArenaPlayers: 32,
+    maxArenaPlayers: 50,
     hasCohortAnalytics: true,
     canUseClutchNotes: true,
     maxNotesPerDay: 30,
   },
 };
+
+export function getMaxArenaPlayersForTier(tier: UserTier): number {
+  return TIER_LIMITS[tier]?.maxArenaPlayers ?? 8;
+}
 
 export interface PlanPricing {
   id: UserTier;
@@ -132,8 +136,8 @@ export const PRICING_PLANS: PlanPricing[] = [
     badgeEn: "Most Popular for Finals",
     badgeVi: "Được chọn nhiều nhất mùa thi",
     recommended: true,
-    priceVnd: 69_000,
-    priceVndFormatted: "69.000đ",
+    priceVnd: 5_000,
+    priceVndFormatted: "5.000đ",
     priceUsd: 3.99,
     priceUsdFormatted: "$3.99",
     featuresEn: [
@@ -428,28 +432,94 @@ export async function fetchCloudUserTier(): Promise<{
       .maybeSingle();
 
     if (!subErr && subData?.tier) {
-      cloudTier = subData.tier;
-      cloudExpiresAt = subData.expires_at;
-    } else {
+      const isSubExpired = subData.expires_at
+        ? !isNaN(new Date(subData.expires_at).getTime()) &&
+          new Date(subData.expires_at).getTime() <= Date.now()
+        : false;
+
+      if (!isSubExpired) {
+        cloudTier = subData.tier;
+        cloudExpiresAt = subData.expires_at;
+      }
+      // If subscription has expired, do not stop; fall through to profiles table!
+    }
+
+    if (!cloudTier) {
       // 2. Fallback to `profiles` table
       const { data: profileData, error: profileErr } = await supabase
         .from("profiles")
-        .select("tier, tier_expires_at")
+        .select("tier, tier_expires_at, updated_at")
         .eq("id", user.id)
         .maybeSingle();
 
-      if (!profileErr && profileData) {
-        cloudTier = profileData.tier;
-        cloudExpiresAt = profileData.tier_expires_at;
-      } else {
-        // 3. Fallback to `user_profiles` table
-        const { data: userProfileData, error: userProfileErr } = await supabase
-          .from("user_profiles")
-          .select("tier, tier_expires_at")
-          .eq("id", user.id)
-          .maybeSingle();
+      if (!profileErr && profileData?.tier) {
+        const norm = profileData.tier.toLowerCase().trim();
+        const isPaid = norm === "cram_pass" || norm === "pro" || norm === "tutor";
 
-        if (!userProfileErr && userProfileData) {
+        if (isPaid) {
+          const normTier = (norm === "cram_pass" ? "cram_pass" : norm === "pro" ? "pro" : "tutor") as UserTier;
+
+          if (!profileData.tier_expires_at) {
+            // Non-expiring / manual admin grant
+            cloudTier = profileData.tier;
+            cloudExpiresAt = null;
+          } else {
+            const expMs = new Date(profileData.tier_expires_at).getTime();
+            const isExpired = !isNaN(expMs) && expMs <= Date.now();
+
+            if (!isExpired) {
+              cloudTier = profileData.tier;
+              cloudExpiresAt = profileData.tier_expires_at;
+            } else if (
+              profileData.updated_at &&
+              new Date(profileData.updated_at).getTime() > expMs
+            ) {
+              // Active manual admin grant updated after the previous expiration
+              cloudTier = profileData.tier;
+              cloudExpiresAt = calculateTierExpiration(normTier);
+            }
+          }
+        } else {
+          cloudTier = profileData.tier;
+          cloudExpiresAt = profileData.tier_expires_at;
+        }
+      }
+    }
+
+    if (!cloudTier) {
+      // 3. Fallback to `user_profiles` table
+      const { data: userProfileData, error: userProfileErr } = await supabase
+        .from("user_profiles")
+        .select("tier, tier_expires_at, updated_at")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (!userProfileErr && userProfileData?.tier) {
+        const norm = userProfileData.tier.toLowerCase().trim();
+        const isPaid = norm === "cram_pass" || norm === "pro" || norm === "tutor";
+
+        if (isPaid) {
+          const normTier = (norm === "cram_pass" ? "cram_pass" : norm === "pro" ? "pro" : "tutor") as UserTier;
+
+          if (!userProfileData.tier_expires_at) {
+            cloudTier = userProfileData.tier;
+            cloudExpiresAt = null;
+          } else {
+            const expMs = new Date(userProfileData.tier_expires_at).getTime();
+            const isExpired = !isNaN(expMs) && expMs <= Date.now();
+
+            if (!isExpired) {
+              cloudTier = userProfileData.tier;
+              cloudExpiresAt = userProfileData.tier_expires_at;
+            } else if (
+              userProfileData.updated_at &&
+              new Date(userProfileData.updated_at).getTime() > expMs
+            ) {
+              cloudTier = userProfileData.tier;
+              cloudExpiresAt = calculateTierExpiration(normTier);
+            }
+          }
+        } else {
           cloudTier = userProfileData.tier;
           cloudExpiresAt = userProfileData.tier_expires_at;
         }

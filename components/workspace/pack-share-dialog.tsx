@@ -17,6 +17,7 @@ import type { StudyPack } from "@/lib/schemas/question";
 import {
   LONG_LINK_THRESHOLD,
   buildShareUrl,
+  copyTextWithFallback,
   downloadTextFile,
   encodePackForShare,
   packToAnki,
@@ -74,22 +75,22 @@ export function PackShareDialog({
 
   const copyLink = async () => {
     if (!link) return;
-    try {
-      await navigator.clipboard.writeText(link);
+    const ok = await copyTextWithFallback(link);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2_000);
-    } catch {
+    } else {
       setLinkError("Clipboard access was blocked — select the link and copy it manually.");
     }
   };
 
   const copyMarkdown = async () => {
     const md = packToMarkdown(pack, activeIds);
-    try {
-      await navigator.clipboard.writeText(md);
+    const ok = await copyTextWithFallback(md);
+    if (ok) {
       setCopiedMd(true);
       setTimeout(() => setCopiedMd(false), 2_000);
-    } catch {
+    } else {
       setLinkError("Clipboard access was blocked — try downloading the file instead.");
     }
   };

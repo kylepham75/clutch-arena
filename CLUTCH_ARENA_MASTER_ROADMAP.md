@@ -1,7 +1,7 @@
 # 🚀 CLUTCH ARENA — Comprehensive Product Specification, Monetization Architecture, and Launch Roadmap
 
-> **Document Version:** 1.2.0  
-> **Last Updated:** October 24, 2026  
+> **Document Version:** 1.3.0  
+> **Last Updated:** October 27, 2026  
 > **Repository:** `clutch-arena` (v0.2.4 — Production Live on Vercel)  
 > **Stack:** Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS v4, Framer Motion, PartyKit (Edge WebSockets), Supabase (Auth, Postgres & Realtime SSE), Vercel AI SDK 5 (Gemini 3.5/3.8 Flash, Groq Llama 3.3 70B, Ollama), Upstash Redis, KaTeX.
 
@@ -127,7 +127,7 @@ To align seamlessly with the light-mode workspace and modern iOS/macOS/web icon 
 
 ## 3. Current Architecture & Completed Capabilities (v0.2.4)
 
-The platform is live in production on Vercel with **201 passing automated unit/integration tests across 27 test suites**, zero TypeScript errors, and verified serverless PDF ingestion. Below is an exhaustive breakdown of implemented systems:
+The platform is live in production on Vercel with **576 passing automated unit/integration tests across 37 test suites**, zero TypeScript errors, and verified serverless PDF ingestion. Below is an exhaustive breakdown of implemented systems:
 
 ### 3.1 Solo Gamified Active Recall Engine
 - **Gameplay Mechanics:**
@@ -397,6 +397,12 @@ gantt
 - **Phase 3: Public Beta & Zero-CAC Growth Engine (Days 15–21):** Roll out the new white-background minimalist brand icon across favicons/OG cards, activate the *"Host 4-Player Match / Share Pack to Unlock 3 Free Concept Remix Runs"* viral loop, and stress-test 30+ player Tutor/Guild lobbies.
 - **Phase 4: Official Launch & Finals Season Campaign (Days 22–30):** Launch short-form POV video blitz on TikTok/Reels, seed pre-built exam packs into university Zalo/Discord groups via Campus Ambassadors, and host the inter-university **"Clutch Cup"** tournament.
 
+### 8.1 Stage 11: Mobile Webview QA, Tiered Lobby Caps & 90s Idle SSE Guard, and Tutor Class Analytics
+- [x] **11.1 Arena Tier Caps, Schema Contracts & Per-Question Analytics Types (`lib/pricing/tiers.ts`, `lib/schemas/multiplayer.ts`):** Align `maxArenaPlayers` (`8` Contender, `15` Cram Pass / Pro, `50` Tutor/Guild), add `hostTier` / `maxPlayers` / `classAnalytics` (`ArenaQuestionStat`, `ArenaClassAnalytics`) schemas to `ArenaRoomState`.
+- [x] **11.2 Mobile Webview & Touch QA Hardening (`lib/game/pack-transfer.ts`, `components/workspace/pack-share-dialog.tsx`, `components/quiz/solo-engine.tsx`, `app/globals.css`, `tests/unit/pack-transfer.test.ts`):** Harden `readShareToken` against Zalo/Messenger tracking params appended to `#pack=...` (`?zarsrc=`, `&fbclid=`) and support `?pack=` query fallback; add `copyTextWithFallback` for restricted in-app webviews; enforce `touch-action: manipulation`, `-webkit-tap-highlight-color: transparent`, 48px minimum touch targets, and `100dvh` safe-area rules on 15s quiz/arena buttons.
+- [x] **11.3 Server-Side Host Lobby Cap Enforcement, 90s Idle SSE Auto-Disconnect & Class Analytics Engine (`lib/multiplayer/room-manager.ts`, `app/api/arena/rooms/route.ts`, `app/api/arena/rooms/[code]/join/route.ts`, `app/api/arena/rooms/[code]/stream/route.ts`, `tests/unit/arena-lobby-caps-and-analytics.test.ts`):** Enforce server-resolved host tier caps (`8` / `15` / `50`) and `ROOM_FULL` error payloads with upgrade metadata; auto-disconnect idle SSE streams after `IDLE_ROOM_TIMEOUT_MS` (90s) and notify subscribers on idle room teardown; aggregate per-question classroom accuracy, missed-question percentages, top distractor choice, and early-elimination counts during matches.
+- [x] **11.4 Tutor/Guild Post-Match Class Analytics Dashboard & Gradebook CSV Export (`components/arena/arena-podium.tsx`, `tests/unit/arena-podium-analytics.test.ts`):** Render the Post-Match Class Analytics Dashboard on `ArenaPodium` (missed-question percentages sorted worst-first, early heart-loss diagnostic alert, 1-click CSV Gradebook export, and Coach review handoff).
+
 ---
 
 ## 9. Actionable Execution Matrix
@@ -407,22 +413,26 @@ gantt
 | **Deploy Next.js Production Build to Vercel** | Infra | 🔴 P0 | GitHub repo | ✅ **Completed** — Live on Vercel; SSR hydration fixed, RLS JWT forwarding & paid-tier auth verified (`c07b206`). |
 | **Harden Serverless PDF Parsing on Vercel** | Ingestion | 🔴 P0 | `pdf-parse` v2 | ✅ **Completed** — Added Node `DOMMatrix`/`Path2D` polyfills & pre-bound in-memory `pdfjsWorker` (`9bd13a8`, `21c6dd8`). |
 | **Upgrade Clutch Notes AI v2 (Concise Handout)**| AI Core | 🔴 P0 | Gold-standard PDF| ✅ **Completed** — Shipped 6-rule synthesis engine, continuous serif A4 handout UI & print PDF (`eacef0e`). |
+| **Execute Hallucination Shield v3 (Stages 1–5)**| AI Quality | 🔴 P0 | Master Spec | ✅ **Completed** — Shipped formula inventory, ledger-bound synthesis, numeric equivalence engine, verifier LLM + targeted single-pass repair loop, domain rule packs, and golden eval CI suite (`ad0f469`). |
+| **Harden Production Cybersecurity & Paywall Access**| Security | 🔴 P0 | Auth Guard | ✅ **Completed** — Restricted `x-test-tier` bypass via `isTestTierAllowed()`, injected defensive HTTP security headers, hardened KaTeX math sandbox, and secured API rate limiting (`e4a7216`). |
+| **Resolve Ingestion & KaTeX Formatting (Bugs 1–4)**| Ingestion/UI | 🔴 P0 | PDF Output | ✅ **Completed** — Filtered false-positive uncaptured warnings (`omitted_by_rule`), wrapped bare English math in `\text{}`, preserved Unicode arrows (`↑`/`↓`), and enabled natural equation wrapping in PDF export. |
+| **Implement Supabase Admin Tier Synchronization**| Cloud Auth | 🔴 P0 | Supabase DB | ✅ **Completed** — Fall through expired subscriptions to `profiles.tier`, recognize non-expiring/renewed admin grants, and authored `20261027_admin_tier_sync_trigger.sql` for 1-click edits. |
 | **Update App Favicon & Manifest to White Icon**| Brand | 🟡 P1 | SVG asset | ✅ **Completed** — Applied minimalist white-background hexagonal-C + lightning icon across web & PWA (`1149666`). |
 | **Verify Gemini Quotas & Groq Failover** | AI Core | 🔴 P0 | API accounts | ✅ **Ready** — Active `gemini-3.5/3.8` IDs + Groq Llama 3.3 70B automatic fallback configured (`1afc5c7`). |
 | **Onboard Early-Access Friend Cohort** | Validation| 🔴 P0 | Real course PDFs | 🟢 **Active Next** — Share live Vercel URL + course PDFs with friend testers for real-customer midterm prep. |
 | **Run 48h Willingness-to-Pay Smoke Test** | Validation| 🔴 P0 | Pilot cohort | ⏳ **Pending Cohort** — Test `69,000đ` / `$3.99` Cram Pass conversion intent manually before coding payment webhooks. |
-| **Mobile Webview & Touch QA (Zalo/FB Browser)**| Frontend | 🟡 P1 | Mobile devices | ⏳ **Pending** — Verify `#pack=...` links and 15s timer buttons inside Zalo, Messenger, and iOS Safari. |
-| **Implement Lobby Cap & Idle SSE Disconnect** | Cost Guard| 🟡 P1 | Arena API | ⏳ **Phase 2** — Enforce 8-player free host cap, 15-player Pro cap, 30+ Guild cap, and 90s idle SSE disconnect. |
-| **Integrate PayOS (VN) & LemonSqueezy (Global)**| Billing | 🟡 P1 | Smoke Test Pass | ⏳ **Phase 2** — Automate dual-region PPP checkouts (`vi` -> VietQR, `en` -> USD Merchant of Record). |
-| **Build Tutor/Guild Post-Match Class Analytics**| Product | 🟢 P2 | Arena Summary | ⏳ **Phase 2 / v0.3** — Add Host Dashboard showing missed-question percentages across all classroom joiners. |
+| **Mobile Webview & Touch QA (Zalo/FB Browser)**| Frontend | 🟡 P1 | Mobile devices | ✅ **Completed** — Hardened `#pack=` / `?pack=` sanitizer against Zalo/Messenger tracking params, added Webview clipboard fallback, and enforced `touch-action: manipulation` + 48px touch targets. |
+| **Implement Lobby Cap & Idle SSE Disconnect** | Cost Guard| 🟡 P1 | Arena API | ✅ **Completed** — Enforced server-side 8-player free cap, 15-player Pro cap, 50-player Guild cap (`ROOM_FULL`), and 90s idle SSE stream auto-disconnect. |
+| **Integrate PayOS (VN) & LemonSqueezy (Global)**| Billing | 🟡 P1 | Smoke Test Pass | ✅ **PayOS Live** — Automated PayOS v2 VietQR payment links, HMAC-SHA256 webhook verification, and 4s auto-polling (`lib/payments/payos.ts`). |
+| **Build Tutor/Guild Post-Match Class Analytics**| Product | 🟢 P2 | Arena Summary | ✅ **Completed** — Shipped Host Class Analytics Dashboard (worst-first missed %, early heart-loss alerts, top wrong option trap, and 1-click CSV Gradebook export). |
 | **Host 'Clutch Cup' Finals Launch Tournament** | Growth | 🟢 P2 | Campus Reps | ⏳ **Phase 4** — Run inter-university live review tournament 10 days before final exams. |
 
 ---
 
 ## 10. Engineering Progress & Production Changelog (October 2026)
 
-> **Current Build & Test Health (Verified Oct 24, 2026):**
-> - **Automated Test Suite:** `222 / 222` unit & integration tests passing across `28` Vitest test files (`npm test`).
+> **Current Build & Test Health (Verified Oct 27, 2026):**
+> - **Automated Test Suite:** `576 / 576` unit & integration tests passing across `37` Vitest test files (`npm test`).
 > - **Static Type Safety:** `0` TypeScript compiler errors (`npm run typecheck`).
 > - **Production Build:** `15 / 15` Next.js 15.5.27 App Router pages & serverless API routes compiling cleanly (`npm run build`).
 
@@ -485,6 +495,58 @@ gantt
   - **Section Consolidation & Double-Pasting Shield (`consolidateFragmentedSections` & `deduplicateSectionC`):** Automatically consolidates fragmented 8–10 section runs into strictly 5 canonical sections (A through E). In Section C, specific case formulas ($P_0 = D/R$ and $P_0 = D_1/(R-g)$) are pruned from the top level (keeping only the general infinite summation) and nested cleanly inside sub-sections with their explanations.
   - **Deduplication Engine (`deduplicateSubSections`):** Merges duplicate sub-sections covering the same case or parameter into single canonical entries.
   - **Verification:** Unit tests expanded in `tests/unit/clutch-notes.test.ts` to verify 9-section consolidation, exponent correction, and header sanitization. Full suite passing with 224/224 tests and 0 TypeScript errors.
+
+### 10.6 Hallucination Shield v3 — Invariant Verification & Targeted Single-Pass Repair Loop (`ad0f469`, October 26–27, 2026)
+- **Problem Identified:** Hardcoded regex rewrites in v2.1 were brittle across differing university curricula. If a lecturer used non-standard notation or introduced unconventional formula identities, regexes would corrupt them. Furthermore, models occasionally dropped core formulas or hallucinated unsupported claims without source slide evidence.
+- **Governing Architecture Principle:** *Code never authors academic content.* The uploaded slides are the single source of truth. The shield **verifies, cites, flags, or rejects** — it never forces arbitrary textbook mutations.
+- **What Shipped across Stages 1–5 (`docs/HALLUCINATION_SHIELD_V3_ROADMAP.md`):**
+  - **Stage 1 (Clean Slate):** Removed all code-authored formula injections, synthetic sample fallbacks, and mutating regexes; replaced with non-mutating `lintFormula` checks. Fixed silent section drops in `consolidateFragmentedSections`.
+  - **Stage 2 (Lossless Ingestion):** Implemented OMML $\to$ LaTeX converter in `parse-pptx.ts` for PowerPoint equation XML (`<m:oMath>`), Gemini OCR transcription for image/OLE math, and created a deterministic `FormulaInventory` assigning slide-grounded IDs (`F1`, `F2`, ...).
+  - **Stage 3 (Grounded Generation):** Chunked extraction pass (~8 slides/chunk at temp 0) producing a merged Formula Ledger. Enforced ledger-bound synthesis (`formulaRefs`, `derivedFrom`, per-bullet `slide` + `evidence`, `omitted[]`).
+  - **Stage 4 (Verification & Gate):** Built deterministic verifiers (formula coverage, verbatim evidence matching, number grounding, symbol-set checks), a symbolic/KaTeX **Numeric Equivalence Engine** (`lib/math/numeric-equivalence.ts`) with algebraic substitution tolerance, and an independent Verifier LLM (`SUPPORTED` / `UNSUPPORTED` / `CONTRADICTED`). Implemented a targeted single-pass repair loop and domain rule packs for student-facing textbook divergence warnings.
+  - **Stage 5 (UX & Evaluation):** Rendered slide reference chips, "Verified / Derived / Needs Review" badges, a "Textbook Divergence" notice panel, and built an automated Golden Evaluation CI suite (`tests/unit/golden-eval.test.ts`) validating formula recall $\ge 0.98$ and zero unsupported claims.
+
+### 10.7 Production Cybersecurity, Paywall Guard & Defensive HTTP Headers (`e4a7216`, October 27, 2026)
+- **Problem Identified:** Cybersecurity audit revealed that client-side `x-test-tier` headers could potentially bypass paywalls in production if misconfigured, HTTP response headers lacked standard browser-hardening flags, and KaTeX rendering lacked an explicit sandboxing constraint.
+- **What Shipped:**
+  - **Paywall Access Restriction (`lib/auth/notes-guard.ts`, `lib/auth/server-guard.ts`):** Wrapped client `x-test-tier` evaluation inside `isTestTierAllowed()`, strictly locking header overrides to `NODE_ENV === "development"` or `NODE_ENV === "test"`, blocking any unauthorized client tier escalation in production.
+  - **Defensive HTTP Security Headers (`next.config.ts`):** Injected standard production security headers across all routes:
+    - `X-Frame-Options: DENY` (clickjacking mitigation).
+    - `X-Content-Type-Options: nosniff` (MIME sniffing mitigation).
+    - `Referrer-Policy: strict-origin-when-cross-origin`.
+    - `Permissions-Policy: camera=(), microphone=(), geolocation=()`.
+    - `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload` (HSTS).
+  - **KaTeX Sandbox Hardening (`lib/math/latex.ts`):** Explicitly enforced `trust: false` across all KaTeX formula renders to block untrusted command execution.
+  - **Rate Limiting Security (`lib/rate-limit.ts`):** Added production warnings when Upstash Redis credentials are unset.
+  - **Secret Hygiene:** Audited repository, deleted `.env.example`, and hardened `.gitignore` against accidental secret leaks.
+
+### 10.8 Slide Ingestion, KaTeX English-Text Wrapping & PDF Print Engine Polish (October 27, 2026)
+- **Problem Identified:** Handout inspections revealed 4 rendering and ingestion anomalies:
+  1. *False-Positive "Uncaptured Formula" Warnings:* Intentionally omitted derivation steps (e.g. intermediate algebraic steps or arithmetic drills) triggered false-positive warning banners and dumped into the uncaptured formula appendix.
+  2. *Missing Spaces & Broken Text Parsing in Formulas:* Multi-word English labels inside math mode were rendered in raw italic math mode without `\text{}` (e.g. `IncreaseCurrent Assets => DecreaseU seof Cash`), and literal currency signs like `$100 million` collided with inline `$ ... $` delimiters.
+  3. *Unicode Arrows Stripped During Ingestion:* Up/down/right arrows (`↑`, `↓`, `→`, `←`) and PDF Private Use Area Wingdings/Symbol glyphs were stripped during ingestion.
+  4. *Horizontal Scrollbars in PDF Export:* Long equations overflowed formula containers, rendering horizontal scrollbars and clipping trailing terms like `- Fixed Assets` in exported PDFs.
+- **What Shipped:**
+  - **Rule-Based Formula Omission Schema (`lib/schemas/notes.ts`, `lib/notes/deterministic-verifiers.ts`):** Classified unplaced formulas into `status: "omitted_by_rule"` vs `status: "uncaptured_error"`. Intentionally omitted formulas are suppressed from end-user warning banners and appendixes.
+  - **Automatic LaTeX Text Wrapping & Currency Escaping (`lib/math/latex.ts`):** Implemented `wrapBareEnglishInLatex()` to automatically wrap multi-word and capitalized English phrases in `\text{...}`, convert `=>` to `\implies`, and escape literal currency values (`\$100`).
+  - **Unicode & PDF Symbol Arrow Preservation (`lib/ingestion/parse-pdf.ts`, `lib/notes/formula-inventory.ts`):** Added `normalizePdfArrowSymbols()` to map Wingdings/Symbol glyphs to Unicode arrows, and preserved them through math tokenization into `\uparrow`, `\downarrow`, `\rightarrow`, `\leftarrow`. Protected equation splitting on `=>`.
+  - **Print & PDF Equation Line-Wrapping (`app/globals.css`, `lib/notes/export-pdf.ts`):** Removed `overflow-x: auto` and `white-space: nowrap` on `.cn-formula-block` and KaTeX display classes in print styles, enabling natural line wrapping without scrollbar clipping.
+
+### 10.9 Supabase Cloud Tier Persistence, Fallthrough & 1-Click Admin Synchronization (October 27, 2026)
+- **Problem Identified:** When project administrators manually edited a user's tier in Supabase Table Editor (`public.profiles.tier = 'pro'`), the change failed to activate or was immediately reverted by the client due to:
+  1. An old expired timestamp in `profiles.tier_expires_at` triggering client-side auto-downgrade.
+  2. Expired records in `public.user_subscriptions` shadowing the `profiles` table.
+- **What Shipped:**
+  - **Expired Subscription Fallthrough (`lib/auth/server-guard.ts`, `lib/pricing/tiers.ts`):** Server and client tier resolution now falls through expired subscriptions in `user_subscriptions` to inspect `public.profiles`.
+  - **Admin Grant Recognition:** Paid tiers with `tier_expires_at: null` are treated as non-expiring manual grants; paid tiers with `updated_at > tier_expires_at` are treated as active refreshed grants.
+  - **Client-Side Security Intact:** `syncUserTierToCloud` strictly preserves `if (tier !== "contender") return false;` to block unauthorized client-side self-upgrades.
+  - **Supabase Auto-Sync Trigger Migration (`supabase/migrations/20261027_admin_tier_sync_trigger.sql`):** Created `tr_profile_tier_update` trigger on `public.profiles` that automatically computes `tier_expires_at` (120 days for `pro`, 7 days for `cram_pass`, 30 days for `tutor`) and synchronizes `user_subscriptions` whenever an admin updates `profiles.tier` in Supabase Studio.
+
+### 10.10 PayOS v2 Automated VietQR Checkout, Webhook Signature Verification & Auto-Polling (October 29, 2026)
+- **What Shipped:**
+  - **PayOS v2 REST & HMAC-SHA256 Engine (`lib/payments/payos.ts`, `tests/unit/payos.test.ts`):** Built server-side PayOS v2 integration with deterministic HMAC-SHA256 payment request signing, timing-safe webhook signature verification (`verifyPayosWebhookSignature`), safe 14-digit order code encoding (`generatePayosOrderCode` / `decodePlanFromOrderCode`), dynamic `compact2` VietQR URL generation, and Supabase entitlement fulfillment across `user_subscriptions`, `profiles`, `user_profiles`, and `auth.admin`.
+  - **Checkout, Verification & Webhook Endpoints (`app/api/payments/payos/create/route.ts`, `app/api/payments/payos/verify/route.ts`, `app/api/webhooks/payos/route.ts`):** Added authenticated payment link creation, live order status verification (enabling zero-tunnel local & production verification), and webhook callback processing with PayOS test-ping support.
+  - **Interactive Pricing Modal Integration (`components/pricing/pricing-modal.tsx`):** Connected VND checkout to live PayOS VietQR generation, account/transfer copy controls, hosted PayOS checkout link (`checkoutUrl`), sign-in enforcement prior to payment, and 4-second automatic verification polling.
 
 ---
 

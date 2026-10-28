@@ -447,11 +447,12 @@ function toBase64Url(bytes: Uint8Array): string {
 }
 
 function fromBase64Url(value: string): Uint8Array {
-  if (!/^[A-Za-z0-9_-]*$/.test(value)) {
+  const clean = value.replace(/=+$/, "");
+  if (!clean || !/^[A-Za-z0-9_\-+/]*$/.test(clean)) {
     throw new PackTransferError("This share link is malformed.");
   }
   const base64 =
-    value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+    clean.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((clean.length + 3) % 4);
   const binary = atob(base64);
   return Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
 }
@@ -507,9 +508,10 @@ export async function encodePackForShare(pack: StudyPack): Promise<string> {
 }
 
 export async function decodeSharedPack(token: string): Promise<StudyPack> {
-  const dot = token.indexOf(".");
-  const version = token.slice(0, dot);
-  const payload = token.slice(dot + 1);
+  const sanitized = sanitizeShareToken(token);
+  const dot = sanitized.indexOf(".");
+  const version = sanitized.slice(0, dot);
+  const payload = sanitized.slice(dot + 1);
   if (dot < 1 || !payload || (version !== "0" && version !== "1")) {
     throw new PackTransferError("This share link is malformed.");
   }
@@ -544,11 +546,123 @@ export function buildShareUrl(origin: string, token: string): string {
   return `${origin}/solo#${SHARE_HASH_KEY}=${token}`;
 }
 
-/** Extracts the share token from a location hash like `#pack=1.abc`. */
-export function readShareToken(hash: string): string | null {
-  const params = new URLSearchParams(hash.replace(/^#/, ""));
-  const token = params.get(SHARE_HASH_KEY);
-  return token && token.length > 0 ? token : null;
+/**
+ * Sanitizes a share token against tracking parameter pollution injected by
+ * chat in-app browsers (Zalo, Facebook Messenger, WeChat, etc.) and trailing punctuation.
+ */
+export function sanitizeShareToken(token: string): string {
+  if (!token) return "";
+  let clean = token.trim();
+
+  // 1. Strip query string or tracking parameter pollution (?zarsrc=..., &zarsrc=..., ?fbclid=..., &fbclid=..., ?utm_...)
+  const queryOrAmpIdx = clean.search(/[?&]/);
+  if (queryOrAmpIdx !== -1) {
+    clean = clean.slice(0, queryOrAmpIdx);
+  }
+
+  // 2. Strip tracking parameters separated by whitespace (e.g. " zarsrc=...", " fbclid=...")
+  clean = clean.replace(/\s+(?:[?&]|zarsrc|fbclid|utm|\S+=).*$/i, "").trim();
+
+  // 3. Strip trailing punctuation often appended by chat app auto-linkifiers (.,:;)> etc.)
+  clean = clean.replace(/[^A-Za-z0-9_\-+=]+$/, "");
+
+  // 4. Convert accidental spaces back to + (e.g. if URL decoding or form decoding turned + into space)
+  clean = clean.replace(/ /g, "+");
+
+  return clean;
+}
+
+function extractRawToken(source?: string): string | null {
+  if (!source || typeof source !== "string") return null;
+
+  // If source contains a hash fragment, prioritize checking the hash first
+  if (source.includes("#")) {
+    const hashPart = source.slice(source.indexOf("#") + 1);
+    const hashMatch = hashPart.match(/(?:^|[?&#])pack=([^&\s]+)/);
+    if (hashMatch && hashMatch[1]) {
+      return hashMatch[1];
+    }
+  }
+
+  // Next check query or bare string
+  const match = source.match(/(?:^|[?&#])pack=([^&\s]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+
+  // URLSearchParams fallback
+  try {
+    const cleaned = source.replace(/^[#?]/, "");
+    const searchPart = cleaned.includes("?") ? cleaned.slice(cleaned.indexOf("?") + 1) : cleaned;
+    const params = new URLSearchParams(searchPart);
+    const token = params.get(SHARE_HASH_KEY);
+    if (token) return token;
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+/**
+ * Extracts the share token from a location hash (#pack=1.abc...), full URL,
+ * or search query parameter fallback (?pack=1.abc...).
+ * Strips Zalo / Messenger tracking parameters and sanitizes against in-app webview quirks.
+ */
+export function readShareToken(hashOrUrl: string, search?: string): string | null {
+  const raw = extractRawToken(hashOrUrl) ?? (search ? extractRawToken(search) : null);
+  if (!raw) return null;
+  const sanitized = sanitizeShareToken(raw);
+  return sanitized.length > 0 ? sanitized : null;
+}
+
+/**
+ * Resilient clipboard copy helper for modern browsers and in-app webviews (Zalo, Messenger, etc.).
+ * Attempts navigator.clipboard.writeText first, falling back to an offscreen <textarea>
+ * with document.execCommand("copy") if clipboard access is blocked or unavailable.
+ */
+export async function copyTextWithFallback(text: string): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+
+  // 1. Try modern Async Clipboard API first
+  if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // In-app webviews (Zalo / FB Messenger / restricted iframes) often reject clipboard permissions
+    }
+  }
+
+  // 2. Fallback: offscreen textarea + document.execCommand("copy")
+  if (typeof document === "undefined") return false;
+
+  let textArea: HTMLTextAreaElement | null = null;
+  try {
+    textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.readOnly = true;
+    textArea.style.position = "fixed";
+    textArea.style.top = "-9999px";
+    textArea.style.left = "-9999px";
+    textArea.style.opacity = "0";
+    textArea.style.pointerEvents = "none";
+    textArea.setAttribute("aria-hidden", "true");
+
+    document.body.appendChild(textArea);
+    textArea.focus({ preventScroll: true });
+    textArea.select();
+    textArea.setSelectionRange(0, text.length);
+
+    const success = document.execCommand("copy");
+    return success;
+  } catch {
+    return false;
+  } finally {
+    if (textArea && textArea.parentNode) {
+      textArea.parentNode.removeChild(textArea);
+    }
+  }
 }
 
 /* -------------------------------------------------------------------------- */

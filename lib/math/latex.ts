@@ -78,6 +78,229 @@ export function cleanTypoString(str: string): string {
   return cleanVietnameseSigmaTypos(str);
 }
 
+const MATH_FUNCTIONS = new Set([
+  "sin", "cos", "tan", "cot", "sec", "csc",
+  "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
+  "log", "ln", "lg", "lim", "max", "min", "sup", "inf",
+  "det", "dim", "exp", "gcd", "mod", "arg", "deg", "hom",
+  "ker", "Pr", "Cov", "Var", "Corr", "SD", "SE",
+]);
+
+const GREEK_NAMES = new Set([
+  "alpha", "beta", "gamma", "delta", "epsilon", "varepsilon",
+  "zeta", "eta", "theta", "vartheta", "iota", "kappa", "lambda",
+  "mu", "nu", "xi", "pi", "varpi", "rho", "varrho", "sigma",
+  "varsigma", "tau", "upsilon", "phi", "varphi", "chi", "psi",
+  "omega", "Delta", "Sigma", "Omega", "Gamma", "Theta", "Lambda",
+  "Xi", "Pi", "Upsilon", "Phi", "Psi",
+]);
+
+const LATEX_COMMAND_NAMES = new Set([
+  "implies", "impliedby", "iff", "uparrow", "downarrow", "rightarrow", "leftarrow",
+  "Uparrow", "Downarrow", "Rightarrow", "Leftarrow", "to", "times", "div", "pm",
+  "mp", "cdot", "sum", "prod", "int", "frac", "sqrt", "partial", "left", "right",
+  "text", "mathrm", "mathbf", "operatorname", "bar", "hat", "tilde", "vec",
+  "alpha", "beta", "gamma", "delta", "epsilon", "varepsilon", "zeta", "eta",
+  "theta", "vartheta", "iota", "kappa", "lambda", "mu", "nu", "xi", "pi",
+  "varpi", "rho", "varrho", "sigma", "varsigma", "tau", "upsilon", "phi",
+  "varphi", "chi", "psi", "omega", "Delta", "Sigma", "Omega", "Gamma",
+  "Theta", "Lambda", "Xi", "Pi", "Upsilon", "Phi", "Psi",
+]);
+
+function isEnglishWord(w: string): boolean {
+  if (!w || w.startsWith("\\")) return false;
+  // Must have at least one lowercase letter (exclude all-caps acronyms like ROE, NPV, WACC)
+  if (!/[a-z]/.test(w)) return false;
+  const clean = w.replace(/['’].*$/, "").replace(/[-_].*$/, "");
+  if (MATH_FUNCTIONS.has(clean) || GREEK_NAMES.has(clean) || LATEX_COMMAND_NAMES.has(clean)) return false;
+  return true;
+}
+
+/**
+ * Executes a replacement function only on text segments outside \text{...}, \mathrm{...}, \mathbf{...}, \operatorname{...}
+ */
+export function replaceOutsideText(
+  tex: string,
+  replacer: (nonText: string) => string,
+): string {
+  if (!tex || typeof tex !== "string") return "";
+  const textCmdRegex = /\\(?:text|mathrm|mathbf|operatorname)\{(?:[^{}]|\{[^{}]*\})*\}/g;
+  let lastIndex = 0;
+  let result = "";
+  let match: RegExpExecArray | null;
+
+  while ((match = textCmdRegex.exec(tex)) !== null) {
+    const before = tex.slice(lastIndex, match.index);
+    result += replacer(before) + match[0];
+    lastIndex = match.index + match[0].length;
+  }
+  result += replacer(tex.slice(lastIndex));
+  return result;
+}
+
+/**
+ * Merges adjacent \text{A} \text{B} or \text{A}\text{B} into a single \text{A B}
+ * with proper spacing, preserving hyphens if A ends with '-' or B starts with '-'.
+ */
+export function mergeTextBlocks(text: string): string {
+  let prev = "";
+  let s = text;
+  while (prev !== s) {
+    prev = s;
+    s = s.replace(
+      /\\text\{([^{}]+)\}\s*\\text\{([^{}]+)\}/g,
+      (_match, a: string, b: string) => {
+        const trimmedA = a.trim();
+        const trimmedB = b.trim();
+        if (trimmedA.endsWith("-") || trimmedB.startsWith("-")) {
+          return `\\text{${trimmedA}${trimmedB}}`;
+        }
+        return `\\text{${trimmedA} ${trimmedB}}`;
+      },
+    );
+  }
+  return s;
+}
+
+/**
+ * General-purpose multi-word and prose English \text{...} wrapper for LaTeX formulas in math mode.
+ * Wraps sequences of 2+ English words and bare English words (>= 3 letters) in \text{...},
+ * handles parenthetical qualifiers (e.g. Other (non-cash) Current Assets),
+ * converts Unicode and ASCII arrows, and merges adjacent \text{...} blocks cleanly.
+ */
+export function wrapBareEnglishInLatex(latex: string): string {
+  if (!latex || typeof latex !== "string") return "";
+  let s = latex;
+
+  // 1. Convert Unicode arrows and ASCII arrows outside \text{...}
+  s = replaceOutsideText(s, (part) => {
+    let p = part;
+    p = p.replace(/\s*[\uF0E1\uF0D9\uF0AD\u25B2\u2191↑]\s*/g, " \\uparrow ");
+    p = p.replace(/\s*[\uF0E2\uF0DA\uF0AF\u25BC\u2193↓]\s*/g, " \\downarrow ");
+    p = p.replace(/\s*[\uF0E0\uF0AE\uF0E8\u2192→]\s*/g, " \\rightarrow ");
+    p = p.replace(/\s*[\uF0DF\uF0AC\u2190←]\s*/g, " \\leftarrow ");
+    p = p.replace(/\s*[\uF0DC\u21D2⇒]\s*/g, " \\implies ");
+    p = p.replace(/\s*⇐\s*/g, " \\impliedby ");
+    p = p.replace(/\s*⇔\s*/g, " \\iff ");
+    p = p.replace(/\s*⇑\s*/g, " \\Uparrow ");
+    p = p.replace(/\s*⇓\s*/g, " \\Downarrow ");
+    p = p.replace(/\s*(?<![<>])=>\s*/g, " \\implies ");
+    p = p.replace(/\s*(?<!<)->\s*/g, " \\rightarrow ");
+    p = p.replace(/\s*<-(?!>)\s*/g, " \\leftarrow ");
+    p = p.replace(/\s*\\(implies|impliedby|iff|uparrow|downarrow|rightarrow|leftarrow|Uparrow|Downarrow)\s*/g, " \\$1 ");
+    p = p.replace(/[ \t]+/g, " ");
+    return p;
+  });
+
+  // 2. Handle parenthetical English qualifiers inside accounting/finance terms first:
+  // e.g. Other (non-cash) Current Assets, Net Working Capital (other than Cash), Net Working Capital (excluding Cash)
+  s = s.replace(
+    /(?:\\text\{\s*)?Other\s*\(\s*non-cash\s*\)\s*Current\s+Assets(?:\s*\})?/gi,
+    "\\text{Other (non-cash) Current Assets}",
+  );
+  s = s.replace(
+    /(?:\\text\{\s*)?Net\s+Working\s+Capital\s*\(\s*(?:other than|excluding)\s*Cash\s*\)(?:\s*\})?/gi,
+    "\\text{Net Working Capital (other than Cash)}",
+  );
+  s = s.replace(
+    /(?:\\text\{\s*)?Current\s+Assets\s*\(\s*(?:other than|excluding)\s*Cash\s*\)(?:\s*\})?/gi,
+    "\\text{Current Assets (other than Cash)}",
+  );
+  s = s.replace(
+    /(?:\\text\{\s*)?Cumulative\s+Surplus\s*\/\s*(?:\(Deficit\)|Deficit)(_\{?[a-z0-9\-]+\}?)?(?:\s*\})?/gi,
+    (_m, sub) => `\\text{Cumulative Surplus / (Deficit)}${sub || ""}`,
+  );
+  s = s.replace(
+    /(?<!\\text\{)\b([A-Za-z]+(?:-[A-Za-z]+)?(?:\s+[A-Za-z]+(?:-[A-Za-z]+)?)*\s*\(\s*(?:non-cash|other than [A-Za-z]+|excluding [A-Za-z]+)\s*\)\s*(?:[A-Za-z]+(?:-[A-Za-z]+)?(?:\s+[A-Za-z]+(?:-[A-Za-z]+)?)*)?)\b(?!\})/gi,
+    "\\text{$1}",
+  );
+
+  // 3. Multi-word phrases outside existing \text{...}
+  // Sequences of 2+ space-separated English words (e.g. "Last quarter's sales", "Shareholders' Equity",
+  // "Increase Current Assets", "Decrease Use of Cash", "Cash inflow", "Source of Cash", "Use of Cash",
+  // "Accounts Receivable period", "Long-Term Debt", "Short-Term Debt")
+  s = replaceOutsideText(s, (part) => {
+    return part.replace(
+      /(?<!\\)\b([A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?(?:\s+[A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?)+)\b/g,
+      (match, _p1, offset, fullStr) => {
+        if (offset > 0 && fullStr[offset - 1] === "\\") return match;
+        const words = match.split(/\s+/);
+        if (words.length < 2) return match;
+        const allWordsValid = words.every((w) => w.length >= 2 && isEnglishWord(w));
+        const hasLongWord = words.some((w) => w.length >= 3);
+        if (allWordsValid && hasLongWord) {
+          return `\\text{${match}}`;
+        }
+        return match;
+      },
+    );
+  });
+
+  // 4. Bare English words adjacent to \text{...} blocks
+  // e.g. "Increase \text{Current Assets}" -> "\text{Increase} \text{Current Assets}"
+  // e.g. "\text{Accounts Receivable}period" -> "\text{Accounts Receivable} \text{period}"
+  let prevAdjacent = "";
+  while (prevAdjacent !== s) {
+    prevAdjacent = s;
+    // Word before \text{...}
+    s = s.replace(
+      /(?<!\\)\b([A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?)\s*(\\text\{[^{}]+\})/g,
+      (match, word, textBlock, offset, fullStr) => {
+        if (offset > 0 && fullStr[offset - 1] === "\\") return match;
+        if (word.length >= 3 && isEnglishWord(word) && !word.startsWith("\\")) {
+          return `\\text{${word}} ${textBlock}`;
+        }
+        return match;
+      },
+    );
+    // Word after \text{...}
+    s = s.replace(
+      /(\\text\{[^{}]+\})\s*([A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?)\b/g,
+      (match, textBlock, word, offset, fullStr) => {
+        const nextChar = fullStr[offset + match.length];
+        if (nextChar === "(" || nextChar === "_" || nextChar === "^") return match;
+        if (word.length >= 3 && isEnglishWord(word) && !word.startsWith("\\")) {
+          return `${textBlock} \\text{${word}}`;
+        }
+        return match;
+      },
+    );
+  }
+
+  // 5. Bare English words (>= 3 letters, not a math function) inside an equation with \text{...} or arrows
+  const hasArrows =
+    /\\(?:uparrow|downarrow|rightarrow|leftarrow|implies|impliedby|iff|Uparrow|Downarrow)\b|[↑↓→←⇒⇐⇔⇑⇓]/.test(s);
+  const hasText = /\\text\{[^{}]+\}/.test(s);
+
+  if (hasArrows || hasText) {
+    s = replaceOutsideText(s, (part) => {
+      return part.replace(
+        /\b([A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?)\b/g,
+        (match, word, offset, fullStr) => {
+          if (word.length < 3 || !isEnglishWord(word)) return match;
+          const prevChar = offset > 0 ? fullStr[offset - 1] : "";
+          if (prevChar === "\\" || prevChar === "_" || prevChar === "^") return match;
+          const nextChar = fullStr[offset + match.length];
+          if (nextChar === "_" || nextChar === "^" || nextChar === "(" || nextChar === "[") {
+            return match;
+          }
+          return `\\text{${word}}`;
+        },
+      );
+    });
+  }
+
+  // 6. Merge adjacent \text{A} \text{B} or \text{A}\text{B} into single \text{A B}
+  s = mergeTextBlocks(s);
+
+  // 7. Clean up duplicate whitespace inside and outside \text{...} and any double \text{\text{...}}
+  s = s.replace(/\\text\{\\text\{([^}]+)\}\}/g, "\\text{$1}");
+  s = s.replace(/\\text\{([^{}]+)\}/g, (_m, inner) => `\\text{${inner.replace(/\s+/g, " ").trim()}}`);
+  s = replaceOutsideText(s, (part) => part.replace(/[ \t]{2,}/g, " "));
+
+  return s;
+}
+
 /**
  * Formats multi-word terms and hyphenated phrases in accounting and financial formulas
  * (e.g. "Long-Term Debt", "Net Working Capital", "Current Assets", "Cash") into clean KaTeX \text{...}
@@ -125,6 +348,7 @@ export function formatAccountingFormula(latex: string): string {
 
   // 3. Multi-word phrases with optional subscript _t or _{...}:
   const orderedPhrases: Array<[RegExp, string | ((m: string, sub?: string) => string)]> = [
+    [/(?:\\text\{\s*)?Other\s*\(\s*non-cash\s*\)\s*Current\s+Assets(?:\s*\})?/gi, "\\text{Other (non-cash) Current Assets}"],
     [/(?<!\\text\{)\bNet Working Capital\s*\(\s*(?:other than|excluding)\s*Cash\s*\)(?!\})/gi, "\\text{Net Working Capital (other than Cash)}"],
     [/(?<!\\text\{)\bNet Working Capital\b(?!\s*\(|\})/gi, "\\text{Net Working Capital}"],
     [/(?<!\\text\{)\bCurrent Liabilities\b(?!\})/gi, "\\text{Current Liabilities}"],
@@ -170,6 +394,9 @@ export function formatAccountingFormula(latex: string): string {
   s = s.replace(/(?<!\\text\{)\bDSO\b(?!\})/g, "\\text{DSO}");
   s = s.replace(/(?<!\\text\{)\bCollections_t\b(?!\})/g, "\\text{Collections}_t");
   s = s.replace(/(?<!\\text\{)\bSales_(\{?[a-z0-9\-]+\}?)(?!\})/g, "\\text{Sales}_$1");
+
+  // Apply general multi-word & prose wrapper
+  s = wrapBareEnglishInLatex(s);
 
   // Clean up any double \text{\text{...}}
   s = s.replace(/\\text\{\\text\{([^}]+)\}\}/g, "\\text{$1}");
@@ -270,11 +497,29 @@ export function repairCorruptedLatex(text: string): string {
 
   // 3. Multi-word accounting terms in equations & repair hyphens (e.g. Long-Term Debt)
   if (
-    /(?:Long|Short)\s*[-–—]\s*Term|\b(Net Working Capital|Current Assets|Current Liabilities|Fixed Assets|Operating Cycle|Cash Cycle|Inventory Turnover|Receivables Turnover|Payables Turnover|Inventory Period|Receivables Period|Payables Period|Ending Cash|Beginning Cash|Cash Collections|Cash Disbursements|Net Cash Flow|Cumulative Surplus)\b/i.test(
+    /(?:Long|Short)\s*[-–—]\s*Term|\b(Net Working Capital|Current Assets|Current Liabilities|Fixed Assets|Operating Cycle|Cash Cycle|Inventory Turnover|Receivables Turnover|Payables Turnover|Inventory Period|Receivables Period|Payables Period|Ending Cash|Beginning Cash|Cash Collections|Cash Disbursements|Net Cash Flow|Cumulative Surplus|Other\s*\(\s*non-cash\s*\)\s*Current\s+Assets)\b/i.test(
       s,
     )
   ) {
     s = formatAccountingFormula(s);
+  }
+
+  // Inside delimited math blocks ($...$, $$...$$, \[...\]), wrap bare English phrases and convert arrows
+  if (s.includes("$") || s.includes("\\[")) {
+    s = s.replace(/\$\$([\s\S]*?)\$\$/g, (_m, inner) => `$$${wrapBareEnglishInLatex(inner)}$$`);
+    s = s.replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner) => `\\[${wrapBareEnglishInLatex(inner)}\\]`);
+    s = s.replace(/(?<!\$)\$(?!\$)([^\$\n]+?)\$(?!\$)/g, (_m, inner) => {
+      return isLikelyInlineMath(inner) ? `$${wrapBareEnglishInLatex(inner)}$` : _m;
+    });
+  } else if (
+    /(?:=>|->|⇒|→|\\implies|\\rightarrow)\b/.test(s) &&
+    !/\b(is|gives|where|measures|according|represents|equals|satisfies|sample|demand|with|when|if|trong|với|khi|là|được)\b/i.test(
+      s,
+    ) &&
+    !/[.!?]\s+[A-Za-z]/.test(s)
+  ) {
+    // Pure arrow / implication formula without surrounding prose
+    s = wrapBareEnglishInLatex(s);
   }
 
   // 4. Move trailing sentence punctuation outside inline math delimiters:
@@ -290,9 +535,17 @@ export function repairCorruptedLatex(text: string): string {
 export function renderKatexSafe(tex: string, displayMode: boolean): string {
   try {
     const repaired = repairCorruptedLatex(tex);
+    const wrapped = wrapBareEnglishInLatex(repaired);
+
+    // Escape any unescaped dollar signs inside math mode so KaTeX never throws
+    let sanitized = wrapped.trim();
+    // 1. $ followed by digit -> \text{\$}
+    sanitized = sanitized.replace(/(?<!\\)\$(?=\d)/g, "\\text{\\$}");
+    // 2. Any other unescaped $ -> \$
+    sanitized = sanitized.replace(/(?<!\\)\$/g, "\\$");
+
     // Sanitize unescaped % signs to \% so KaTeX doesn't treat them as comments
-    const sanitized = repaired
-      .trim()
+    sanitized = sanitized
       .replace(/(^|[^\\])%/g, "$1\\%")
       .replace(/[\u0394Δ]/g, "\\Delta ")
       .replace(/÷/g, "\\div ")
@@ -362,17 +615,19 @@ export function isLikelyInlineMath(rawContent: string): boolean {
   // Sentences with full stops and capitalized words are prose, not math
   if (/[.!?]\s+[A-Za-z]/.test(content)) return false;
 
-  // Check if content is an equation or calculation (contains = with math operators, variables, or brackets)
+  // Check if content is an equation or calculation (contains = or arrow/implication with math operators, variables, or brackets)
   const isEquation =
-    content.includes("=") &&
-    (/[+\-*/^_{}()\[\]0-9%]/.test(content) || /\\times|\\div|\\approx/.test(content));
+    (content.includes("=") || /\\(?:implies|rightarrow|leftarrow|uparrow|downarrow)\b|=>|->|⇒|→|↑|↓/.test(content)) &&
+    (/[+\-*/^_{}()\[\]0-9%]/.test(content) || /\\(?:times|div|approx|uparrow|downarrow|rightarrow|leftarrow|implies)\b|[↑↓→←⇒]/.test(content) || /[A-Za-z]/.test(content));
 
   // Multi-word prose strings (> 4 words) without LaTeX commands or equations are not math
   const words = content.split(/\s+/);
-  if (words.length > 4 && !content.includes("\\") && !isEquation) return false;
+  if (words.length > 4 && !content.includes("\\") && !isEquation && !/[↑↓→←⇒]/.test(content)) return false;
 
   // Genuine inline math must contain math symbols, be an equation, or be a short variable name
-  const hasMathSymbols = /[\\_^{}=<>|±÷×+\-*/%]/.test(content);
+  const hasMathSymbols =
+    /[\\_^{}=<>|±÷×+\-*/%↑↓→←⇒⇐⇔⇑⇓]/.test(content) ||
+    /\\(?:uparrow|downarrow|rightarrow|leftarrow|implies|impliedby|iff|Uparrow|Downarrow)\b/.test(content);
   const isShortVariable = /^[a-zA-Z]{1,3}$/.test(content);
 
   return hasMathSymbols || isEquation || isShortVariable;
@@ -525,14 +780,15 @@ export function ensureInlineMathDelimiters(text: string): string {
       };
 
       const isMathEquation = (m: string): boolean => {
-        if (!/=|\\approx|≈|\\sim|\\le|\\ge|\\leq|\\geq|\\ne|\\neq/.test(m)) return false;
-        if (/\\(?:sigma|beta|rho|alpha|mu|gamma|delta|epsilon|theta|lambda|pi|tau|phi|omega|Delta|Sigma|Omega|bar|hat|tilde|vec|mathbf|mathit|text|frac|sqrt|sum|prod|int|partial|left|right|times|div|approx|le|ge|leq|geq|ne|neq|cdot|pm|mp|circ|infty)\b/.test(m)) {
+        if (!/=|\\approx|≈|\\sim|\\le|\\ge|\\leq|\\geq|\\ne|\\neq|\\implies|\\rightarrow|\\leftarrow|\\uparrow|\\downarrow|=>|->|⇒|→|↑|↓/.test(m)) return false;
+        if (/\\(?:sigma|beta|rho|alpha|mu|gamma|delta|epsilon|theta|lambda|pi|tau|phi|omega|Delta|Sigma|Omega|bar|hat|tilde|vec|mathbf|mathit|text|frac|sqrt|sum|prod|int|partial|left|right|times|div|approx|le|ge|leq|geq|ne|neq|cdot|pm|mp|circ|infty|uparrow|downarrow|rightarrow|leftarrow|implies|impliedby|iff|Uparrow|Downarrow)\b/.test(m)) {
           return true;
         }
         if (/[_^{}]/.test(m)) return true;
         if (/[+\-*/^]/.test(m) && /[A-Za-z0-9]/.test(m)) return true;
         if (/\b(?:NPV|IRR|WACC|ROE|ROA|PV|FV|EAR|APR|EBIT|EBITDA|CAPM|EPS|DPS|NWC|Cash|Debt|Equity|Turnover|Period|Cycle|COGS|DSO|Working Capital)\b/.test(m)) return true;
         if (/[A-Z]\[[A-Za-z0-9]|(?:Var|Cov|Corr|SD|SE)\(/.test(m)) return true;
+        if (/[↑↓→←⇒⇐⇔⇑⇓]/.test(m)) return true;
         return false;
       };
 
@@ -586,8 +842,12 @@ export function ensureInlineMathDelimiters(text: string): string {
       apply(opNumRegex, (m) => wrapInMath(m));
 
       const compRegex =
-        /\s+(\\(?:approx|sim|le|ge|leq|geq|ne|neq|times|div|pm|mp|cdot|circ|infty|forall|exists|in|notin|subset|cup|cap))\s+/g;
+        /\s+(\\(?:approx|sim|le|ge|leq|geq|ne|neq|times|div|pm|mp|cdot|circ|infty|forall|exists|in|notin|subset|cup|cap|uparrow|downarrow|rightarrow|leftarrow|implies|impliedby|iff|Uparrow|Downarrow))\s+/g;
       apply(compRegex, (op) => ` $${op.trim()}$ `);
+
+      const arrowRegex =
+        /(?:^|\s)(\\(?:uparrow|downarrow|rightarrow|leftarrow|implies|impliedby|iff|Uparrow|Downarrow)\b|[↑↓→←⇒⇐⇔⇑⇓])(?:\s|$)/g;
+      apply(arrowRegex, (m) => wrapInMath(m));
 
       // 9. Wrap variables with subscripts: P_0, D_1, R_f, R_M, R_E, R_D, R_P, CF_t, CF_0, w_A, w_B, T_C, P_t, P_{t+1}, D_{t+1}, Q_d, Q_s
       const subscriptRegex =
@@ -827,6 +1087,32 @@ export function tokenizeMath(input: string): MathToken[] {
             j++;
             continue;
           }
+
+          // If $ is followed by a digit (e.g. $100 inside $\text{Sales} = $100 \text{ million}$)
+          // and there is another unescaped $ later on the same line, treat the $ before the digit
+          // as an inner currency symbol rather than prematurely closing the inline math block
+          if (/\d/.test(text[j + 1] || "")) {
+            let hasLaterDollar = false;
+            for (let nextDollarIdx = j + 1; nextDollarIdx < text.length; nextDollarIdx++) {
+              if (text[nextDollarIdx] === "\n") break;
+              if (text[nextDollarIdx] === "$") {
+                let bs = 0;
+                let bsk = nextDollarIdx - 1;
+                while (bsk >= 0 && text[bsk] === "\\") {
+                  bs++;
+                  bsk--;
+                }
+                if (bs % 2 === 0) {
+                  hasLaterDollar = true;
+                  break;
+                }
+              }
+            }
+            if (hasLaterDollar) {
+              continue;
+            }
+          }
+
           closeIdx = j;
           break;
         }

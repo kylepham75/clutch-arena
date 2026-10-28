@@ -184,7 +184,7 @@ export function TextbookDivergenceCard({
               <div className="text-[10.5px] font-bold text-amber-900 uppercase tracking-wide mb-1">
                 Lecturer&apos;s Form
               </div>
-              <div className="overflow-x-auto py-1 font-serif">
+              <div className="note-formula-wrap max-w-full whitespace-normal break-words py-1 font-serif">
                 <MathText content={`$$${notice.lecturerForm}$$`} />
               </div>
             </div>
@@ -194,7 +194,7 @@ export function TextbookDivergenceCard({
               <div className="text-[10.5px] font-bold text-emerald-900 uppercase tracking-wide mb-1">
                 Standard Textbook Form
               </div>
-              <div className="overflow-x-auto py-1 font-serif">
+              <div className="note-formula-wrap max-w-full whitespace-normal break-words py-1 font-serif">
                 <MathText content={`$$${notice.textbookForm}$$`} />
               </div>
             </div>
@@ -260,8 +260,8 @@ function FormulaBlock({ formula }: { formula: NoteFormula }) {
       )}
 
       {/* Centered crisp bordered equation box */}
-      <div className="my-3 flex justify-center overflow-x-auto py-0.5">
-        <div className="inline-block border border-[#1f2937] bg-white px-5 sm:px-7 py-2.5 sm:py-3 text-[#111827] max-w-full overflow-x-auto">
+      <div className="my-3 flex justify-center py-0.5 max-w-full">
+        <div className="note-formula-wrap inline-block border border-[#1f2937] bg-white px-5 sm:px-7 py-2.5 sm:py-3 text-[#111827] max-w-full whitespace-normal break-words">
           <MathText content={`$$${formula.latex}$$`} />
         </div>
       </div>
@@ -418,11 +418,21 @@ function getUnattachedDivergenceNotices(note: ClutchNote): {
 }
 
 function getUncapturedFormulas(note: ClutchNote): UncapturedFormulaItem[] {
-  const omittedMap = new Map<string, string>();
+  const omittedByRuleSet = new Set<string>(
+    note.verification?.omittedByRuleFormulaIds || [],
+  );
+
+  const omittedMap = new Map<string, { reason: string; status?: string }>();
   if (note.omitted) {
     for (const o of note.omitted) {
-      if (o.formulaId) {
-        omittedMap.set(o.formulaId, o.reason);
+      if (o && o.formulaId) {
+        omittedMap.set(o.formulaId, {
+          reason: o.reason,
+          status: (o as any).status,
+        });
+        if ((o as any).status === "omitted_by_rule") {
+          omittedByRuleSet.add(o.formulaId);
+        }
       }
     }
   }
@@ -450,38 +460,60 @@ function getUncapturedFormulas(note: ClutchNote): UncapturedFormulaItem[] {
     }
   }
 
-  const uncapturedIds = new Set<string>();
+  const targetUncapturedIds = new Set<string>();
 
+  // 1. Explicit uncaptured IDs from verification gate (minus any marked omitted_by_rule)
   if (note.verification?.uncapturedFormulaIds) {
     for (const id of note.verification.uncapturedFormulaIds) {
-      uncapturedIds.add(id);
-    }
-  }
-
-  if (note.omitted) {
-    for (const o of note.omitted) {
-      if (o.formulaId) {
-        uncapturedIds.add(o.formulaId);
+      if (!omittedByRuleSet.has(id)) {
+        targetUncapturedIds.add(id);
       }
     }
   }
 
-  if (note.formulaLedger) {
-    for (const entry of note.formulaLedger) {
-      if (!placedIds.has(entry.id)) {
-        uncapturedIds.add(entry.id);
+  // 2. Formulas explicitly marked as uncaptured_error in omitted[]
+  if (note.omitted) {
+    for (const o of note.omitted) {
+      if (
+        o &&
+        o.formulaId &&
+        (o as any).status === "uncaptured_error" &&
+        !omittedByRuleSet.has(o.formulaId)
+      ) {
+        targetUncapturedIds.add(o.formulaId);
+      }
+    }
+  }
+
+  // 3. Fallback compatibility: If verification is not provided (e.g. mock note without verification gate),
+  // include unplaced formulas from omitted or ledger that are not omitted_by_rule
+  if (!note.verification) {
+    if (note.omitted) {
+      for (const o of note.omitted) {
+        if (o && o.formulaId && !omittedByRuleSet.has(o.formulaId)) {
+          targetUncapturedIds.add(o.formulaId);
+        }
+      }
+    }
+    if (note.formulaLedger) {
+      for (const entry of note.formulaLedger) {
+        if (!placedIds.has(entry.id) && !omittedByRuleSet.has(entry.id)) {
+          targetUncapturedIds.add(entry.id);
+        }
       }
     }
   }
 
   const items: UncapturedFormulaItem[] = [];
 
-  for (const id of uncapturedIds) {
+  for (const id of targetUncapturedIds) {
+    if (omittedByRuleSet.has(id)) continue;
+
     const ledger = ledgerMap.get(id);
-    const omittedReason = omittedMap.get(id);
+    const omittedEntry = omittedMap.get(id);
 
     const reason =
-      omittedReason ||
+      omittedEntry?.reason ||
       (ledger?.isExerciseOnly
         ? "Appeared solely in a practice exercise or worked example"
         : ledger?.evidence
@@ -526,6 +558,14 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
     () => getUncapturedFormulas(note),
     [note]
   );
+
+  const displayWarnings = useMemo(() => {
+    const rawWarnings = note.verification?.warnings || [];
+    if (uncapturedFormulas.length === 0) {
+      return rawWarnings.filter((w) => !w.startsWith("Uncaptured formula IDs:"));
+    }
+    return rawWarnings;
+  }, [note.verification?.warnings, uncapturedFormulas.length]);
 
   const handleCopyMarkdown = () => {
     if (!note.rawMarkdown) return;
@@ -638,7 +678,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
           </h1>
 
           {/* Ingestion & Verification Notices Alert Banner */}
-          {note.verification?.warnings && note.verification.warnings.length > 0 && (
+          {displayWarnings.length > 0 && (
             <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50/90 p-4 text-xs sm:text-[13px] text-amber-950 font-sans shadow-2xs">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2 pb-2 border-b border-amber-200">
                 <div className="flex items-center gap-2">
@@ -648,13 +688,13 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
                   </span>
                 </div>
                 <span className="px-2 py-0.5 rounded-full bg-amber-200/80 text-amber-900 font-semibold text-[11px]">
-                  {note.verification.warnings.length}{" "}
-                  {note.verification.warnings.length === 1 ? "Notice" : "Notices"}
+                  {displayWarnings.length}{" "}
+                  {displayWarnings.length === 1 ? "Notice" : "Notices"}
                 </span>
               </div>
 
               <ul className="pl-5 space-y-1 list-disc marker:text-amber-700 text-amber-900 leading-relaxed my-2">
-                {note.verification.warnings.map((w, idx) => (
+                {displayWarnings.map((w, idx) => (
                   <li key={idx}>
                     <MathText content={w} inline />
                   </li>
@@ -831,7 +871,11 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
                                   <ul className="pl-6 mt-1 space-y-1 list-disc marker:text-[#111827]">
                                     {item.subBullets.map((sb, sbIdx) => (
                                       <li key={sbIdx} className="leading-relaxed">
-                                        <MathText content={sb} inline />
+                                        {sb.includes("→") && !sb.includes("$") && !sb.includes("\\") ? (
+                                          <span>{sb}</span>
+                                        ) : (
+                                          <MathText content={sb} inline />
+                                        )}
                                       </li>
                                     ))}
                                   </ul>
@@ -843,7 +887,11 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
                           <ol className="pl-6 space-y-1.5 list-decimal text-sm sm:text-[15px] text-[#111827]">
                             {fallbackTakeawayPoints.map((pt, idx) => (
                               <li key={idx} className="leading-relaxed">
-                                <MathText content={pt} inline />
+                                {pt.includes("→") && !pt.includes("$") && !pt.includes("\\") ? (
+                                  <span>{pt}</span>
+                                ) : (
+                                  <MathText content={pt} inline />
+                                )}
                               </li>
                             ))}
                           </ol>
@@ -893,7 +941,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
                       </div>
 
                       {entry.latex && (
-                        <div className="my-2.5 flex justify-center overflow-x-auto py-2 px-3 bg-[#f8fafc] rounded border border-[#e2e8f0] font-serif">
+                        <div className="note-formula-wrap my-2.5 flex justify-center py-2 px-3 bg-[#f8fafc] rounded border border-[#e2e8f0] font-serif max-w-full whitespace-normal break-words">
                           <MathText content={`$$${entry.latex}$$`} />
                         </div>
                       )}

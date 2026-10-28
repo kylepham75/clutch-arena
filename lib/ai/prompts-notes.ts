@@ -18,6 +18,9 @@ Follow these core transformation rules:
 2. FORMULA FIDELITY & OCR RECONSTRUCTION:
    - Notation Fidelity: Copy each formula's structure, variable names, subscripts, and numerical constants exactly as presented on the slide (e.g., retain k_e if the slide writes k_e; keep 360 if the slide uses 360).
    - Clean LaTeX: Format all equations in clean LaTeX without outer dollar signs ($ or $$) in the \`latex\` field.
+   - Text Wrapping in Math: Always wrap multi-word English labels, accounting line items, and prose words inside formulas in \\text{...} (e.g., \\text{Operating Cycle} = \\text{Inventory Period} + \\text{Accounts Receivable Period}).
+   - Arrows & Implications: Never use raw => or -> in LaTeX; always use \\implies or \\rightarrow. Preserve directional arrows as \\uparrow and \\downarrow.
+   - Currency in Math: Always escape literal currency signs inside math as \\$ (e.g., \\$100\\text{ million}).
    - Ledger-Bound Formula Placement: When a <formula_ledger> is provided, reference each placed formula by its ledger ID in \`formulaRefs\` (e.g., ["F1"]). Code will overwrite \`latex\` with the authoritative ledger LaTeX by ID. For algebraic rearrangements/derivations of ledger formulas, set \`derivedFrom\` (e.g., ["F1"]) and \`formulaRefs: []\`. Any ledger formula omitted (e.g., exact duplicate) must be listed in \`omitted\` with { formulaId, reason }.
    - Flattened OCR / Extraction Handling: Slide text extraction may flatten fractions or subscripts (e.g., "D1P0+g" or "r=D1/P0+g"). Reconstruct mathematical structure (e.g. \\frac{D_1}{P_0} + g) ONLY when completely unambiguous from surrounding slides. If structure is ambiguous or cannot be determined with certainty, copy the raw text into the formula inside \\text{...} and set \`description\` to "Formula structure unclear in source (slide N)".
    - Formula Descriptions: Leave \`description\` as empty string "" unless a short transition remark or the source-clarity note above is necessary. Never repeat the formula title in \`description\`.
@@ -55,7 +58,7 @@ Follow these core transformation rules:
    - Digit 0: Always use numeric digit 0 (e.g., g = 0, P_0, D_0), never the letter "o" or "O".
    - Greek Letters vs Vietnamese: NEVER substitute Greek Sigma (\\Sigma or \\sigma) for Vietnamese syllables like 'su' or 'sử' (write 'tỷ suất sinh lời', 'suất sinh lời', 'chi phí sử dụng vốn'). Greek symbols are strictly reserved for math equations.
    - Inline Key Terms: Include Vietnamese key terms inline in parentheses when helpful for bilingual comprehension.
-   - Clean LaTeX: Math in \`latex\` fields must never have enclosing dollar signs ($).
+   - Clean LaTeX: Math in \`latex\` fields must never have enclosing dollar signs ($). Always wrap multi-word English labels and accounting line items in \\text{...}, use \\implies / \\rightarrow instead of raw => or ->, preserve \\uparrow / \\downarrow, and escape currency signs inside math as \\$.
 
 8. HONEST METRICS & KEY TAKEAWAYS:
    - \`noiseReductionRate\`: Provide an honest percentage estimate (0–100) of slide volume stripped (drills, administrative fluff, repetition).
@@ -122,11 +125,11 @@ ${slideContent}
 
 Strict Synthesis Directives:
 1. Absolute Source Grounding: Extract only formulas, definitions, and mechanics present in the slides above. Never add outside textbook knowledge or standard formula variants. If a slide formula is non-standard or unusual, copy it exactly as written without correcting it.
-2. Formula Fidelity & Ledger-Bound Placement: When <formula_ledger> is provided, reference each placed formula by its ledger ID in formulaRefs (e.g. ["F1"]). Code will overwrite latex with the authoritative ledger LaTeX by ID. For algebraic derivations or rearrangements, set derivedFrom (e.g. ["F1"]) and formulaRefs: []. List any omitted ledger formula in omitted with { formulaId, reason }.
+2. Formula Fidelity & Ledger-Bound Placement: When <formula_ledger> is provided, reference each placed formula by its ledger ID in formulaRefs (e.g. ["F1"]). Code will overwrite latex with the authoritative ledger LaTeX by ID. For algebraic derivations or rearrangements, set derivedFrom (e.g. ["F1"]) and formulaRefs: []. List any omitted ledger formula in omitted with { formulaId, reason }. Always wrap multi-word English labels and accounting line items in \\text{...}, use \\implies / \\rightarrow (never raw => or ->), preserve \\uparrow / \\downarrow, and escape currency as \\$.
 3. Exhaustive Coverage & Evidence Grounding: Every distinct formula taught in the slides must appear once as a boxed formula. Every bullet in bullets and item in takeaways must include its 1-based slide number and verbatim evidence quote. Non-redundant "Trong đó:" variables are defined once when first introduced. Pass variables: [] for previously defined symbols.
 4. Drop Exercises: Omit specific practice numbers, company names, and worked arithmetic. Keep only the general formula and decision logic. Strip cover slides, attendance QR codes, course logistics, and thank-you slides.
 5. Radical Brevity: Use short bullet points (5–15 words). No multi-sentence paragraphs. At most 1-line overview (≤18 words) and 1-line coreStatement (or empty ""). Brevity applies to prose only, never at the cost of omitting formulas or decision rules.
 6. Topic-Derived Structure: Derive sections from the deck's natural topic flow (A, B, C...). Use as few sections as the deck's structure allows (typically 3–6; schema permits 3–6). Nest detailed cases in subSections. Clean uppercase titles in standard academic terminology (no literal machine translations). Record exact 1-based slide numbers in sourceSlides.
-7. Typography: Use digit 0 (never 'o') for subscripts and zero-conditions (P_0, g = 0). Never substitute Greek Sigma for Vietnamese 'su'/'sử'. Clean LaTeX without outer $. Vietnamese key terms inline in parentheses.
+7. Typography: Use digit 0 (never 'o') for subscripts and zero-conditions (P_0, g = 0). Never substitute Greek Sigma for Vietnamese 'su'/'sử'. Clean LaTeX without outer $. Wrap English labels and accounting line items in \\text{...}, use \\implies / \\rightarrow, preserve \\uparrow / \\downarrow, and escape currency as \\$. Vietnamese key terms inline in parentheses.
 8. Takeaways & Honest Metrics: Provide 3–5 high-value takeaways (with '→' sub-bullets) on the main model section grounded strictly in the slides with slide and evidence. Provide an honest noiseReductionRate (0–100) and estimatedDistilledPages (1–6).`;
 }

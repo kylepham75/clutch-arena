@@ -9,6 +9,7 @@ import {
   type KeyTakeawaysItem,
   type FormulaLedgerEntry,
   type SynthesisOmittedFormula,
+  type NoteOmittedFormula,
   type SynthesisSection,
   type TextbookDivergenceNotice,
   type ClaimVerificationItem,
@@ -61,7 +62,7 @@ export interface VerificationGateInput {
   sections: NoteSection[];
   sources: SourceBlock[];
   ledger: FormulaLedgerEntry[];
-  omitted?: SynthesisOmittedFormula[];
+  omitted?: (SynthesisOmittedFormula | NoteOmittedFormula)[];
   options?: VerificationGateOptions;
 }
 
@@ -198,7 +199,7 @@ export async function executeVerificationPipeline(input: {
   sections: NoteSection[];
   sources: SourceBlock[];
   ledger: FormulaLedgerEntry[];
-  omitted?: SynthesisOmittedFormula[];
+  omitted?: (SynthesisOmittedFormula | NoteOmittedFormula)[];
   options?: VerificationGateOptions;
 }): Promise<VerificationPipelineReport> {
   // 1. Domain Rule Packs (Divergence notices without rewriting formula LaTeX)
@@ -698,11 +699,11 @@ export function applyMarkPolicyAndGate(input: {
       : repairAttempted &&
           needsReviewCount === 0 &&
           unsupportedClaimsRemoved === 0 &&
-          detCoverage.uncapturedIds.length === 0
+          detCoverage.uncapturedErrorIds.length === 0
         ? "repaired"
         : needsReviewCount > 0 ||
             unsupportedClaimsRemoved > 0 ||
-            detCoverage.uncapturedIds.length > 0
+            detCoverage.uncapturedErrorIds.length > 0
           ? "marked"
           : "passed";
 
@@ -712,7 +713,8 @@ export function applyMarkPolicyAndGate(input: {
     coverageRatio: detCoverage.coverageRatio,
     totalLedgerFormulas: ledger.length,
     placedFormulaIds: detCoverage.placedIds,
-    uncapturedFormulaIds: detCoverage.uncapturedIds,
+    uncapturedFormulaIds: detCoverage.uncapturedErrorIds,
+    omittedByRuleFormulaIds: detCoverage.omittedByRuleIds,
     unsupportedClaimsRemoved,
     needsReviewCount,
     contradictedFormulaCount,
@@ -766,9 +768,7 @@ export async function runVerificationGate(
 
   // Step 2: Check if targeted repair is warranted
   const detCoverage = initialPipeline.deterministicReport.coverage;
-  const unjustifiedUncaptured = detCoverage.uncapturedIds.filter(
-    (id) => !detCoverage.duplicateOmittedIds.includes(id),
-  );
+  const unjustifiedUncaptured = detCoverage.uncapturedErrorIds;
 
   const hasContradictedFormula =
     initialPipeline.equivalenceReport.contradictedFormulas > 0;

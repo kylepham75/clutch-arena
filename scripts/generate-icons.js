@@ -10,7 +10,9 @@ async function generate() {
 
   const targets = [
     { dest: path.join(__dirname, '..', 'public', 'brand-icon.png'), size: 512 },
+    { dest: path.join(__dirname, '..', 'public', 'icon.png'), size: 512 },
     { dest: path.join(__dirname, '..', 'app', 'icon.png'), size: 512 },
+    { dest: path.join(__dirname, '..', 'icon.png'), size: 512 },
     { dest: path.join(__dirname, '..', 'public', 'logo.png'), size: 512 },
     { dest: path.join(__dirname, '..', 'public', 'apple-icon.png'), size: 180 },
     { dest: path.join(__dirname, '..', 'public', 'apple-touch-icon.png'), size: 180 },

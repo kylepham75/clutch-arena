@@ -342,6 +342,21 @@ export const synthesisOmittedFormulaSchema = z
   })
   .strict();
 
+export const formulaOmissionStatusSchema = z.enum(["omitted_by_rule", "uncaptured_error"]);
+export type FormulaOmissionStatus = z.infer<typeof formulaOmissionStatusSchema>;
+
+export type NoteOmittedFormula = {
+  formulaId: string;
+  reason: string;
+  status?: FormulaOmissionStatus;
+};
+
+export const noteOmittedFormulaSchema: z.ZodType<NoteOmittedFormula> = z.object({
+  formulaId: z.string().min(1),
+  reason: z.string().min(1),
+  status: formulaOmissionStatusSchema.optional().default("omitted_by_rule"),
+});
+
 export const synthesisSchema = z
   .object({
     title: z.string().min(1).describe("Concise uppercase chapter/topic heading"),
@@ -402,6 +417,7 @@ export const noteVerificationRecordSchema = z.object({
   totalLedgerFormulas: z.number().int().min(0),
   placedFormulaIds: z.array(z.string()).default([]),
   uncapturedFormulaIds: z.array(z.string()).default([]),
+  omittedByRuleFormulaIds: z.array(z.string()).default([]).optional(),
   unsupportedClaimsRemoved: z.number().int().min(0).default(0),
   needsReviewCount: z.number().int().min(0).default(0),
   contradictedFormulaCount: z.number().int().min(0).default(0),
@@ -445,7 +461,7 @@ export const clutchNoteSchema = z.object({
   sections: z.array(noteSectionSchema).min(1),
   rawMarkdown: z.string().optional(),
   formulaLedger: z.array(formulaLedgerEntrySchema).optional().describe("Formula ledger entries across all slides"),
-  omitted: z.array(synthesisOmittedFormulaSchema).optional().describe("Omitted formula entries with justification"),
+  omitted: z.array(noteOmittedFormulaSchema).optional().describe("Omitted formula entries with justification"),
   verification: noteVerificationRecordSchema.optional().describe("Stage 4 verification and gate record"),
 });
 

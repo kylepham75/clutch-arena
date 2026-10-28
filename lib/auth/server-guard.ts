@@ -1,7 +1,7 @@
 import "server-only";
 import { getSupabaseServerClient, isSupabaseServerConfigured } from "@/lib/supabase/server";
 import type { User } from "@supabase/supabase-js";
-import type { UserTier } from "@/lib/pricing/tiers";
+import { calculateTierExpiration, type UserTier } from "@/lib/pricing/tiers";
 
 export type ServerTier = "guest" | UserTier;
 
@@ -103,30 +103,100 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       .maybeSingle();
 
     if (subData?.tier) {
-      resolvedTier = normalizeTier(subData.tier);
-      resolvedExpiresAt = subData.expires_at ?? null;
-    } else {
+      const isSubExpired = subData.expires_at
+        ? !isNaN(new Date(subData.expires_at).getTime()) &&
+          new Date(subData.expires_at).getTime() <= Date.now()
+        : false;
+
+      if (!isSubExpired) {
+        resolvedTier = normalizeTier(subData.tier);
+        resolvedExpiresAt = subData.expires_at ?? null;
+      }
+      // If elapsed/expired, do not resolve tier to 'contender' immediately.
+      // Instead, allow fallback to step 2 (profiles table) so an active tier set on profiles
+      // by an admin is not shadowed by an old expired subscription!
+    }
+
+    if (resolvedTier === "contender") {
       // 2. Fallback to profiles table
       const { data: profileData } = await supabase
         .from("profiles")
-        .select("tier, tier_expires_at")
+        .select("tier, tier_expires_at, updated_at")
         .eq("id", user.id)
         .maybeSingle();
 
       if (profileData?.tier) {
-        resolvedTier = normalizeTier(profileData.tier);
-        resolvedExpiresAt = profileData.tier_expires_at ?? null;
-      } else {
-        // 3. Fallback to user_profiles table
-        const { data: userProfileData } = await supabase
-          .from("user_profiles")
-          .select("tier, tier_expires_at")
-          .eq("id", user.id)
-          .maybeSingle();
+        const normTier = normalizeTier(profileData.tier);
+        if (normTier !== "contender") {
+          let isActive = false;
+          let tierExpiresAt: string | null = profileData.tier_expires_at ?? null;
 
-        if (userProfileData?.tier) {
-          resolvedTier = normalizeTier(userProfileData.tier);
-          resolvedExpiresAt = userProfileData.tier_expires_at ?? null;
+          if (!profileData.tier_expires_at) {
+            // Null tier_expires_at: treat as active (non-expiring / manual admin grant)
+            isActive = true;
+            tierExpiresAt = null;
+          } else {
+            const expMs = new Date(profileData.tier_expires_at).getTime();
+            const isExpired = !isNaN(expMs) && expMs <= Date.now();
+
+            if (!isExpired) {
+              isActive = true;
+              tierExpiresAt = profileData.tier_expires_at;
+            } else if (
+              profileData.updated_at &&
+              new Date(profileData.updated_at).getTime() > expMs
+            ) {
+              // Active manual grant updated after the previous expiration
+              isActive = true;
+              tierExpiresAt = calculateTierExpiration(normTier);
+            }
+          }
+
+          if (isActive) {
+            resolvedTier = normTier;
+            resolvedExpiresAt = tierExpiresAt;
+          }
+        }
+      }
+    }
+
+    if (resolvedTier === "contender") {
+      // 3. Fallback to user_profiles table
+      const { data: userProfileData } = await supabase
+        .from("user_profiles")
+        .select("tier, tier_expires_at, updated_at")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (userProfileData?.tier) {
+        const normTier = normalizeTier(userProfileData.tier);
+        if (normTier !== "contender") {
+          let isActive = false;
+          let tierExpiresAt: string | null = userProfileData.tier_expires_at ?? null;
+
+          if (!userProfileData.tier_expires_at) {
+            isActive = true;
+            tierExpiresAt = null;
+          } else {
+            const expMs = new Date(userProfileData.tier_expires_at).getTime();
+            const isExpired = !isNaN(expMs) && expMs <= Date.now();
+
+            if (!isExpired) {
+              isActive = true;
+              tierExpiresAt = userProfileData.tier_expires_at;
+            } else if (
+              userProfileData.updated_at &&
+              new Date(userProfileData.updated_at).getTime() > expMs
+            ) {
+              isActive = true;
+              tierExpiresAt = calculateTierExpiration(normTier);
+            }
+          }
+
+          if (isActive) {
+            resolvedTier = normTier;
+            resolvedExpiresAt = tierExpiresAt;
+          }
         }
       }
     }
