@@ -12,7 +12,7 @@ export function getGeminiModel(modelOverride?: string) {
     googleApiKey !== "your-gemini-key-here" &&
     googleApiKey !== "your-api-key-here"
   ) {
-    const defaultModel = "gemini-3.5-flash-lite";
+    const defaultModel = "gemini-3.5-flash";
     const modelId = modelOverride || process.env.GEMINI_MODEL?.trim() || defaultModel;
     return createGoogleGenerativeAI({ apiKey: googleApiKey })(modelId);
   }
@@ -54,9 +54,9 @@ export function getGenerationModel(tier: string = "contender") {
     if (local) return local;
   }
 
-  // High-retention synthesis routing for Clutch Notes (strictly fast gemini-3.6-flash or Groq)
+  // High-retention synthesis routing for Clutch Notes (strictly fast gemini-3.5-flash or Groq)
   if (tier === "notes") {
-    const noteModel = process.env.NOTES_AI_MODEL?.trim() || "gemini-3.6-flash";
+    const noteModel = process.env.NOTES_AI_MODEL?.trim() || "gemini-3.5-flash";
     const gemini = getGeminiModel(noteModel);
     if (gemini) return gemini;
     const groq = getGroqModel();
@@ -65,7 +65,7 @@ export function getGenerationModel(tier: string = "contender") {
 
   if (provider === "gemini") {
     const envModel = process.env.GEMINI_MODEL?.trim();
-    const defaultGemini = isPriority ? "gemini-3.5-flash" : "gemini-3.5-flash-lite";
+    const defaultGemini = "gemini-3.5-flash";
     const gemini = getGeminiModel(envModel || defaultGemini);
     if (gemini) return gemini;
   }
@@ -85,7 +85,7 @@ export function getGenerationModel(tier: string = "contender") {
   const groq = getGroqModel();
   if (groq) return groq;
 
-  const gemini = getGeminiModel(process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash-lite");
+  const gemini = getGeminiModel(process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash");
   if (gemini) return gemini;
 
   throw new IngestionError(
