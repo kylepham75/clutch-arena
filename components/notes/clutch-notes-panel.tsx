@@ -12,7 +12,6 @@ import {
   Layers,
   AlertCircle,
   FileSpreadsheet,
-  CheckCircle2,
   Lock,
   ArrowRight,
   RefreshCw,
@@ -361,26 +360,6 @@ export function ClutchNotesPanel() {
         <p className="text-xs sm:text-sm text-[#67705f] max-w-2xl leading-relaxed">
           {t.notes.subtitle}
         </p>
-
-        {/* Feature Highlights Pills */}
-        <div className="mt-5 pt-4 border-t border-[#edf0e8] flex flex-wrap gap-2 text-xs text-[#4d5746]">
-          <span className="flex items-center gap-1.5 bg-[#f7f8f4] px-3 py-1.5 rounded-lg border border-[#e3e7dc] font-medium">
-            <CheckCircle2 size={13} className="text-[#2e7d32]" />
-            <span>{t.notes.pillNoise}</span>
-          </span>
-          <span className="flex items-center gap-1.5 bg-[#f7f8f4] px-3 py-1.5 rounded-lg border border-[#e3e7dc] font-medium">
-            <CheckCircle2 size={13} className="text-[#2e7d32]" />
-            <span>{t.notes.pillBilingual}</span>
-          </span>
-          <span className="flex items-center gap-1.5 bg-[#f7f8f4] px-3 py-1.5 rounded-lg border border-[#e3e7dc] font-medium">
-            <CheckCircle2 size={13} className="text-[#2e7d32]" />
-            <span>{t.notes.pillLatex}</span>
-          </span>
-          <span className="flex items-center gap-1.5 bg-[#f7f8f4] px-3 py-1.5 rounded-lg border border-[#e3e7dc] font-medium">
-            <CheckCircle2 size={13} className="text-[#2e7d32]" />
-            <span>{t.notes.pillPdf}</span>
-          </span>
-        </div>
       </div>
 
       {/* Upload Dropzone Container */}
