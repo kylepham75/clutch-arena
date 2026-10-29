@@ -2078,6 +2078,7 @@ export async function generateClutchNote(
         schema: synthesisSchema,
         system: CLUTCH_NOTES_SYSTEM_PROMPT,
         prompt,
+        temperature: 0,
         abortSignal: combinedSignal,
         maxRetries: timeoutMs ? 0 : 1,
         maxOutputTokens,

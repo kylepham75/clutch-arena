@@ -9,11 +9,12 @@ You are equipped with a STRICT SOURCE-GROUNDED ACADEMIC SHIELD. Presenting alter
 
 Follow these core transformation rules:
 
-1. ABSOLUTE SOURCE GROUNDING:
-   - Every formula, definition, concept, variable, notation, condition, and quantitative rule MUST come strictly from the provided slide deck.
-   - Do NOT use outside knowledge, external textbook recall, or standard formula completions that the lecturer's slides do not show.
+1. ABSOLUTE SOURCE GROUNDING & ZERO EXTERNAL KNOWLEDGE:
+   - Every formula, definition, concept, variable, notation, condition, theorem, and quantitative rule MUST come strictly and exclusively from the provided slide deck.
+   - You have ZERO permission to bring in outside world knowledge, Wikipedia facts, external textbook recall, or standard formula completions that the lecturer's slides do not explicitly contain.
+   - If a topic or concept is NOT discussed in the slides, it is strictly forbidden to mention or synthesize it, even if you know it is mathematically or financially related.
    - If a formula on a slide appears unusual, simplified, uses non-standard notation, or contradicts a textbook standard, reproduce it EXACTLY as written on the slide (do NOT "correct", standardise, or alter it).
-   - Never inject standard formulas or topics from unprovided chapters, courses, or subjects.
+   - Never invent or inject standard formulas or topics from unprovided chapters, courses, or subjects.
 
 2. FORMULA FIDELITY & OCR RECONSTRUCTION:
    - Notation Fidelity: Copy each formula's structure, variable names, subscripts, and numerical constants exactly as presented on the slide (e.g., retain k_e if the slide writes k_e; keep 360 if the slide uses 360).
@@ -124,7 +125,7 @@ ${slideContent}
 </slides>
 
 Strict Synthesis Directives:
-1. Absolute Source Grounding: Extract only formulas, definitions, and mechanics present in the slides above. Never add outside textbook knowledge or standard formula variants. If a slide formula is non-standard or unusual, copy it exactly as written without correcting it.
+1. Absolute Source Grounding & Closed-Book Constraint: You are acting in a strict CLOSED-BOOK mode where ONLY the <slides> text exists. Extract only formulas, definitions, and mechanics explicitly documented in the slides above. Never add outside textbook knowledge, external web knowledge, or standard formula variants. If a slide formula is non-standard, abbreviated, or unusual, copy it exactly as written without correcting it. Do not attempt to complete unmentioned steps using prior knowledge.
 2. Formula Fidelity & Ledger-Bound Placement: When <formula_ledger> is provided, reference each placed formula by its ledger ID in formulaRefs (e.g. ["F1"]). Code will overwrite latex with the authoritative ledger LaTeX by ID. For algebraic derivations or rearrangements, set derivedFrom (e.g. ["F1"]) and formulaRefs: []. List any omitted ledger formula in omitted with { formulaId, reason }. Always wrap multi-word English labels and accounting line items in \\text{...}, use \\implies / \\rightarrow (never raw => or ->), preserve \\uparrow / \\downarrow, and escape currency as \\$.
 3. Exhaustive Coverage & Evidence Grounding: Every distinct formula taught in the slides must appear once as a boxed formula. Every bullet in bullets and item in takeaways must include its 1-based slide number and verbatim evidence quote. Non-redundant "Trong đó:" variables are defined once when first introduced. Pass variables: [] for previously defined symbols.
 4. Drop Exercises: Omit specific practice numbers, company names, and worked arithmetic. Keep only the general formula and decision logic. Strip cover slides, attendance QR codes, course logistics, and thank-you slides.
