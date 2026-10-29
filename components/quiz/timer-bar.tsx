@@ -13,7 +13,7 @@ export function TimerBar({
   running: boolean;
   frozenRemaining?: number;
 }) {
-  const { language } = useLanguage();
+  const { t } = useLanguage();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!running) return;
@@ -28,13 +28,7 @@ export function TimerBar({
       <div className="timer-label">
         <span>
           <Clock3 size={15} />
-          {running
-            ? language === "vi"
-              ? "Thời gian suy nghĩ"
-              : "Time to think"
-            : language === "vi"
-              ? "Đã tạm dừng"
-              : "Clock paused"}
+          {running ? t.run.timeToThink : t.run.clockPaused}
         </span>
         <strong data-testid="timer">
           {seconds}
@@ -44,7 +38,7 @@ export function TimerBar({
       <div
         className="timer-track"
         role="progressbar"
-        aria-label="Time remaining"
+        aria-label={t.run.timeRemaining}
         aria-valuemin={0}
         aria-valuemax={15}
         aria-valuenow={seconds}

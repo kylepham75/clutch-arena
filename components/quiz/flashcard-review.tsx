@@ -16,6 +16,7 @@ import {
 import type { StudyPack } from "@/lib/schemas/question";
 import { Button } from "@/components/ui/button";
 import { MathText } from "@/components/ui/math-text";
+import { useLanguage } from "@/lib/i18n/context";
 
 type Verdict = "known" | "learning";
 const LETTERS = ["A", "B", "C", "D"] as const;
@@ -40,6 +41,7 @@ export function FlashcardReview({
   onExit: () => void;
   onStartRun: () => void;
 }) {
+  const { t } = useLanguage();
   const allIds = useMemo(() => pack.questions.map((q) => q.id), [pack]);
   const [order, setOrder] = useState<string[]>(allIds);
   const [index, setIndex] = useState(0);
@@ -125,8 +127,8 @@ export function FlashcardReview({
       <header className="flashcards-header">
         <div>
           <span className="eyebrow">
-            <span className="tiny-star">✦</span> FLASHCARD REVIEW
-            {mode === "variants" ? " · CONCEPT REMIX" : ""}
+            <span className="tiny-star">✦</span> {t.flashcard.eyebrow}
+            {mode === "variants" ? t.flashcard.conceptRemixSuffix : ""}
           </span>
           <h2>{pack.title}</h2>
         </div>
@@ -138,11 +140,11 @@ export function FlashcardReview({
             disabled={finished || order.length < 2}
           >
             <Shuffle size={14} />
-            Shuffle
+            {t.flashcard.shuffle}
           </Button>
           <Button variant="ghost" size="sm" onClick={onExit}>
             <X size={15} />
-            Exit
+            {t.flashcard.exit}
           </Button>
         </div>
       </header>
@@ -150,7 +152,7 @@ export function FlashcardReview({
       <div
         className="flashcards-progress"
         role="progressbar"
-        aria-label="Cards reviewed"
+        aria-label={t.flashcard.cardsReviewedAria}
         aria-valuemin={0}
         aria-valuemax={order.length}
         aria-valuenow={Math.min(index, order.length)}
@@ -163,33 +165,33 @@ export function FlashcardReview({
           <div className="flashcards-summary-stats">
             <div>
               <strong data-testid="flashcards-known">{knownCount}</strong>
-              <span>Got it</span>
+              <span>{t.flashcard.gotItCount}</span>
             </div>
             <div>
               <strong data-testid="flashcards-learning">{learningIds.length}</strong>
-              <span>Still learning</span>
+              <span>{t.flashcard.stillLearningCount}</span>
             </div>
           </div>
           <h3>
             {learningIds.length === 0
-              ? "Every card felt solid. Time to test it under pressure."
-              : "Nice pass. Run the shaky ones again, or test yourself for real."}
+              ? t.flashcard.summaryAllKnown
+              : t.flashcard.summarySomeLearning}
           </h3>
           <div className="flashcards-summary-actions">
             <Button className="start-button" onClick={onStartRun}>
               <Zap size={17} fill="currentColor" />
-              Start Clutch Run
+              {t.flashcard.startClutchRun}
               <ArrowRight size={17} />
             </Button>
             {learningIds.length > 0 && (
               <Button variant="outline" onClick={() => restart(learningIds)}>
                 <Repeat size={15} />
-                Review {learningIds.length} still learning
+                {t.flashcard.reviewStillLearningPrefix} {learningIds.length} {t.flashcard.reviewStillLearningSuffix}
               </Button>
             )}
             <Button variant="ghost" onClick={() => restart(allIds)}>
               <RotateCcw size={15} />
-              Restart all cards
+              {t.flashcard.restartAll}
             </Button>
           </div>
         </div>
@@ -198,7 +200,7 @@ export function FlashcardReview({
           <>
             <div className="flashcard-meta">
               <span>
-                Card {index + 1} of {order.length}
+                {t.flashcard.cardWord} {index + 1} {t.flashcard.ofWord} {order.length}
               </span>
               {meta?.topic && <span className="topic-badge">{meta.topic}</span>}
             </div>
@@ -207,7 +209,7 @@ export function FlashcardReview({
               type="button"
               className={`flashcard ${flipped ? "is-flipped" : ""}`}
               onClick={() => setFlipped((f) => !f)}
-              aria-label={flipped ? "Show question" : "Reveal answer"}
+              aria-label={flipped ? t.flashcard.showQuestionAria : t.flashcard.revealAnswerAria}
             >
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div
@@ -220,7 +222,7 @@ export function FlashcardReview({
                 >
                   {!flipped ? (
                     <>
-                      <span className="flashcard-side">QUESTION</span>
+                      <span className="flashcard-side">{t.flashcard.questionSide}</span>
                       <h3 className="flashcard-question">
                         <MathText content={card.question} />
                       </h3>
@@ -232,11 +234,11 @@ export function FlashcardReview({
                           </li>
                         ))}
                       </ol>
-                      <span className="flashcard-hint">Click or press Space to flip</span>
+                      <span className="flashcard-hint">{t.flashcard.flipHint}</span>
                     </>
                   ) : (
                     <>
-                      <span className="flashcard-side">ANSWER</span>
+                      <span className="flashcard-side">{t.flashcard.answerSide}</span>
                       <h3 className="flashcard-answer" data-testid="flashcard-answer">
                         <kbd>{LETTERS[card.correctIndex]}</kbd>
                         <MathText content={card.options[card.correctIndex]} inline />
@@ -267,7 +269,7 @@ export function FlashcardReview({
                 size="sm"
                 onClick={() => go(-1)}
                 disabled={index === 0}
-                aria-label="Previous card"
+                aria-label={t.flashcard.prevCardAria}
               >
                 <ArrowLeft size={15} />
               </Button>
@@ -275,23 +277,23 @@ export function FlashcardReview({
                 <div className="flashcard-verdicts">
                   <Button variant="outline" onClick={() => mark("learning")}>
                     <Repeat size={15} />
-                    Still learning <kbd>1</kbd>
+                    {t.flashcard.stillLearningBtn} <kbd>1</kbd>
                   </Button>
                   <Button variant="dark" onClick={() => mark("known")}>
                     <Check size={15} />
-                    Got it <kbd>2</kbd>
+                    {t.flashcard.gotItBtn} <kbd>2</kbd>
                   </Button>
                 </div>
               ) : (
                 <Button variant="dark" onClick={() => setFlipped(true)}>
-                  Reveal answer <kbd>Space</kbd>
+                  {t.flashcard.revealAnswerBtn} <kbd>Space</kbd>
                 </Button>
               )}
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => go(1)}
-                aria-label="Skip card"
+                aria-label={t.flashcard.nextCardAria}
               >
                 <ArrowRight size={15} />
               </Button>

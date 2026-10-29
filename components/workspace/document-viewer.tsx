@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import type { ParsedDocument, SourceBlock } from "@/lib/schemas/ingestion";
 import { Button } from "@/components/ui/button";
+import { useLanguage } from "@/lib/i18n/context";
 
 export function DocumentViewer({
   document,
@@ -30,6 +31,7 @@ export function DocumentViewer({
   onAskCoachAboutSource?: (source: SourceBlock) => void;
   onOpenUpload?: () => void;
 }) {
+  const { t } = useLanguage();
   const [search, setSearch] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
@@ -67,20 +69,17 @@ export function DocumentViewer({
 
   if (!document) {
     return (
-      <aside className="doc-viewer doc-viewer-empty" aria-label="Document viewer">
+      <aside className="doc-viewer doc-viewer-empty" aria-label={t.docViewer.viewerAria}>
         <div className="doc-empty-state">
           <div className="doc-empty-icon">
             <FileText size={36} />
           </div>
-          <h3>No study material loaded</h3>
-          <p>
-            Upload lecture slides, notes, or test banks (PDF, Word, TXT) to view
-            source pages, inspect citations, and ask the AI Coach questions.
-          </p>
+          <h3>{t.docViewer.emptyTitle}</h3>
+          <p>{t.docViewer.emptyDesc}</p>
           {onOpenUpload && (
             <Button onClick={onOpenUpload} size="sm">
               <Sparkles size={14} />
-              Upload document
+              {t.docViewer.uploadDocBtn}
             </Button>
           )}
         </div>
@@ -89,13 +88,13 @@ export function DocumentViewer({
   }
 
   return (
-    <aside className="doc-viewer" aria-label={`Document: ${document.fileName}`}>
+    <aside className="doc-viewer" aria-label={`${t.docViewer.viewerAria}: ${document.fileName}`}>
       <header className="doc-header">
         <div className="doc-title-row">
           <div className="doc-badge-group">
             <span className="doc-format-badge">{document.format.toUpperCase()}</span>
             <span className="doc-sources-count">
-              {document.sources.length} {document.pageCount ? "pages" : "sections"}
+              {document.sources.length} {document.pageCount ? t.docViewer.pagesWord : t.docViewer.sectionsWord}
             </span>
           </div>
           <h2 className="doc-filename" title={document.fileName}>
@@ -109,15 +108,15 @@ export function DocumentViewer({
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search source blocks..."
-            aria-label="Search within document"
+            placeholder={t.docViewer.searchPlaceholder}
+            aria-label={t.docViewer.searchAria}
             className="doc-search-input"
           />
           {search && (
             <button
               onClick={() => setSearch("")}
               className="doc-search-clear"
-              aria-label="Clear search"
+              aria-label={t.docViewer.clearSearchAria}
             >
               <X size={12} />
             </button>
@@ -125,12 +124,12 @@ export function DocumentViewer({
         </div>
       </header>
 
-      <div className="doc-blocks-container" role="feed" aria-label="Source blocks">
+      <div className="doc-blocks-container" role="feed" aria-label={t.docViewer.sourceBlocksAria}>
         {filteredSources.length === 0 ? (
           <div className="doc-no-matches">
-            <p>No sections match &ldquo;{search}&rdquo;</p>
+            <p>{t.docViewer.noMatchesPrefix} &ldquo;{search}&rdquo;</p>
             <Button variant="ghost" size="sm" onClick={() => setSearch("")}>
-              Clear filter
+              {t.docViewer.clearFilter}
             </Button>
           </div>
         ) : (
@@ -161,18 +160,18 @@ export function DocumentViewer({
                     {onAskCoachAboutSource && (
                       <button
                         className="doc-block-btn"
-                        title="Ask Coach about this section"
-                        aria-label={`Ask Coach about ${source.label}`}
+                        title={t.docViewer.askCoachTooltip}
+                        aria-label={`${t.docViewer.askCoachBtn}: ${source.label}`}
                         onClick={() => onAskCoachAboutSource(source)}
                       >
                         <Sparkles size={12} />
-                        <span>Ask Coach</span>
+                        <span>{t.docViewer.askCoachBtn}</span>
                       </button>
                     )}
                     <button
                       className="doc-block-btn"
-                      title="Copy text"
-                      aria-label="Copy source text"
+                      title={t.docViewer.copyTextTooltip}
+                      aria-label={t.docViewer.copyTextTooltip}
                       onClick={() => copyText(source)}
                     >
                       {copiedId === source.id ? (
@@ -205,11 +204,11 @@ export function DocumentViewer({
                   >
                     {isExpanded ? (
                       <>
-                        <ChevronUp size={12} /> Show less
+                        <ChevronUp size={12} /> {t.docViewer.showLess}
                       </>
                     ) : (
                       <>
-                        <ChevronDown size={12} /> Read more
+                        <ChevronDown size={12} /> {t.docViewer.readMore}
                       </>
                     )}
                   </button>

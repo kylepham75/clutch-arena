@@ -5,7 +5,7 @@ import type { GameState } from "@/lib/game/reducer";
 import { useLanguage } from "@/lib/i18n/context";
 
 export function GameHud({ state }: { state: GameState }) {
-  const { language, t } = useLanguage();
+  const { t } = useLanguage();
   return (
     <div className="game-hud">
       <div className="hud-cell">
@@ -29,10 +29,10 @@ export function GameHud({ state }: { state: GameState }) {
         </strong>
       </div>
       <div className="hud-cell">
-        <span className="hud-label">{language === "vi" ? "CƠ HỘI" : "LIVES"}</span>
+        <span className="hud-label">{t.run.livesHud}</span>
         <div
           className="hearts"
-          aria-label={`${state.lives} lives remaining`}
+          aria-label={`${state.lives} ${t.run.livesRemainingAria}`}
           data-testid="lives"
         >
           {[0, 1, 2].map((i) => (

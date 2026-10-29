@@ -24,7 +24,7 @@ export function QuestionCard({
   review: boolean;
   onAnswer: (index: number) => void;
 }) {
-  const { language } = useLanguage();
+  const { t } = useLanguage();
   return (
     <motion.div
       className="question-content"
@@ -34,18 +34,18 @@ export function QuestionCard({
     >
       <div className="question-meta">
         <span className="eyebrow">
-          {language === "vi" ? "CÂU HỎI" : "QUESTION"} {String(number).padStart(2, "0")}
+          {t.run.questionEyebrow} {String(number).padStart(2, "0")}
         </span>
         <span className={`tag ${review ? "tag-purple" : ""}`}>
           {review ? (
             <>
               <Sparkles size={12} />
-              {language === "vi" ? "Vòng khắc phục" : "Mastery round"}
+              {t.run.masteryRoundTag}
             </>
           ) : variant ? (
-            language === "vi" ? "Biến thể tương đương" : "Concept variant"
+            t.run.conceptVariantTag
           ) : (
-            metadata?.topic || (language === "vi" ? "Luyện tập" : "Practice")
+            metadata?.topic || t.run.practiceTag
           )}
         </span>
       </div>

@@ -10,6 +10,7 @@ import type { ArenaPlayer, ArenaRoomState } from "@/lib/schemas/multiplayer";
 import type { StudyPack } from "@/lib/schemas/question";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
+import { useLanguage } from "@/lib/i18n/context";
 
 export function ArenaManager({
   initialRoomCode,
@@ -22,6 +23,7 @@ export function ArenaManager({
   onExitToSolo?: () => void;
   presetPack?: StudyPack | null;
 }) {
+  const { t } = useLanguage();
   const [roomCode, setRoomCode] = useState<string | null>(
     initialRoomCode ? initialRoomCode.toUpperCase() : null,
   );
@@ -150,7 +152,7 @@ export function ArenaManager({
     return (
       <div className="arena-loading-screen">
         <div className="spinner" />
-        <p>Connecting to Arena {roomCode}…</p>
+        <p>{t.arena.connectingToArena} {roomCode}…</p>
       </div>
     );
   }
@@ -159,9 +161,9 @@ export function ArenaManager({
   if (error || !room) {
     return (
       <div className="arena-error-screen surface">
-        <h3>Could not connect to Arena</h3>
-        <p>{error || "Room may have closed or expired."}</p>
-        <Button onClick={handleLeave}>Back to Arena Entrance</Button>
+        <h3>{t.arena.couldNotConnectTitle}</h3>
+        <p>{error || t.arena.roomClosedDesc}</p>
+        <Button onClick={handleLeave}>{t.arena.backToEntrance}</Button>
       </div>
     );
   }
@@ -172,11 +174,11 @@ export function ArenaManager({
       <div className="arena-top-bar">
         <Button variant="ghost" size="sm" onClick={handleLeave} className="leave-arena-link">
           <ArrowLeft size={14} />
-          <span>Exit Arena</span>
+          <span>{t.arena.exitArena}</span>
         </Button>
         <div className="arena-active-badge">
           <span className="live-pulse" />
-          <span>ROOM {room.code}</span>
+          <span>{t.arena.roomBadge} {room.code}</span>
         </div>
       </div>
 

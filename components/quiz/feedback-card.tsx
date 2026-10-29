@@ -29,7 +29,7 @@ export function FeedbackCard({
   onCitationClick?: (citation: string) => void;
   onReportCitation?: () => void;
 }) {
-  const { t, language } = useLanguage();
+  const { t } = useLanguage();
   const [now, setNow] = useState(() => Date.now());
   const button = useRef<HTMLButtonElement>(null);
   const remaining = Math.max(0, Math.ceil((unlockAt - now) / 1000));
@@ -79,10 +79,10 @@ export function FeedbackCard({
                 type="button"
                 onClick={onReportCitation}
                 className="inline-flex items-center gap-1 text-[11px] font-medium text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 transition-colors py-0.5 px-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer"
-                aria-label={language === "vi" ? "Báo lỗi trích dẫn" : "Flag citation"}
+                aria-label={t.run.flagCitation}
               >
                 <Flag size={12} className="text-amber-600 shrink-0" />
-                <span>{language === "vi" ? "Báo lỗi trích dẫn" : "Flag citation"}</span>
+                <span>{t.run.flagCitation}</span>
               </button>
             </div>
           ) : (
@@ -98,9 +98,7 @@ export function FeedbackCard({
       )}
       <div className="feedback-footer">
         <span>
-          {attempt.correct
-            ? "Keep that momentum."
-            : "Queued for a fresh attempt."}
+          {attempt.correct ? t.run.keepMomentum : t.run.queuedForRetry}
         </span>
         <div className="flex items-center gap-2">
           {onAskCoach && !attempt.correct && (

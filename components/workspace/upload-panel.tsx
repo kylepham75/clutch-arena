@@ -77,7 +77,7 @@ export function UploadPanel({
         if (combinedBytes > 25 * 1024 * 1024) {
           setError({
             code: "TOO_LARGE",
-            message: "Combined files exceed 25 MB limit. Please select fewer or smaller files.",
+            message: t.upload.tooLargeError,
           });
         } else {
           setError(null);
@@ -87,7 +87,7 @@ export function UploadPanel({
       setPreviewResult(null);
       setGeneratedResult(null);
     }
-  }, []);
+  }, [t.upload.tooLargeError]);
 
   const handleRemoveFile = (index: number) => {
     setFiles((prev) => {
@@ -131,24 +131,20 @@ export function UploadPanel({
 
   const handleSubmit = async (overrideOperation?: "generate" | "preview") => {
     if (files.length === 0) {
-      setError({ code: "NO_FILE", message: "Please select at least one file to upload." });
+      setError({ code: "NO_FILE", message: t.upload.noFileSelected });
       return;
     }
 
     if (totalBytes > 25 * 1024 * 1024) {
       setError({
         code: "TOO_LARGE",
-        message: "Combined files exceed 25 MB limit. Please select fewer or smaller files.",
+        message: t.upload.tooLargeError,
       });
       return;
     }
 
     if (files.length > limits.maxFilesPerUpload) {
-      setPricingReason(
-        siteLang === "vi"
-          ? "Tổng hợp đa tài liệu cùng lúc (tối đa 10 tệp / 25MB) yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc Clutch Pro. Gói Contender miễn phí hỗ trợ 1 tệp mỗi lần tải."
-          : "Multi-document synthesis (up to 10 files / 25MB) requires a 7-Day Cram Pass or Clutch Pro. Free Contender includes 1 file per upload.",
-      );
+      setPricingReason(t.upload.multiDocLimitReason);
       setPricingOpen(true);
       return;
     }
@@ -159,7 +155,7 @@ export function UploadPanel({
       openAuthModal("guest_limit_reached");
       setError({
         code: "AUTH_REQUIRED",
-        message: "Free guest limit reached (2/2). Please sign in or create an account to generate custom study packs.",
+        message: t.upload.guestLimitError,
       });
       return;
     }
@@ -167,34 +163,35 @@ export function UploadPanel({
     setLoading(true);
     setError(null);
     const startTime = Date.now();
+    const docNoun = siteLang === "vi" ? "tài liệu" : `document${files.length > 1 ? "s" : ""}`;
     setProgressMsg(
       op === "preview"
-        ? `Extracting structure across ${files.length} document${files.length > 1 ? "s" : ""}...`
-        : `Reading and analyzing ${files.length} document${files.length > 1 ? "s" : ""}...`,
+        ? `${t.upload.extractingStructure} ${files.length} ${docNoun}...`
+        : `${t.upload.readingAnalyzing} ${files.length} ${docNoun}...`,
     );
 
     const progressInterval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       if (op === "preview") {
         setProgressMsg(
-          `Extracting text blocks across ${files.length} document${files.length > 1 ? "s" : ""} (${elapsed}s)...`,
+          `${t.upload.extractingTextBlocks} ${files.length} ${docNoun} (${elapsed}s)...`,
         );
       } else {
         if (elapsed < 6) {
           setProgressMsg(
-            `Reading & parsing ${files.length} document${files.length > 1 ? "s" : ""} (${elapsed}s)...`,
+            `${t.upload.readingParsing} ${files.length} ${docNoun} (${elapsed}s)...`,
           );
         } else if (elapsed < 16) {
           setProgressMsg(
-            `Synthesizing key topics & learning objectives (${elapsed}s)...`,
+            `${t.upload.synthesizingTopics} (${elapsed}s)...`,
           );
         } else if (elapsed < 30) {
           setProgressMsg(
-            `Formulating active-recall questions & variants (${elapsed}s)...`,
+            `${t.upload.formulatingQuestions} (${elapsed}s)...`,
           );
         } else {
           setProgressMsg(
-            `Verifying source citations and finalizing study pack (${elapsed}s)...`,
+            `${t.upload.verifyingCitations} (${elapsed}s)...`,
           );
         }
       }
@@ -241,7 +238,7 @@ export function UploadPanel({
       const data = await res.json();
 
       if (!res.ok || !data.ok) {
-        const customErr: any = new Error(data?.error?.message || "Ingestion request failed.");
+        const customErr: any = new Error(data?.error?.message || t.upload.genericIngestError);
         customErr.code = data?.error?.code;
         throw customErr;
       }
@@ -261,11 +258,11 @@ export function UploadPanel({
         openAuthModal("auth_required");
       }
       if (err.name === "AbortError") {
-        setError({ code: "CANCELLED", message: "Upload was cancelled." });
+        setError({ code: "CANCELLED", message: t.upload.cancelledError });
       } else {
         setError({
           code: err.code || "INGEST_ERROR",
-          message: err.message || "Something went wrong while processing the document.",
+          message: err.message || t.upload.genericIngestError,
         });
       }
     } finally {
@@ -277,7 +274,7 @@ export function UploadPanel({
   };
 
   return (
-    <div className="upload-panel surface" aria-label="Document ingestion">
+    <div className="upload-panel surface" aria-label={t.upload.title}>
       <div className="section-top flex items-start justify-between flex-wrap gap-2">
         <div className="flex items-start gap-3">
           <div className="section-icon">
@@ -296,7 +293,7 @@ export function UploadPanel({
           }}
           className="text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-700 flex items-center gap-1 cursor-pointer"
         >
-          <span>{tier === "contender" ? "Contender: 2 uploads/wk (1 file)" : `${tier.toUpperCase()}: Unlimited (10 files)`}</span>
+          <span>{tier === "contender" ? t.upload.contenderBadge : `${tier.toUpperCase()}: ${t.upload.paidBadgeSuffix}`}</span>
         </button>
       </div>
 
@@ -305,7 +302,7 @@ export function UploadPanel({
         {...getRootProps()}
         className={`dropzone ${isDragActive ? "dropzone-active" : ""} ${files.length > 0 ? "dropzone-has-file" : ""}`}
       >
-        <input {...getInputProps()} aria-label="Upload document file" />
+        <input {...getInputProps()} aria-label={t.upload.title} />
         <div className="dropzone-content">
           <div className="dropzone-icon">
             {files.length > 0 ? <FileCheck size={28} /> : <UploadCloud size={28} />}
@@ -372,8 +369,8 @@ export function UploadPanel({
                     type="button"
                     className="file-remove-btn"
                     onClick={() => handleRemoveFile(idx)}
-                    aria-label={`Remove ${f.name}`}
-                    title="Remove file"
+                    aria-label={`${t.upload.removeFileAria}: ${f.name}`}
+                    title={t.upload.removeFileAria}
                   >
                     <X size={13} />
                   </button>
@@ -408,7 +405,7 @@ export function UploadPanel({
           <Sliders size={13} />
           {t.upload.optionsTitle}
         </div>
-        <div className="operation-toggle" role="group" aria-label="Ingestion mode">
+        <div className="operation-toggle" role="group" aria-label={t.upload.optionsTitle}>
           <button
             type="button"
             className={`op-button ${operation === "generate" ? "op-button-active" : ""}`}
@@ -497,7 +494,7 @@ export function UploadPanel({
         <div className="upload-error-box" role="alert">
           <AlertCircle size={18} />
           <div>
-            <strong>Error ({error.code}):</strong>
+            <strong>{t.upload.errorPrefix} ({error.code}):</strong>
             <p>{error.message}</p>
             {error.code === "AI_NOT_CONFIGURED" && (
               <small className="block mt-1 text-xs">
@@ -591,14 +588,14 @@ export function UploadPanel({
           <div className="result-header">
             <FileText size={20} className="text-blue-600" />
             <div>
-              <strong>Preview Extracted: {previewResult.fileName}</strong>
+              <strong>{t.upload.previewExtractedTitle}: {previewResult.fileName}</strong>
               <span>
-                {previewResult.sources.length} blocks · {previewResult.characterCount.toLocaleString()} characters
+                {previewResult.sources.length} {t.upload.blocksWord} · {previewResult.characterCount.toLocaleString()} {t.upload.charactersWord}
               </span>
             </div>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            The document is now loaded in the Document Viewer on the left. Ready to generate questions from it?
+            {t.upload.previewLoadedDesc}
           </p>
           <div className="result-actions">
             <Button
@@ -606,7 +603,7 @@ export function UploadPanel({
               onClick={() => handleSubmit("generate")}
             >
               <Sparkles size={16} />
-              Generate {questionCount} Questions Now
+              {t.upload.generateQuestionsNowPrefix} {questionCount} {t.upload.generateQuestionsNowSuffix}
             </Button>
           </div>
         </div>

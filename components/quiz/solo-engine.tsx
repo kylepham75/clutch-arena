@@ -684,9 +684,11 @@ export function SoloEngine({
                   ? t.nav.clutchRun
                   : activeTab === "ingest"
                     ? t.headings.uploadTitle
-                    : activeTab === "coach"
-                      ? t.headings.coachTitle
-                      : t.headings.arenaTitle}
+                    : activeTab === "notes"
+                      ? t.headings.notesTitle
+                      : activeTab === "coach"
+                        ? t.headings.coachTitle
+                        : t.headings.arenaTitle}
               </strong>
             </div>
 
@@ -708,6 +710,15 @@ export function SoloEngine({
               >
                 <FileText size={14} />
                 <span>{t.topbar.ingest}</span>
+              </button>
+              <button
+                role="tab"
+                aria-selected={activeTab === "notes"}
+                className={`topbar-tab ${activeTab === "notes" ? "active" : ""}`}
+                onClick={() => setActiveTab("notes")}
+              >
+                <FileSpreadsheet size={14} />
+                <span>{t.topbar.notes}</span>
               </button>
               <button
                 role="tab"
@@ -738,12 +749,12 @@ export function SoloEngine({
                   setPricingOpen(true);
                 }}
                 className="flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300 transition-colors cursor-pointer"
-                title="View student passes and pricing"
+                title={t.topbar.viewPricing}
               >
                 <Flame size={14} className="text-amber-600" />
                 <span suppressHydrationWarning>
                   {tier === "contender"
-                    ? language === "vi" ? "Gói Ôn Thi" : "Cram Pass"
+                    ? t.topbar.cramPassBtn
                     : tier === "cram_pass"
                       ? "Cram Pass"
                       : tier === "pro"
@@ -755,8 +766,8 @@ export function SoloEngine({
                 type="button"
                 className={`toggle-viewer-btn ${showDocViewer ? "active" : ""}`}
                 onClick={() => setShowDocViewer(!showDocViewer)}
-                title={showDocViewer ? "Hide Document Viewer" : "Show Document Viewer"}
-                aria-label="Toggle Document Viewer"
+                title={showDocViewer ? t.topbar.hideDocViewer : t.topbar.showDocViewer}
+                aria-label={t.topbar.toggleDocViewer}
               >
                 <BookOpen size={14} />
                 <span>{t.topbar.docViewer}</span>
@@ -776,8 +787,8 @@ export function SoloEngine({
                 size="sm"
                 type="button"
                 data-testid="open-pilot-feedback"
-                aria-label={language === "vi" ? "Góp ý & Báo lỗi" : "Send Feedback"}
-                title={language === "vi" ? "Góp ý & Báo lỗi" : "Send Feedback"}
+                aria-label={t.topbar.sendFeedback}
+                title={t.topbar.sendFeedback}
                 onClick={() => {
                   setFeedbackSeed(null);
                   setFeedbackOpen(true);
@@ -913,10 +924,10 @@ export function SoloEngine({
                                 <Sparkles size={20} className="text-amber-600" />
                               </div>
                               <div>
-                                <h2>Welcome to Clutch Arena</h2>
-                                <p>No study deck loaded yet. Take the quick tour to see how it works, upload your course notes, or try our example deck.</p>
+                                <h2>{t.run.welcomeTitle}</h2>
+                                <p>{t.run.welcomeDesc}</p>
                               </div>
-                              <span className="tag tag-amber">Getting Started</span>
+                              <span className="tag tag-amber">{t.run.gettingStartedTag}</span>
                             </div>
 
                             <div className="welcome-actions-grid">
@@ -932,8 +943,8 @@ export function SoloEngine({
                                 <div className="welcome-card-icon amber">
                                   <Compass size={18} />
                                 </div>
-                                <strong>Interactive Tutorial</strong>
-                                <span>Take a 1-minute guided tour of active recall and live arenas.</span>
+                                <strong>{t.run.welcomeTutorialTitle}</strong>
+                                <span>{t.run.welcomeTutorialDesc}</span>
                               </div>
 
                               <div
@@ -949,10 +960,10 @@ export function SoloEngine({
                                   <FileSpreadsheet size={18} />
                                 </div>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                  <strong>Clutch Notes AI</strong>
+                                  <strong>{t.run.welcomeNotesTitle}</strong>
                                   <span style={{ fontSize: "10px", fontWeight: 800, background: "#e96b44", color: "#fff", padding: "1px 5px", borderRadius: "4px" }}>PRO</span>
                                 </div>
-                                <span>Turn 27-slide lecture decks into 3-page bilingual revision notes with LaTeX &amp; PDF export.</span>
+                                <span>{t.run.welcomeNotesDesc}</span>
                               </div>
 
                               <div
@@ -967,8 +978,8 @@ export function SoloEngine({
                                 <div className="welcome-card-icon emerald">
                                   <Upload size={18} />
                                 </div>
-                                <strong>Upload Study Notes</strong>
-                                <span>Drop your lecture PDFs, DOCX, or PPTX to generate study questions.</span>
+                                <strong>{t.run.welcomeUploadTitle}</strong>
+                                <span>{t.run.welcomeUploadDesc}</span>
                               </div>
 
                               <div
@@ -983,8 +994,8 @@ export function SoloEngine({
                                 <div className="welcome-card-icon blue">
                                   <Play size={18} fill="currentColor" />
                                 </div>
-                                <strong>Load Example Deck</strong>
-                                <span>Try 15 questions from Microeconomics Ch 1–5 with citations.</span>
+                                <strong>{t.run.welcomeSampleTitle}</strong>
+                                <span>{t.run.welcomeSampleDesc}</span>
                               </div>
                             </div>
                           </section>
@@ -1051,7 +1062,7 @@ export function SoloEngine({
                            variant="outline"
                            size="sm"
                            onClick={openLibrary}
-                           title="Switch or import a different study deck"
+                           title={t.run.switchDeckTooltip}
                            className="change-deck-btn"
                            data-testid="clutch-run-change-deck-btn"
                          >
@@ -1062,7 +1073,7 @@ export function SoloEngine({
                            variant="outline"
                            size="sm"
                            onClick={() => setShareOpen(true)}
-                           title="Share & export pack"
+                           title={t.run.shareExportTooltip}
                          >
                            <Share2 size={14} />
                            <span>{t.library.shareBtn}</span>
@@ -1123,13 +1134,13 @@ export function SoloEngine({
                        </div>
                      )}
                      <div className="field-label flex items-center justify-between">
-                       <span>{language === "vi" ? "Số lượng câu hỏi" : "Session Length"}</span>
+                       <span>{t.run.sessionLength}</span>
                        {tier === "contender" && (
                          <span
                            suppressHydrationWarning
                            className="text-[11px] font-semibold text-amber-700 dark:text-amber-400"
                          >
-                           Contender (Max 10Q)
+                           {t.run.contenderMax10Q}
                          </span>
                        )}
                      </div>
@@ -1159,7 +1170,7 @@ export function SoloEngine({
                                  : "border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 text-stone-600 dark:text-stone-300 hover:border-stone-300"
                              }`}
                            >
-                             <span>{count} {language === "vi" ? "câu" : "Questions"}</span>
+                             <span>{count} {t.run.questionsUnit}</span>
                              {isLocked && (
                                <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500 text-stone-950">
                                  Pro
@@ -1254,7 +1265,7 @@ export function SoloEngine({
                          className="flashcard-button"
                          onClick={() => setShowFlashcards(true)}
                          disabled={!pack.questions.length}
-                         title="Review cards before the timed run"
+                         title={t.run.reviewFlashcardsTooltip}
                        >
                          <Layers3 size={16} />
                          {t.run.flashcards}
@@ -1271,15 +1282,15 @@ export function SoloEngine({
                         <div className="weak-spot-header">
                           <span className="weak-spot-title">
                             <Zap size={13} fill="currentColor" />
-                            Comeback Sprint Ready
+                            {t.run.comebackSprintReady}
                           </span>
                           <span className="mastery-badge badge-weak">
-                            {getWeakSpotsForPack(pack, masteryStore).length} weak spot{getWeakSpotsForPack(pack, masteryStore).length > 1 ? "s" : ""}
+                            {getWeakSpotsForPack(pack, masteryStore).length} {getWeakSpotsForPack(pack, masteryStore).length > 1 ? t.run.weakSpotPlural : t.run.weakSpotSingle}
                           </span>
                         </div>
                         <p className="weak-spot-desc">
-                          Target {getWeakSpotsForPack(pack, masteryStore).slice(0, 2).map((w) => w.topic).join(", ")}
-                          {getWeakSpotsForPack(pack, masteryStore).length > 2 ? ` +${getWeakSpotsForPack(pack, masteryStore).length - 2} more` : ""} in a rapid 5-question sprint.
+                          {t.run.weakSpotTargetPrefix} {getWeakSpotsForPack(pack, masteryStore).slice(0, 2).map((w) => w.topic).join(", ")}
+                          {getWeakSpotsForPack(pack, masteryStore).length > 2 ? ` +${getWeakSpotsForPack(pack, masteryStore).length - 2} ${t.run.weakSpotMore}` : ""} {t.run.weakSpotTargetSuffix}
                         </p>
                         <Button
                           size="sm"
@@ -1384,10 +1395,10 @@ export function SoloEngine({
                         variant="ghost"
                         size="sm"
                         onClick={openLibrary}
-                        title="Switch study deck"
+                        title={t.run.switchDeck}
                       >
                         <FolderSync size={14} />
-                        Switch deck
+                        {t.run.switchDeck}
                       </Button>
                       <Button
                         variant="ghost"
@@ -1395,7 +1406,7 @@ export function SoloEngine({
                         onClick={() => openPanel("leave")}
                       >
                         <X size={15} />
-                        Leave run
+                        {t.run.leaveRun}
                       </Button>
                     </div>
                   </div>
@@ -1450,20 +1461,20 @@ export function SoloEngine({
                   <div className="keyboard-footer">
                     <Keyboard size={16} />
                     <span>
-                      <kbd>A</kbd> <kbd>B</kbd> <kbd>C</kbd> <kbd>D</kbd> or{" "}
-                      <kbd>1</kbd>–<kbd>4</kbd> to answer
+                      <kbd>A</kbd> <kbd>B</kbd> <kbd>C</kbd> <kbd>D</kbd> {t.run.orWord}{" "}
+                      <kbd>1</kbd>–<kbd>4</kbd> {t.run.keyboardAnswerHint}
                     </span>
                     <span className="keyboard-separator" />
                     <span>
-                      <kbd>Enter</kbd> / <kbd>Space</kbd> to continue
+                      <kbd>Enter</kbd> / <kbd>Space</kbd> {t.run.keyboardContinueHint}
                     </span>
                   </div>
                 </section>
                 <aside className="run-sidebar">
                   <section className="session-card">
-                    <span className="eyebrow">YOUR SESSION</span>
+                    <span className="eyebrow">{t.run.yourSession}</span>
                     <div className="session-progress-title">
-                      <h3>One concept at a time.</h3>
+                      <h3>{t.run.oneConceptAtATime}</h3>
                       <span>
                         {completedOriginals}/{pack ? pack.questions.length : 0}
                       </span>
@@ -1500,13 +1511,13 @@ export function SoloEngine({
                             </span>
                             <div>
                               <strong>
-                                {topic.topic || "Practice concept"}
+                                {topic.topic || t.run.practiceConceptFallback}
                               </strong>
                               <small>
                                 {state.missed.includes(topic.id) && !mastered
-                                  ? `Reinforcing · ${state.mastery[topic.id] || 0}/2 correct`
+                                  ? `${t.run.reinforcing} · ${state.mastery[topic.id] || 0}/2 ${t.run.correctCountWord}`
                                   : mastered
-                                    ? "Looking good"
+                                    ? t.run.lookingGood
                                     : topic.chapter}
                               </small>
                             </div>
@@ -1517,8 +1528,8 @@ export function SoloEngine({
                     </div>
                     <div className="session-mode">
                       <Sparkles size={14} />
-                      {mode === "variants" ? "Concept remix" : "Classic recall"}
-                      <span>15s / question</span>
+                      {mode === "variants" ? t.run.conceptRemix : t.run.classicRecall}
+                      <span>{t.run.perQuestion15s}</span>
                     </div>
                   </section>
                   <Button
@@ -1531,7 +1542,7 @@ export function SoloEngine({
                     disabled={state.phase !== "answering"}
                   >
                     <Pause size={15} />
-                    Take a breather
+                    {t.run.takeABreather}
                   </Button>
                 </aside>
               </div>
@@ -1576,29 +1587,29 @@ export function SoloEngine({
         <Dialog
           open={panel === "progress"}
           onOpenChange={closePanel}
-          title="Every session adds up."
-          description="Completed runs saved in this browser, on this device."
+          title={t.run.progressTitle}
+          description={t.run.progressDesc}
         >
           <div className="progress-totals">
             <div>
               <strong>{history.length}</strong>
-              <span>Runs completed</span>
+              <span>{t.run.runsCompleted}</span>
             </div>
             <div>
               <strong>{totalXp.toLocaleString()}</strong>
-              <span>Total XP</span>
+              <span>{t.run.totalXp}</span>
             </div>
             <div>
               <strong>
                 {Math.max(0, ...history.map((r) => r.bestStreak))}
               </strong>
-              <span>Best streak</span>
+              <span>{t.run.bestStreakLabel}</span>
             </div>
             <div>
               <strong>
                 {Object.values(masteryStore).filter((s) => getMasteryLevel(s).level === "mastered").length}
               </strong>
-              <span>Mastered</span>
+              <span>{t.run.masteredLabel}</span>
             </div>
           </div>
           <div className="progress-tabs-nav">
@@ -1607,14 +1618,14 @@ export function SoloEngine({
               className={`progress-tab-btn ${progressTab === "runs" ? "active" : ""}`}
               onClick={() => setProgressTab("runs")}
             >
-              Runs History ({history.length})
+              {t.run.runsHistoryTab} ({history.length})
             </button>
             <button
               type="button"
               className={`progress-tab-btn ${progressTab === "mastery" ? "active" : ""}`}
               onClick={() => setProgressTab("mastery")}
             >
-              Concept Mastery ({Object.keys(masteryStore).length})
+              {t.run.conceptMasteryTab} ({Object.keys(masteryStore).length})
             </button>
           </div>
           {progressTab === "runs" ? (
@@ -1626,13 +1637,13 @@ export function SoloEngine({
                       <Zap size={17} />
                     </span>
                     <div>
-                      <strong>Microeconomics practice</strong>
+                      <strong>{pack?.title || t.run.practiceRunItemTitle}</strong>
                       <small>
-                        {new Date(run.date).toLocaleDateString(undefined, {
+                        {new Date(run.date).toLocaleDateString(language === "vi" ? "vi-VN" : "en-US", {
                           month: "short",
                           day: "numeric",
                         })}{" "}
-                        · {run.correct}/{run.total} correct
+                        · {run.correct}/{run.total} {t.run.correctCountWord}
                       </small>
                     </div>
                     <b>{run.score} XP</b>
@@ -1642,8 +1653,8 @@ export function SoloEngine({
             ) : (
               <div className="history-empty">
                 <Target size={34} />
-                <h3>Your first win is waiting.</h3>
-                <p>Complete a run to start your progress story.</p>
+                <h3>{t.run.historyEmptyTitle}</h3>
+                <p>{t.run.historyEmptyDesc}</p>
               </div>
             )
           ) : (
@@ -1658,12 +1669,20 @@ export function SoloEngine({
                     type="button"
                   >
                     <Zap size={13} fill="currentColor" />
-                    Launch Comeback Sprint ({getWeakSpotsForPack(pack, masteryStore).length} weak spots)
+                    {t.run.launchComeback} ({getWeakSpotsForPack(pack, masteryStore).length} {getWeakSpotsForPack(pack, masteryStore).length > 1 ? t.run.weakSpotPlural : t.run.weakSpotSingle})
                   </Button>
                 )}
                 <div className="mastery-list max-h-[260px] overflow-y-auto pr-1">
                   {Object.values(masteryStore).map((stats) => {
-                    const { score, level, label } = getMasteryLevel(stats);
+                    const { score, level } = getMasteryLevel(stats);
+                    const masteryLabel =
+                      level === "untested"
+                        ? t.run.masteryUntested
+                        : level === "mastered"
+                          ? t.run.masteryMastered
+                          : level === "weak"
+                            ? t.run.masteryNeedsReview
+                            : t.run.masteryLearning;
                     return (
                       <div key={stats.topic} className="mastery-row">
                         <div className="flex-1 min-w-0 pr-3">
@@ -1671,11 +1690,11 @@ export function SoloEngine({
                             {stats.topic}
                           </strong>
                           <small className="text-[10px] text-neutral-500">
-                            {stats.correctAttempts}/{stats.totalAttempts} correct ({score}%) · {stats.consecutiveCorrect} in a row
+                            {stats.correctAttempts}/{stats.totalAttempts} {t.run.correctCountWord} ({score}%) · {stats.consecutiveCorrect} {t.run.inARow}
                           </small>
                         </div>
                         <span className={`mastery-badge badge-${level}`}>
-                          {label}
+                          {masteryLabel}
                         </span>
                       </div>
                     );
@@ -1685,26 +1704,26 @@ export function SoloEngine({
             ) : (
               <div className="history-empty">
                 <Target size={34} />
-                <h3>No concept data yet.</h3>
-                <p>Complete practice questions to build your topic mastery profile.</p>
+                <h3>{t.run.masteryEmptyTitle}</h3>
+                <p>{t.run.masteryEmptyDesc}</p>
               </div>
             )
           )}
           <Button onClick={() => closePanel(false)}>
-            Back to practice <ArrowRight size={16} />
+            {t.run.backToPractice} <ArrowRight size={16} />
           </Button>
         </Dialog>
         <Dialog
           open={panel === "leave"}
           onOpenChange={closePanel}
-          title="Call it a practice round?"
-          description="Your clock is paused. Leaving discards this unfinished run; completed runs stay saved."
+          title={t.run.leaveDialogTitle}
+          description={t.run.leaveDialogDesc}
         >
           <div className="dialog-actions">
             <Button variant="outline" onClick={() => closePanel(false)}>
-              Keep going
+              {t.run.keepGoing}
             </Button>
-            <Button onClick={reset}>Leave run</Button>
+            <Button onClick={reset}>{t.run.leaveRun}</Button>
           </div>
         </Dialog>
         <Dialog
@@ -1712,8 +1731,8 @@ export function SoloEngine({
           onOpenChange={(open) => {
             if (!open) dispatch({ type: "RESUME", now: Date.now() });
           }}
-          title="Breathe. You’ve got time."
-          description="Your timer is paused. Take a moment and come back when you’re ready."
+          title={t.run.pauseDialogTitle}
+          description={t.run.pauseDialogDesc}
         >
           <div className="pause-illustration">
             <Pause size={36} />
@@ -1723,7 +1742,7 @@ export function SoloEngine({
             onClick={() => dispatch({ type: "RESUME", now: Date.now() })}
           >
             <Play size={17} fill="currentColor" />
-            Resume run
+            {t.run.resumeRun}
           </Button>
         </Dialog>
 

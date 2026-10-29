@@ -78,11 +78,11 @@ export function ArenaEntrance({
   const handleJoin = async (codeToJoin?: string) => {
     const targetCode = (codeToJoin || roomCode).trim().toUpperCase();
     if (!targetCode) {
-      setError("Please enter a room code.");
+      setError(t.arena.enterCodeError);
       return;
     }
     if (!nickname.trim()) {
-      setError("Please enter a nickname.");
+      setError(t.arena.enterNicknameError);
       return;
     }
 
@@ -91,13 +91,13 @@ export function ArenaEntrance({
     const success = await onJoinRoom(targetCode, nickname.trim(), avatar);
     setSubmitting(false);
     if (!success) {
-      setError("Could not join room. Check code or room may have already started.");
+      setError(t.arena.joinFailedError);
     }
   };
 
   const handleCreate = async () => {
     if (!nickname.trim()) {
-      setError("Please enter a nickname.");
+      setError(t.arena.enterNicknameError);
       return;
     }
 
@@ -113,7 +113,7 @@ export function ArenaEntrance({
     }
 
     if (!chosenPack) {
-      setError("Please select or upload a study pack before creating an arena room.");
+      setError(t.arena.selectPackError);
       setSubmitting(false);
       return;
     }
@@ -122,9 +122,7 @@ export function ArenaEntrance({
       if (unlockedRemixRuns > 0) {
         consumeRemixRun();
       } else {
-        setPricingReason(
-          "Host Privileges: Hosting custom Concept Remix arena rooms requires a 7-Day Cram Pass or Clutch Pro. Friends can join and play for free!",
-        );
+        setPricingReason(t.arena.hostPrivilegesNotice);
         setPricingOpen(true);
         setSubmitting(false);
         return;
@@ -141,7 +139,7 @@ export function ArenaEntrance({
     });
     setSubmitting(false);
     if (!code) {
-      setError("Could not create arena room. Please try again.");
+      setError(t.arena.createFailedError);
     }
   };
 
@@ -158,8 +156,8 @@ export function ArenaEntrance({
         </p>
         <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-amber-600">⚡ Host-Pays, Friends-Play-Free:</span>
-            <span>Anyone can join friend lobbies for 100% free ($0 AI cost). Only room host needs a Cram Pass or Pro to launch custom 30Q remix packs.</span>
+            <span className="font-bold text-amber-600">{t.arena.hostPaysTitle}</span>
+            <span>{t.arena.hostPaysDesc}</span>
           </div>
           <button
             type="button"
@@ -169,7 +167,7 @@ export function ArenaEntrance({
             }}
             className="text-xs font-bold underline shrink-0 hover:text-amber-600 cursor-pointer"
           >
-            View Tiers & Passes
+            {t.arena.viewTiersBtn}
           </button>
         </div>
       </div>
@@ -258,15 +256,15 @@ export function ArenaEntrance({
                   <div>
                     <strong>{presetPack.title}</strong>
                     <small data-testid="arena-preset-pack">
-                      {presetPack.questions.length} {t.library.questionsCount} · {t.arena.currentPack}
+                      {presetPack.questions.length} {t.arena.questionsUnit} · {t.arena.currentPack}
                     </small>
                   </div>
                 </label>
               )}
               {!presetPack && libraryItems.length === 0 && (
                 <div className="p-4 rounded-xl border border-dashed border-stone-300 bg-stone-50 text-center text-xs text-stone-600 my-2">
-                  <p className="font-semibold text-stone-800 mb-1">No Study Packs Found</p>
-                  <p>Upload lecture notes in the Ingest tab to generate a custom study pack to host here.</p>
+                  <p className="font-semibold text-stone-800 mb-1">{t.arena.noPacksTitle}</p>
+                  <p>{t.arena.noPacksDesc}</p>
                 </div>
               )}
 
@@ -287,7 +285,7 @@ export function ArenaEntrance({
                   </span>
                   <div>
                     <strong>{item.title}</strong>
-                    <small>{item.questionCount} {t.library.questionsCount} · {t.arena.userLibrary}</small>
+                    <small>{item.questionCount} {t.arena.questionsUnit} · {t.arena.userLibrary}</small>
                   </div>
                 </label>
               ))}
@@ -310,9 +308,7 @@ export function ArenaEntrance({
                 className={`mode-btn ${mode === "variants" ? "active" : ""}`}
                 onClick={() => {
                   if (!limits.canHostArenaRemix && unlockedRemixRuns === 0) {
-                    setPricingReason(
-                      "Host Privileges: Hosting Concept Remix arena rooms requires a 7-Day Cram Pass or Clutch Pro. Friends can join and play for free!",
-                    );
+                    setPricingReason(t.arena.hostPrivilegesNotice);
                     setPricingOpen(true);
                     return;
                   }
@@ -324,7 +320,7 @@ export function ArenaEntrance({
                   <strong>{t.arena.conceptRemix}</strong>
                   {!limits.canHostArenaRemix && (
                     <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-amber-500 text-stone-950 ml-auto">
-                      {unlockedRemixRuns > 0 ? `${unlockedRemixRuns} Pass` : "Pro"}
+                      {unlockedRemixRuns > 0 ? `${unlockedRemixRuns} ${t.arena.passSuffix}` : t.arena.proBadge}
                     </span>
                   )}
                 </div>
@@ -360,7 +356,7 @@ export function ArenaEntrance({
                     void handleJoin();
                   }
                 }}
-                placeholder="CLUTCH"
+                placeholder={t.arena.roomCodePlaceholder}
                 className="text-input arena-code-input"
               />
               <Button onClick={() => handleJoin()} disabled={submitting}>
@@ -382,8 +378,8 @@ export function ArenaEntrance({
                       <div>
                         <strong>{r.title}</strong>
                         <small>
-                          Code: <b>{r.code}</b> · {Object.keys(r.players).length}{" "}
-                          player(s)
+                          {t.arena.codeLabel} <b>{r.code}</b> · {Object.keys(r.players).length}{" "}
+                          {t.arena.playersWord}
                         </small>
                       </div>
                       <Button size="sm" variant="outline">

@@ -103,7 +103,7 @@ export function CoachPanel({
 
   if (!document) {
     return (
-      <div className="coach-panel coach-empty surface" aria-label="AI Study Coach">
+      <div className="coach-panel coach-empty surface" aria-label={t.coach.title}>
         <div className="coach-empty-state">
           <div className="section-icon">
             <Sparkles size={24} />
@@ -122,7 +122,7 @@ export function CoachPanel({
   }
 
   return (
-    <section className="coach-panel surface" aria-label="AI Study Coach Chat">
+    <section className="coach-panel surface" aria-label={t.coach.title}>
       <header className="coach-header">
         <div className="section-top">
           <div className="section-icon">
@@ -143,14 +143,14 @@ export function CoachPanel({
                 <>
                   <Lightbulb size={14} className="text-amber-500" />
                   <span>
-                    Focus: Missed question &ldquo;{activeFocus.topic || activeFocus.question.slice(0, 40)}...&rdquo;
+                    {t.coach.focusMissedPrefix} &ldquo;{activeFocus.topic || activeFocus.question.slice(0, 40)}...&rdquo;
                   </span>
                 </>
               ) : (
                 <>
                   <RotateCcw size={14} className="text-purple-500" />
                   <span>
-                    Focus: Post-run debrief ({activeFocus.correct}/{activeFocus.total} correct, {activeFocus.score} XP)
+                    {t.coach.focusDebriefPrefix} ({activeFocus.correct}/{activeFocus.total} {t.coach.focusDebriefCorrect}, {activeFocus.score} XP)
                   </span>
                 </>
               )}
@@ -162,8 +162,8 @@ export function CoachPanel({
                 onClick={() =>
                   handleSend(
                     activeFocus.type === "explain"
-                      ? "Why is the correct answer right, and what was the main trap in this question?"
-                      : "Can you debrief my run, identify my biggest conceptual weaknesses, and give me a 3-step review plan?",
+                      ? t.coach.explainAutoPrompt
+                      : t.coach.debriefAutoPrompt,
                     activeFocus,
                   )
                 }
@@ -175,8 +175,8 @@ export function CoachPanel({
                 <button
                   className="coach-clear-focus-btn"
                   onClick={onClearFocus}
-                  title="Dismiss focus"
-                  aria-label="Dismiss active focus"
+                  title={t.coach.dismissFocus}
+                  aria-label={t.coach.dismissFocus}
                 >
                   ✕
                 </button>
@@ -261,11 +261,11 @@ export function CoachPanel({
         {isStreaming && (
           <div className="coach-streaming-indicator">
             <span className="pulse-dot" />
-            <span>Coach is analyzing source material...</span>
+            <span>{t.coach.streamingStatus}</span>
             <button
               className="coach-stop-btn"
               onClick={stop}
-              aria-label="Stop generating response"
+              aria-label={t.coach.stop}
             >
               <Square size={12} />
               {t.coach.stop}
@@ -283,9 +283,9 @@ export function CoachPanel({
                   return parsed.error?.message || error.message;
                 } catch {
                   if (error.message === "An error occurred.") {
-                    return "AI Coach encountered an issue connecting to the model. Please verify your GEMINI_API_KEY or GROQ_API_KEY and try again.";
+                    return t.coach.connectionError;
                   }
-                  return error.message || "Failed to get coach response. Check API configuration or try again.";
+                  return error.message || t.coach.genericCoachError;
                 }
               })()}
             </span>
@@ -302,7 +302,7 @@ export function CoachPanel({
           onChange={(e) => setInputVal(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={t.coach.placeholder}
-          aria-label="Ask the AI Study Coach"
+          aria-label={t.coach.placeholder}
           rows={1}
           maxLength={2000}
           className="coach-textarea"
@@ -313,7 +313,7 @@ export function CoachPanel({
           className="btn-primary"
           onClick={() => handleSend()}
           disabled={!inputVal.trim() || isStreaming}
-          aria-label="Send message"
+          aria-label={t.coach.send}
         >
           <Send size={14} />
         </Button>
@@ -325,7 +325,18 @@ export function CoachPanel({
 function getCitationDisplay(
   sourceId: string,
   document?: ParsedDocument | null,
+  labels?: { docWord: string; slideWord: string },
 ): { label: string; fullTitle: string } {
+  const docWord = labels?.docWord || "Doc";
+  const slideWord = labels?.slideWord || "Slide";
+
+  const localizeLabel = (rawLabel: string) => {
+    return rawLabel
+      .replace(/^Doc\s+(\d+)\s*·\s*Slide\s+(\d+)/i, `${docWord} $1 · ${slideWord} $2`)
+      .replace(/^Slide\s+(\d+)/i, `${slideWord} $1`)
+      .replace(/^Page\s+(\d+)/i, `${slideWord} $1`);
+  };
+
   if (!document || !document.sources) {
     return { label: sourceId, fullTitle: sourceId };
   }
@@ -333,7 +344,8 @@ function getCitationDisplay(
   // 1. Exact match in sources
   const direct = document.sources.find((s) => s.id === sourceId);
   if (direct && direct.label) {
-    return { label: direct.label, fullTitle: `${direct.label} (${sourceId})` };
+    const label = localizeLabel(direct.label);
+    return { label, fullTitle: `${label} (${sourceId})` };
   }
 
   // 2. Loose match (prefix or suffix)
@@ -344,7 +356,8 @@ function getCitationDisplay(
       s.id === `doc0_${sourceId}`,
   );
   if (loose && loose.label) {
-    return { label: loose.label, fullTitle: `${loose.label} (${sourceId})` };
+    const label = localizeLabel(loose.label);
+    return { label, fullTitle: `${label} (${sourceId})` };
   }
 
   // 3. Fallback parser: doc0_page-9 -> Doc 1 · Slide 9
@@ -352,13 +365,13 @@ function getCitationDisplay(
   if (docMatch) {
     const docIdx = parseInt(docMatch[1], 10) + 1;
     const pageNum = docMatch[2];
-    const label = `Doc ${docIdx} · Slide ${pageNum}`;
+    const label = `${docWord} ${docIdx} · ${slideWord} ${pageNum}`;
     return { label, fullTitle: `${label} (${sourceId})` };
   }
 
   const pageMatch = sourceId.match(/^(?:page-)?(\d+)$/i);
   if (pageMatch) {
-    const label = `Slide ${pageMatch[1]}`;
+    const label = `${slideWord} ${pageMatch[1]}`;
     return { label, fullTitle: `${label} (${sourceId})` };
   }
 
@@ -374,6 +387,7 @@ function FormattedInlineSegment({
   onSelectCitation?: (sourceId: string) => void;
   document?: ParsedDocument | null;
 }) {
+  const { t } = useLanguage();
   // Matches [[id1, id2]] or [[id]] or [docN_page-X]
   const citationTokenRegex = /(\[\[[a-zA-Z0-9_\-.,\s]+\]\]|\[doc\d+_[a-zA-Z0-9_\-]+\])/g;
   const citationParts = text.split(citationTokenRegex);
@@ -403,15 +417,18 @@ function FormattedInlineSegment({
                 className="inline-flex flex-wrap items-center gap-1 mx-1 align-baseline"
               >
                 {ids.map((sourceId, sIdx) => {
-                  const { label, fullTitle } = getCitationDisplay(sourceId, document);
+                  const { label, fullTitle } = getCitationDisplay(sourceId, document, {
+                    docWord: t.coach.docWord,
+                    slideWord: t.coach.slideWord,
+                  });
                   return (
                     <button
                       key={sIdx}
                       type="button"
                       className="coach-citation-pill inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-amber-200/90 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-medium transition-colors align-baseline shadow-xs"
                       onClick={() => onSelectCitation?.(sourceId)}
-                      title={`Jump to ${fullTitle} in Document Viewer`}
-                      aria-label={`Jump to citation ${label}`}
+                      title={`${t.coach.jumpToCitation} ${fullTitle} ${t.coach.jumpToCitationViewerSuffix}`}
+                      aria-label={`${t.coach.jumpToCitationAria}: ${label}`}
                     >
                       <BookOpen size={11} className="text-amber-700 shrink-0" />
                       <span>{label}</span>

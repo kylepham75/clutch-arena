@@ -54,7 +54,7 @@ export function PricingModal({
   onClose: () => void;
   initialReason?: string | null;
 }) {
-  const { language } = useLanguage();
+  const { t, language } = useLanguage();
   const { tier, setTier, referrals, daysRemaining, refreshTier } = useUserTier();
   const { user, session, openAuthModal } = useAuth();
   const openAuthDialog = openAuthModal;
@@ -75,7 +75,11 @@ export function PricingModal({
   const [authRequiredForPayment, setAuthRequiredForPayment] = useState(false);
   const isCreatingRef = useRef(false);
 
-  const isVi = language === "vi" || currency === "vnd";
+  const isVi = language === "vi";
+
+  useEffect(() => {
+    setCurrency(language === "vi" ? "vnd" : "usd");
+  }, [language]);
 
   const sendSmokeTestTelemetry = (
     planId: "cram_pass" | "pro" | "tutor",
@@ -358,7 +362,7 @@ export function PricingModal({
     }
   };
 
-  const displayBankName = payosOrder ? "MBBank (Napas 24/7)" : "Ngân hàng liên kết PayOS";
+  const displayBankName = payosOrder ? "MBBank (Napas 24/7)" : t.pricing.payosLinkedBank;
   const displayAccountNumber = payosOrder?.accountNumber || "";
   const displayAccountName = payosOrder?.accountName || "PayOS VietQR";
   const displayTransferNote = payosOrder?.description || "";
@@ -462,7 +466,7 @@ export function PricingModal({
               }}
               className="text-xs font-semibold text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 mb-3 flex items-center gap-1"
             >
-              ← {isVi ? "Quay lại danh sách gói" : "Back to all plans"}
+              ← {t.pricing.backToPlans}
             </button>
 
             {/* Authentication Callout Banner */}
@@ -511,7 +515,7 @@ export function PricingModal({
                   <div className="flex items-center gap-2 mb-2">
                     <QrCode size={18} className="text-amber-600" />
                     <span className="text-xs font-bold uppercase tracking-wider text-stone-700 dark:text-stone-300">
-                      Quét mã VietQR (MoMo, ZaloPay, Mọi Ngân Hàng)
+                      {t.pricing.vietQrHeader}
                     </span>
                   </div>
 
@@ -567,34 +571,38 @@ export function PricingModal({
 
                   <span className="text-[11px] text-stone-500 mt-2 flex items-center gap-1">
                     <Clock size={12} />
-                    {isVi ? "Xác nhận tự động trong 3 giây" : "Auto-verified in 3 seconds"}
+                    {t.pricing.autoVerifiedIn3s}
                   </span>
                 </div>
 
                 <div className="space-y-3">
                   <div className="p-3 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800">
-                    <div className="text-xs text-stone-500 font-medium">Gói đăng ký</div>
+                    <div className="text-xs text-stone-500 font-medium">{t.pricing.selectedPlanLabel}</div>
                     <div className="text-base font-bold text-amber-700 dark:text-amber-400">
-                      {selectedPlan.nameVi} ·{" "}
+                      {isVi ? selectedPlan.nameVi : selectedPlan.nameEn} ·{" "}
                       {payosOrder
-                        ? `${payosOrder.amount.toLocaleString("vi-VN")}đ`
+                        ? `${payosOrder.amount.toLocaleString(isVi ? "vi-VN" : "en-US")}đ`
                         : selectedPlan.priceVndFormatted}
                       {selectedPlan.cycle === "semester"
-                        ? " / 4 tháng"
+                        ? isVi
+                          ? " / 4 tháng"
+                          : " / 4 months"
                         : selectedPlan.cycle === "monthly"
-                          ? " / tháng"
+                          ? isVi
+                            ? " / tháng"
+                            : " / mo"
                           : ""}
                     </div>
                   </div>
 
                   <div className="p-3 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800 space-y-2 text-xs">
                     <div className="flex justify-between items-center">
-                      <span className="text-stone-500">Ngân hàng:</span>
+                      <span className="text-stone-500">{t.pricing.bankLabel}</span>
                       <span className="font-semibold">{displayBankName}</span>
                     </div>
 
                     <div className="flex justify-between items-center">
-                      <span className="text-stone-500">Số tài khoản:</span>
+                      <span className="text-stone-500">{t.pricing.accountNumberLabel}</span>
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono font-bold text-stone-900 dark:text-stone-100">
                           {displayAccountNumber}
@@ -603,7 +611,7 @@ export function PricingModal({
                           type="button"
                           onClick={() => handleCopy(displayAccountNumber, "acc")}
                           className="p-1 hover:bg-stone-100 dark:hover:bg-stone-800 rounded text-stone-500 cursor-pointer"
-                          title="Sao chép số tài khoản"
+                          title={t.pricing.copyAccountTitle}
                         >
                           {copiedField === "acc" ? (
                             <Check size={12} className="text-emerald-600" />
@@ -615,12 +623,12 @@ export function PricingModal({
                     </div>
 
                     <div className="flex justify-between items-center">
-                      <span className="text-stone-500">Chủ tài khoản:</span>
+                      <span className="text-stone-500">{t.pricing.accountNameLabel}</span>
                       <span className="font-semibold">{displayAccountName}</span>
                     </div>
 
                     <div className="flex justify-between items-center pt-1 border-t border-stone-100 dark:border-stone-800">
-                      <span className="text-stone-500">Nội dung chuyển khoản:</span>
+                      <span className="text-stone-500">{t.pricing.transferNoteLabel}</span>
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono font-bold text-amber-600 dark:text-amber-400">
                           {displayTransferNote}
@@ -629,7 +637,7 @@ export function PricingModal({
                           type="button"
                           onClick={() => handleCopy(displayTransferNote, "note")}
                           className="p-1 hover:bg-stone-100 dark:hover:bg-stone-800 rounded text-stone-500 cursor-pointer"
-                          title="Sao chép nội dung"
+                          title={t.pricing.copyNoteTitle}
                         >
                           {copiedField === "note" ? (
                             <Check size={12} className="text-emerald-600" />
@@ -654,8 +662,8 @@ export function PricingModal({
                       className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl shadow-sm cursor-pointer"
                     >
                       {simulating
-                        ? "Đang kiểm tra xác thực giao dịch..."
-                        : "Kiểm tra trạng thái thanh toán"}
+                        ? t.pricing.checkingPaymentBtn
+                        : t.pricing.verifyPaymentBtn}
                     </Button>
 
                     {payosOrder?.checkoutUrl && (
@@ -665,14 +673,14 @@ export function PricingModal({
                         rel="noopener noreferrer"
                         className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold py-2 px-3 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-200 transition-colors shadow-xs"
                       >
-                        <span>Mở cổng thanh toán PayOS</span>
+                        <span>{t.pricing.openPayosPortal}</span>
                         <ExternalLink size={14} />
                       </a>
                     )}
                   </div>
 
                   <p className="text-[11px] text-center text-stone-500">
-                    Bảo mật 100% · Hệ thống tự động kích hoạt sau khi ngân hàng xác nhận giao dịch.
+                    {t.pricing.securityNote}
                   </p>
                 </div>
               </div>
@@ -680,30 +688,38 @@ export function PricingModal({
               /* Global USD Checkout */
               <div className="global-usd-checkout max-w-md mx-auto text-center space-y-4 py-4">
                 <div className="p-4 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800">
-                  <span className="text-xs text-stone-500 font-medium">Selected Plan</span>
+                  <span className="text-xs text-stone-500 font-medium">{t.pricing.selectedPlanLabel}</span>
                   <div className="text-xl font-black text-amber-600 dark:text-amber-400 mt-1">
-                    {selectedPlan.nameEn}
+                    {isVi ? selectedPlan.nameVi : selectedPlan.nameEn}
                   </div>
                   <div className="text-2xl font-bold text-stone-900 dark:text-stone-100 mt-0.5">
                     {selectedPlan.priceUsdFormatted}
                     <span className="text-sm font-semibold text-stone-500 ml-1">
                       {selectedPlan.cycle === "semester"
-                        ? "/ 4 months"
+                        ? isVi
+                          ? " / 4 tháng"
+                          : " / 4 months"
                         : selectedPlan.cycle === "monthly"
-                          ? "/ mo"
+                          ? isVi
+                            ? " / tháng"
+                            : " / mo"
                           : ""}
                     </span>
                   </div>
                   <div className="text-xs text-stone-500 mt-1">
                     {selectedPlan.cycle === "one_time"
-                      ? "One-time purchase · No subscription"
-                      : "Billed automatically"}
+                      ? isVi
+                        ? "Mua 1 lần · Không gia hạn"
+                        : "One-time purchase · No subscription"
+                      : isVi
+                        ? "Gia hạn tự động định kỳ"
+                        : "Billed automatically"}
                   </div>
                 </div>
 
                 <div className="flex items-center justify-center gap-2 text-stone-500 text-xs font-medium">
                   <CreditCard size={15} />
-                  <span>Apple Pay · Google Pay · Credit & Debit Cards</span>
+                  <span>{t.pricing.globalCardsLabel}</span>
                 </div>
 
                 {verificationError && (
@@ -717,13 +733,13 @@ export function PricingModal({
                   disabled={simulating}
                   className="w-full bg-stone-900 dark:bg-amber-500 dark:text-stone-950 text-white hover:bg-stone-800 font-bold py-3 rounded-xl shadow-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  {simulating ? "Verifying payment status..." : "Verify Payment / Check Status"}
+                  {simulating ? t.pricing.checkingPaymentBtn : t.pricing.verifyPaymentBtn}
                   <ExternalLink size={15} />
                 </Button>
 
                 <p className="text-[11px] text-stone-500 flex items-center justify-center gap-1">
                   <ShieldCheck size={13} className="text-emerald-600" />
-                  Processed securely by LemonSqueezy Merchant of Record. Tax compliant.
+                  {t.pricing.globalSecurityNote}
                 </p>
               </div>
             )}

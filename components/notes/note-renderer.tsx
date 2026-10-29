@@ -13,6 +13,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { MathText } from "@/components/ui/math-text";
 import { exportClutchNotePdf } from "@/lib/notes/export-pdf";
+import {
+  translations,
+  type TranslationDict,
+  type Language,
+} from "@/lib/i18n/translations";
 import type {
   ClutchNote,
   NoteFormula,
@@ -21,6 +26,36 @@ import type {
   TextbookDivergenceNotice,
   FormulaLedgerEntry,
 } from "@/lib/schemas/notes";
+
+let realUseLanguage:
+  | (() => { language: Language; setLanguage: (lang: Language) => void; t: TranslationDict })
+  | null = null;
+
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ctx = require("@/lib/i18n/context");
+  if (ctx && typeof ctx.useLanguage === "function") {
+    realUseLanguage = ctx.useLanguage;
+  }
+} catch {
+  // Graceful fallback in environments (such as custom test transpilers)
+  // where relative imports inside @/lib/i18n/context cannot be resolved.
+}
+
+export function useLanguage() {
+  if (realUseLanguage) {
+    try {
+      return realUseLanguage();
+    } catch {
+      // Fallback if called outside provider
+    }
+  }
+  return {
+    language: "en" as Language,
+    setLanguage: () => {},
+    t: translations.en,
+  };
+}
 
 interface NoteRendererProps {
   note: ClutchNote;
@@ -35,10 +70,14 @@ interface UncapturedFormulaItem {
   reason: string;
 }
 
-export function formatSlideList(slides: number[]): string {
+export function formatSlideList(
+  slides: number[],
+  slideWord: string = "Slide",
+  slidesWord: string = "Slides"
+): string {
   if (!slides || slides.length === 0) return "";
   const sorted = Array.from(new Set(slides)).sort((a, b) => a - b);
-  if (sorted.length === 1) return `Slide ${sorted[0]}`;
+  if (sorted.length === 1) return `${slideWord} ${sorted[0]}`;
 
   const ranges: string[] = [];
   let start = sorted[0];
@@ -56,7 +95,7 @@ export function formatSlideList(slides: number[]): string {
   }
   ranges.push(start === prev ? `${start}` : `${start}–${prev}`);
 
-  return `Slides ${ranges.join(", ")}`;
+  return `${slidesWord} ${ranges.join(", ")}`;
 }
 
 export function SlideChip({
@@ -68,7 +107,14 @@ export function SlideChip({
   slides?: number[];
   label?: string;
 }) {
-  const text = label || (slides ? formatSlideList(slides) : slide ? `Slide ${slide}` : null);
+  const { t } = useLanguage();
+  const text =
+    label ||
+    (slides
+      ? formatSlideList(slides, t.notes.slideWord, t.notes.slidesWord)
+      : slide
+        ? `${t.notes.slideWord} ${slide}`
+        : null);
   if (!text) return null;
   return (
     <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-sans font-medium bg-[#f3f4f6] text-[#4b5563] border border-[#e5e7eb] select-none tracking-tight">
@@ -84,6 +130,7 @@ export function ItemStatusChip({
   status?: string;
   reviewReason?: string;
 }) {
+  const { t } = useLanguage();
   if (status === "contradicted") {
     return (
       <span
@@ -91,7 +138,7 @@ export function ItemStatusChip({
         className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-sans font-medium bg-rose-50 text-rose-700 border border-rose-200 select-none"
       >
         <AlertOctagon size={11} className="stroke-[2.5]" />
-        <span>Contradicted</span>
+        <span>{t.notes.contradictedBadge}</span>
       </span>
     );
   }
@@ -102,7 +149,7 @@ export function ItemStatusChip({
         className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-sans font-medium bg-amber-50 text-amber-700 border border-amber-200 select-none"
       >
         <AlertTriangle size={11} className="stroke-[2.5]" />
-        <span>Needs review</span>
+        <span>{t.notes.needsReviewBadge}</span>
       </span>
     );
   }
@@ -110,11 +157,12 @@ export function ItemStatusChip({
 }
 
 export function FormulaStatusBadge({ formula }: { formula: NoteFormula }) {
+  const { t } = useLanguage();
   if (formula.status === "contradicted") {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-sans font-medium bg-rose-50 text-rose-700 border border-rose-200 select-none">
         <AlertOctagon size={12} className="stroke-[2.5]" />
-        <span>Contradicted</span>
+        <span>{t.notes.contradictedBadge}</span>
       </span>
     );
   }
@@ -123,7 +171,7 @@ export function FormulaStatusBadge({ formula }: { formula: NoteFormula }) {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-sans font-medium bg-amber-50 text-amber-700 border border-amber-200 select-none">
         <AlertTriangle size={12} className="stroke-[2.5]" />
-        <span>Needs review</span>
+        <span>{t.notes.needsReviewBadge}</span>
       </span>
     );
   }
@@ -136,8 +184,8 @@ export function FormulaStatusBadge({ formula }: { formula: NoteFormula }) {
   if (isDerived) {
     const derivedLabel =
       formula.derivedFrom && formula.derivedFrom.length > 0
-        ? `Derived from ${formula.derivedFrom.join(", ")}`
-        : "Derived";
+        ? `${t.notes.derivedFromPrefix} ${formula.derivedFrom.join(", ")}`
+        : t.notes.derivedBadge;
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-sans font-medium bg-indigo-50 text-indigo-700 border border-indigo-200 select-none">
         <Sparkles size={12} className="stroke-[2]" />
@@ -150,7 +198,7 @@ export function FormulaStatusBadge({ formula }: { formula: NoteFormula }) {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-sans font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 select-none">
         <Check size={12} className="stroke-[2.5]" />
-        <span>Verified</span>
+        <span>{t.notes.verifiedBadge}</span>
       </span>
     );
   }
@@ -163,12 +211,13 @@ export function TextbookDivergenceCard({
 }: {
   notice: TextbookDivergenceNotice;
 }) {
+  const { t } = useLanguage();
   return (
     <div className="my-2.5 rounded-lg border border-amber-300 bg-amber-50/70 p-3.5 text-xs sm:text-[13px] text-[#1f2937] font-sans">
       <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1.5">
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-200/80 text-amber-900 font-bold text-[10.5px] uppercase tracking-wider">
           <AlertTriangle size={12} className="text-amber-800" />
-          <span>Textbook Divergence Notice</span>
+          <span>{t.notes.divergenceBadge}</span>
         </span>
         {notice.slide && <SlideChip slide={notice.slide} />}
       </div>
@@ -182,7 +231,7 @@ export function TextbookDivergenceCard({
           {notice.lecturerForm && (
             <div className="bg-white/90 rounded border border-amber-200 p-2 text-center">
               <div className="text-[10.5px] font-bold text-amber-900 uppercase tracking-wide mb-1">
-                Lecturer&apos;s Form
+                {t.notes.lecturerForm}
               </div>
               <div className="note-formula-wrap max-w-full whitespace-normal break-words py-1 font-serif">
                 <MathText content={`$$${notice.lecturerForm}$$`} />
@@ -192,7 +241,7 @@ export function TextbookDivergenceCard({
           {notice.textbookForm && (
             <div className="bg-white/90 rounded border border-amber-200 p-2 text-center">
               <div className="text-[10.5px] font-bold text-emerald-900 uppercase tracking-wide mb-1">
-                Standard Textbook Form
+                {t.notes.textbookForm}
               </div>
               <div className="note-formula-wrap max-w-full whitespace-normal break-words py-1 font-serif">
                 <MathText content={`$$${notice.textbookForm}$$`} />
@@ -205,7 +254,8 @@ export function TextbookDivergenceCard({
   );
 }
 
-function FormulaBlock({ formula }: { formula: NoteFormula }) {
+export function FormulaBlock({ formula }: { formula: NoteFormula }) {
+  const { t } = useLanguage();
   const isDerived =
     formula.status === "derived" ||
     formula.origin === "derived" ||
@@ -266,10 +316,10 @@ function FormulaBlock({ formula }: { formula: NoteFormula }) {
         </div>
       </div>
 
-      {/* "Trong đó:" variable list — rendered only when new variables are defined */}
+      {/* "Where:" vs. "Trong đó:" variable list */}
       {formula.variables && formula.variables.length > 0 && (
         <div className="mt-2.5 mb-3 text-sm sm:text-[15px] text-[#1f2937]">
-          <div className="mb-1.5 font-medium">Trong đó:</div>
+          <div className="mb-1.5 font-medium">{t.notes.whereLabel}</div>
           <ul className="pl-7 space-y-1 list-disc marker:text-[#111827]">
             {formula.variables.map((v, vIdx) => (
               <li key={vIdx} className="leading-relaxed">
@@ -316,6 +366,7 @@ function BulletList({ items }: { items: string[] }) {
 }
 
 function GroundedBulletList({ items }: { items: GroundedBullet[] }) {
+  const { t } = useLanguage();
   if (!items || items.length === 0) return null;
   return (
     <ul className="pl-7 space-y-2 list-disc marker:text-[#111827] text-sm sm:text-[15px] text-[#1f2937] my-2">
@@ -336,7 +387,7 @@ function GroundedBulletList({ items }: { items: GroundedBullet[] }) {
                   : "text-amber-800 bg-amber-50/80 border border-amber-200/80"
               }`}
             >
-              <span className="font-semibold">Review note: </span>
+              <span className="font-semibold">{t.notes.reviewNotePrefix} </span>
               {bullet.reviewReason}
             </div>
           )}
@@ -417,7 +468,10 @@ function getUnattachedDivergenceNotices(note: ClutchNote): {
   return { perSection, global };
 }
 
-function getUncapturedFormulas(note: ClutchNote): UncapturedFormulaItem[] {
+function getUncapturedFormulas(
+  note: ClutchNote,
+  tNotes?: TranslationDict["notes"]
+): UncapturedFormulaItem[] {
   const omittedByRuleSet = new Set<string>(
     note.verification?.omittedByRuleFormulaIds || [],
   );
@@ -515,10 +569,10 @@ function getUncapturedFormulas(note: ClutchNote): UncapturedFormulaItem[] {
     const reason =
       omittedEntry?.reason ||
       (ledger?.isExerciseOnly
-        ? "Appeared solely in a practice exercise or worked example"
+        ? (tNotes?.omittedExerciseReason || "Appeared solely in a practice exercise or worked example")
         : ledger?.evidence
-          ? `Slide context: "${ledger.evidence}"`
-          : "Omitted from core summary sections as non-essential or duplicate");
+          ? `${tNotes?.slideContextPrefix || "Slide context:"} "${ledger.evidence}"`
+          : (tNotes?.omittedDuplicateReason || "Omitted from core summary sections as non-essential or duplicate"));
 
     items.push({
       id,
@@ -541,7 +595,166 @@ function getUncapturedFormulas(note: ClutchNote): UncapturedFormulaItem[] {
   return items;
 }
 
+export function notesToMarkdown(
+  note: ClutchNote,
+  notesT?: TranslationDict["notes"]
+): string {
+  const whereLabel = notesT?.whereLabel || "Where:";
+  const keyTakeawaysHeading = notesT?.keyTakeawaysHeading || "KEY TAKEAWAYS";
+  const slidesWord = notesT?.slidesWord || "Slides";
+  const pagesWord = notesT?.pagesWord || "Pages";
+
+  const parts: string[] = [];
+
+  parts.push(`# ${note.title}`);
+  parts.push(
+    `*${note.subject} · ${note.originalSlideCount} ${slidesWord} → ${note.estimatedDistilledPages} ${pagesWord}*`
+  );
+  parts.push("");
+
+  for (const section of note.sections) {
+    parts.push(`## ${section.titleVi}`);
+
+    if (section.coreStatement) {
+      parts.push(`**${section.coreStatement}**`);
+      parts.push("");
+    }
+
+    if (section.overview) {
+      parts.push(section.overview);
+      parts.push("");
+    }
+
+    const renderFormulaMd = (f: NoteFormula) => {
+      if (f.leadText) {
+        parts.push(f.leadText);
+        parts.push("");
+      } else if (f.name) {
+        parts.push(`**${f.name}**`);
+        parts.push("");
+      }
+      parts.push(`$$${f.latex}$$`);
+      parts.push("");
+      if (f.variables && f.variables.length > 0) {
+        parts.push(`**${whereLabel}**`);
+        for (const v of f.variables) {
+          parts.push(`- $${v.symbol}$: ${v.definition}`);
+        }
+        parts.push("");
+      }
+      if (f.description) {
+        parts.push(f.description);
+        parts.push("");
+      }
+    };
+
+    const formulasIntroduceBullets =
+      section.formulas.length > 0 &&
+      !section.formulas[0].leadText &&
+      Boolean(section.formulas[0].description?.trim().endsWith(":"));
+
+    if (formulasIntroduceBullets) {
+      for (const formula of section.formulas) {
+        renderFormulaMd(formula);
+      }
+      if (section.bulletPoints && section.bulletPoints.length > 0) {
+        for (const bp of section.bulletPoints) {
+          parts.push(`- ${bp}`);
+        }
+        parts.push("");
+      } else if (section.groundedBullets && section.groundedBullets.length > 0) {
+        for (const gb of section.groundedBullets) {
+          parts.push(`- ${gb.text}`);
+        }
+        parts.push("");
+      }
+    } else {
+      if (section.bulletPoints && section.bulletPoints.length > 0) {
+        for (const bp of section.bulletPoints) {
+          parts.push(`- ${bp}`);
+        }
+        parts.push("");
+      } else if (section.groundedBullets && section.groundedBullets.length > 0) {
+        for (const gb of section.groundedBullets) {
+          parts.push(`- ${gb.text}`);
+        }
+        parts.push("");
+      }
+      for (const formula of section.formulas) {
+        renderFormulaMd(formula);
+      }
+    }
+
+    if (section.subSections && section.subSections.length > 0) {
+      for (const sub of section.subSections) {
+        if (sub.heading) {
+          parts.push(`### ${sub.heading}`);
+        }
+        if (sub.leadIn) {
+          parts.push(sub.leadIn);
+        }
+        if (sub.bulletPoints && sub.bulletPoints.length > 0) {
+          for (const bp of sub.bulletPoints) {
+            parts.push(`- ${bp}`);
+          }
+          parts.push("");
+        } else if (sub.groundedBullets && sub.groundedBullets.length > 0) {
+          for (const gb of sub.groundedBullets) {
+            parts.push(`- ${gb.text}`);
+          }
+          parts.push("");
+        }
+        for (const formula of sub.formulas) {
+          renderFormulaMd(formula);
+        }
+      }
+    }
+
+    if (section.keyTakeaways) {
+      const kt = section.keyTakeaways;
+      const heading =
+        !kt.title ||
+        kt.title.trim().toUpperCase() === "KEY TAKEAWAYS" ||
+        kt.title.trim().toUpperCase() === "ĐIỂM CỐT LÕI" ||
+        kt.title.trim().toUpperCase() === "ĐIỂM CỐT LÕI (KEY TAKEAWAYS)"
+          ? keyTakeawaysHeading
+          : kt.title;
+      parts.push(`> **${heading}**`);
+      if (kt.items && kt.items.length > 0) {
+        kt.items.forEach((item, idx) => {
+          parts.push(`> ${idx + 1}. ${item.point}`);
+          if (item.subBullets && item.subBullets.length > 0) {
+            for (const sb of item.subBullets) {
+              parts.push(`>    - ${sb}`);
+            }
+          }
+        });
+      } else {
+        let num = 1;
+        if (kt.modelSelectionRule) {
+          parts.push(`> ${num++}. ${kt.modelSelectionRule}`);
+        }
+        if (kt.realWorldConditions) {
+          parts.push(`> ${num++}. ${kt.realWorldConditions}`);
+        }
+        if (kt.boundaryConditions) {
+          parts.push(`> ${num++}. ${kt.boundaryConditions}`);
+        }
+        if (kt.summaryPoints) {
+          for (const point of kt.summaryPoints) {
+            parts.push(`> ${num++}. ${point}`);
+          }
+        }
+      }
+      parts.push("");
+    }
+  }
+
+  return parts.join("\n").trim();
+}
+
 export function NoteRenderer({ note, onReset }: NoteRendererProps) {
+  const { language, t } = useLanguage();
   const [copied, setCopied] = useState(false);
 
   const displayNoiseRate =
@@ -555,8 +768,8 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
   );
 
   const uncapturedFormulas = useMemo(
-    () => getUncapturedFormulas(note),
-    [note]
+    () => getUncapturedFormulas(note, t.notes),
+    [note, t.notes]
   );
 
   const displayWarnings = useMemo(() => {
@@ -568,8 +781,8 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
   }, [note.verification?.warnings, uncapturedFormulas.length]);
 
   const handleCopyMarkdown = () => {
-    if (!note.rawMarkdown) return;
-    navigator.clipboard.writeText(note.rawMarkdown).then(() => {
+    const md = notesToMarkdown(note, t.notes) || note.rawMarkdown || "";
+    navigator.clipboard.writeText(md).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -596,16 +809,16 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
             className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5b6653] hover:text-[#1a2118] transition-colors cursor-pointer"
           >
             <ArrowLeft size={15} />
-            <span>New Deck</span>
+            <span>{t.notes.newDeckBtn}</span>
           </button>
 
           <span className="hidden sm:inline-block h-4 w-px bg-[#e2e6db]" />
 
           <span className="px-2.5 py-0.5 rounded-full bg-[#f7f8f4] border border-[#e2e6dc] text-[#4c5745] text-[11px] font-semibold">
-            {note.originalSlideCount} Slides → {note.estimatedDistilledPages} Pages
+            {note.originalSlideCount} {t.notes.slidesWord} → {note.estimatedDistilledPages} {t.notes.pagesWord}
           </span>
           <span className="px-2.5 py-0.5 rounded-full bg-[#edf5e8] border border-[#cde0c3] text-[#2e6320] text-[11px] font-bold">
-            {displayNoiseRate}% Noise Stripped
+            {displayNoiseRate}% {t.notes.noiseStripped}
           </span>
         </div>
 
@@ -633,7 +846,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
             className="border-[#dce1d5] bg-white hover:bg-[#f7f8f4] text-[#3d4735] text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-2xs"
           >
             {copied ? <Check size={14} className="text-[#2e7d32]" /> : <Copy size={14} />}
-            <span>{copied ? "Copied" : "Copy Markdown"}</span>
+            <span>{copied ? t.notes.copiedBtn : t.notes.copyMarkdownBtn}</span>
           </Button>
 
           <Button
@@ -642,7 +855,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
             className="bg-[#e96b44] hover:bg-[#d95e37] text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
           >
             <Printer size={14} />
-            <span>Export PDF</span>
+            <span>{t.notes.exportPdfBtn}</span>
           </Button>
         </div>
       </div>
@@ -669,7 +882,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
         >
           {/* Top-left subtle course label */}
           <div className="text-xs sm:text-sm italic font-semibold text-[#374151] mb-4">
-            {note.subject} — Clutch Notes AI
+            {note.subject} — {t.notes.badge}
           </div>
 
           {/* Centered Chapter / Topic Title */}
@@ -684,12 +897,12 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
                 <div className="flex items-center gap-2">
                   <AlertTriangle size={16} className="text-amber-700 shrink-0" />
                   <span className="font-bold text-sm text-amber-900">
-                    Ingestion & Verification Notices
+                    {t.notes.noticesTitle}
                   </span>
                 </div>
                 <span className="px-2 py-0.5 rounded-full bg-amber-200/80 text-amber-900 font-semibold text-[11px]">
                   {displayWarnings.length}{" "}
-                  {displayWarnings.length === 1 ? "Notice" : "Notices"}
+                  {displayWarnings.length === 1 ? t.notes.noticeSingle : t.notes.noticePlural}
                 </span>
               </div>
 
@@ -702,7 +915,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
               </ul>
 
               <p className="text-[11.5px] italic text-amber-800/90 mt-2.5 pt-2 border-t border-amber-200/80">
-                Formulas or tables from these slides should be double-checked against your original lecture deck.
+                {t.notes.noticesFooter}
               </p>
             </div>
           )}
@@ -838,7 +1051,12 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
                     (hasStructuredTakeaways || fallbackTakeawayPoints.length > 0) && (
                       <div className="my-5 border border-[#1f2937] bg-white px-5 py-4">
                         <div className="text-sm sm:text-[15px] font-bold text-[#991b1b] uppercase tracking-wide mb-2">
-                          {section.keyTakeaways.title || "KEY TAKEAWAYS"}
+                          {!section.keyTakeaways.title ||
+                          section.keyTakeaways.title.trim().toUpperCase() === "KEY TAKEAWAYS" ||
+                          section.keyTakeaways.title.trim().toUpperCase() === "ĐIỂM CỐT LÕI" ||
+                          section.keyTakeaways.title.trim().toUpperCase() === "ĐIỂM CỐT LÕI (KEY TAKEAWAYS)"
+                            ? t.notes.keyTakeawaysHeading
+                            : section.keyTakeaways.title}
                         </div>
 
                         {hasStructuredTakeaways ? (
@@ -863,7 +1081,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
                                         : "text-amber-800 bg-amber-50/80 border border-amber-200/80"
                                     }`}
                                   >
-                                    <span className="font-semibold">Review note: </span>
+                                    <span className="font-semibold">{t.notes.reviewNotePrefix} </span>
                                     {item.reviewReason}
                                   </div>
                                 )}
@@ -909,15 +1127,15 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
               <div className="border border-[#cbd5e1] bg-[#f8fafc] rounded-xl p-5 sm:p-6 font-sans">
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
                   <h3 className="text-sm sm:text-base font-bold text-[#1e293b] uppercase tracking-wide">
-                    Uncaptured Source Formulas
+                    {t.notes.uncapturedTitle}
                   </h3>
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[#e2e8f0] text-[#334155] border border-[#cbd5e1]">
                     {uncapturedFormulas.length}{" "}
-                    {uncapturedFormulas.length === 1 ? "Formula Omitted" : "Formulas Omitted"}
+                    {uncapturedFormulas.length === 1 ? t.notes.formulaOmittedSingle : t.notes.formulaOmittedPlural}
                   </span>
                 </div>
                 <p className="text-xs sm:text-sm text-[#475569] leading-relaxed mb-4">
-                  The following formulas appeared in the lecture slides (e.g. in practice exercises or appendices) but were omitted from core summary sections.
+                  {t.notes.uncapturedDesc}
                 </p>
 
                 <div className="space-y-3">
@@ -947,7 +1165,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
                       )}
 
                       <div className="text-xs text-[#64748b] mt-1.5 flex items-start gap-1.5">
-                        <span className="font-semibold text-[#475569] shrink-0">Reason:</span>
+                        <span className="font-semibold text-[#475569] shrink-0">{t.notes.reasonLabel}</span>
                         <span className="leading-relaxed">{entry.reason}</span>
                       </div>
                     </div>

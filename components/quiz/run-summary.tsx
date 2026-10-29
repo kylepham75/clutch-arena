@@ -140,7 +140,7 @@ export function RunSummary({
         {onExportCheatSheet && (
           <Button variant="outline" onClick={onExportCheatSheet} type="button" className="cheat-sheet-btn">
             <FileText size={17} className="text-amber-600" />
-            <span>1-Click PDF Cheat Sheet</span>
+            <span>{t.run.cheatSheetBtn}</span>
           </Button>
         )}
         {onExport && (
@@ -165,9 +165,7 @@ export function RunSummary({
           {t.run.playAgain} <ArrowRight size={17} />
         </Button>
       </div>
-      <p className="summary-footnote">
-        This run is saved on this device when browser storage is available.
-      </p>
+      <p className="summary-footnote">{t.run.summaryFootnote}</p>
     </motion.section>
   );
 }

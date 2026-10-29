@@ -25,6 +25,52 @@ import {
   downloadTextFile,
   slugify,
 } from "@/lib/game/pack-transfer";
+import { translations, type Language, type TranslationDict } from "@/lib/i18n/translations";
+
+let testLanguageOverride: { language: Language; t: TranslationDict } | null = null;
+
+export function setArenaPodiumTestLanguage(lang: Language | null) {
+  testLanguageOverride = lang ? { language: lang, t: translations[lang] } : null;
+}
+
+let realUseLanguage:
+  | (() => { language: Language; setLanguage: (lang: Language) => void; t: TranslationDict })
+  | null = null;
+
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ctx = require("@/lib/i18n/context");
+  if (ctx && typeof ctx.useLanguage === "function") {
+    realUseLanguage = ctx.useLanguage;
+  }
+} catch {
+  // Graceful fallback in environments (such as custom test transpilers)
+  // where relative imports inside @/lib/i18n/context cannot be resolved.
+}
+
+export function useLanguage() {
+  if (testLanguageOverride) {
+    return {
+      language: testLanguageOverride.language,
+      setLanguage: (lang: Language) => {
+        testLanguageOverride = { language: lang, t: translations[lang] };
+      },
+      t: testLanguageOverride.t,
+    };
+  }
+  if (realUseLanguage) {
+    try {
+      return realUseLanguage();
+    } catch {
+      // Fallback
+    }
+  }
+  return {
+    language: "en" as Language,
+    setLanguage: () => {},
+    t: translations.en,
+  };
+}
 
 const OPTION_LETTERS = ["A", "B", "C", "D"] as const;
 
@@ -126,6 +172,7 @@ export function ArenaPodium({
   onDebriefCoach?: () => void;
   onLeave: () => void;
 }) {
+  const { t } = useLanguage();
   const [copied, setCopied] = useState(false);
   const isHost = Boolean(currentPlayer.isHost);
   const podium = room.podium;
@@ -194,9 +241,9 @@ export function ArenaPodium({
         <div className="podium-trophy-circle">
           <Trophy size={42} />
         </div>
-        <span className="eyebrow">ARENA MATCH CONCLUDED</span>
-        <h2>{winner ? `${winner.nickname} claims victory!` : "Match Complete!"}</h2>
-        <p>A battle of speed, precision, and focus.</p>
+        <span className="eyebrow">{t.arena.matchConcludedEyebrow}</span>
+        <h2>{winner ? `${winner.nickname} ${t.arena.claimsVictorySuffix}` : t.arena.matchCompleteTitle}</h2>
+        <p>{t.arena.podiumSubtitle}</p>
 
         {/* 1st, 2nd, 3rd visual podium */}
         <div className="podium-stages">
@@ -253,7 +300,7 @@ export function ArenaPodium({
 
         {/* Full rankings table */}
         <div className="podium-scoreboard">
-          <div className="scoreboard-title">FINAL SCOREBOARD</div>
+          <div className="scoreboard-title">{t.arena.finalScoreboard}</div>
           <div className="scoreboard-list">
             {rankings.map((p, rank) => {
               const isMe = p.id === currentPlayer.id;
@@ -266,10 +313,10 @@ export function ArenaPodium({
                   <span className="score-avatar">{p.avatar}</span>
                   <div className="score-name-cell">
                     <strong>
-                      {p.nickname} {isMe && <small>(You)</small>}
+                      {p.nickname} {isMe && <small> ({t.arena.youPill})</small>}
                     </strong>
                     <small>
-                      Best streak: {p.bestStreak} · {p.lives} lives remaining
+                      {t.arena.bestStreakLabel}: {p.bestStreak} · {p.lives} {t.arena.livesRemaining}
                     </small>
                   </div>
                   <strong className="score-xp">{p.score} XP</strong>
@@ -289,9 +336,9 @@ export function ArenaPodium({
               <div className="analytics-title-group">
                 <BarChart3 size={20} className="analytics-icon" />
                 <div>
-                  <h3 className="analytics-title">Post-Match Class Analytics</h3>
+                  <h3 className="analytics-title">{t.arena.classAnalyticsTitle}</h3>
                   <p className="analytics-subtitle">
-                    Diagnostic breakdown of student comprehension and high-priority re-teach topics.
+                    {t.arena.classAnalyticsSubtitle}
                   </p>
                 </div>
               </div>
@@ -307,7 +354,7 @@ export function ArenaPodium({
                 }}
               >
                 <Download size={15} />
-                <span>Export Gradebook CSV</span>
+                <span>{t.arena.exportGradebookBtn}</span>
               </Button>
             </div>
 
@@ -319,8 +366,8 @@ export function ArenaPodium({
               >
                 <AlertTriangle size={18} className="alert-icon" />
                 <span>
-                  ⚠️ {classAnalytics.earlyEliminatedCount} student(s) (
-                  {classAnalytics.earlyEliminatedNicknames.join(", ")}) lost all 3 hearts before Round 5.
+                  ⚠️ {classAnalytics.earlyEliminatedCount} {t.arena.earlyEliminationPrefix} (
+                  {classAnalytics.earlyEliminatedNicknames.join(", ")}) {t.arena.earlyEliminationSuffix}
                 </span>
               </div>
             )}
@@ -328,15 +375,15 @@ export function ArenaPodium({
             {/* Summary KPI Strip */}
             <div className="analytics-kpi-strip" data-testid="analytics-kpi-strip">
               <div className="analytics-kpi-card">
-                <span className="kpi-label">Class Average Accuracy</span>
+                <span className="kpi-label">{t.arena.classAvgAccuracy}</span>
                 <strong className="kpi-value">{classAnalytics.averageAccuracyPercent}%</strong>
               </div>
               <div className="analytics-kpi-card">
-                <span className="kpi-label">Total Players</span>
+                <span className="kpi-label">{t.arena.totalPlayersKpi}</span>
                 <strong className="kpi-value">{classAnalytics.totalPlayers}</strong>
               </div>
               <div className="analytics-kpi-card">
-                <span className="kpi-label">Total Questions</span>
+                <span className="kpi-label">{t.arena.totalQuestionsKpi}</span>
                 <strong className="kpi-value">{classAnalytics.totalQuestions}</strong>
               </div>
             </div>
@@ -344,7 +391,7 @@ export function ArenaPodium({
             {/* Missed-Question Diagnostic Breakdown */}
             <div className="missed-questions-list" data-testid="missed-questions-list">
               <div className="missed-questions-header">
-                <h4>Missed Questions Diagnostic (Sorted Worst First)</h4>
+                <h4>{t.arena.missedDiagnosticHeader}</h4>
               </div>
               <div className="missed-questions-items">
                 {sortedQuestionStats.map((stat) => {
@@ -371,11 +418,11 @@ export function ArenaPodium({
                             </span>
                           )}
                           {isNeedsReteach && (
-                            <span className="needs-reteach-badge">Needs Re-Teach</span>
+                            <span className="needs-reteach-badge">{t.arena.needsReteachBadge}</span>
                           )}
                           {trapLetter && (
                             <span className="top-trap-badge">
-                              Top trap: Option {trapLetter}
+                              {t.arena.topTrapPrefix} {trapLetter}
                             </span>
                           )}
                         </div>
@@ -383,7 +430,7 @@ export function ArenaPodium({
                       </div>
                       <div className="question-stat-meta">
                         <span className={`missed-badge ${isNeedsReteach ? "missed-badge-high" : ""}`}>
-                          {stat.missedPercent}% missed ({stat.missedCount}/{stat.totalAttempts})
+                          {stat.missedPercent}% {t.arena.missedWord} ({stat.missedCount}/{stat.totalAttempts})
                         </span>
                       </div>
                     </div>
@@ -399,12 +446,12 @@ export function ArenaPodium({
           {isHost ? (
             <Button onClick={onRematch} className="rematch-btn">
               <RotateCcw size={16} />
-              <span>Host Rematch</span>
+              <span>{t.arena.hostRematchBtn}</span>
             </Button>
           ) : (
             <div className="rematch-waiting-note">
               <span className="live-pulse" />
-              <span>Waiting for host to rematch…</span>
+              <span>{t.arena.waitingForRematch}</span>
             </div>
           )}
 
@@ -420,7 +467,7 @@ export function ArenaPodium({
               className="toggle-analytics-btn"
             >
               <BarChart3 size={16} />
-              <span>{isAnalyticsVisible ? "Hide Class Analytics" : "View Class Analytics"}</span>
+              <span>{isAnalyticsVisible ? t.arena.hideAnalyticsBtn : t.arena.viewAnalyticsBtn}</span>
             </Button>
           )}
 
@@ -430,7 +477,7 @@ export function ArenaPodium({
             className="copy-scoreboard-btn"
           >
             {copied ? <Check size={16} /> : <Share2 size={16} />}
-            <span>{copied ? "Scoreboard Copied!" : "Share Results"}</span>
+            <span>{copied ? t.arena.scoreboardCopiedBtn : t.arena.shareResultsBtn}</span>
           </Button>
 
           {onDebriefCoach && (
@@ -440,12 +487,12 @@ export function ArenaPodium({
               className="debrief-coach-btn"
             >
               <Sparkles size={16} />
-              <span>Debrief with Coach</span>
+              <span>{t.arena.debriefWithCoachBtn}</span>
             </Button>
           )}
 
           <Button variant="ghost" onClick={onLeave}>
-            Leave Arena
+            {t.arena.leaveArenaBtn}
           </Button>
         </div>
       </motion.div>

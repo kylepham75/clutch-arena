@@ -3,6 +3,7 @@
 import { User, LogIn, Sparkles, Zap } from "lucide-react";
 import { useAuth } from "@/lib/auth/context";
 import { useUserTier } from "@/hooks/use-user-tier";
+import { useLanguage } from "@/lib/i18n/context";
 import { Button } from "@/components/ui/button";
 
 export function UserProfileButton({
@@ -12,8 +13,9 @@ export function UserProfileButton({
 }) {
   const { user, guestUsageCount, guestLimit, openAuthModal } = useAuth();
   const { tier: userTier } = useUserTier();
+  const { t } = useLanguage();
 
-  const displayTier = user ? (userTier === "contender" ? "Free" : userTier.toUpperCase()) : "Guest";
+  const displayTier = user ? (userTier === "contender" ? t.auth.freeBadge : userTier.toUpperCase()) : t.auth.guestBadge;
 
   if (variant === "sidebar") {
     return (
@@ -41,11 +43,11 @@ export function UserProfileButton({
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <strong style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-            {user?.email ? user.email.split("@")[0] : "Guest Student"}
+            {user?.email ? user.email.split("@")[0] : t.auth.guestStudent}
           </strong>
           <small style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
             <span />
-            {user ? `${displayTier} Account` : `Guest (${guestUsageCount}/${guestLimit} used)`}
+            {user ? `${displayTier} ${t.auth.accountSuffix}` : `${t.auth.guestBadge} (${guestUsageCount}/${guestLimit} ${t.auth.usedWord})`}
           </small>
         </div>
       </button>
@@ -110,7 +112,7 @@ export function UserProfileButton({
       ) : (
         <>
           <LogIn size={14} style={{ color: "#ee714c" }} />
-          <span>Sign In</span>
+          <span>{t.auth.signInTab}</span>
           <span
             style={{
               fontSize: "0.6875rem",

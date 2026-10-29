@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth/context";
 import { useUserTier } from "@/hooks/use-user-tier";
+import { useLanguage } from "@/lib/i18n/context";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
@@ -33,6 +34,7 @@ export function AuthDialog() {
     signOut,
   } = useAuth();
   const { tier: userTier, daysRemaining } = useUserTier();
+  const { t } = useLanguage();
 
   const [tab, setTab] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
@@ -44,7 +46,7 @@ export function AuthDialog() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password.trim()) {
-      setErrorMsg("Please enter both email and password.");
+      setErrorMsg(t.auth.enterBothEmailPassword);
       return;
     }
 
@@ -56,7 +58,7 @@ export function AuthDialog() {
       const { error } = await signInWithEmail(email.trim(), password);
       setLoading(false);
       if (error) {
-        setErrorMsg(error.message || "Failed to sign in. Please verify your credentials.");
+        setErrorMsg(error.message || t.auth.signInError);
       } else {
         closeAuthModal();
       }
@@ -64,11 +66,9 @@ export function AuthDialog() {
       const { error } = await signUpWithEmail(email.trim(), password);
       setLoading(false);
       if (error) {
-        setErrorMsg(error.message || "Failed to create account.");
+        setErrorMsg(error.message || t.auth.signUpError);
       } else {
-        setSuccessMsg(
-          "Account created! Please check your email to verify your account, or sign in now.",
-        );
+        setSuccessMsg(t.auth.signUpSuccess);
         setTab("signin");
       }
     }
@@ -80,7 +80,7 @@ export function AuthDialog() {
     const { error } = await signInWithOAuth(provider);
     if (error) {
       setLoading(false);
-      setErrorMsg(error.message || `Failed to sign in with ${provider}.`);
+      setErrorMsg(error.message || t.auth.oauthError);
     }
   };
 
@@ -94,11 +94,11 @@ export function AuthDialog() {
           setSuccessMsg(null);
         }
       }}
-      title={user ? "My Account" : tab === "signin" ? "Sign In to ClutchArena" : "Create a Free Account"}
+      title={user ? t.auth.myAccount : tab === "signin" ? t.auth.signInTitle : t.auth.createAccountTitle}
       description={
         user
-          ? "Manage your ClutchArena study account, quotas, and preferences."
-          : "Sign in to save study packs across devices, track active recall progress, and compete in the arena."
+          ? t.auth.accountDesc
+          : t.auth.guestDesc
       }
     >
       <div className="auth-dialog-body" style={{ display: "flex", flexDirection: "column", gap: "1.25rem", marginTop: "1rem" }}>
@@ -120,10 +120,10 @@ export function AuthDialog() {
             <Zap size={18} style={{ color: "var(--primary, #e96943)", flexShrink: 0, marginTop: "2px" }} />
             <div>
               <strong style={{ display: "block", color: "var(--foreground, #292c28)", marginBottom: "0.15rem" }}>
-                Free Guest Quota Reached ({guestUsageCount}/{guestLimit})
+                {t.auth.guestLimitTitle} ({guestUsageCount}/{guestLimit})
               </strong>
               <span style={{ color: "var(--foreground, #292c28)", opacity: 0.85 }}>
-                You have used your 2 free anonymous generations. Create a free account to unlock continuous uploads, cloud deck saves, and multiplayer battles!
+                {t.auth.guestLimitDesc}
               </span>
             </div>
           </div>
@@ -143,9 +143,9 @@ export function AuthDialog() {
             }}
           >
             <strong style={{ color: "var(--foreground, #292c28)", display: "block", marginBottom: "0.25rem", fontSize: "0.875rem" }}>
-              🛠️ Local Development Mode
+              {t.auth.localDevMode}
             </strong>
-            Supabase Auth credentials are not yet configured in <code>.env.local</code>. Add <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> to enable live cloud authentication.
+            {t.auth.localDevNote}
           </div>
         )}
 
@@ -205,11 +205,11 @@ export function AuthDialog() {
                       textTransform: "uppercase",
                     }}
                   >
-                    {userTier === "contender" ? "Free" : userTier.toUpperCase()}
+                    {userTier === "contender" ? t.auth.freeBadge : userTier.toUpperCase()}
                   </span>
                 </div>
                 <small style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>
-                  User ID: {user.id.slice(0, 12)}...
+                  {t.auth.userIdLabel} {user.id.slice(0, 12)}...
                 </small>
               </div>
             </div>
@@ -229,8 +229,8 @@ export function AuthDialog() {
                   border: "1px solid var(--border, #e2e5dc)",
                 }}
               >
-                <div style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>Cloud Sync</div>
-                <strong style={{ color: "#2e7d32", fontSize: "0.875rem" }}>Active ✓</strong>
+                <div style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>{t.auth.cloudSync}</div>
+                <strong style={{ color: "#2e7d32", fontSize: "0.875rem" }}>{t.auth.activeStatus}</strong>
               </div>
               <div
                 style={{
@@ -240,16 +240,16 @@ export function AuthDialog() {
                   border: "1px solid var(--border, #e2e5dc)",
                 }}
               >
-                <div style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>Plan Tier</div>
+                <div style={{ color: "var(--muted-foreground, #666)", fontSize: "0.75rem" }}>{t.auth.planTier}</div>
                 <strong style={{ color: "var(--primary, #e96943)", fontSize: "0.875rem" }}>
                   {userTier === "contender"
-                    ? "Clutch Free"
+                    ? t.auth.tierContender
                     : userTier === "cram_pass"
-                      ? "7-Day Cram Pass"
+                      ? t.auth.tierCramPass
                       : userTier === "pro"
-                        ? "Đấu Sĩ Pro (Học Kỳ)"
-                        : "Giảng Viên & Nhóm Học (Tutor)"}
-                  {daysRemaining !== null && ` (${daysRemaining}d left)`}
+                        ? t.auth.tierPro
+                        : t.auth.tierTutor}
+                  {daysRemaining !== null && ` (${daysRemaining} ${t.auth.daysLeft})`}
                 </strong>
               </div>
             </div>
@@ -268,7 +268,7 @@ export function AuthDialog() {
               }}
             >
               <LogOut size={16} />
-              <span>Sign Out</span>
+              <span>{t.auth.signOut}</span>
             </Button>
           </div>
         ) : (
@@ -303,7 +303,7 @@ export function AuthDialog() {
                   transition: "all 0.15s ease",
                 }}
               >
-                Sign In
+                {t.auth.signInTab}
               </button>
               <button
                 type="button"
@@ -324,7 +324,7 @@ export function AuthDialog() {
                   transition: "all 0.15s ease",
                 }}
               >
-                Create Account
+                {t.auth.signUpTab}
               </button>
             </div>
 
@@ -402,7 +402,7 @@ export function AuthDialog() {
                     d="M12 23.5c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2-6.4-4.8L1.9 17C3.7 20.8 7.5 23.5 12 23.5z"
                   />
                 </svg>
-                <span>Continue with Google</span>
+                <span>{t.auth.continueGoogle}</span>
               </Button>
             </div>
 
@@ -417,7 +417,7 @@ export function AuthDialog() {
               }}
             >
               <span style={{ flex: 1, height: "1px", background: "var(--border, #e2e5dc)" }} />
-              <span>Or with email</span>
+              <span>{t.auth.orEmail}</span>
               <span style={{ flex: 1, height: "1px", background: "var(--border, #e2e5dc)" }} />
             </div>
 
@@ -433,7 +433,7 @@ export function AuthDialog() {
                     marginBottom: "0.375rem",
                   }}
                 >
-                  Email Address
+                  {t.auth.emailLabel}
                 </label>
                 <div style={{ position: "relative" }}>
                   <Mail
@@ -476,7 +476,7 @@ export function AuthDialog() {
                     marginBottom: "0.375rem",
                   }}
                 >
-                  Password
+                  {t.auth.passwordLabel}
                 </label>
                 <div style={{ position: "relative" }}>
                   <Lock
@@ -525,10 +525,10 @@ export function AuthDialog() {
                 }}
               >
                 {loading ? (
-                  <span>Processing...</span>
+                  <span>{t.auth.processing}</span>
                 ) : (
                   <>
-                    <span>{tab === "signin" ? "Sign In" : "Create Free Account"}</span>
+                    <span>{tab === "signin" ? t.auth.signInTab : t.auth.createFreeAccountBtn}</span>
                     <ArrowRight size={15} />
                   </>
                 )}

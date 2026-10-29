@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { ArenaPlayer, ArenaRoomState } from "@/lib/schemas/multiplayer";
 import { Button } from "@/components/ui/button";
+import { useLanguage } from "@/lib/i18n/context";
 
 export function ArenaLobby({
   room,
@@ -32,6 +33,7 @@ export function ArenaLobby({
   onAddBot: (type?: "speed" | "steady" | "wildcard") => void;
   onRemoveBot: (botId: string) => void;
 }) {
+  const { t } = useLanguage();
   const [copied, setCopied] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
   const isHost = currentPlayer.isHost;
@@ -62,7 +64,7 @@ export function ArenaLobby({
       <div className="arena-lobby-header surface">
         <div className="arena-title-area">
           <div className="eyebrow">
-            <span className="tiny-star">✦</span> MULTIPLAYER STUDY ARENA LOBBY
+            <span className="tiny-star">✦</span> {t.arena.lobbyEyebrow}
           </div>
           <h2>{room.title}</h2>
           <div className="lobby-meta-row">
@@ -70,10 +72,10 @@ export function ArenaLobby({
               type="button"
               onClick={copyRoomCode}
               className="room-code-tag cursor-pointer"
-              title="Click to copy room code"
+              title={t.arena.clickToCopyCode}
             >
-              CODE: <strong>{room.code}</strong>
-              {codeCopied && <span className="copied-pill">Copied!</span>}
+              {t.arena.codeLabel} <strong>{room.code}</strong>
+              {codeCopied && <span className="copied-pill">{t.arena.copiedPill}</span>}
             </button>
             <Button
               variant="outline"
@@ -82,13 +84,13 @@ export function ArenaLobby({
               className="copy-code-btn"
             >
               {copied ? <Check size={14} /> : <Copy size={14} />}
-              <span>{copied ? "Link Copied!" : "Share Room Link"}</span>
+              <span>{copied ? t.arena.linkCopiedBtn : t.arena.shareRoomLinkBtn}</span>
             </Button>
             <span className="mode-badge">
-              {room.mode === "variants" ? "Concept remix" : "Classic recall"}
+              {room.mode === "variants" ? t.arena.conceptRemix : t.arena.classicRecall}
             </span>
             <span className="question-count-badge">
-              {room.totalQuestions} questions
+              {room.totalQuestions} {t.arena.questionsUnit}
             </span>
           </div>
         </div>
@@ -99,9 +101,9 @@ export function ArenaLobby({
         <div className="lobby-roster-card surface">
           <div className="roster-header">
             <div>
-              <h3>Contenders in the Arena</h3>
+              <h3>{t.arena.contendersHeader}</h3>
               <p>
-                {players.length} player{players.length === 1 ? "" : "s"} joined
+                {players.length} {t.arena.playersWord} {t.arena.joinedWord}
               </p>
             </div>
 
@@ -114,7 +116,7 @@ export function ArenaLobby({
                   className="add-bot-btn"
                 >
                   <Bot size={14} />
-                  <span>Add Practice Bot</span>
+                  <span>{t.arena.addPracticeBot}</span>
                   <Plus size={13} />
                 </Button>
                 <div className="bot-archetype-chips">
@@ -122,25 +124,25 @@ export function ArenaLobby({
                     type="button"
                     onClick={() => onAddBot("speed")}
                     className="bot-chip"
-                    title="Add Alex (Speed Demon)"
+                    title={t.arena.botSpeedTitle}
                   >
-                    ⚡ Speed
+                    {t.arena.botSpeed}
                   </button>
                   <button
                     type="button"
                     onClick={() => onAddBot("steady")}
                     className="bot-chip"
-                    title="Add Maya (Steady Scholar)"
+                    title={t.arena.botSteadyTitle}
                   >
-                    🦉 Steady
+                    {t.arena.botSteady}
                   </button>
                   <button
                     type="button"
                     onClick={() => onAddBot("wildcard")}
                     className="bot-chip"
-                    title="Add Sam (Wildcard)"
+                    title={t.arena.botWildcardTitle}
                   >
-                    🔥 Wildcard
+                    {t.arena.botWildcard}
                   </button>
                 </div>
               </div>
@@ -158,7 +160,7 @@ export function ArenaLobby({
                   <div className="player-avatar-circle">
                     <span>{p.avatar}</span>
                     {p.isHost && (
-                      <span className="host-crown-badge" title="Room Host">
+                      <span className="host-crown-badge" title={t.arena.roleHost}>
                         <Crown size={12} fill="currentColor" />
                       </span>
                     )}
@@ -166,20 +168,20 @@ export function ArenaLobby({
 
                   <div className="player-info-cell">
                     <strong>
-                      {p.nickname} {isMe && <span className="you-pill">YOU</span>}
+                      {p.nickname} {isMe && <span className="you-pill">{t.arena.youPill}</span>}
                     </strong>
                     <small>
-                      {p.isBot ? "AI Practice Bot" : p.isHost ? "Arena Host" : "Challenger"}
+                      {p.isBot ? t.arena.roleBot : p.isHost ? t.arena.roleHost : t.arena.roleChallenger}
                     </small>
                   </div>
 
                   <div className="player-status-cell">
                     {p.isReady ? (
                       <span className="ready-tag">
-                        <Check size={12} /> Ready
+                        <Check size={12} /> {t.arena.readyTag}
                       </span>
                     ) : (
-                      <span className="not-ready-tag">Waiting</span>
+                      <span className="not-ready-tag">{t.arena.waitingTag}</span>
                     )}
 
                     {isHost && p.isBot && (
@@ -187,7 +189,7 @@ export function ArenaLobby({
                         type="button"
                         className="remove-bot-btn"
                         onClick={() => onRemoveBot(p.id)}
-                        title="Remove bot"
+                        title={t.arena.removeBotTitle}
                       >
                         <Trash2 size={13} />
                       </button>
@@ -203,10 +205,10 @@ export function ArenaLobby({
                   <span>+</span>
                 </div>
                 <div className="player-info-cell">
-                  <strong>Open Contender Slot</strong>
-                  <small>Share room code {room.code} or add a bot above</small>
+                  <strong>{t.arena.openSlotTitle}</strong>
+                  <small>{t.arena.openSlotDescPrefix} {room.code} {t.arena.openSlotDescSuffix}</small>
                 </div>
-                <span className="not-ready-tag">Open</span>
+                <span className="not-ready-tag">{t.arena.openTag}</span>
               </div>
             )}
           </div>
@@ -214,28 +216,25 @@ export function ArenaLobby({
 
         {/* Match briefing & Start panel */}
         <div className="lobby-briefing-card surface">
-          <div className="eyebrow">MATCH RULES</div>
-          <h4>Fast recall under pressure.</h4>
+          <div className="eyebrow">{t.arena.matchRulesEyebrow}</div>
+          <h4>{t.arena.matchRulesTitle}</h4>
           <ul className="rules-list">
             <li>
               <Zap size={14} />
               <span>
-                <strong>15 seconds per question</strong>: Everyone answers at the
-                same time.
+                <strong>{t.arena.rule1Bold}</strong>: {t.arena.rule1Text}
               </span>
             </li>
             <li>
               <Sparkles size={14} />
               <span>
-                <strong>Streak Multipliers</strong>: 3 in a row unlocks 1.5×, 5
-                unlocks 2× XP.
+                <strong>{t.arena.rule2Bold}</strong>: {t.arena.rule2Text}
               </span>
             </li>
             <li>
               <Users size={14} />
               <span>
-                <strong>3 Hearts</strong>: A wrong answer or timeout costs 1
-                heart. Last survivors take the podium!
+                <strong>{t.arena.rule3Bold}</strong>: {t.arena.rule3Text}
               </span>
             </li>
           </ul>
@@ -248,7 +247,7 @@ export function ArenaLobby({
                 disabled={players.length === 0}
               >
                 <Play size={16} fill="currentColor" />
-                <span>Start Arena Match ({players.length} Players)</span>
+                <span>{t.arena.startMatchBtn} ({players.length} {t.arena.playersWord})</span>
               </Button>
             ) : (
               <Button
@@ -258,14 +257,12 @@ export function ArenaLobby({
               >
                 <Check size={16} />
                 <span>
-                  {currentPlayer.isReady ? "Cancel Ready" : "I’m Ready!"}
+                  {currentPlayer.isReady ? t.arena.cancelReadyBtn : t.arena.imReadyBtn}
                 </span>
               </Button>
             )}
             <p className="host-caption">
-              {isHost
-                ? "Once started, all players transition into the synchronized countdown."
-                : "Waiting for the arena host to begin the countdown."}
+              {isHost ? t.arena.hostCaption : t.arena.guestCaption}
             </p>
           </div>
         </div>

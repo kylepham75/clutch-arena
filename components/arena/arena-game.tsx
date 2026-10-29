@@ -21,6 +21,51 @@ import { TimerBar } from "@/components/quiz/timer-bar";
 import { streakLabel } from "@/lib/game/scoring";
 import { MathText } from "@/components/ui/math-text";
 import { useGameAudio } from "@/hooks/use-game-audio";
+import { translations, type Language, type TranslationDict } from "@/lib/i18n/translations";
+
+let testLanguageOverride: { language: Language; t: TranslationDict } | null = null;
+
+export function setArenaGameTestLanguage(lang: Language | null) {
+  testLanguageOverride = lang ? { language: lang, t: translations[lang] } : null;
+}
+
+let realUseLanguage:
+  | (() => { language: Language; setLanguage: (lang: Language) => void; t: TranslationDict })
+  | null = null;
+
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ctx = require("@/lib/i18n/context");
+  if (ctx && typeof ctx.useLanguage === "function") {
+    realUseLanguage = ctx.useLanguage;
+  }
+} catch {
+  // Graceful fallback in environments where relative imports cannot be resolved
+}
+
+export function useLanguage() {
+  if (testLanguageOverride) {
+    return {
+      language: testLanguageOverride.language,
+      setLanguage: (lang: Language) => {
+        testLanguageOverride = { language: lang, t: translations[lang] };
+      },
+      t: testLanguageOverride.t,
+    };
+  }
+  if (realUseLanguage) {
+    try {
+      return realUseLanguage();
+    } catch {
+      // Fallback
+    }
+  }
+  return {
+    language: "en" as Language,
+    setLanguage: () => {},
+    t: translations.en,
+  };
+}
 
 export function ArenaGame({
   room,
@@ -31,6 +76,7 @@ export function ArenaGame({
   currentPlayer: ArenaPlayer;
   onSubmitAnswer: (selected: number) => void;
 }) {
+  const { t } = useLanguage();
   const audio = useGameAudio();
   const [selectedChoice, setSelectedChoice] = useState<number | null>(null);
   const myPlayer = room.players[currentPlayer.id] || currentPlayer;
@@ -114,12 +160,12 @@ export function ArenaGame({
             animate={{ scale: 1, opacity: 1 }}
             className="countdown-box"
           >
-            <span className="countdown-eyebrow">MATCH STARTING</span>
-            <h2>Get Ready!</h2>
+            <span className="countdown-eyebrow">{t.arena.matchStartingEyebrow}</span>
+            <h2>{t.arena.getReadyTitle}</h2>
             <div className="countdown-pulse-circle">
               <Zap size={48} fill="currentColor" />
             </div>
-            <p>15 seconds per round · Synchronized answers</p>
+            <p>{t.arena.countdownSubtitle}</p>
           </motion.div>
         </div>
       )}
@@ -130,7 +176,7 @@ export function ArenaGame({
           {/* Round Header & Player HUD */}
           <div className="arena-hud surface">
             <div className="hud-metric">
-              <span className="metric-label">ROUND</span>
+              <span className="metric-label">{t.arena.roundLabel}</span>
               <strong>
                 {room.currentQuestionIndex + 1}
                 <small>/{room.totalQuestions}</small>
@@ -138,12 +184,12 @@ export function ArenaGame({
             </div>
 
             <div className="hud-metric">
-              <span className="metric-label">SCORE</span>
+              <span className="metric-label">{t.arena.scoreLabel}</span>
               <strong className="score-val">{myPlayer.score} XP</strong>
             </div>
 
             <div className="hud-metric">
-              <span className="metric-label">STREAK</span>
+              <span className="metric-label">{t.arena.streakLabel}</span>
               <strong className="streak-val">
                 <Flame
                   size={15}
@@ -154,7 +200,7 @@ export function ArenaGame({
             </div>
 
             <div className="hud-metric">
-              <span className="metric-label">LIVES</span>
+              <span className="metric-label">{t.arena.livesLabel}</span>
               <div className="lives-row">
                 {[1, 2, 3].map((heart) => (
                   <Heart
@@ -179,7 +225,7 @@ export function ArenaGame({
               <div className="arena-question-body">
                 <div className="arena-question-meta">
                   <span className="eyebrow">
-                    QUESTION {q.number} OF {q.total}
+                    {t.arena.questionNum} {q.number} {t.arena.of} {q.total}
                   </span>
                   {q.topic && <span className="topic-badge">{q.topic}</span>}
                 </div>
@@ -231,7 +277,7 @@ export function ArenaGame({
                 {room.status === "answering" && selectedChoice !== null && (
                   <div className="arena-submitted-banner">
                     <CheckCircle2 size={16} />
-                    <span>Answer locked in! Waiting for other contenders…</span>
+                    <span>{t.arena.answerLockedBanner}</span>
                   </div>
                 )}
 
@@ -239,7 +285,7 @@ export function ArenaGame({
                 {isEliminated && (
                   <div className="arena-spectator-banner">
                     <Eye size={16} />
-                    <span>Out of hearts — Spectating remaining contenders. Final standings appear on the podium!</span>
+                    <span>{t.arena.spectatorBanner}</span>
                   </div>
                 )}
 
@@ -255,7 +301,7 @@ export function ArenaGame({
                         <div className="result-chip chip-correct">
                           <CheckCircle2 size={16} />
                           <strong>
-                            Clutch! +{myPlayer.lastAnswer.points} XP
+                            {t.arena.clutchCorrectPrefix} +{myPlayer.lastAnswer.points} XP
                           </strong>
                         </div>
                       ) : (
@@ -263,12 +309,12 @@ export function ArenaGame({
                           <XCircle size={16} />
                           <strong>
                             {myPlayer.lastAnswer?.selected === null
-                              ? "Timed out! -1 Life"
-                              : "Missed! -1 Life"}
+                              ? t.arena.timedOutLife
+                              : t.arena.missedLife}
                           </strong>
                         </div>
                       )}
-                      <span className="next-countdown">Next round in 4s…</span>
+                      <span className="next-countdown">{t.arena.nextRoundIn4s}</span>
                     </div>
 
                     <p className="feedback-explanation">
@@ -289,10 +335,10 @@ export function ArenaGame({
           <div className="keyboard-footer">
             <Keyboard size={15} />
             <span>
-              <kbd>A</kbd>–<kbd>D</kbd> or <kbd>1</kbd>–<kbd>4</kbd> to submit
+              <kbd>A</kbd>–<kbd>D</kbd> {t.arena.orWord} <kbd>1</kbd>–<kbd>4</kbd> {t.arena.toSubmitHint}
             </span>
             <span className="keyboard-separator" />
-            <span>Synchronized server deadline</span>
+            <span>{t.arena.syncServerDeadline}</span>
           </div>
         </div>
 
@@ -300,8 +346,8 @@ export function ArenaGame({
         <aside className="arena-sidebar">
           <div className="leaderboard-card surface">
             <div className="leaderboard-header">
-              <span className="eyebrow">LIVE LEADERBOARD</span>
-              <h4>Arena Rankings</h4>
+              <span className="eyebrow">{t.arena.liveLeaderboardEyebrow}</span>
+              <h4>{t.arena.arenaRankingsTitle}</h4>
             </div>
 
             <div className="leaderboard-list">
@@ -322,7 +368,7 @@ export function ArenaGame({
                       <div className="player-details">
                         <span className="player-name">
                           {player.nickname}
-                          {isMe && <small>(You)</small>}
+                          {isMe && <small> ({t.arena.youPill})</small>}
                         </span>
                         <div className="player-stats-sub">
                           <span className="lives-dots">
@@ -335,9 +381,9 @@ export function ArenaGame({
                           )}
                           {room.status === "answering" && !isDead && (
                             player.status === "submitted" ? (
-                              <span className="player-live-tag tag-locked">✓ In</span>
+                              <span className="player-live-tag tag-locked">{t.arena.lockedInTag}</span>
                             ) : (
-                              <span className="player-live-tag tag-thinking">Thinking…</span>
+                              <span className="player-live-tag tag-thinking">{t.arena.thinkingTag}</span>
                             )
                           )}
                           {room.status === "feedback" && player.lastAnswer && (
@@ -346,7 +392,7 @@ export function ArenaGame({
                             >
                               {player.lastAnswer.correct
                                 ? `+${player.lastAnswer.points}`
-                                : "Miss"}
+                                : t.arena.missTag}
                             </span>
                           )}
                         </div>

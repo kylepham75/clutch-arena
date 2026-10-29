@@ -1,8 +1,14 @@
+"use client";
+
+import { useLanguage } from "@/lib/i18n/context";
+
 export default function Loading() {
+  const { t } = useLanguage();
+
   return (
     <main className="error-page" role="status">
       <span className="loading-bolt">ϟ</span>
-      <p>Getting your comeback ready…</p>
+      <p>{t.common.loadingText}</p>
     </main>
   );
 }

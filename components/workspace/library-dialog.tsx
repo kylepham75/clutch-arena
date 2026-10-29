@@ -44,7 +44,7 @@ export function LibraryDialog({
   onSelectPack: (pack: StudyPack, doc?: ParsedDocument) => void;
   onHostArena?: (pack: StudyPack) => void;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const [items, setItems] = useState<SavedStudyItem[]>([]);
   const [sharingPack, setSharingPack] = useState<StudyPack | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -90,7 +90,7 @@ export function LibraryDialog({
       const updated = saveStudyItem(newItem);
       setItems(updated);
     } catch (err: any) {
-      setImportError(err.message || "Failed to import pack file.");
+      setImportError(err.message || t.library.importErrorFallback);
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
@@ -98,6 +98,9 @@ export function LibraryDialog({
 
   const handleDelete = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (typeof window !== "undefined" && !window.confirm(t.library.confirmDelete)) {
+      return;
+    }
     const updated = deleteStudyItem(id);
     setItems(updated);
   };
@@ -118,7 +121,7 @@ export function LibraryDialog({
         {/* User Saved Packs */}
         <div className="library-section">
           <div className="flex items-center justify-between mb-2">
-            <span className="field-label mb-0">SAVED STUDY PACKS ({items.length})</span>
+            <span className="field-label mb-0">{t.library.savedPacksHeader} ({items.length})</span>
             <div>
               <input
                 ref={fileInputRef}
@@ -133,7 +136,7 @@ export function LibraryDialog({
                 onClick={() => fileInputRef.current?.click()}
               >
                 <Upload size={13} />
-                Import JSON
+                {t.library.importJson}
               </Button>
             </div>
           </div>
@@ -145,11 +148,8 @@ export function LibraryDialog({
           {items.length === 0 ? (
             <div className="library-empty">
               <FileText size={28} />
-              <p>No uploaded packs saved yet.</p>
-              <small>
-                Upload your slides, PDFs, or notes in the Ingest tab to generate custom study
-                packs that stay saved here.
-              </small>
+              <p>{t.library.noPacksSavedTitle}</p>
+              <small>{t.library.noPacksSavedDesc}</small>
             </div>
           ) : (
             <div className="library-list" role="list">
@@ -172,8 +172,8 @@ export function LibraryDialog({
                       <span className="tag">{item.format.toUpperCase()}</span>
                     </div>
                     <small>
-                      {item.fileName} · {item.questionCount} questions ·{" "}
-                      {new Date(item.createdAt).toLocaleDateString(undefined, {
+                      {item.fileName} · {item.questionCount} {t.library.questionsCount} ·{" "}
+                      {new Date(item.createdAt).toLocaleDateString(language === "vi" ? "vi-VN" : "en-US", {
                         month: "short",
                         day: "numeric",
                       })}
@@ -189,7 +189,7 @@ export function LibraryDialog({
                       onClick={() => handleSelect(item)}
                     >
                       <Play size={12} fill="currentColor" />
-                      Play
+                      {t.library.playBtn}
                     </Button>
                     {onHostArena && (
                       <Button
@@ -199,24 +199,24 @@ export function LibraryDialog({
                           onHostArena(item.pack);
                           onOpenChange(false);
                         }}
-                        title="Host in Arena"
+                        title={t.library.hostInArenaTooltip}
                       >
                         <Users size={12} />
-                        Arena
+                        {t.library.arenaBtn}
                       </Button>
                     )}
                     <Button
                       size="sm"
                       variant="ghost"
                       onClick={() => setSharingPack(item.pack)}
-                      title="Share & Export"
+                      title={t.library.shareExportTooltip}
                     >
                       <Share2 size={13} />
                     </Button>
                     <button
                       className="library-delete-btn"
-                      title="Delete saved pack"
-                      aria-label={`Delete ${item.title}`}
+                      title={t.library.deletePackTooltip}
+                      aria-label={`${t.library.deleteBtn} ${item.title}`}
                       onClick={(e) => handleDelete(item.id, e)}
                     >
                       <Trash2 size={14} />

@@ -22,6 +22,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useUserTier } from "@/hooks/use-user-tier";
 import { useAuth } from "@/lib/auth/context";
+import { useLanguage } from "@/lib/i18n/context";
 import { BeforeAfterModal } from "./before-after-modal";
 import { NoteRenderer } from "./note-renderer";
 import { PricingModal } from "@/components/pricing/pricing-modal";
@@ -36,6 +37,7 @@ import type { ClutchNote } from "@/lib/schemas/notes";
 export function ClutchNotesPanel() {
   const { user, session } = useAuth();
   const { tier, isPaidTier, isCramPassOrAbove, isProOrAbove, setTier } = useUserTier();
+  const { t, language } = useLanguage();
 
   const [note, setNote] = useState<ClutchNote | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -83,20 +85,20 @@ export function ClutchNotesPanel() {
       const ext = file.name.split(".").at(-1)?.toLowerCase();
 
       if (ext !== "pdf" && ext !== "pptx") {
-        setError("Please upload a PowerPoint (.pptx) or PDF (.pdf) lecture slide deck.");
+        setError(t.notes.errInvalidFileType);
         return;
       }
 
       if (file.size > 25 * 1024 * 1024) {
         setError(
-          `File size is ${(file.size / (1024 * 1024)).toFixed(1)}MB. Maximum allowed slide deck size is 25MB.`,
+          `${t.notes.errFileTooLargePrefix}${(file.size / (1024 * 1024)).toFixed(1)}${t.notes.errFileTooLargeSuffix}`,
         );
         return;
       }
 
       setSelectedFile(file);
     },
-    [hasNotesAccess],
+    [hasNotesAccess, t.notes],
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -120,23 +122,23 @@ export function ClutchNotesPanel() {
     setLoading(true);
     setError(null);
     setWarnings([]);
-    setProgressStep("Extracting slide text & mathematical notation locally...");
+    setProgressStep(t.notes.step1);
 
     const progressTimers = [
       setTimeout(() => {
-        setProgressStep("Stripping attendance QR codes, cover slides & repetitive noise...");
+        setProgressStep(t.notes.step2);
       }, 800),
       setTimeout(() => {
-        setProgressStep("Extracting mathematical notation and bilingual conceptual structure...");
+        setProgressStep(t.notes.step3);
       }, 3500),
       setTimeout(() => {
-        setProgressStep("Analyzing valuation models, accounting formulas & economic principles...");
+        setProgressStep(t.notes.step4);
       }, 9000),
       setTimeout(() => {
-        setProgressStep("Standardizing LaTeX equations and compiling 'Trong đó:' variable list...");
+        setProgressStep(t.notes.step5);
       }, 18_000),
       setTimeout(() => {
-        setProgressStep("Synthesizing exam-ready Key Takeaways & boundary condition rules...");
+        setProgressStep(t.notes.step6);
       }, 35_000),
     ];
 
@@ -169,7 +171,7 @@ export function ClutchNotesPanel() {
           useMultipartFallback = true;
         } else {
           throw new Error(
-            `Local slide extraction failed (${err?.message || "unknown error"}), and file size (${(selectedFile.size / (1024 * 1024)).toFixed(1)}MB) exceeds the 4.5MB direct upload fallback limit. Please compress the file or upload a smaller chapter deck.`,
+            `${t.notes.errLocalExtractionFailedPrefix} (${err?.message || "unknown error"}), ${t.notes.errLocalExtractionFailedSuffix}`,
           );
         }
       }
@@ -234,31 +236,27 @@ export function ClutchNotesPanel() {
 
       if (!res.ok || !data || !data.ok) {
         if (res.status === 413) {
-          throw new Error(
-            "Slide deck exceeds Vercel serverless upload limit (4.5MB). Please compress the PDF/PPTX or upload specific chapters.",
-          );
+          throw new Error(t.notes.errPayloadTooLarge);
         }
         if (res.status === 504) {
-          throw new Error(
-            "The note synthesis timed out on the server (120s limit). Please try converting fewer slides or specify a focused chapter topic.",
-          );
+          throw new Error(t.notes.errGatewayTimeout);
         }
         if (res.status === 403) {
           setBeforeAfterOpen(true);
           throw new Error(
-            data?.error?.message || "Paid subscription required (Cram Pass, Pro, or Tutor).",
+            data?.error?.message || t.notes.errSubscriptionRequired,
           );
         }
         if (res.status === 429) {
           throw new Error(
-            data?.error?.message || "Daily limit reached: up to 30 deck conversions per day.",
+            data?.error?.message || t.notes.errDailyQuotaReached,
           );
         }
         const serverMsg =
           data?.error?.message ||
           (res.statusText
             ? `Server error (${res.status}): ${res.statusText}`
-            : "Failed to synthesize study notes. Please try again.");
+            : t.notes.errServerGeneric);
         throw new Error(serverMsg);
       }
 
@@ -272,19 +270,15 @@ export function ClutchNotesPanel() {
       setSelectedFile(null);
     } catch (err: any) {
       if (err.name === "AbortError") {
-        setError(
-          "Synthesis timed out after 2 minutes. The slide deck may be too dense or complex. Try compressing the PDF or uploading single chapter slides.",
-        );
+        setError(t.notes.errTimeoutClient);
       } else if (
         err.message?.includes("Failed to fetch") ||
         err.message?.includes("NetworkError") ||
         err.name === "TypeError"
       ) {
-        setError(
-          "Network connection interrupted or serverless gateway timed out. If your slide file is large, please compress the PDF/PPTX or upload fewer slides.",
-        );
+        setError(t.notes.errNetwork);
       } else {
-        setError(err.message || "An unexpected error occurred during note synthesis.");
+        setError(err.message || t.notes.errUnexpected);
       }
     } finally {
       clearTimeout(timeoutId);
@@ -315,7 +309,7 @@ export function ClutchNotesPanel() {
           >
             <div className="flex items-center gap-2 font-bold text-sm sm:text-base text-[#b45309]">
               <AlertCircle size={18} className="text-[#d97706] flex-shrink-0" />
-              <span>Some slides could not be read</span>
+              <span>{t.notes.someSlidesUnread}</span>
             </div>
             <ul className="list-disc list-inside space-y-1 text-xs sm:text-sm text-[#92400e] pl-1">
               {warnings.map((warn, index) => (
@@ -325,7 +319,7 @@ export function ClutchNotesPanel() {
               ))}
             </ul>
             <p className="text-xs sm:text-sm text-[#b45309] font-medium pt-2 border-t border-[#fde68a]">
-              Formulas shown as images on these slides may be missing from this note — check the original slides.
+              {t.notes.unreadFormulasNote}
             </p>
           </div>
         )}
@@ -347,46 +341,44 @@ export function ClutchNotesPanel() {
         <div className="flex flex-wrap items-center justify-between gap-4 mb-3">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#fff4ec] border border-[#fbd8c8] text-[#d9532f] text-xs font-bold uppercase tracking-wider">
             <Sparkles size={14} className="text-[#e96b44]" />
-            <span>Clutch Notes AI</span>
+            <span>{t.notes.badge}</span>
             <span className="ml-1 px-1.5 py-0.5 rounded bg-[#e96b44] text-white text-[10px] font-black">
-              CRAM PASS · PRO · TUTOR
+              {t.notes.tierBadge}
             </span>
           </div>
 
           <div className="flex items-center gap-2 text-xs font-medium text-[#737c6b]">
             <Clock size={14} className="text-[#e96b44]" />
             <span>
-              Daily Quota: <strong className="text-[#1f261c]">{30 - dailyUsage}</strong>/30 remaining
+              {t.notes.dailyQuota} <strong className="text-[#1f261c]">{30 - dailyUsage}</strong>/30 {t.notes.remaining}
             </span>
           </div>
         </div>
 
         <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1a2118] tracking-tight mb-2">
-          Slide-to-Summary Note Generator
+          {t.notes.title}
         </h1>
         <p className="text-xs sm:text-sm text-[#67705f] max-w-2xl leading-relaxed">
-          Upload raw lecturer slide decks (PDF or PowerPoint). The Academic Synthesis Engine strips away
-          agenda slides and attendance QR codes, structuring exam-ready bilingual notes with standardized
-          LaTeX math formulas and Clutch Arena watermarked PDF export.
+          {t.notes.subtitle}
         </p>
 
         {/* Feature Highlights Pills */}
         <div className="mt-5 pt-4 border-t border-[#edf0e8] flex flex-wrap gap-2 text-xs text-[#4d5746]">
           <span className="flex items-center gap-1.5 bg-[#f7f8f4] px-3 py-1.5 rounded-lg border border-[#e3e7dc] font-medium">
             <CheckCircle2 size={13} className="text-[#2e7d32]" />
-            <span>Noise Stripping (Agendas &amp; QR removed)</span>
+            <span>{t.notes.pillNoise}</span>
           </span>
           <span className="flex items-center gap-1.5 bg-[#f7f8f4] px-3 py-1.5 rounded-lg border border-[#e3e7dc] font-medium">
             <CheckCircle2 size={13} className="text-[#2e7d32]" />
-            <span>Bilingual Anchoring (EN/VI)</span>
+            <span>{t.notes.pillBilingual}</span>
           </span>
           <span className="flex items-center gap-1.5 bg-[#f7f8f4] px-3 py-1.5 rounded-lg border border-[#e3e7dc] font-medium">
             <CheckCircle2 size={13} className="text-[#2e7d32]" />
-            <span>LaTeX Math &amp; "Trong đó:" Variables</span>
+            <span>{t.notes.pillLatex}</span>
           </span>
           <span className="flex items-center gap-1.5 bg-[#f7f8f4] px-3 py-1.5 rounded-lg border border-[#e3e7dc] font-medium">
             <CheckCircle2 size={13} className="text-[#2e7d32]" />
-            <span>Watermarked PDF Export</span>
+            <span>{t.notes.pillPdf}</span>
           </span>
         </div>
       </div>
@@ -398,9 +390,9 @@ export function ClutchNotesPanel() {
             <div className="w-7 h-7 rounded-lg bg-[#fbede5] text-[#e46d47] flex items-center justify-center">
               <FileSpreadsheet size={16} />
             </div>
-            <span>Upload Lecturer Slide Deck</span>
+            <span>{t.notes.uploadHeader}</span>
           </div>
-          <span className="text-xs text-[#7e8777] font-medium">PDF or PPTX up to 25MB</span>
+          <span className="text-xs text-[#7e8777] font-medium">{t.notes.fileLimitNote}</span>
         </div>
 
         {/* Dropzone with PRO badge */}
@@ -419,7 +411,7 @@ export function ClutchNotesPanel() {
           {/* Premium Tier Badge on Dropzone */}
           <div className="absolute top-3.5 right-3.5 flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#fef3c7] border border-[#fde68a] text-[#b45309] text-[11px] font-black tracking-wider uppercase">
             <Sparkles size={12} className="text-[#b45309]" />
-            <span>PAID TIERS</span>
+            <span>{t.notes.paidTiersBadge}</span>
           </div>
 
           <div className="w-14 h-14 mx-auto rounded-xl bg-[#fbede5] text-[#e46d47] flex items-center justify-center mb-3.5 shadow-xs">
@@ -430,18 +422,16 @@ export function ClutchNotesPanel() {
             <div className="space-y-1">
               <div className="text-base font-bold text-[#1f271a]">{selectedFile.name}</div>
               <div className="text-xs font-semibold text-[#2e6320]">
-                {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB · Ready to synthesize
+                {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB · {t.notes.readyToSynthesize}
               </div>
             </div>
           ) : (
             <div className="space-y-1.5 max-w-md mx-auto">
               <div className="text-sm font-bold text-[#1f261b]">
-                Drag and drop your lecture slide deck here, or click to browse
+                {t.notes.dropTitle}
               </div>
               <p className="text-xs text-[#788270] leading-relaxed">
-                Accepts <strong className="text-[#3c4636]">.pdf</strong> and{" "}
-                <strong className="text-[#3c4636]">.pptx</strong> files from university courses
-                (Finance, Economics, Engineering, STEM). Max 25MB per deck.
+                {t.notes.dropDesc}
               </p>
             </div>
           )}
@@ -449,7 +439,7 @@ export function ClutchNotesPanel() {
           {!hasNotesAccess && (
             <div className="mt-4 pt-3.5 border-t border-[#ebeee5] flex items-center justify-center gap-1.5 text-xs text-[#b45309] font-medium">
               <Lock size={13} className="text-[#b45309]" />
-              <span>Available on 7-Day Cram Pass (69.000đ), Đấu Sĩ Pro (299.000đ), and Giảng Viên plans</span>
+              <span>{t.notes.lockedNotice}</span>
             </div>
           )}
         </div>
@@ -457,13 +447,13 @@ export function ClutchNotesPanel() {
         {/* Optional Study Focus Input */}
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-[#5a6452]">
-            Optional Study Focus or Chapter Topics:
+            {t.notes.focusLabel}
           </label>
           <input
             type="text"
             value={focus}
             onChange={(e) => setFocus(e.target.value)}
-            placeholder="e.g. Gordon Growth Model, Two-Stage Valuation, Dividend Discount boundary conditions..."
+            placeholder={t.notes.focusPlaceholder}
             className="w-full px-4 py-2.5 bg-[#fafbf8] border border-[#dce1d5] rounded-xl text-xs sm:text-sm text-[#1f261b] placeholder-[#959d8e] focus:outline-none focus:border-[#e96943] focus:bg-white transition-colors"
           />
         </div>
@@ -481,7 +471,7 @@ export function ClutchNotesPanel() {
           <div className="bg-[#fafbf8] border border-[#dce2d4] rounded-xl p-4 text-center space-y-2.5">
             <div className="inline-flex items-center gap-2 text-xs font-bold text-[#c8532f]">
               <RefreshCw size={14} className="animate-spin text-[#e96b44]" />
-              <span>{progressStep || "Synthesizing lecture notes..."}</span>
+              <span>{progressStep || t.notes.synthesizingDefault}</span>
             </div>
             <div className="w-full bg-[#ebeee5] rounded-full h-1.5 overflow-hidden">
               <div className="bg-gradient-to-r from-[#e96b44] to-[#f59e0b] h-full w-2/3 animate-pulse" />
@@ -498,7 +488,7 @@ export function ClutchNotesPanel() {
             className="w-full sm:w-auto border-[#dce1d5] bg-white hover:bg-[#f7f8f4] text-[#424c3a] text-xs font-semibold flex items-center gap-2 cursor-pointer shadow-2xs"
           >
             <Sparkles size={14} className="text-[#e96b44]" />
-            <span>Load Sample Valuation Deck (27 Slides)</span>
+            <span>{t.notes.loadSampleBtn}</span>
           </Button>
 
           <Button
@@ -511,7 +501,7 @@ export function ClutchNotesPanel() {
             }`}
           >
             <Zap size={15} />
-            <span>Synthesize Clutch Note</span>
+            <span>{t.notes.synthesizeBtn}</span>
             <ArrowRight size={15} />
           </Button>
         </div>
@@ -522,14 +512,13 @@ export function ClutchNotesPanel() {
         <div className="space-y-1.5 text-center md:text-left">
           <div className="text-xs font-bold uppercase tracking-wider text-[#e46d47] flex items-center justify-center md:justify-start gap-1.5">
             <Sparkles size={14} />
-            <span>Interactive Before / After Showcase</span>
+            <span>{t.notes.showcaseEyebrow}</span>
           </div>
           <h3 className="text-base sm:text-lg font-extrabold text-[#1f261b]">
-            See how 27 slides become a 3-page bilingual cheat sheet
+            {t.notes.showcaseTitle}
           </h3>
           <p className="text-xs text-[#6e7766] max-w-lg leading-relaxed">
-            Compare messy lecturer slides with the structured Clutch Arena output, complete with
-            standardized LaTeX equations and "Trong đó:" variable definitions.
+            {t.notes.showcaseDesc}
           </p>
         </div>
 
@@ -537,7 +526,7 @@ export function ClutchNotesPanel() {
           onClick={() => setBeforeAfterOpen(true)}
           className="w-full md:w-auto px-5 py-2.5 bg-white hover:bg-[#f5f6f1] border border-[#d6dbcf] hover:border-[#c3cbb8] text-[#2c3525] text-xs font-bold rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-2xs"
         >
-          <span>View Before / After Comparison</span>
+          <span>{t.notes.showcaseBtn}</span>
           <ArrowRight size={14} />
         </Button>
       </div>
@@ -554,7 +543,7 @@ export function ClutchNotesPanel() {
       <PricingModal
         open={pricingOpen}
         onClose={() => setPricingOpen(false)}
-        initialReason="Upgrade to Clutch Pro to unlock unlimited Clutch Notes AI slide synthesis."
+        initialReason={t.notes.pricingInitialReason}
       />
     </div>
   );
