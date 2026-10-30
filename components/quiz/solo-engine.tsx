@@ -925,6 +925,39 @@ export function SoloEngine({
                               <span className="tag tag-amber">{t.run.gettingStartedTag}</span>
                             </div>
 
+                            {/* Prominent Quick-Action Launchpad Banner */}
+                            <div className="hero-quick-start mb-6 p-6 sm:p-7 rounded-2xl bg-[#fff8f4] border border-[#f5d2c2] flex flex-col md:flex-row items-center justify-between gap-5 shadow-xs">
+                              <div className="space-y-1.5 text-center md:text-left">
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#fde8dc] text-[#d9532f] text-xs font-bold uppercase tracking-wider">
+                                  <Zap size={14} fill="currentColor" />
+                                  <span>{t.nav.clutchRun}</span>
+                                </span>
+                                <h3 className="text-xl sm:text-2xl font-extrabold text-[#1a2118] tracking-tight">
+                                  {t.run.welcomeSampleTitle}
+                                </h3>
+                                <p className="text-xs sm:text-sm text-[#5d6754] max-w-lg leading-relaxed">
+                                  {t.run.welcomeSampleDesc}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-3 w-full md:w-auto">
+                                <Button
+                                  onClick={handleLoadSamplePack}
+                                  className="flex-1 md:flex-none px-6 py-3 bg-[#e96943] hover:bg-[#d85833] text-white font-bold text-sm rounded-xl shadow-sm hover:scale-[1.01] transition-all cursor-pointer flex items-center justify-center gap-2"
+                                >
+                                  <Play size={16} fill="currentColor" />
+                                  <span>{t.run.startRun}</span>
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  onClick={() => setActiveTab("ingest")}
+                                  className="flex-1 md:flex-none px-5 py-3 border-[#d8ded0] bg-white hover:bg-[#f6f8f2] text-[#343e2c] font-semibold text-sm rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                                >
+                                  <Upload size={16} />
+                                  <span>{t.nav.uploadNotes}</span>
+                                </Button>
+                              </div>
+                            </div>
+
                             <div className="welcome-actions-grid">
                               <div
                                 role="button"
