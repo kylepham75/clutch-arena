@@ -1000,13 +1000,6 @@ svg {
   gap: 6px;
   margin-top: 14px;
 }
-  color: #a2a899;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  margin-top: 13px;
-}
 .setup-aside {
   display: flex;
   flex-direction: column;
