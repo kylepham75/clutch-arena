@@ -35,8 +35,8 @@ export function UserProfileButton({
         <div
           className="profile-avatar"
           style={{
-            background: user ? "linear-gradient(135deg, #ee714c, #f3c77b)" : undefined,
-            color: user ? "#000" : undefined,
+            background: user ? "#b83811" : undefined,
+            color: user ? "#fff" : undefined,
           }}
         >
           {user?.email ? user.email.charAt(0).toUpperCase() : "⚡"}
@@ -68,9 +68,9 @@ export function UserProfileButton({
         padding: "0 0.75rem",
         borderRadius: "0.5rem",
         fontSize: "0.8125rem",
-        background: user ? "rgba(238, 113, 76, 0.12)" : "rgba(255, 255, 255, 0.04)",
-        borderColor: user ? "rgba(238, 113, 76, 0.35)" : "rgba(255, 255, 255, 0.1)",
-        color: user ? "#f3c77b" : "#e4e4e7",
+        background: user ? "rgba(184, 56, 17, 0.08)" : "#ffffff",
+        borderColor: user ? "rgba(184, 56, 17, 0.28)" : "#d8dfd0",
+        color: user ? "#8a270b" : "#242e1d",
         cursor: "pointer",
       }}
     >
@@ -81,7 +81,7 @@ export function UserProfileButton({
               width: "18px",
               height: "18px",
               borderRadius: "50%",
-              background: "#ee714c",
+              background: "#b83811",
               color: "#fff",
               display: "flex",
               alignItems: "center",
@@ -97,9 +97,9 @@ export function UserProfileButton({
           </span>
           <span
             style={{
-              fontSize: "0.625rem",
-              background: "rgba(238, 113, 76, 0.25)",
-              color: "#ee714c",
+              fontSize: "0.6875rem",
+              background: "rgba(184, 56, 17, 0.12)",
+              color: "#8a270b",
               fontWeight: 700,
               padding: "0.1rem 0.35rem",
               borderRadius: "4px",
@@ -111,12 +111,13 @@ export function UserProfileButton({
         </>
       ) : (
         <>
-          <LogIn size={14} style={{ color: "#ee714c" }} />
+          <LogIn size={14} style={{ color: "#b83811" }} />
           <span>{t.auth.signInTab}</span>
           <span
             style={{
-              fontSize: "0.6875rem",
-              color: guestUsageCount >= guestLimit ? "#ff7b72" : "#a1a1aa",
+              fontSize: "0.75rem",
+              color: guestUsageCount >= guestLimit ? "#b91c1c" : "#5a654f",
+              fontWeight: 500,
             }}
           >
             ({guestUsageCount}/{guestLimit})

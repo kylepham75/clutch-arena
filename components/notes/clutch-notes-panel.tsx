@@ -337,16 +337,10 @@ export function ClutchNotesPanel() {
       {/* Header Introduction Card */}
       <div className="bg-white border border-[#e2e6db] rounded-2xl p-6 sm:p-7 shadow-sm relative overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-4 mb-3">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#fff4ec] border border-[#fbd8c8] text-[#d9532f] text-xs font-bold uppercase tracking-wider">
-            <BookOpen size={14} className="text-[#e96b44]" />
-            <span>{t.notes.badge}</span>
-            <span className="ml-1 px-1.5 py-0.5 rounded bg-[#e96b44] text-white text-[10px] font-black">
-              {t.notes.tierBadge}
-            </span>
-          </div>
+          <span className="badge-pro">PRO</span>
 
-          <div className="flex items-center gap-2 text-xs font-medium text-[#737c6b]">
-            <Clock size={14} className="text-[#e96b44]" />
+          <div className="flex items-center gap-2 text-xs font-medium text-[#5a6452]">
+            <Clock size={14} className="text-[#b83811]" />
             <span>
               {t.notes.dailyQuota} <strong className="text-[#1f261c]">{30 - dailyUsage}</strong>/30 {t.notes.remaining}
             </span>
@@ -474,8 +468,8 @@ export function ClutchNotesPanel() {
             disabled={loading || !selectedFile}
             className={`w-full sm:w-auto px-6 py-2.5 text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-all shadow-xs ${
               selectedFile && !loading
-                ? "bg-[#e96b44] hover:bg-[#d95e37] text-white shadow-sm hover:scale-[1.01]"
-                : "bg-[#e8ece2] text-[#939c8c] cursor-not-allowed border border-[#dce0d5]"
+                ? "bg-[#b83811] hover:bg-[#9e2e0a] text-white shadow-xs"
+                : "bg-[#e8ece2] text-[#555f4c] cursor-not-allowed border border-[#dce0d5]"
             }`}
           >
             <Zap size={15} />
@@ -488,10 +482,6 @@ export function ClutchNotesPanel() {
       {/* Before / After Preview Card CTA */}
       <div className="bg-[#fafbf8] border border-[#e2e6db] rounded-2xl p-6 sm:p-7 flex flex-col md:flex-row items-center justify-between gap-5 shadow-2xs">
         <div className="space-y-1.5 text-center md:text-left">
-          <div className="text-xs font-bold uppercase tracking-wider text-[#e46d47] flex items-center justify-center md:justify-start gap-1.5">
-            <Layers size={14} />
-            <span>{t.notes.showcaseEyebrow}</span>
-          </div>
           <h3 className="text-base sm:text-lg font-extrabold text-[#1f261b]">
             {t.notes.showcaseTitle}
           </h3>

@@ -146,17 +146,13 @@ export function ArenaEntrance({
   return (
     <div className="arena-entrance-container">
       <div className="arena-hero">
-        <div className="arena-badge">
-          <Flame size={14} />
-          <span>{t.arena.badge}</span>
-        </div>
         <h2>{t.arena.heroTitle}</h2>
         <p>
           {t.arena.heroDesc}
         </p>
-        <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200 flex flex-wrap items-center justify-between gap-3">
+        <div className="mt-3 p-3 rounded-xl bg-amber-50 border border-amber-200/80 text-xs text-amber-900 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-amber-600">{t.arena.hostPaysTitle}</span>
+            <span className="font-bold text-amber-950">{t.arena.hostPaysTitle}</span>
             <span>{t.arena.hostPaysDesc}</span>
           </div>
           <button
@@ -165,7 +161,7 @@ export function ArenaEntrance({
               setPricingReason(null);
               setPricingOpen(true);
             }}
-            className="text-xs font-bold underline shrink-0 hover:text-amber-600 cursor-pointer"
+            className="text-xs font-bold underline shrink-0 text-amber-900 hover:text-amber-950 cursor-pointer"
           >
             {t.arena.viewTiersBtn}
           </button>
@@ -262,7 +258,7 @@ export function ArenaEntrance({
                 </label>
               )}
               {!presetPack && libraryItems.length === 0 && (
-                <div className="p-4 rounded-xl border border-dashed border-stone-300 bg-stone-50 text-center text-xs text-stone-600 my-2">
+                <div className="py-6 px-4 text-center text-xs text-stone-600 border-t border-b border-stone-200 my-2">
                   <p className="font-semibold text-stone-800 mb-1">{t.arena.noPacksTitle}</p>
                   <p>{t.arena.noPacksDesc}</p>
                 </div>
@@ -319,7 +315,7 @@ export function ArenaEntrance({
                   <Sparkles size={14} />
                   <strong>{t.arena.conceptRemix}</strong>
                   {!limits.canHostArenaRemix && (
-                    <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-amber-500 text-stone-950 ml-auto">
+                    <span className="text-xs uppercase font-bold px-2 py-0.5 rounded bg-amber-100 border border-amber-300 text-amber-900 ml-auto">
                       {unlockedRemixRuns > 0 ? `${unlockedRemixRuns} ${t.arena.passSuffix}` : t.arena.proBadge}
                     </span>
                   )}

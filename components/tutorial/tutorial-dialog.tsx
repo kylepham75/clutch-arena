@@ -130,12 +130,14 @@ export function TutorialDialog({
           <div className="tutorial-body">
             {step === 0 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-box amber">
-                  <Sparkles size={24} />
+                <div className="tutorial-title-row">
+                  <div className="tutorial-icon-box amber">
+                    <Sparkles size={20} />
+                  </div>
+                  <h3 className="tutorial-title">
+                    {t.tutorial.step0Title}
+                  </h3>
                 </div>
-                <h3 className="tutorial-title">
-                  {t.tutorial.step0Title}
-                </h3>
                 <p className="tutorial-desc">
                   {t.tutorial.step0Desc}
                 </p>
@@ -176,12 +178,14 @@ export function TutorialDialog({
 
             {step === 1 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-box emerald">
-                  <Upload size={24} />
+                <div className="tutorial-title-row">
+                  <div className="tutorial-icon-box emerald">
+                    <Upload size={20} />
+                  </div>
+                  <h3 className="tutorial-title">
+                    {t.tutorial.step1Title}
+                  </h3>
                 </div>
-                <h3 className="tutorial-title">
-                  {t.tutorial.step1Title}
-                </h3>
                 <p className="tutorial-desc">
                   {t.tutorial.step1Desc}
                 </p>
@@ -217,12 +221,14 @@ export function TutorialDialog({
 
             {step === 2 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-box amber">
-                  <Zap size={24} />
+                <div className="tutorial-title-row">
+                  <div className="tutorial-icon-box amber">
+                    <Zap size={20} />
+                  </div>
+                  <h3 className="tutorial-title">
+                    {t.tutorial.step2Title}
+                  </h3>
                 </div>
-                <h3 className="tutorial-title">
-                  {t.tutorial.step2Title}
-                </h3>
                 <p className="tutorial-desc">
                   {t.tutorial.step2DescPrefix}
                   <strong>{t.tutorial.step2DescHighlight}</strong>
@@ -261,12 +267,14 @@ export function TutorialDialog({
 
             {step === 3 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-box purple">
-                  <Compass size={24} />
+                <div className="tutorial-title-row">
+                  <div className="tutorial-icon-box purple">
+                    <Compass size={20} />
+                  </div>
+                  <h3 className="tutorial-title">
+                    {t.tutorial.step3Title}
+                  </h3>
                 </div>
-                <h3 className="tutorial-title">
-                  {t.tutorial.step3Title}
-                </h3>
                 <p className="tutorial-desc">
                   {t.tutorial.step3Desc}
                 </p>
@@ -303,12 +311,14 @@ export function TutorialDialog({
 
             {step === 4 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-box blue">
-                  <Users size={24} />
+                <div className="tutorial-title-row">
+                  <div className="tutorial-icon-box blue">
+                    <Users size={20} />
+                  </div>
+                  <h3 className="tutorial-title">
+                    {t.tutorial.step4Title}
+                  </h3>
                 </div>
-                <h3 className="tutorial-title">
-                  {t.tutorial.step4Title}
-                </h3>
                 <p className="tutorial-desc">
                   {t.tutorial.step4Desc}
                 </p>
@@ -343,12 +353,14 @@ export function TutorialDialog({
 
             {step === 5 && (
               <div className="tutorial-step">
-                <div className="tutorial-icon-box amber">
-                  <Trophy size={24} />
+                <div className="tutorial-title-row">
+                  <div className="tutorial-icon-box amber">
+                    <Trophy size={20} />
+                  </div>
+                  <h3 className="tutorial-title">
+                    {t.tutorial.step5Title}
+                  </h3>
                 </div>
-                <h3 className="tutorial-title">
-                  {t.tutorial.step5Title}
-                </h3>
                 <p className="tutorial-desc">
                   {t.tutorial.step5DescPrefix}
                   <strong>{t.tutorial.step5DescHighlight}</strong>
