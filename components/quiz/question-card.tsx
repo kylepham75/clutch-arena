@@ -34,7 +34,7 @@ export function QuestionCard({
     >
       <div className="question-meta">
         <span className="eyebrow">
-          {t.run.questionEyebrow} {String(number).padStart(2, "0")}
+          {t.run.questionEyebrow} {number}
         </span>
         <span className={`tag ${review ? "tag-purple" : ""}`}>
           {review ? (

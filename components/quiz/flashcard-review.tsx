@@ -127,7 +127,7 @@ export function FlashcardReview({
       <header className="flashcards-header">
         <div>
           <span className="eyebrow">
-            <span className="tiny-star">✦</span> {t.flashcard.eyebrow}
+            {t.flashcard.eyebrow}
             {mode === "variants" ? t.flashcard.conceptRemixSuffix : ""}
           </span>
           <h2>{pack.title}</h2>

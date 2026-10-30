@@ -6,7 +6,6 @@ import {
   UploadCloud,
   FileText,
   AlertCircle,
-  Sparkles,
   CheckCircle2,
   Play,
   RotateCcw,
@@ -14,6 +13,8 @@ import {
   X,
   FileCheck,
   Users,
+  Zap,
+  Layers,
 } from "lucide-react";
 import type {
   IngestionOptions,
@@ -381,7 +382,7 @@ export function UploadPanel({
 
           {files.length > 1 && (
             <div className="multi-file-notice">
-              <Sparkles size={14} className="multi-file-notice-icon" />
+              <Layers size={14} className="multi-file-notice-icon" />
               <span>
                 <strong>{t.upload.unifiedMasterDeck}:</strong> {t.upload.unifiedDesc}
               </span>
@@ -411,7 +412,7 @@ export function UploadPanel({
             className={`op-button ${operation === "generate" ? "op-button-active" : ""}`}
             onClick={() => setOperation("generate")}
           >
-            <Sparkles size={16} />
+            <Zap size={16} />
             <div>
               <strong>{t.upload.generateBtn}</strong>
               <small>{t.upload.generatePackDesc}</small>
@@ -524,7 +525,7 @@ export function UploadPanel({
           >
             {operation === "generate" ? (
               <>
-                <Sparkles size={16} />
+                <Zap size={16} />
                 {files.length > 1
                   ? `${t.upload.generateMasterBtn} (${files.length})`
                   : t.upload.generateBtn}
@@ -602,7 +603,7 @@ export function UploadPanel({
               className="btn-primary"
               onClick={() => handleSubmit("generate")}
             >
-              <Sparkles size={16} />
+              <Zap size={16} />
               {t.upload.generateQuestionsNowPrefix} {questionCount} {t.upload.generateQuestionsNowSuffix}
             </Button>
           </div>

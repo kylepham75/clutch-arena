@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "ai-hallucination-fact-check-protocol": {
+      "source": "garethmanning/education-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/ai-literacy/ai-hallucination-fact-check-protocol/SKILL.md",
+      "computedHash": "9713a5c5673bae29ea40c1b628bd83dd6a046094361508bd2d91b4259e466694"
+    },
+    "find-skills": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/find-skills/SKILL.md",
+      "computedHash": "b146008599c31057cef1c145774cea5d5afb30e8f43fa802e47a4b461419aaaf"
+    }
+  }
+}

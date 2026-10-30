@@ -150,10 +150,10 @@ describe("coach HTTP handler", () => {
     expect(cleaned).toBe("For a stock with a beta of 1.29, expected to move by 1.29% for every 1% move in the market.");
   });
 
-  it("defaults to active gemini-3.5-flash-lite model instead of deprecated 2.5", async () => {
+  it("defaults to active gemini-3.5-flash model instead of deprecated 2.5", async () => {
     vi.stubEnv("GEMINI_API_KEY", "test-key-abc-123");
     const { getGeminiModel } = await import("@/lib/ai/provider");
     const model: any = getGeminiModel();
-    expect(model.modelId).toBe("gemini-3.5-flash-lite");
+    expect(model.modelId).toBe("gemini-3.5-flash");
   });
 });

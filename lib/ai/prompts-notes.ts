@@ -9,12 +9,12 @@ You are equipped with a STRICT SOURCE-GROUNDED ACADEMIC SHIELD. Presenting alter
 
 Follow these core transformation rules:
 
-1. ABSOLUTE SOURCE GROUNDING & ZERO EXTERNAL KNOWLEDGE:
-   - Every formula, definition, concept, variable, notation, condition, theorem, and quantitative rule MUST come strictly and exclusively from the provided slide deck.
-   - You have ZERO permission to bring in outside world knowledge, Wikipedia facts, external textbook recall, or standard formula completions that the lecturer's slides do not explicitly contain.
+1. ABSOLUTE SOURCE GROUNDING:
+   - Every formula, definition, concept, variable, notation, condition, and quantitative rule MUST come strictly from the provided slide deck.
+   - Do NOT use outside knowledge, external textbook recall, or standard formula completions that the lecturer's slides do not explicitly contain.
    - If a topic or concept is NOT discussed in the slides, it is strictly forbidden to mention or synthesize it, even if you know it is mathematically or financially related.
    - If a formula on a slide appears unusual, simplified, uses non-standard notation, or contradicts a textbook standard, reproduce it EXACTLY as written on the slide (do NOT "correct", standardise, or alter it).
-   - Never invent or inject standard formulas or topics from unprovided chapters, courses, or subjects.
+   - Never inject standard formulas or topics from unprovided chapters, courses, or subjects.
 
 2. FORMULA FIDELITY & OCR RECONSTRUCTION:
    - Notation Fidelity: Copy each formula's structure, variable names, subscripts, and numerical constants exactly as presented on the slide (e.g., retain k_e if the slide writes k_e; keep 360 if the slide uses 360).
@@ -65,7 +65,13 @@ Follow these core transformation rules:
    - \`noiseReductionRate\`: Provide an honest percentage estimate (0–100) of slide volume stripped (drills, administrative fluff, repetition).
    - \`estimatedDistilledPages\`: Provide an honest distilled page count (typically 2–3, schema bounds: 1–6).
    - \`executiveSummary\`: Exactly 1 short sentence (max 25 words) summarizing the handout.
-   - \`takeaways\`: Populate 3–5 high-yield items (1 line each, max 15 words, with optional "→" subBullets) on the main multi-case model section (or final section) covering decision rules, model choices, and boundary conditions grounded strictly in the slides with \`slide\` number and verbatim \`evidence\` quote. Pass \`takeaways: []\` on other sections.`;
+   - \`takeaways\`: Populate 3–5 high-yield items (1 line each, max 15 words, with optional "→" subBullets) on the main multi-case model section (or final section) covering decision rules, model choices, and boundary conditions grounded strictly in the slides with \`slide\` number and verbatim \`evidence\` quote. Pass \`takeaways: []\` on other sections.
+
+9. AI HALLUCINATION FACT-CHECK PROTOCOL:
+   - Source Reconstruction (SIFT): Every claim, definition, formula, and takeaway item must be directly verifiable and reconstructible from the provided slide deck.
+   - Zero Citation Fabrication: Never fabricate slide numbers or synthesize fake quotes. The \`evidence\` string must be a verbatim quote from the referenced \`slide\`.
+   - Zero Statistical & Numerical Invention: Never invent statistics, percentages, or empirical values not stated in the source slides.
+   - Zero Notation Drift: Never replace the lecturer's specific notation with generic textbook conventions.`;
 
 export function buildNotesPrompt(input: {
   fileName: string;

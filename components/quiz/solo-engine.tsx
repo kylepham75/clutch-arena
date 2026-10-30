@@ -14,6 +14,7 @@ import {
   FileSpreadsheet,
   FileText,
   Flame,
+  GraduationCap,
   Heart,
   Keyboard,
   Layers3,
@@ -23,7 +24,6 @@ import {
   Play,
   RotateCcw,
   ShieldCheck,
-  Sparkles,
   Target,
   Trophy,
   Users,
@@ -631,7 +631,7 @@ export function SoloEngine({
               className={`nav-item ${activeTab === "coach" ? "active" : ""}`}
               onClick={() => setActiveTab("coach")}
             >
-              <Sparkles size={19} />
+              <GraduationCap size={19} />
               <span>{t.nav.aiCoach}</span>
               {activeTab === "coach" && <span className="nav-dot" />}
             </button>
@@ -659,7 +659,6 @@ export function SoloEngine({
           </button>
           <div className="sidebar-bottom">
             <div className="sidebar-note">
-              <span className="note-star">✦</span>
               <h4>
                 {t.sidebar.smallSessions}
                 <br />
@@ -668,7 +667,6 @@ export function SoloEngine({
               <p>
                 {t.sidebar.focusQuote}
               </p>
-              <span className="note-line" />
             </div>
             <UserProfileButton variant="sidebar" />
           </div>
@@ -726,7 +724,7 @@ export function SoloEngine({
                 className={`topbar-tab ${activeTab === "coach" ? "active" : ""}`}
                 onClick={() => setActiveTab("coach")}
               >
-                <Sparkles size={14} />
+                <GraduationCap size={14} />
                 <span>{t.topbar.coach}</span>
               </button>
               <button
@@ -812,9 +810,6 @@ export function SoloEngine({
             {!inRun && (
               <div className="page-heading">
                 <div>
-                  <div className="eyebrow">
-                    <span className="tiny-star">✦</span> {t.headings.eyebrow}
-                  </div>
                   <h1>
                     {activeTab === "arena"
                       ? t.headings.arenaTitle
@@ -843,7 +838,7 @@ export function SoloEngine({
                   </p>
                 </div>
                 <div className="session-pill">
-                  <span className="pulse-dot" />
+                  {activeTab === "arena" && <span className="pulse-dot" />}
                   <span>
                     {activeTab === "arena"
                       ? t.run.statusArena
@@ -921,7 +916,7 @@ export function SoloEngine({
                           <section className="setup-card surface empty-study-card">
                             <div className="section-top mb-3">
                               <div className="section-icon">
-                                <Sparkles size={20} className="text-amber-600" />
+                                <BookOpen size={20} className="text-amber-700" />
                               </div>
                               <div>
                                 <h2>{t.run.welcomeTitle}</h2>
@@ -1219,7 +1214,7 @@ export function SoloEngine({
                            setMode("variants");
                          }}
                        >
-                         <Sparkles size={20} />
+                         <Layers3 size={20} />
                          <div>
                            <div className="flex items-center gap-1.5 flex-wrap">
                              <strong>{t.run.conceptRemix}</strong>
@@ -1307,7 +1302,6 @@ export function SoloEngine({
                     <section className="how-card">
                       <div className="section-heading">
                         <span className="eyebrow">{t.run.deckConcepts}</span>
-                        <span className="mini-spark">✦</span>
                       </div>
                       <h3>{topics.length} {t.run.keyConcepts}</h3>
                       <div className="topic-list" style={{ marginTop: 16 }}>
@@ -1326,7 +1320,7 @@ export function SoloEngine({
                           return (
                             <div className="topic" key={topic.id}>
                               <span className="topic-number">
-                                {String(i + 1).padStart(2, "0")}
+                                {i + 1}
                               </span>
                               <div className="flex-1 min-w-0 pr-2">
                                 <strong className="truncate block">{topic.topic || t.nav.workspace}</strong>
@@ -1506,7 +1500,7 @@ export function SoloEngine({
                               {mastered ? (
                                 <Check size={13} />
                               ) : (
-                                String(i + 1).padStart(2, "0")
+                                i + 1
                               )}
                             </span>
                             <div>
@@ -1527,7 +1521,7 @@ export function SoloEngine({
                       })}
                     </div>
                     <div className="session-mode">
-                      <Sparkles size={14} />
+                      <Layers3 size={14} />
                       {mode === "variants" ? t.run.conceptRemix : t.run.classicRecall}
                       <span>{t.run.perQuestion15s}</span>
                     </div>

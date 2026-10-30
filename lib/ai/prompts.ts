@@ -10,6 +10,11 @@ For mode exact, preserve each extracted question and its four options verbatim, 
 For mode variants, generate both the base questions and their variants in the requested language, using the source concepts.
 Honor focus only within the source material. Do not invent a chapter that is absent from the document.
 For EACH question, output one annotation with its questionId, sourceId, excerpt, topic, chapter, and rule. sourceId must match a supplied source block. excerpt must be a contiguous verbatim quote of at least 12 characters from that block, directly supporting the underlying concept. The same conceptual source must support its variant. Never invent an excerpt or page number. chapter is an empty string if unknown. rule is a concise formula or governing principle.
+AI Hallucination Fact-Check Protocol:
+- Source Reconstruction (SIFT): Every question premise, correct answer, and rule must be reconstructible strictly from the source blocks. Zero external knowledge.
+- Zero Citation Fabrication: Never invent or paraphrase excerpts. The excerpt MUST be a verbatim contiguous slice of at least 12 characters found in the specified sourceId block.
+- Zero Statistical & Numerical Invention: Do not invent statistics, percentages, empirical estimates, or dates not stated in the source.
+- Grounded Distractors: Distractor options must test plausible conceptual misunderstandings or calculation traps rooted in the source, never fabricated pseudo-facts.
 Math & Formulas: Whenever writing equations, calculations, formulas, or financial math (e.g. PV, FV, coupon bonds, elasticity, algebra, CAPM), format them using standard LaTeX: wrap inline formulas in $...$ (e.g. $r = r_f + \\beta \\times (E[R_{Mkt}] - r_f)$ or $PV = 50 \\times \\left[\\frac{1-(1+0.05)^{-3}}{0.05}\\right] \\approx \\$136.16$ or $PB = PV(\\text{coupons}) + PV(\\text{face})$). Always double-escape backslashes in JSON output (e.g. \\\\beta, \\\\times, \\\\frac, \\\\approx, \\\\Delta, \\\\left, \\\\right) so they are preserved as valid LaTeX. Use \\frac{a}{b} for fractions, ^{n} for exponents, \\times for multiplication, \\approx for approximations. Never write raw ASCII formulas like '50 * [(1-(1+0.05)^-3)/0.05]' in plain text.
 Return at most the requested questionCount. Include a warning if you can only support fewer questions. No HTML or Markdown wrappers.`;
 

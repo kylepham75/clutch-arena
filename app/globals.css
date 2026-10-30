@@ -363,43 +363,33 @@ svg {
   position: relative;
   overflow: hidden;
   background: #e7ebdf;
-  padding: 13px 14px;
-  border-radius: 9px;
+  padding: 14px 14px;
+  border-radius: 8px;
+  border: 1px solid #d9e0ce;
   margin-bottom: 14px;
 }
 .note-star {
-  color: #7e906b;
-  font-size: 22px;
-  line-height: 1;
+  display: none;
 }
 .sidebar-note h4 {
-  font-size: 15px;
-  line-height: 1.3;
-  font-weight: 600;
-  letter-spacing: -0.4px;
-  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 700;
+  color: #2b3026;
+  letter-spacing: -0.2px;
+  margin-top: 0;
 }
 .sidebar-note p {
-  font-size: 10px;
-  color: #7c8470;
-  line-height: 1.5;
-  margin-top: 5px;
+  font-size: 11px;
+  color: #5c6653;
+  line-height: 1.45;
+  margin-top: 6px;
 }
 .note-line {
-  position: absolute;
-  width: 90px;
-  height: 90px;
-  border: 1px solid #d2dbc6;
-  right: -28px;
-  bottom: -22px;
-  border-radius: 50%;
+  display: none;
 }
 .note-line:after {
-  content: "";
-  position: absolute;
-  inset: 10px;
-  border: 1px solid #d2dbc6;
-  border-radius: 50%;
+  display: none;
 }
 .local-profile {
   display: flex;
@@ -560,49 +550,51 @@ svg {
   margin-bottom: 28px;
 }
 .eyebrow {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 1.8px;
-  color: #858d7c;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #616b5a;
   display: flex;
-  gap: 7px;
+  gap: 6px;
   align-items: center;
+  text-transform: uppercase;
 }
 .tiny-star {
-  color: #e6714c;
-  font-size: 15px;
+  display: none;
 }
 .page-heading h1 {
-  font-size: 29px;
-  letter-spacing: -1.05px;
-  font-weight: 600;
-  margin-top: 9px;
-  line-height: 1.25;
+  font-size: 28px;
+  letter-spacing: -0.025em;
+  font-weight: 700;
+  margin-top: 0;
+  line-height: 1.2;
 }
 .page-heading p {
-  font-size: 11px;
-  color: #8a9183;
-  margin-top: 10px;
+  font-size: 13px;
+  color: #5c6653;
+  margin-top: 6px;
+  line-height: 1.45;
 }
 .session-pill {
   display: flex;
-  gap: 7px;
+  gap: 6px;
   align-items: center;
-  background: #f0f2e9;
-  border: 1px solid #e2e6d9;
-  border-radius: 30px;
-  padding: 9px 12px;
-  margin-top: 11px;
-  font-size: 8px;
+  background: #edf0e6;
+  border: 1px solid #d9dfd0;
+  border-radius: 9999px;
+  padding: 5px 12px;
+  margin-top: 8px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 1px;
+  letter-spacing: 0.02em;
+  color: #434d3d;
   white-space: nowrap;
 }
 .pulse-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #8b9b77;
+  background: #6f8a52;
 }
 .hero {
   min-height: 262px;
@@ -959,12 +951,12 @@ svg {
   align-items: center;
 }
 .section-heading .eyebrow {
-  font-size: 8px;
-  letter-spacing: 1.5px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #616b5a;
 }
 .mini-spark {
-  font-size: 22px;
-  color: #99a789;
+  display: none;
 }
 .how-card h3 {
   font-size: 18px;
@@ -1252,8 +1244,10 @@ svg {
   margin-bottom: 20px;
 }
 .question-meta .eyebrow {
-  font-size: 8px;
-  letter-spacing: 1.4px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: #616b5a;
 }
 .question-title {
   font-size: 23px;
@@ -1555,7 +1549,9 @@ svg {
   padding: 23px 19px;
 }
 .session-card > .eyebrow {
-  font-size: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #616b5a;
 }
 .session-progress-title {
   display: flex;
@@ -1596,21 +1592,22 @@ svg {
   align-items: center;
 }
 .topic-number {
-  height: 26px;
-  width: 26px;
+  height: 24px;
+  width: 24px;
   background: #e6ebdc;
   border: 1px solid #dbe2ce;
-  border-radius: 50%;
-  font-size: 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
   display: grid;
   place-items: center;
-  color: #9ea98f;
+  color: #556149;
   flex-shrink: 0;
 }
 .topic-active .topic-number {
-  background: #f5dfce;
-  border-color: #e8c2a4;
-  color: #c89168;
+  background: #f7e6d9;
+  border-color: #edbb9c;
+  color: #c45b2b;
 }
 .topic-done {
   background: #dae7c9;
@@ -1618,9 +1615,9 @@ svg {
   border-color: #c9dab4;
 }
 .topic strong {
-  font-size: 10px;
-  font-weight: 500;
-  color: #758464;
+  font-size: 12px;
+  font-weight: 600;
+  color: #2b3324;
 }
 .topic small {
   display: block;
@@ -1711,19 +1708,21 @@ svg {
 }
 .summary > .eyebrow {
   justify-content: center;
-  font-size: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #616b5a;
 }
 .summary h1 {
   font-size: 30px;
-  letter-spacing: -1px;
-  font-weight: 500;
-  margin-top: 13px;
+  letter-spacing: -0.025em;
+  font-weight: 700;
+  margin-top: 10px;
 }
 .summary > p {
-  font-size: 11px;
-  line-height: 1.8;
-  color: #9da88e;
-  margin-top: 11px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #5c6653;
+  margin-top: 8px;
 }
 .summary-stats {
   display: grid;
@@ -2491,16 +2490,16 @@ svg {
     padding: 23px 15px 0;
   }
   .page-heading .eyebrow {
-    font-size: 7px;
-    letter-spacing: 1px;
+    font-size: 10px;
+    letter-spacing: 0.03em;
   }
   .page-heading h1 {
-    font-size: 25px;
-    line-height: 1.2;
+    font-size: 24px;
+    line-height: 1.25;
   }
   .page-heading p {
-    font-size: 9px;
-    margin-top: 9px;
+    font-size: 12px;
+    margin-top: 6px;
   }
   .page-heading {
     margin-bottom: 21px;
@@ -2680,12 +2679,12 @@ svg {
     margin-bottom: 15px;
   }
   .question-meta .eyebrow {
-    font-size: 6px;
-    letter-spacing: 0.8px;
+    font-size: 10px;
+    letter-spacing: 0.03em;
   }
   .question-meta .tag {
-    font-size: 7px;
-    padding: 4px 6px;
+    font-size: 10px;
+    padding: 3px 6px;
   }
   .question-title {
     font-size: 19px;
@@ -3784,24 +3783,28 @@ svg {
 .welcome-card-icon {
   width: 36px;
   height: 36px;
-  border-radius: 9px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 12px;
   flex-shrink: 0;
+  background: #f1f3ec;
+  border: 1px solid #e1e5da;
+  color: #4b5443;
+  transition: all 0.18s ease;
 }
-.welcome-card-icon.amber {
-  background: #fef3c7;
-  color: #b45309;
+.welcome-action-card:hover .welcome-card-icon {
+  background: #fdf2ec;
+  border-color: #f6c5b4;
+  color: #e96943;
 }
-.welcome-card-icon.emerald {
-  background: #d1fae5;
-  color: #047857;
-}
+.welcome-card-icon.amber,
+.welcome-card-icon.emerald,
 .welcome-card-icon.blue {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: #f1f3ec;
+  border: 1px solid #e1e5da;
+  color: #4b5443;
 }
 .welcome-action-card strong {
   display: block;
@@ -4706,10 +4709,10 @@ svg {
   max-width: 360px;
 }
 .countdown-eyebrow {
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 2px;
-  color: #e96943;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #d45731;
 }
 .countdown-box h2 {
   font-size: 28px;

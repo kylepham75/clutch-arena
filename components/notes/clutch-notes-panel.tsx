@@ -5,7 +5,6 @@ import { useDropzone } from "react-dropzone";
 import {
   FileText,
   UploadCloud,
-  Sparkles,
   Zap,
   ShieldCheck,
   Printer,
@@ -339,7 +338,7 @@ export function ClutchNotesPanel() {
       <div className="bg-white border border-[#e2e6db] rounded-2xl p-6 sm:p-7 shadow-sm relative overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-4 mb-3">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#fff4ec] border border-[#fbd8c8] text-[#d9532f] text-xs font-bold uppercase tracking-wider">
-            <Sparkles size={14} className="text-[#e96b44]" />
+            <BookOpen size={14} className="text-[#e96b44]" />
             <span>{t.notes.badge}</span>
             <span className="ml-1 px-1.5 py-0.5 rounded bg-[#e96b44] text-white text-[10px] font-black">
               {t.notes.tierBadge}
@@ -389,7 +388,7 @@ export function ClutchNotesPanel() {
 
           {/* Premium Tier Badge on Dropzone */}
           <div className="absolute top-3.5 right-3.5 flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#fef3c7] border border-[#fde68a] text-[#b45309] text-[11px] font-black tracking-wider uppercase">
-            <Sparkles size={12} className="text-[#b45309]" />
+            <Zap size={12} className="text-[#b45309]" />
             <span>{t.notes.paidTiersBadge}</span>
           </div>
 
@@ -466,7 +465,7 @@ export function ClutchNotesPanel() {
             disabled={loading}
             className="w-full sm:w-auto border-[#dce1d5] bg-white hover:bg-[#f7f8f4] text-[#424c3a] text-xs font-semibold flex items-center gap-2 cursor-pointer shadow-2xs"
           >
-            <Sparkles size={14} className="text-[#e96b44]" />
+            <BookOpen size={14} className="text-[#e96b44]" />
             <span>{t.notes.loadSampleBtn}</span>
           </Button>
 
@@ -490,7 +489,7 @@ export function ClutchNotesPanel() {
       <div className="bg-[#fafbf8] border border-[#e2e6db] rounded-2xl p-6 sm:p-7 flex flex-col md:flex-row items-center justify-between gap-5 shadow-2xs">
         <div className="space-y-1.5 text-center md:text-left">
           <div className="text-xs font-bold uppercase tracking-wider text-[#e46d47] flex items-center justify-center md:justify-start gap-1.5">
-            <Sparkles size={14} />
+            <Layers size={14} />
             <span>{t.notes.showcaseEyebrow}</span>
           </div>
           <h3 className="text-base sm:text-lg font-extrabold text-[#1f261b]">

@@ -64,7 +64,7 @@ export function ArenaLobby({
       <div className="arena-lobby-header surface">
         <div className="arena-title-area">
           <div className="eyebrow">
-            <span className="tiny-star">✦</span> {t.arena.lobbyEyebrow}
+            {t.arena.lobbyEyebrow}
           </div>
           <h2>{room.title}</h2>
           <div className="lobby-meta-row">
