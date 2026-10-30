@@ -623,8 +623,8 @@ export function SoloEngine({
               onClick={() => setActiveTab("notes")}
             >
               <FileSpreadsheet size={19} />
-              <span>{t.nav.clutchNotes || "Clutch Notes"}</span>
-              <span className="badge-pro ml-auto">PRO</span>
+              <span>{t.nav.clutchNotes || "Clutch Notes AI"}</span>
+              <span className="live-pill" style={{ background: "#e96b44", color: "#ffffff", fontWeight: 800, padding: "1px 6px", fontSize: "10px" }}>PRO</span>
               {activeTab === "notes" && <span className="nav-dot" />}
             </button>
             <button
@@ -912,111 +912,121 @@ export function SoloEngine({
                   <>
                     {state.phase === "ready" ? (
                       !pack ? (
-                        <div className="empty-study-view space-y-6">
-                          <div className="empty-study-hero p-6 sm:p-8 rounded-2xl bg-white border border-[#dce3d5] shadow-xs flex flex-col md:flex-row items-center justify-between gap-6">
-                            <div className="space-y-2 text-center md:text-left">
-                              <h2 className="text-2xl sm:text-3xl font-extrabold text-[#171d13] tracking-tight">
-                                {t.run.welcomeTitle}
-                              </h2>
-                              <p className="text-sm text-[#505a46] max-w-lg leading-relaxed">
-                                {t.run.welcomeDesc}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-3 w-full md:w-auto">
-                              <Button
-                                onClick={handleLoadSamplePack}
-                                className="flex-1 md:flex-none px-6 py-3 bg-[#b83811] hover:bg-[#9f2f0c] text-white font-bold text-sm rounded-xl shadow-xs transition-all cursor-pointer flex items-center justify-center gap-2"
-                              >
-                                <Play size={16} fill="currentColor" />
-                                <span>{t.run.startRun}</span>
-                              </Button>
-                              <Button
-                                variant="outline"
-                                onClick={() => setActiveTab("ingest")}
-                                className="flex-1 md:flex-none px-5 py-3 border-[#d4dbcc] bg-white hover:bg-[#f4f6ef] text-[#2c3624] font-semibold text-sm rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
-                              >
-                                <Upload size={16} />
-                                <span>{t.nav.uploadNotes}</span>
-                              </Button>
-                            </div>
-                          </div>
-
-                          <div className="welcome-actions-grid">
-                            <div
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => setTutorialOpen(true)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") setTutorialOpen(true);
-                              }}
-                              className="welcome-action-card"
-                            >
-                              <div className="welcome-card-icon">
-                                <Compass size={18} />
+                        <div className="setup-grid">
+                          <section className="setup-card surface empty-study-card">
+                            <div className="section-top mb-3">
+                              <div className="section-icon">
+                                <BookOpen size={20} className="text-amber-700" />
                               </div>
-                              <div className="welcome-card-text">
+                              <div>
+                                <h2>{t.run.welcomeTitle}</h2>
+                                <p>{t.run.welcomeDesc}</p>
+                              </div>
+                              <span className="tag tag-amber">{t.run.gettingStartedTag}</span>
+                            </div>
+
+                            {/* Prominent Quick-Action Launchpad Banner */}
+                            <div className="hero-quick-start mb-6 p-6 sm:p-7 rounded-2xl bg-[#fff8f4] border border-[#f5d2c2] flex flex-col md:flex-row items-center justify-between gap-5 shadow-xs">
+                              <div className="space-y-1.5 text-center md:text-left">
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#fde8dc] text-[#d9532f] text-xs font-bold uppercase tracking-wider">
+                                  <Zap size={14} fill="currentColor" />
+                                  <span>{t.nav.clutchRun}</span>
+                                </span>
+                                <h3 className="text-xl sm:text-2xl font-extrabold text-[#1a2118] tracking-tight">
+                                  {t.run.welcomeSampleTitle}
+                                </h3>
+                                <p className="text-xs sm:text-sm text-[#5d6754] max-w-lg leading-relaxed">
+                                  {t.run.welcomeSampleDesc}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-3 w-full md:w-auto">
+                                <Button
+                                  onClick={handleLoadSamplePack}
+                                  className="flex-1 md:flex-none px-6 py-3 bg-[#e96943] hover:bg-[#d85833] text-white font-bold text-sm rounded-xl shadow-sm hover:scale-[1.01] transition-all cursor-pointer flex items-center justify-center gap-2"
+                                >
+                                  <Play size={16} fill="currentColor" />
+                                  <span>{t.run.startRun}</span>
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  onClick={() => setActiveTab("ingest")}
+                                  className="flex-1 md:flex-none px-5 py-3 border-[#d8ded0] bg-white hover:bg-[#f6f8f2] text-[#343e2c] font-semibold text-sm rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                                >
+                                  <Upload size={16} />
+                                  <span>{t.nav.uploadNotes}</span>
+                                </Button>
+                              </div>
+                            </div>
+
+                            <div className="welcome-actions-grid">
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => setTutorialOpen(true)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") setTutorialOpen(true);
+                                }}
+                                className="welcome-action-card"
+                              >
+                                <div className="welcome-card-icon amber">
+                                  <Compass size={18} />
+                                </div>
                                 <strong>{t.run.welcomeTutorialTitle}</strong>
                                 <span>{t.run.welcomeTutorialDesc}</span>
                               </div>
-                            </div>
 
-                            <div
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => setActiveTab("notes")}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") setActiveTab("notes");
-                              }}
-                              className="welcome-action-card"
-                            >
-                              <div className="welcome-card-icon">
-                                <FileSpreadsheet size={18} />
-                              </div>
-                              <div className="welcome-card-text">
-                                <div className="flex items-center gap-2">
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => setActiveTab("notes")}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") setActiveTab("notes");
+                                }}
+                                className="welcome-action-card"
+                              >
+                                <div className="welcome-card-icon amber">
+                                  <FileSpreadsheet size={18} />
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                   <strong>{t.run.welcomeNotesTitle}</strong>
-                                  <span className="badge-pro">PRO</span>
+                                  <span style={{ fontSize: "10px", fontWeight: 800, background: "#e96b44", color: "#fff", padding: "1px 5px", borderRadius: "4px" }}>PRO</span>
                                 </div>
                                 <span>{t.run.welcomeNotesDesc}</span>
                               </div>
-                            </div>
 
-                            <div
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => setActiveTab("ingest")}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") setActiveTab("ingest");
-                              }}
-                              className="welcome-action-card"
-                            >
-                              <div className="welcome-card-icon">
-                                <Upload size={18} />
-                              </div>
-                              <div className="welcome-card-text">
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => setActiveTab("ingest")}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") setActiveTab("ingest");
+                                }}
+                                className="welcome-action-card"
+                              >
+                                <div className="welcome-card-icon emerald">
+                                  <Upload size={18} />
+                                </div>
                                 <strong>{t.run.welcomeUploadTitle}</strong>
                                 <span>{t.run.welcomeUploadDesc}</span>
                               </div>
-                            </div>
 
-                            <div
-                              role="button"
-                              tabIndex={0}
-                              onClick={handleLoadSamplePack}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") handleLoadSamplePack();
-                              }}
-                              className="welcome-action-card"
-                            >
-                              <div className="welcome-card-icon">
-                                <Play size={18} fill="currentColor" />
-                              </div>
-                              <div className="welcome-card-text">
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={handleLoadSamplePack}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") handleLoadSamplePack();
+                                }}
+                                className="welcome-action-card"
+                              >
+                                <div className="welcome-card-icon blue">
+                                  <Play size={18} fill="currentColor" />
+                                </div>
                                 <strong>{t.run.welcomeSampleTitle}</strong>
                                 <span>{t.run.welcomeSampleDesc}</span>
                               </div>
                             </div>
-                          </div>
+                          </section>
                         </div>
                       ) : showFlashcards ? (
                         <FlashcardReview
@@ -1032,59 +1042,51 @@ export function SoloEngine({
                         <>
                           <div className="setup-grid">
                             <section className="setup-card surface">
-                              {/* Integrated Deck Hero Command Banner */}
+                              {/* Integrated Deck Hero Header */}
                               <div className="deck-hero-banner">
-                                <div className="deck-hero-badge-row flex items-center justify-between gap-3 mb-3">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    {pack.subtitle && (
-                                      <span className="deck-source-tag text-xs font-semibold text-stone-600 truncate max-w-[320px]" title={pack.subtitle}>
-                                        {pack.subtitle}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <span className="tag tag-green">{t.run.readyToPlay}</span>
-                                </div>
-
-                                <div className="deck-hero-content flex items-center gap-4 py-2">
-                                  <div className="deck-cover-icon w-14 h-14 rounded-2xl bg-[#f3f6ef] text-[#37442d] border border-[#d8e0d0] flex items-center justify-center shrink-0 shadow-xs">
-                                    <BookOpen size={28} />
-                                  </div>
-                                  <div className="deck-hero-text min-w-0 flex-1">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <h2 className="deck-hero-title text-2xl sm:text-3xl font-extrabold text-[#161c12] tracking-tight truncate">
-                                        {pack.title}
-                                      </h2>
+                                <div className="flex items-start justify-between gap-4">
+                                  <div className="flex items-center gap-3.5 min-w-0">
+                                    <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-[#fde8dc] to-[#fcd5c1] text-[#c9512c] border border-[#f5c2aa] flex items-center justify-center shrink-0 shadow-2xs">
+                                      <BookOpen size={20} />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <h2 className="text-xl sm:text-2xl font-bold text-stone-900 tracking-tight truncate">
+                                          {pack.title}
+                                        </h2>
+                                        {pack.id.endsWith("-weak-spots") && (
+                                          <span className="mastery-badge badge-weak">{t.run.comebackSprint}</span>
+                                        )}
+                                      </div>
+                                      <p className="text-xs sm:text-[13px] text-stone-500 mt-0.5 truncate">
+                                        {pack.id === "mock-microeconomics"
+                                          ? t.run.soloPracticeSubtitle
+                                          : `${pack.questions.length} ${t.library.questionsCount}${pack.subtitle ? ` • ${pack.subtitle}` : ""}`}
+                                      </p>
                                       {pack.id.endsWith("-weak-spots") && (
-                                        <span className="mastery-badge badge-weak">{t.run.comebackSprint}</span>
+                                        <div className="sprint-indicator-banner mt-1">
+                                          <button
+                                            type="button"
+                                            onClick={handleRestoreBasePack}
+                                            className="restore-pack-link"
+                                          >
+                                            {t.run.backToFullDeck}
+                                          </button>
+                                        </div>
                                       )}
                                     </div>
-                                    <p className="deck-hero-meta text-xs sm:text-sm text-[#556149] mt-0.5">
-                                      {pack.id === "mock-microeconomics"
-                                        ? t.run.soloPracticeSubtitle
-                                        : `${pack.questions.length} ${t.library.questionsCount} • ${t.headings.clutchRunReady}`}
-                                    </p>
-                                    {pack.id.endsWith("-weak-spots") && (
-                                      <div className="sprint-indicator-banner mt-1">
-                                        <button
-                                          type="button"
-                                          onClick={handleRestoreBasePack}
-                                          className="restore-pack-link"
-                                        >
-                                          {t.run.backToFullDeck}
-                                        </button>
-                                      </div>
-                                    )}
                                   </div>
+
                                   <div className="deck-hero-actions flex items-center gap-2 shrink-0">
                                     <Button
                                       variant="outline"
                                       size="sm"
                                       onClick={openLibrary}
                                       title={t.run.switchDeckTooltip}
-                                      className="change-deck-btn"
+                                      className="change-deck-btn text-xs h-8 px-2.5"
                                       data-testid="clutch-run-change-deck-btn"
                                     >
-                                      <FolderSync size={14} className="text-amber-700" />
+                                      <FolderSync size={13} className="text-amber-700" />
                                       <span>{t.run.changeDeck}</span>
                                     </Button>
                                     <Button
@@ -1092,8 +1094,9 @@ export function SoloEngine({
                                       size="sm"
                                       onClick={() => setShareOpen(true)}
                                       title={t.run.shareExportTooltip}
+                                      className="text-xs h-8 px-2.5"
                                     >
-                                      <Share2 size={14} />
+                                      <Share2 size={13} />
                                       <span>{t.library.shareBtn}</span>
                                     </Button>
                                   </div>
@@ -1101,9 +1104,9 @@ export function SoloEngine({
 
                                 {availablePacks.length > 1 && (
                                   <div className="quick-deck-chips" role="region" aria-label="Quick deck switcher">
-                                    <span className="text-stone-500 font-medium shrink-0 flex items-center gap-1 text-xs">
-                                      <Layers3 size={13} className="text-amber-700" />
-                                      <span>{t.run.quickSwitch}</span>
+                                    <span className="text-stone-400 font-medium shrink-0 flex items-center gap-1 text-[11px]">
+                                      <Layers3 size={12} className="text-stone-400" />
+                                      <span>{t.run.quickSwitch}:</span>
                                     </span>
                                     <div className="quick-deck-list flex items-center gap-1.5 flex-wrap">
                                       {availablePacks.map((item) => {
@@ -1124,15 +1127,15 @@ export function SoloEngine({
                                           >
                                             {isSelected && (
                                               <Check
-                                                size={12}
+                                                size={11}
                                                 className="inline mr-1 text-emerald-600"
                                               />
                                             )}
-                                            <span className="truncate max-w-[150px] inline-block align-bottom">
+                                            <span className="truncate max-w-[130px] inline-block align-bottom">
                                               {item.title}
                                             </span>
                                             <span className="text-[10px] opacity-70 ml-1">
-                                              ({item.questionCount}Q)
+                                              ({item.questionCount})
                                             </span>
                                           </button>
                                         );
@@ -1141,9 +1144,9 @@ export function SoloEngine({
                                         type="button"
                                         onClick={openLibrary}
                                         className="quick-deck-chip more-chip"
-                                        title="Open Study Library to browse all or import JSON"
+                                        title="Open Study Library"
                                       >
-                                        <span>{t.run.moreInLibrary}</span>
+                                        <span>+ Thêm</span>
                                       </button>
                                     </div>
                                   </div>
@@ -1151,11 +1154,11 @@ export function SoloEngine({
                               </div>
 
                               {/* Question Count Segmented Track */}
-                              <div className="control-section mt-6">
+                              <div className="control-section mt-5">
                                 <div className="control-section-header flex items-center justify-between mb-2">
-                                  <span className="control-label text-xs font-bold text-[#3b4630] uppercase tracking-wider">
+                                  <label className="text-xs font-semibold text-stone-700">
                                     {t.run.sessionLength}
-                                  </span>
+                                  </label>
                                   {tier === "contender" && (
                                     <span
                                       suppressHydrationWarning
@@ -1202,11 +1205,11 @@ export function SoloEngine({
                               </div>
 
                               {/* Practice Mode Selection */}
-                              <div className="control-section mt-6">
+                              <div className="control-section mt-5">
                                 <div className="control-section-header mb-2">
-                                  <span className="control-label text-xs font-bold text-[#3b4630] uppercase tracking-wider">
+                                  <label className="text-xs font-semibold text-stone-700">
                                     {t.run.howPractice}
-                                  </span>
+                                  </label>
                                 </div>
                                 <div className="mode-cards-grid" role="group" aria-label="Practice mode">
                                   <div
@@ -1220,17 +1223,17 @@ export function SoloEngine({
                                     }}
                                   >
                                     <div className="mode-card-icon mode-card-icon-classic">
-                                      <ListChecks size={22} />
+                                      <ListChecks size={18} />
                                     </div>
                                     <div className="mode-card-body flex-1 min-w-0">
-                                      <div className="flex items-center gap-2">
+                                      <div className="flex items-center gap-1.5">
                                         <strong className="mode-card-title">{t.run.classicRecall}</strong>
                                         <span className="mode-card-tag">Nền tảng</span>
                                       </div>
                                       <p className="mode-card-desc">{t.run.classicRecallDesc}</p>
                                     </div>
                                     <div className="mode-card-radio">
-                                      {mode === "exact" && <Check size={14} className="text-white" />}
+                                      {mode === "exact" && <div className="mode-card-radio-dot" />}
                                     </div>
                                   </div>
 
@@ -1262,36 +1265,36 @@ export function SoloEngine({
                                     }}
                                   >
                                     <div className="mode-card-icon mode-card-icon-remix">
-                                      <Layers3 size={22} />
+                                      <Layers3 size={18} />
                                     </div>
                                     <div className="mode-card-body flex-1 min-w-0">
-                                      <div className="flex items-center gap-2 flex-wrap">
+                                      <div className="flex items-center gap-1.5 flex-wrap">
                                         <strong className="mode-card-title">{t.run.conceptRemix}</strong>
-                                        <span className="mode-card-tag-remix">
-                                          {!limits.canUseConceptRemix && unlockedRemixRuns > 0 ? `${unlockedRemixRuns} Pass` : "REMIX"}
+                                        <span className="pro-badge-glow">
+                                          {!limits.canUseConceptRemix && unlockedRemixRuns > 0 ? `${unlockedRemixRuns} Pass` : "AI REMIX"}
                                         </span>
                                       </div>
                                       <p className="mode-card-desc">{t.run.conceptRemixDesc}</p>
                                     </div>
                                     <div className="mode-card-radio">
-                                      {mode === "variants" && <Check size={14} className="text-white" />}
+                                      {mode === "variants" && <div className="mode-card-radio-dot" />}
                                     </div>
                                   </div>
                                 </div>
                               </div>
 
                               {/* Launch Command Area */}
-                              <div className="launch-section mt-7">
+                              <div className="launch-section mt-6 pt-5 border-t border-stone-200/60">
                                 <div className="launch-actions-row flex items-center gap-3">
                                   <Button
                                     className="launch-primary-btn flex-1"
                                     onClick={start}
                                     disabled={!pack.questions.length}
                                   >
-                                    <Zap size={20} fill="currentColor" />
+                                    <Zap size={17} fill="currentColor" />
                                     <span>{t.run.startRun}</span>
                                     <span className="launch-shortcut-kbd">↵ Enter</span>
-                                    <ArrowRight size={18} className="ml-auto" />
+                                    <ArrowRight size={16} className="ml-auto" />
                                   </Button>
                                   <Button
                                     variant="outline"
@@ -1300,20 +1303,16 @@ export function SoloEngine({
                                     disabled={!pack.questions.length}
                                     title={t.run.reviewFlashcardsTooltip}
                                   >
-                                    <Layers3 size={17} />
+                                    <Layers3 size={15} />
                                     <span>{t.run.flashcards}</span>
                                   </Button>
                                 </div>
-                                <div className="launch-perks-row flex items-center justify-center gap-3 text-xs text-[#556149] mt-3">
-                                  <span className="flex items-center gap-1.5"><Clock3 size={14} /> {t.run.about2Minutes}</span>
+                                <div className="launch-perks-row flex items-center justify-center gap-2 text-xs text-stone-500 mt-3">
+                                  <span>{t.run.about2Minutes}</span>
                                   <span className="text-stone-300">•</span>
-                                  <span className="flex items-center gap-1.5"><RotateCcw size={14} /> {t.run.smartRetry}</span>
+                                  <span>{t.run.smartRetry}</span>
                                   <span className="text-stone-300">•</span>
-                                  <span className="flex items-center gap-1.5"><Keyboard size={14} /> {t.run.keyboardReady}</span>
-                                </div>
-                                <div className="launch-security-note flex items-center justify-center gap-1.5 text-xs text-[#6e7762] mt-2">
-                                  <ShieldCheck size={14} className="text-emerald-600" />
-                                  <span>{t.run.noAccount}</span>
+                                  <span>{t.run.keyboardReady}</span>
                                 </div>
                               </div>
                             </section>
@@ -1350,17 +1349,17 @@ export function SoloEngine({
                               {/* Knowledge Map & Arena Rules Card */}
                               <section className="how-card deck-intel-card">
                                 <div className="deck-intel-header">
-                                  <div className="flex items-center justify-between mb-2">
-                                    <h3 className="deck-intel-title text-lg font-bold text-[#161c12]">
-                                      {topics.length} {t.run.keyConcepts}
-                                    </h3>
-                                    <span className="deck-intel-count text-xs font-semibold text-stone-600">
+                                  <div className="flex items-center justify-between mb-1.5">
+                                    <span className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">
+                                      {t.run.deckConcepts}
+                                    </span>
+                                    <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200/60">
                                       {topics.length} khái niệm
                                     </span>
                                   </div>
-                                  <div className="deck-intel-progress-track w-full h-2 rounded-full bg-[#e8eee0] mt-2 overflow-hidden">
+                                  <div className="deck-intel-progress-track w-full h-1.5 rounded-full bg-stone-100 mt-2 overflow-hidden">
                                     <div
-                                      className="deck-intel-progress-fill h-full bg-[#4a7732] rounded-full transition-all duration-300"
+                                      className="deck-intel-progress-fill h-full bg-emerald-600 rounded-full transition-all duration-300"
                                       style={{
                                         width: `${Math.max(8, Math.min(100, Math.round((topics.filter(tp => getMasteryLevel(masteryStore[normalizeTopicKey(tp.topic || tp.id)]).level === 'mastered').length / Math.max(1, topics.length)) * 100)))}%`
                                       }}
@@ -1368,7 +1367,7 @@ export function SoloEngine({
                                   </div>
                                 </div>
 
-                                <div className="topic-list mt-4 space-y-2">
+                                <div className="topic-list mt-3.5 divide-y divide-stone-100 rounded-xl border border-stone-200/70 overflow-hidden bg-white">
                                   {topics.slice(0, 6).map((topic, i) => {
                                     const topicKey = normalizeTopicKey(topic.topic || topic.id);
                                     const stats = masteryStore[topicKey];
@@ -1382,19 +1381,16 @@ export function SoloEngine({
                                             ? `${mastery.score}% ${t.run.masteryNeedsReview}`
                                             : `${mastery.score}% ${t.run.masteryLearning}`;
                                     return (
-                                      <div className="topic-item flex items-center gap-3 p-2.5 rounded-xl bg-white border border-[#e5ecdc] hover:border-[#cbd7bf] transition-all" key={topic.id}>
-                                        <span className="topic-index w-7 h-7 rounded-lg bg-[#f0f4ea] text-[#3b4630] font-mono text-xs font-bold flex items-center justify-center shrink-0">
-                                          {i + 1}
-                                        </span>
-                                        <div className="topic-item-text flex-1 min-w-0 pr-2">
-                                          <strong className="topic-item-title text-xs sm:text-sm font-bold text-[#161c12] truncate block">
+                                      <div className="topic-item flex items-center justify-between gap-2.5 px-3 py-2 text-xs hover:bg-stone-50/70 transition-colors" key={topic.id}>
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                          <span className="topic-index text-[11px] font-mono font-semibold text-stone-400 w-4 shrink-0">
+                                            {String(i + 1).padStart(2, "0")}
+                                          </span>
+                                          <span className="topic-item-title font-medium text-stone-800 truncate" title={topic.topic || t.nav.workspace}>
                                             {topic.topic || t.nav.workspace}
-                                          </strong>
-                                          <small className="topic-item-sub text-[11px] text-[#5c6850] block truncate">
-                                            {topic.chapter || "Chương trọng tâm"}
-                                          </small>
+                                          </span>
                                         </div>
-                                        <span className={`mastery-badge badge-${mastery.level} text-[10.5px] font-bold px-2 py-0.5 rounded-md shrink-0`}>
+                                        <span className={`mastery-badge badge-${mastery.level} text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0`}>
                                           {masteryLabel}
                                         </span>
                                       </div>
@@ -1402,33 +1398,33 @@ export function SoloEngine({
                                   })}
                                 </div>
 
-                                <div className="arena-rules-card mt-5 pt-4 border-t border-[#e2e7da]">
-                                  <div className="arena-rules-title text-[11px] font-bold text-[#4a573e] uppercase tracking-wider mb-2.5">
-                                    LUẬT THI ĐẤU ARENA
+                                <div className="arena-rules-card mt-4 pt-3.5 border-t border-stone-200/70">
+                                  <div className="text-[10.5px] font-bold text-stone-500 uppercase tracking-wider mb-2">
+                                    LUẬT ARENA
                                   </div>
-                                  <div className="arena-rules-grid grid grid-cols-3 gap-2">
-                                    <div className="rule-tile p-2.5 rounded-xl bg-white border border-[#e5ecdc] text-center flex flex-col items-center gap-1 shadow-2xs">
-                                      <Heart size={16} className="text-rose-500" />
-                                      <strong className="text-xs font-bold text-[#161c12]">{t.run.livesCount}</strong>
-                                      <span className="text-[10px] text-[#5c6850]">Trượt 3 lần</span>
+                                  <div className="arena-rules-grid grid grid-cols-3 gap-1.5">
+                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50/80 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+                                      <Heart size={14} className="text-rose-500" />
+                                      <strong className="text-[11.5px] font-bold text-stone-800">{t.run.livesCount}</strong>
+                                      <span className="text-[9.5px] text-stone-400">3 Lần</span>
                                     </div>
-                                    <div className="rule-tile p-2.5 rounded-xl bg-white border border-[#e5ecdc] text-center flex flex-col items-center gap-1 shadow-2xs">
-                                      <Clock3 size={16} className="text-amber-500" />
-                                      <strong className="text-xs font-bold text-[#161c12]">{t.run.timerCount}</strong>
-                                      <span className="text-[10px] text-[#5c6850]">Đếm ngược</span>
+                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50/80 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+                                      <Clock3 size={14} className="text-amber-500" />
+                                      <strong className="text-[11.5px] font-bold text-stone-800">{t.run.timerCount}</strong>
+                                      <span className="text-[9.5px] text-stone-400">15s/câu</span>
                                     </div>
-                                    <div className="rule-tile p-2.5 rounded-xl bg-white border border-[#e5ecdc] text-center flex flex-col items-center gap-1 shadow-2xs">
-                                      <Flame size={16} className="text-orange-500" />
-                                      <strong className="text-xs font-bold text-[#161c12]">{t.run.streakBonus}</strong>
-                                      <span className="text-[10px] text-[#5c6850]">Nhân điểm</span>
+                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50/80 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+                                      <Flame size={14} className="text-orange-500" />
+                                      <strong className="text-[11.5px] font-bold text-stone-800">{t.run.streakBonus}</strong>
+                                      <span className="text-[9.5px] text-stone-400">Nhân điểm</span>
                                     </div>
                                   </div>
                                   <button
-                                    className="learn-link mt-3.5 flex items-center gap-1.5 text-xs font-bold text-[#3b4630] hover:text-[#d86e33] transition-colors"
+                                    className="learn-link mt-2.5 flex items-center gap-1 text-[11.5px] font-semibold text-stone-500 hover:text-orange-600 transition-colors"
                                     onClick={() => openPanel("help")}
                                   >
                                     <span>{t.run.howToPlay}</span>
-                                    <ArrowUpRight size={14} />
+                                    <ArrowUpRight size={13} />
                                   </button>
                                 </div>
                               </section>
