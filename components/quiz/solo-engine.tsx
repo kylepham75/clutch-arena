@@ -563,6 +563,30 @@ export function SoloEngine({
       }))
     : [];
 
+  const uniqueConcepts = useMemo(() => {
+    if (!pack) return [];
+    const seen = new Set<string>();
+    const list: Array<{ id: string; topic: string; chapter?: string; questionCount: number }> = [];
+    pack.questions.forEach((q) => {
+      const meta = pack.metadata[q.id];
+      const topicName = meta?.topic || "Khái niệm chung";
+      const key = normalizeTopicKey(topicName);
+      if (!seen.has(key)) {
+        seen.add(key);
+        const count = pack.questions.filter(
+          (otherQ) => normalizeTopicKey(pack.metadata[otherQ.id]?.topic || "") === key,
+        ).length;
+        list.push({
+          id: q.id,
+          topic: topicName,
+          chapter: meta?.chapter,
+          questionCount: count,
+        });
+      }
+    });
+    return list;
+  }, [pack]);
+
   return (
     <MotionConfig reducedMotion="user">
       <div className="app-shell">
@@ -658,17 +682,7 @@ export function SoloEngine({
             <span className="live-pill">{t.nav.live}</span>
           </button>
           <div className="sidebar-bottom">
-            <div className="sidebar-note">
-              <h4>
-                {t.sidebar.smallSessions}
-                <br />
-                {t.sidebar.bigComebacks}
-              </h4>
-              <p>
-                {t.sidebar.focusQuote}
-              </p>
-            </div>
-            <UserProfileButton variant="sidebar" />
+            {/* Clean bottom spacer without quote/profile fluff */}
           </div>
         </aside>
 
@@ -690,118 +704,82 @@ export function SoloEngine({
               </strong>
             </div>
 
-            <div className="topbar-nav-tabs" role="tablist" aria-label="Workspace views">
-              <button
-                role="tab"
-                aria-selected={activeTab === "play"}
-                className={`topbar-tab ${activeTab === "play" ? "active" : ""}`}
-                onClick={() => setActiveTab("play")}
-              >
-                <Zap size={14} />
-                <span>{t.topbar.play}</span>
-              </button>
-              <button
-                role="tab"
-                aria-selected={activeTab === "ingest"}
-                className={`topbar-tab ${activeTab === "ingest" ? "active" : ""}`}
-                onClick={() => setActiveTab("ingest")}
-              >
-                <FileText size={14} />
-                <span>{t.topbar.ingest}</span>
-              </button>
-              <button
-                role="tab"
-                aria-selected={activeTab === "notes"}
-                className={`topbar-tab ${activeTab === "notes" ? "active" : ""}`}
-                onClick={() => setActiveTab("notes")}
-              >
-                <FileSpreadsheet size={14} />
-                <span>{t.topbar.notes}</span>
-              </button>
-              <button
-                role="tab"
-                aria-selected={activeTab === "coach"}
-                className={`topbar-tab ${activeTab === "coach" ? "active" : ""}`}
-                onClick={() => setActiveTab("coach")}
-              >
-                <GraduationCap size={14} />
-                <span>{t.topbar.coach}</span>
-              </button>
-              <button
-                role="tab"
-                aria-selected={activeTab === "arena"}
-                className={`topbar-tab ${activeTab === "arena" ? "active" : ""}`}
-                onClick={() => setActiveTab("arena")}
-              >
-                <Users size={14} />
-                <span>{t.topbar.arena}</span>
-              </button>
-            </div>
+            <div className="topbar-actions flex items-center gap-2">
+              <div className="flex items-center gap-1">
+                <LanguageSwitcher />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-stone-500 hover:text-stone-800"
+                  aria-label={audio.muted ? t.topbar.soundOn : t.topbar.muteSound}
+                  title={audio.muted ? t.topbar.soundOn : t.topbar.muteSound}
+                  onClick={audio.toggle}
+                >
+                  {audio.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-stone-500 hover:text-stone-800"
+                  aria-label={t.topbar.howToPlay}
+                  onClick={() => setTutorialOpen(true)}
+                >
+                  <CircleHelp size={16} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-stone-500 hover:text-stone-800"
+                  type="button"
+                  data-testid="open-pilot-feedback"
+                  aria-label={t.topbar.sendFeedback}
+                  title={t.topbar.sendFeedback}
+                  onClick={() => {
+                    setFeedbackSeed(null);
+                    setFeedbackOpen(true);
+                  }}
+                >
+                  <MessageSquarePlus size={16} />
+                </Button>
+              </div>
 
-            <div className="topbar-actions">
-              <LanguageSwitcher />
-              <button
-                type="button"
-                onClick={() => {
-                  setPricingReason(null);
-                  setPricingOpen(true);
-                }}
-                className="flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300 transition-colors cursor-pointer"
-                title={t.topbar.viewPricing}
-              >
-                <Flame size={14} className="text-amber-600" />
-                <span suppressHydrationWarning>
-                  {tier === "contender"
-                    ? t.topbar.cramPassBtn
-                    : tier === "cram_pass"
-                      ? "Cram Pass"
-                      : tier === "pro"
-                        ? "Pro"
-                        : "Tutor"}
-                </span>
-              </button>
-              <button
-                type="button"
-                className={`toggle-viewer-btn ${showDocViewer ? "active" : ""}`}
-                onClick={() => setShowDocViewer(!showDocViewer)}
-                title={showDocViewer ? t.topbar.hideDocViewer : t.topbar.showDocViewer}
-                aria-label={t.topbar.toggleDocViewer}
-              >
-                <BookOpen size={14} />
-                <span>{t.topbar.docViewer}</span>
-              </button>
-              <span className="topbar-divider" />
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={audio.muted ? t.topbar.soundOn : t.topbar.muteSound}
-                title={audio.muted ? t.topbar.soundOn : t.topbar.muteSound}
-                onClick={audio.toggle}
-              >
-                {audio.muted ? <VolumeX size={19} /> : <Volume2 size={19} />}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                type="button"
-                data-testid="open-pilot-feedback"
-                aria-label={t.topbar.sendFeedback}
-                title={t.topbar.sendFeedback}
-                onClick={() => {
-                  setFeedbackSeed(null);
-                  setFeedbackOpen(true);
-                }}
-              >
-                <MessageSquarePlus size={18} />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={t.topbar.howToPlay}
-                onClick={() => setTutorialOpen(true)}
-              >
-                <CircleHelp size={19} />
-              </Button>
+              <span className="h-4 w-[1px] bg-stone-200 dark:bg-stone-800 mx-1" />
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className={`toggle-viewer-btn text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-stone-200 hover:bg-stone-50 flex items-center gap-1.5 transition-colors ${showDocViewer ? "active" : ""}`}
+                  onClick={() => setShowDocViewer(!showDocViewer)}
+                  title={showDocViewer ? t.topbar.hideDocViewer : t.topbar.showDocViewer}
+                  aria-label={t.topbar.toggleDocViewer}
+                >
+                  <BookOpen size={14} />
+                  <span>{t.topbar.docViewer}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPricingReason(null);
+                    setPricingOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300 transition-colors cursor-pointer"
+                  title={t.topbar.viewPricing}
+                >
+                  <Flame size={14} className="text-amber-600" />
+                  <span suppressHydrationWarning>
+                    {tier === "contender"
+                      ? t.topbar.cramPassBtn
+                      : tier === "cram_pass"
+                        ? "Cram Pass"
+                        : tier === "pro"
+                          ? "Pro"
+                          : "Tutor"}
+                  </span>
+                </button>
+              </div>
+
+              <span className="h-4 w-[1px] bg-stone-200 dark:bg-stone-800 mx-1" />
+
               <UserProfileButton variant="topbar" />
             </div>
           </header>
@@ -1041,12 +1019,12 @@ export function SoloEngine({
                       ) : (
                         <>
                           <div className="setup-grid">
-                            <section className="setup-card surface">
+                            <section className="setup-card surface space-y-6">
                               {/* Integrated Deck Hero Header */}
-                              <div className="deck-hero-banner">
+                              <div className="deck-hero-banner space-y-3">
                                 <div className="flex items-start justify-between gap-4">
                                   <div className="flex items-center gap-3.5 min-w-0">
-                                    <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-[#fde8dc] to-[#fcd5c1] text-[#c9512c] border border-[#f5c2aa] flex items-center justify-center shrink-0 shadow-2xs">
+                                    <div className="w-11 h-11 rounded-xl bg-orange-50 text-[#ea580c] border border-orange-200/80 flex items-center justify-center shrink-0 shadow-2xs">
                                       <BookOpen size={20} />
                                     </div>
                                     <div className="min-w-0">
@@ -1083,7 +1061,7 @@ export function SoloEngine({
                                       size="sm"
                                       onClick={openLibrary}
                                       title={t.run.switchDeckTooltip}
-                                      className="change-deck-btn text-xs h-8 px-2.5"
+                                      className="change-deck-btn text-xs h-8 px-2.5 rounded-lg border-stone-200 hover:bg-stone-50"
                                       data-testid="clutch-run-change-deck-btn"
                                     >
                                       <FolderSync size={13} className="text-amber-700" />
@@ -1094,7 +1072,7 @@ export function SoloEngine({
                                       size="sm"
                                       onClick={() => setShareOpen(true)}
                                       title={t.run.shareExportTooltip}
-                                      className="text-xs h-8 px-2.5"
+                                      className="text-xs h-8 px-2.5 rounded-lg border-stone-200 hover:bg-stone-50"
                                     >
                                       <Share2 size={13} />
                                       <span>{t.library.shareBtn}</span>
@@ -1103,12 +1081,12 @@ export function SoloEngine({
                                 </div>
 
                                 {availablePacks.length > 1 && (
-                                  <div className="quick-deck-chips" role="region" aria-label="Quick deck switcher">
+                                  <div className="flex items-center gap-2 pt-2 border-t border-stone-100" role="region" aria-label="Quick deck switcher">
                                     <span className="text-stone-400 font-medium shrink-0 flex items-center gap-1 text-[11px]">
                                       <Layers3 size={12} className="text-stone-400" />
                                       <span>{t.run.quickSwitch}:</span>
                                     </span>
-                                    <div className="quick-deck-list flex items-center gap-1.5 flex-wrap">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
                                       {availablePacks.map((item) => {
                                         const isSelected = item.id === pack.id;
                                         return (
@@ -1121,7 +1099,11 @@ export function SoloEngine({
                                                 item.document,
                                               )
                                             }
-                                            className={`quick-deck-chip ${isSelected ? "selected" : ""}`}
+                                            className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium transition-all cursor-pointer ${
+                                              isSelected
+                                                ? "bg-orange-50 text-[#c9512c] border border-orange-200/80 font-semibold"
+                                                : "bg-stone-50 text-stone-600 border border-stone-200/70 hover:bg-stone-100"
+                                            }`}
                                             title={`Switch active deck to ${item.title}`}
                                             aria-pressed={isSelected}
                                           >
@@ -1143,7 +1125,7 @@ export function SoloEngine({
                                       <button
                                         type="button"
                                         onClick={openLibrary}
-                                        className="quick-deck-chip more-chip"
+                                        className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium text-stone-500 hover:text-stone-800 hover:bg-stone-100 border border-transparent transition-all cursor-pointer"
                                         title="Open Study Library"
                                       >
                                         <span>+ Thêm</span>
@@ -1154,8 +1136,8 @@ export function SoloEngine({
                               </div>
 
                               {/* Question Count Segmented Track */}
-                              <div className="control-section mt-5">
-                                <div className="control-section-header flex items-center justify-between mb-2">
+                              <div className="control-section">
+                                <div className="flex items-center justify-between mb-2">
                                   <label className="text-xs font-semibold text-stone-700">
                                     {t.run.sessionLength}
                                   </label>
@@ -1168,7 +1150,7 @@ export function SoloEngine({
                                     </span>
                                   )}
                                 </div>
-                                <div className="segmented-control" role="group" aria-label="Question count selection">
+                                <div className="segmented-control w-full max-w-md grid grid-cols-3 gap-1.5 p-1 bg-stone-100/80 border border-stone-200/80 rounded-xl" role="group" aria-label="Question count selection">
                                   {[10, 20, 30].map((count) => {
                                     const isLocked = count > limits.maxQuestionsPerRun;
                                     const isSelected = questionCount === count;
@@ -1189,15 +1171,19 @@ export function SoloEngine({
                                           }
                                           setQuestionCount(count);
                                         }}
-                                        className={`segmented-pill ${isSelected ? "selected" : ""} ${isLocked ? "locked" : ""}`}
+                                        className={`flex flex-col items-center justify-center py-2 px-3 rounded-lg border transition-all text-center ${
+                                          isSelected
+                                            ? "bg-white border-[#ea580c] text-stone-900 shadow-2xs"
+                                            : "bg-transparent border-transparent text-stone-600 hover:bg-white/60 hover:text-stone-900"
+                                        } ${isLocked ? "opacity-60 cursor-pointer" : ""}`}
                                       >
-                                        <div className="segmented-pill-title">
-                                          <span>{count} {t.run.questionsUnit}</span>
+                                        <div className="flex items-center justify-center gap-1 text-[13px] font-bold">
+                                          <span className={isSelected ? "text-[#ea580c]" : ""}>{count} {t.run.questionsUnit}</span>
                                           {isLocked && (
-                                            <span className="pro-badge">PRO</span>
+                                            <span className="text-[9px] font-extrabold px-1.5 py-0.2 rounded bg-stone-900 text-white">PRO</span>
                                           )}
                                         </div>
-                                        <span className="segmented-pill-sub">{timeEstimate}</span>
+                                        <span className="text-[10.5px] text-stone-500 font-medium mt-0.5">{timeEstimate}</span>
                                       </button>
                                     );
                                   })}
@@ -1205,35 +1191,45 @@ export function SoloEngine({
                               </div>
 
                               {/* Practice Mode Selection */}
-                              <div className="control-section mt-5">
-                                <div className="control-section-header mb-2">
+                              <div className="control-section">
+                                <div className="mb-2">
                                   <label className="text-xs font-semibold text-stone-700">
                                     {t.run.howPractice}
                                   </label>
                                 </div>
-                                <div className="mode-cards-grid" role="group" aria-label="Practice mode">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" role="group" aria-label="Practice mode">
                                   <div
                                     role="button"
                                     tabIndex={0}
                                     aria-pressed={mode === "exact"}
-                                    className={`mode-card ${mode === "exact" ? "selected" : ""}`}
+                                    className={`flex items-center gap-3 p-3.5 rounded-xl border transition-all cursor-pointer ${
+                                      mode === "exact"
+                                        ? "border-[#ea580c] bg-orange-50/20 ring-1 ring-[#ea580c]"
+                                        : "border-stone-200 bg-white hover:border-stone-300 hover:bg-stone-50/50"
+                                    }`}
                                     onClick={() => setMode("exact")}
                                     onKeyDown={(e) => {
                                       if (e.key === "Enter" || e.key === " ") setMode("exact");
                                     }}
                                   >
-                                    <div className="mode-card-icon mode-card-icon-classic">
+                                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border ${
+                                      mode === "exact"
+                                        ? "bg-orange-50 text-[#ea580c] border-orange-200"
+                                        : "bg-stone-100 text-stone-600 border-stone-200"
+                                    }`}>
                                       <ListChecks size={18} />
                                     </div>
-                                    <div className="mode-card-body flex-1 min-w-0">
+                                    <div className="flex-1 min-w-0">
                                       <div className="flex items-center gap-1.5">
-                                        <strong className="mode-card-title">{t.run.classicRecall}</strong>
-                                        <span className="mode-card-tag">Nền tảng</span>
+                                        <strong className="text-[13.5px] font-bold text-stone-900">{t.run.classicRecall}</strong>
+                                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-stone-100 text-stone-600 border border-stone-200/60">Nền tảng</span>
                                       </div>
-                                      <p className="mode-card-desc">{t.run.classicRecallDesc}</p>
+                                      <p className="text-xs text-stone-500 mt-0.5 truncate">{t.run.classicRecallDesc}</p>
                                     </div>
-                                    <div className="mode-card-radio">
-                                      {mode === "exact" && <div className="mode-card-radio-dot" />}
+                                    <div className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+                                      mode === "exact" ? "border-[#ea580c]" : "border-stone-300"
+                                    }`}>
+                                      {mode === "exact" && <div className="w-2 h-2 rounded-full bg-[#ea580c]" />}
                                     </div>
                                   </div>
 
@@ -1241,7 +1237,11 @@ export function SoloEngine({
                                     role="button"
                                     tabIndex={0}
                                     aria-pressed={mode === "variants"}
-                                    className={`mode-card ${mode === "variants" ? "selected" : ""}`}
+                                    className={`flex items-center gap-3 p-3.5 rounded-xl border transition-all cursor-pointer ${
+                                      mode === "variants"
+                                        ? "border-[#ea580c] bg-orange-50/20 ring-1 ring-[#ea580c]"
+                                        : "border-stone-200 bg-white hover:border-stone-300 hover:bg-stone-50/50"
+                                    }`}
                                     onClick={() => {
                                       if (!limits.canUseConceptRemix && unlockedRemixRuns === 0) {
                                         setPricingReason(
@@ -1264,41 +1264,47 @@ export function SoloEngine({
                                       }
                                     }}
                                   >
-                                    <div className="mode-card-icon mode-card-icon-remix">
+                                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border ${
+                                      mode === "variants"
+                                        ? "bg-orange-50 text-[#ea580c] border-orange-200"
+                                        : "bg-stone-100 text-stone-600 border-stone-200"
+                                    }`}>
                                       <Layers3 size={18} />
                                     </div>
-                                    <div className="mode-card-body flex-1 min-w-0">
+                                    <div className="flex-1 min-w-0">
                                       <div className="flex items-center gap-1.5 flex-wrap">
-                                        <strong className="mode-card-title">{t.run.conceptRemix}</strong>
-                                        <span className="pro-badge-glow">
+                                        <strong className="text-[13.5px] font-bold text-stone-900">{t.run.conceptRemix}</strong>
+                                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-stone-900 text-white">
                                           {!limits.canUseConceptRemix && unlockedRemixRuns > 0 ? `${unlockedRemixRuns} Pass` : "AI REMIX"}
                                         </span>
                                       </div>
-                                      <p className="mode-card-desc">{t.run.conceptRemixDesc}</p>
+                                      <p className="text-xs text-stone-500 mt-0.5 truncate">{t.run.conceptRemixDesc}</p>
                                     </div>
-                                    <div className="mode-card-radio">
-                                      {mode === "variants" && <div className="mode-card-radio-dot" />}
+                                    <div className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+                                      mode === "variants" ? "border-[#ea580c]" : "border-stone-300"
+                                    }`}>
+                                      {mode === "variants" && <div className="w-2 h-2 rounded-full bg-[#ea580c]" />}
                                     </div>
                                   </div>
                                 </div>
                               </div>
 
                               {/* Launch Command Area */}
-                              <div className="launch-section mt-6 pt-5 border-t border-stone-200/60">
-                                <div className="launch-actions-row flex items-center gap-3">
+                              <div className="launch-section pt-5 border-t border-stone-100">
+                                <div className="flex items-center gap-3">
                                   <Button
-                                    className="launch-primary-btn flex-1"
+                                    className="launch-primary-btn flex-1 h-11 text-sm font-bold rounded-lg"
                                     onClick={start}
                                     disabled={!pack.questions.length}
                                   >
-                                    <Zap size={17} fill="currentColor" />
+                                    <Zap size={16} fill="currentColor" />
                                     <span>{t.run.startRun}</span>
-                                    <span className="launch-shortcut-kbd">↵ Enter</span>
-                                    <ArrowRight size={16} className="ml-auto" />
+                                    <span className="launch-shortcut-kbd text-[10.5px] py-0.5 px-1.5 rounded ml-2">↵ Enter</span>
+                                    <ArrowRight size={15} className="ml-auto" />
                                   </Button>
                                   <Button
                                     variant="outline"
-                                    className="launch-flashcard-btn"
+                                    className="launch-flashcard-btn h-11 text-xs font-semibold px-4 rounded-lg border-stone-200 hover:bg-stone-50"
                                     onClick={() => setShowFlashcards(true)}
                                     disabled={!pack.questions.length}
                                     title={t.run.reviewFlashcardsTooltip}
@@ -1307,7 +1313,7 @@ export function SoloEngine({
                                     <span>{t.run.flashcards}</span>
                                   </Button>
                                 </div>
-                                <div className="launch-perks-row flex items-center justify-center gap-2 text-xs text-stone-500 mt-3">
+                                <div className="flex items-center justify-center gap-2 text-xs text-stone-400 mt-3 font-medium">
                                   <span>{t.run.about2Minutes}</span>
                                   <span className="text-stone-300">•</span>
                                   <span>{t.run.smartRetry}</span>
@@ -1347,80 +1353,91 @@ export function SoloEngine({
                               )}
 
                               {/* Knowledge Map & Arena Rules Card */}
-                              <section className="how-card deck-intel-card">
-                                <div className="deck-intel-header">
-                                  <div className="flex items-center justify-between mb-1.5">
-                                    <span className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">
-                                      {t.run.deckConcepts}
-                                    </span>
-                                    <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200/60">
-                                      {topics.length} khái niệm
-                                    </span>
+                              <section className="how-card deck-intel-card rounded-2xl bg-white border border-stone-200/80 p-5 shadow-xs flex flex-col justify-between">
+                                <div>
+                                  <div className="deck-intel-header">
+                                    <div className="flex items-center justify-between mb-1.5">
+                                      <span className="text-xs font-semibold text-stone-600">
+                                        Khái niệm trong bộ đề
+                                      </span>
+                                      <span className="text-[11px] font-semibold text-stone-500 bg-stone-100 px-2 py-0.5 rounded-md border border-stone-200/60">
+                                        {uniqueConcepts.length} khái niệm
+                                      </span>
+                                    </div>
+                                    <div className="deck-intel-progress-track w-full h-1.5 rounded-full bg-stone-100 mt-2 overflow-hidden">
+                                      <div
+                                        className="deck-intel-progress-fill h-full bg-[#ea580c] rounded-full transition-all duration-300"
+                                        style={{
+                                          width: `${Math.max(8, Math.min(100, Math.round((uniqueConcepts.filter(c => getMasteryLevel(masteryStore[normalizeTopicKey(c.topic)]).level === 'mastered').length / Math.max(1, uniqueConcepts.length)) * 100)))}%`
+                                        }}
+                                      />
+                                    </div>
                                   </div>
-                                  <div className="deck-intel-progress-track w-full h-1.5 rounded-full bg-stone-100 mt-2 overflow-hidden">
-                                    <div
-                                      className="deck-intel-progress-fill h-full bg-emerald-600 rounded-full transition-all duration-300"
-                                      style={{
-                                        width: `${Math.max(8, Math.min(100, Math.round((topics.filter(tp => getMasteryLevel(masteryStore[normalizeTopicKey(tp.topic || tp.id)]).level === 'mastered').length / Math.max(1, topics.length)) * 100)))}%`
-                                      }}
-                                    />
-                                  </div>
-                                </div>
 
-                                <div className="topic-list mt-3.5 divide-y divide-stone-100 rounded-xl border border-stone-200/70 overflow-hidden bg-white">
-                                  {topics.slice(0, 6).map((topic, i) => {
-                                    const topicKey = normalizeTopicKey(topic.topic || topic.id);
-                                    const stats = masteryStore[topicKey];
-                                    const mastery = getMasteryLevel(stats);
-                                    const masteryLabel =
-                                      mastery.level === "untested"
-                                        ? t.run.masteryUntested
-                                        : mastery.level === "mastered"
-                                          ? `${mastery.score}% ${t.run.masteryMastered}`
-                                          : mastery.level === "weak"
-                                            ? `${mastery.score}% ${t.run.masteryNeedsReview}`
-                                            : `${mastery.score}% ${t.run.masteryLearning}`;
-                                    return (
-                                      <div className="topic-item flex items-center justify-between gap-2.5 px-3 py-2 text-xs hover:bg-stone-50/70 transition-colors" key={topic.id}>
-                                        <div className="flex items-center gap-2.5 min-w-0">
-                                          <span className="topic-index text-[11px] font-mono font-semibold text-stone-400 w-4 shrink-0">
-                                            {String(i + 1).padStart(2, "0")}
-                                          </span>
-                                          <span className="topic-item-title font-medium text-stone-800 truncate" title={topic.topic || t.nav.workspace}>
-                                            {topic.topic || t.nav.workspace}
+                                  <div className="topic-list mt-3.5 divide-y divide-stone-100 rounded-xl border border-stone-200/70 overflow-hidden bg-white">
+                                    {uniqueConcepts.slice(0, 6).map((concept, i) => {
+                                      const topicKey = normalizeTopicKey(concept.topic);
+                                      const stats = masteryStore[topicKey];
+                                      const mastery = getMasteryLevel(stats);
+                                      const masteryLabel =
+                                        mastery.level === "untested"
+                                          ? `${concept.questionCount} câu`
+                                          : mastery.level === "mastered"
+                                            ? `${mastery.score}% Thuộc`
+                                            : mastery.level === "weak"
+                                              ? `${mastery.score}% Ôn lại`
+                                              : `${mastery.score}% Đang học`;
+                                      const badgeColor =
+                                        mastery.level === "untested"
+                                          ? "bg-stone-100 text-stone-600 border-stone-200/60"
+                                          : mastery.level === "mastered"
+                                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                            : mastery.level === "weak"
+                                              ? "bg-rose-50 text-rose-700 border-rose-200"
+                                              : "bg-amber-50 text-amber-700 border-amber-200";
+
+                                      return (
+                                        <div className="topic-item flex items-center justify-between gap-2.5 px-3 py-2.5 text-xs hover:bg-stone-50/70 transition-colors" key={concept.topic}>
+                                          <div className="flex items-center gap-2.5 min-w-0">
+                                            <span className="topic-index text-[11px] font-mono font-medium text-stone-400 w-4 shrink-0">
+                                              {String(i + 1).padStart(2, "0")}
+                                            </span>
+                                            <span className="topic-item-title font-medium text-stone-800 truncate" title={concept.topic}>
+                                              {concept.topic}
+                                            </span>
+                                          </div>
+                                          <span className={`text-[10.5px] font-medium px-2 py-0.5 rounded-md border ${badgeColor} shrink-0`}>
+                                            {masteryLabel}
                                           </span>
                                         </div>
-                                        <span className={`mastery-badge badge-${mastery.level} text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0`}>
-                                          {masteryLabel}
-                                        </span>
-                                      </div>
-                                    );
-                                  })}
+                                      );
+                                    })}
+                                  </div>
                                 </div>
 
-                                <div className="arena-rules-card mt-4 pt-3.5 border-t border-stone-200/70">
-                                  <div className="text-[10.5px] font-bold text-stone-500 uppercase tracking-wider mb-2">
-                                    LUẬT ARENA
+                                <div className="arena-rules-card mt-5 pt-4 border-t border-stone-200/70">
+                                  <div className="text-xs font-semibold text-stone-600 mb-2">
+                                    Luật đấu trường
                                   </div>
-                                  <div className="arena-rules-grid grid grid-cols-3 gap-1.5">
-                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50/80 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+                                  <div className="arena-rules-grid grid grid-cols-3 gap-2">
+                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
                                       <Heart size={14} className="text-rose-500" />
-                                      <strong className="text-[11.5px] font-bold text-stone-800">{t.run.livesCount}</strong>
-                                      <span className="text-[9.5px] text-stone-400">3 Lần</span>
+                                      <strong className="text-xs font-bold text-stone-800">{t.run.livesCount}</strong>
+                                      <span className="text-[10px] text-stone-400">Trượt 3 lần</span>
                                     </div>
-                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50/80 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
                                       <Clock3 size={14} className="text-amber-500" />
-                                      <strong className="text-[11.5px] font-bold text-stone-800">{t.run.timerCount}</strong>
-                                      <span className="text-[9.5px] text-stone-400">15s/câu</span>
+                                      <strong className="text-xs font-bold text-stone-800">{t.run.timerCount}</strong>
+                                      <span className="text-[10px] text-stone-400">15s/câu</span>
                                     </div>
-                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50/80 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
                                       <Flame size={14} className="text-orange-500" />
-                                      <strong className="text-[11.5px] font-bold text-stone-800">{t.run.streakBonus}</strong>
-                                      <span className="text-[9.5px] text-stone-400">Nhân điểm</span>
+                                      <strong className="text-xs font-bold text-stone-800">{t.run.streakBonus}</strong>
+                                      <span className="text-[10px] text-stone-400">Nhân điểm</span>
                                     </div>
                                   </div>
                                   <button
-                                    className="learn-link mt-2.5 flex items-center gap-1 text-[11.5px] font-semibold text-stone-500 hover:text-orange-600 transition-colors"
+                                    className="learn-link mt-3 flex items-center gap-1 text-xs font-medium text-stone-500 hover:text-orange-600 transition-colors"
                                     onClick={() => openPanel("help")}
                                   >
                                     <span>{t.run.howToPlay}</span>
@@ -1614,14 +1631,6 @@ export function SoloEngine({
                 )}
               </div>
             </div>
-            <footer className="page-footer">
-              <span>
-                {t.run.footerLeft}
-              </span>
-              <span>
-                {t.run.footerRight} <Zap size={12} />
-              </span>
-            </footer>
           </main>
         </div>
 

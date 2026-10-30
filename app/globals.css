@@ -595,16 +595,16 @@ svg {
   gap: 8px;
   align-items: center;
   background: #ffffff;
-  border: 1.5px solid #dce2d5;
-  border-radius: 9999px;
-  padding: 7px 16px;
+  border: 1px solid #dce2d5;
+  border-radius: 8px;
+  padding: 6px 14px;
   margin-top: 4px;
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   color: #35402d;
   white-space: nowrap;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 .pulse-dot {
   width: 6px;
@@ -6338,7 +6338,7 @@ svg {
   font-size: 14px !important;
   padding: 10px 20px !important;
   min-height: 42px !important;
-  border-radius: 11px !important;
+  border-radius: 8px !important;
   border: 1px solid rgba(255, 255, 255, 0.18) !important;
   box-shadow: 0 2px 10px rgba(212, 76, 32, 0.28) !important;
   transition: all 0.15s ease !important;
@@ -6371,7 +6371,7 @@ svg {
 }
 
 .launch-flashcard-btn {
-  border-radius: 11px !important;
+  border-radius: 8px !important;
   border: 1.5px solid #dce3d6 !important;
   background: #ffffff !important;
   color: #3b4632 !important;
