@@ -1042,358 +1042,415 @@ export function SoloEngine({
                         <>
                           <div className="setup-grid">
                             <section className="setup-card surface">
-                              <div className="section-top">
-                                <div className="section-icon">
-                                  <Zap size={19} />
+                              {/* Integrated Deck Hero Command Banner */}
+                              <div className="deck-hero-banner">
+                                <div className="deck-hero-badge-row flex items-center justify-between gap-3 mb-3">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="deck-kicker-pill inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#fde8dc] text-[#c9512c] text-xs font-bold uppercase tracking-wider">
+                                      <Zap size={12} fill="currentColor" />
+                                      <span>{t.run.soloPractice}</span>
+                                    </span>
+                                    {pack.subtitle && (
+                                      <span className="deck-source-tag text-xs font-medium text-stone-500 truncate max-w-[320px]" title={pack.subtitle}>
+                                        {pack.subtitle}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="tag tag-green">{t.run.readyToPlay}</span>
                                 </div>
-                                <div>
-                                  <h2>{t.run.soloPractice}</h2>
-                                  <p>
-                                    {pack.id === "mock-microeconomics"
-                                      ? t.run.soloPracticeSubtitle
-                                      : pack.subtitle ||
-                                        `${pack.questions.length} ${t.library.questionsCount}`}
+
+                                <div className="deck-hero-content flex items-center gap-4 py-2">
+                                  <div className="deck-cover-icon w-14 h-14 rounded-2xl bg-gradient-to-br from-[#fde8dc] to-[#fcd5c1] text-[#c9512c] border border-[#f5c2aa] flex items-center justify-center shrink-0 shadow-xs">
+                                    <BookOpen size={28} />
+                                  </div>
+                                  <div className="deck-hero-text min-w-0 flex-1">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <h2 className="deck-hero-title text-2xl sm:text-3xl font-extrabold text-[#161c12] tracking-tight truncate">
+                                        {pack.title}
+                                      </h2>
+                                      {pack.id.endsWith("-weak-spots") && (
+                                        <span className="mastery-badge badge-weak">{t.run.comebackSprint}</span>
+                                      )}
+                                    </div>
+                                    <p className="deck-hero-meta text-xs sm:text-sm text-[#556149] mt-0.5">
+                                      {pack.id === "mock-microeconomics"
+                                        ? t.run.soloPracticeSubtitle
+                                        : `${pack.questions.length} ${t.library.questionsCount} • ${t.headings.clutchRunReady}`}
+                                    </p>
+                                    {pack.id.endsWith("-weak-spots") && (
+                                      <div className="sprint-indicator-banner mt-1">
+                                        <button
+                                          type="button"
+                                          onClick={handleRestoreBasePack}
+                                          className="restore-pack-link"
+                                        >
+                                          {t.run.backToFullDeck}
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="deck-hero-actions flex items-center gap-2 shrink-0">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={openLibrary}
+                                      title={t.run.switchDeckTooltip}
+                                      className="change-deck-btn"
+                                      data-testid="clutch-run-change-deck-btn"
+                                    >
+                                      <FolderSync size={14} className="text-amber-700" />
+                                      <span>{t.run.changeDeck}</span>
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => setShareOpen(true)}
+                                      title={t.run.shareExportTooltip}
+                                    >
+                                      <Share2 size={14} />
+                                      <span>{t.library.shareBtn}</span>
+                                    </Button>
+                                  </div>
+                                </div>
+
+                                {availablePacks.length > 1 && (
+                                  <div className="quick-deck-chips" role="region" aria-label="Quick deck switcher">
+                                    <span className="text-stone-500 font-medium shrink-0 flex items-center gap-1 text-xs">
+                                      <Layers3 size={13} className="text-amber-700" />
+                                      <span>{t.run.quickSwitch}</span>
+                                    </span>
+                                    <div className="quick-deck-list flex items-center gap-1.5 flex-wrap">
+                                      {availablePacks.map((item) => {
+                                        const isSelected = item.id === pack.id;
+                                        return (
+                                          <button
+                                            key={item.id}
+                                            type="button"
+                                            onClick={() =>
+                                              handleSelectPackFromLibrary(
+                                                item.pack,
+                                                item.document,
+                                              )
+                                            }
+                                            className={`quick-deck-chip ${isSelected ? "selected" : ""}`}
+                                            title={`Switch active deck to ${item.title}`}
+                                            aria-pressed={isSelected}
+                                          >
+                                            {isSelected && (
+                                              <Check
+                                                size={12}
+                                                className="inline mr-1 text-emerald-600"
+                                              />
+                                            )}
+                                            <span className="truncate max-w-[150px] inline-block align-bottom">
+                                              {item.title}
+                                            </span>
+                                            <span className="text-[10px] opacity-70 ml-1">
+                                              ({item.questionCount}Q)
+                                            </span>
+                                          </button>
+                                        );
+                                      })}
+                                      <button
+                                        type="button"
+                                        onClick={openLibrary}
+                                        className="quick-deck-chip more-chip"
+                                        title="Open Study Library to browse all or import JSON"
+                                      >
+                                        <span>{t.run.moreInLibrary}</span>
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Question Count Segmented Track */}
+                              <div className="control-section mt-6">
+                                <div className="control-section-header flex items-center justify-between mb-2">
+                                  <span className="control-label text-xs font-bold text-[#3b4630] uppercase tracking-wider">
+                                    {t.run.sessionLength}
+                                  </span>
+                                  {tier === "contender" && (
+                                    <span
+                                      suppressHydrationWarning
+                                      className="text-[11px] font-semibold text-amber-700 dark:text-amber-400"
+                                    >
+                                      {t.run.contenderMax10Q}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="segmented-control" role="group" aria-label="Question count selection">
+                                  {[10, 20, 30].map((count) => {
+                                    const isLocked = count > limits.maxQuestionsPerRun;
+                                    const isSelected = questionCount === count;
+                                    const timeEstimate = count === 10 ? "~2 phút" : count === 20 ? "~5 phút" : "Cấp tốc";
+                                    return (
+                                      <button
+                                        key={count}
+                                        type="button"
+                                        onClick={() => {
+                                          if (isLocked) {
+                                            setPricingReason(
+                                              language === "vi"
+                                                ? `Chế độ ${count} câu hỏi yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc Clutch Pro.`
+                                                : `Full ${count}-question runs require a 7-Day Cram Pass or Clutch Pro.`,
+                                            );
+                                            setPricingOpen(true);
+                                            return;
+                                          }
+                                          setQuestionCount(count);
+                                        }}
+                                        className={`segmented-pill ${isSelected ? "selected" : ""} ${isLocked ? "locked" : ""}`}
+                                      >
+                                        <div className="segmented-pill-title">
+                                          <span>{count} {t.run.questionsUnit}</span>
+                                          {isLocked && (
+                                            <span className="pro-badge">PRO</span>
+                                          )}
+                                        </div>
+                                        <span className="segmented-pill-sub">{timeEstimate}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              {/* Practice Mode Selection */}
+                              <div className="control-section mt-6">
+                                <div className="control-section-header mb-2">
+                                  <span className="control-label text-xs font-bold text-[#3b4630] uppercase tracking-wider">
+                                    {t.run.howPractice}
+                                  </span>
+                                </div>
+                                <div className="mode-cards-grid" role="group" aria-label="Practice mode">
+                                  <div
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-pressed={mode === "exact"}
+                                    className={`mode-card ${mode === "exact" ? "selected" : ""}`}
+                                    onClick={() => setMode("exact")}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter" || e.key === " ") setMode("exact");
+                                    }}
+                                  >
+                                    <div className="mode-card-icon mode-card-icon-classic">
+                                      <ListChecks size={22} />
+                                    </div>
+                                    <div className="mode-card-body flex-1 min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        <strong className="mode-card-title">{t.run.classicRecall}</strong>
+                                        <span className="mode-card-tag">Nền tảng</span>
+                                      </div>
+                                      <p className="mode-card-desc">{t.run.classicRecallDesc}</p>
+                                    </div>
+                                    <div className="mode-card-radio">
+                                      {mode === "exact" && <Check size={14} className="text-white" />}
+                                    </div>
+                                  </div>
+
+                                  <div
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-pressed={mode === "variants"}
+                                    className={`mode-card ${mode === "variants" ? "selected" : ""}`}
+                                    onClick={() => {
+                                      if (!limits.canUseConceptRemix && unlockedRemixRuns === 0) {
+                                        setPricingReason(
+                                          language === "vi"
+                                            ? "Chế độ Biến thể Concept Remix yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc mở khóa bằng cách mời bạn bè!"
+                                            : "Concept Remix mode requires a 7-Day Cram Pass or Clutch Pro, or unlock free runs with Referrals!",
+                                        );
+                                        setPricingOpen(true);
+                                        return;
+                                      }
+                                      setMode("variants");
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter" || e.key === " ") {
+                                        if (!limits.canUseConceptRemix && unlockedRemixRuns === 0) {
+                                          setPricingOpen(true);
+                                          return;
+                                        }
+                                        setMode("variants");
+                                      }
+                                    }}
+                                  >
+                                    <div className="mode-card-icon mode-card-icon-remix">
+                                      <Layers3 size={22} />
+                                    </div>
+                                    <div className="mode-card-body flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <strong className="mode-card-title">{t.run.conceptRemix}</strong>
+                                        <span className="pro-badge-glow">
+                                          {!limits.canUseConceptRemix && unlockedRemixRuns > 0 ? `${unlockedRemixRuns} Pass` : "AI REMIX"}
+                                        </span>
+                                      </div>
+                                      <p className="mode-card-desc">{t.run.conceptRemixDesc}</p>
+                                    </div>
+                                    <div className="mode-card-radio">
+                                      {mode === "variants" && <Check size={14} className="text-white" />}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Launch Command Area */}
+                              <div className="launch-section mt-7">
+                                <div className="launch-actions-row flex items-center gap-3">
+                                  <Button
+                                    className="launch-primary-btn flex-1"
+                                    onClick={start}
+                                    disabled={!pack.questions.length}
+                                  >
+                                    <Zap size={20} fill="currentColor" />
+                                    <span>{t.run.startRun}</span>
+                                    <span className="launch-shortcut-kbd">↵ Enter</span>
+                                    <ArrowRight size={18} className="ml-auto" />
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="launch-flashcard-btn"
+                                    onClick={() => setShowFlashcards(true)}
+                                    disabled={!pack.questions.length}
+                                    title={t.run.reviewFlashcardsTooltip}
+                                  >
+                                    <Layers3 size={17} />
+                                    <span>{t.run.flashcards}</span>
+                                  </Button>
+                                </div>
+                                <div className="launch-perks-row flex items-center justify-center gap-3 text-xs text-[#556149] mt-3">
+                                  <span className="flex items-center gap-1.5"><Clock3 size={14} /> {t.run.about2Minutes}</span>
+                                  <span className="text-stone-300">•</span>
+                                  <span className="flex items-center gap-1.5"><RotateCcw size={14} /> {t.run.smartRetry}</span>
+                                  <span className="text-stone-300">•</span>
+                                  <span className="flex items-center gap-1.5"><Keyboard size={14} /> {t.run.keyboardReady}</span>
+                                </div>
+                                <div className="launch-security-note flex items-center justify-center gap-1.5 text-xs text-[#6e7762] mt-2">
+                                  <ShieldCheck size={14} className="text-emerald-600" />
+                                  <span>{t.run.noAccount}</span>
+                                </div>
+                              </div>
+                            </section>
+
+                            <aside className="setup-aside">
+                              {getWeakSpotsForPack(pack, masteryStore).length > 0 && (
+                                <div className="weak-spot-card">
+                                  <div className="weak-spot-header">
+                                    <span className="weak-spot-title">
+                                      <Zap size={13} fill="currentColor" />
+                                      {t.run.comebackSprintReady}
+                                    </span>
+                                    <span className="mastery-badge badge-weak">
+                                      {getWeakSpotsForPack(pack, masteryStore).length} {getWeakSpotsForPack(pack, masteryStore).length > 1 ? t.run.weakSpotPlural : t.run.weakSpotSingle}
+                                    </span>
+                                  </div>
+                                  <p className="weak-spot-desc">
+                                    {t.run.weakSpotTargetPrefix} {getWeakSpotsForPack(pack, masteryStore).slice(0, 2).map((w) => w.topic).join(", ")}
+                                    {getWeakSpotsForPack(pack, masteryStore).length > 2 ? ` +${getWeakSpotsForPack(pack, masteryStore).length - 2} ${t.run.weakSpotMore}` : ""} {t.run.weakSpotTargetSuffix}
                                   </p>
+                                  <Button
+                                    size="sm"
+                                    variant="dark"
+                                    className="weak-spot-action"
+                                    onClick={handleLaunchWeakSpotSprint}
+                                    type="button"
+                                  >
+                                    <Zap size={13} fill="currentColor" />
+                                    {t.run.launchComeback}
+                                  </Button>
                                 </div>
-                                <span className="tag tag-green">{t.run.readyToPlay}</span>
-                              </div>
-                     <div className="pack-preview">
-                       <div className="pack-icon">
-                         <BookOpen size={24} />
-                       </div>
-                       <div className="pack-info flex-1 min-w-0">
-                         <div className="flex items-center gap-2 flex-wrap">
-                           <strong className="truncate">{pack.title}</strong>
-                           {pack.id.endsWith("-weak-spots") && (
-                             <span className="mastery-badge badge-weak">{t.run.comebackSprint}</span>
-                           )}
-                         </div>
-                         <span>
-                           {pack.id === "mock-microeconomics"
-                             ? t.run.soloPracticeSubtitle
-                             : pack.subtitle || `${pack.questions.length} ${t.library.questionsCount}`}
-                         </span>
-                         {pack.id.endsWith("-weak-spots") && (
-                           <div className="sprint-indicator-banner mt-1">
-                             <button
-                               type="button"
-                               onClick={handleRestoreBasePack}
-                               className="restore-pack-link"
-                             >
-                               {t.run.backToFullDeck}
-                             </button>
-                           </div>
-                         )}
-                       </div>
-                       <div className="pack-preview-actions flex items-center gap-2 shrink-0">
-                         <Button
-                           variant="outline"
-                           size="sm"
-                           onClick={openLibrary}
-                           title={t.run.switchDeckTooltip}
-                           className="change-deck-btn"
-                           data-testid="clutch-run-change-deck-btn"
-                         >
-                           <FolderSync size={14} className="text-amber-700" />
-                           <span>{t.run.changeDeck}</span>
-                         </Button>
-                         <Button
-                           variant="outline"
-                           size="sm"
-                           onClick={() => setShareOpen(true)}
-                           title={t.run.shareExportTooltip}
-                         >
-                           <Share2 size={14} />
-                           <span>{t.library.shareBtn}</span>
-                         </Button>
-                         <span className="pack-count">
-                           {pack.questions.length} {t.library.questionsCount}
-                         </span>
-                       </div>
-                     </div>
+                              )}
 
-                     {availablePacks.length > 1 && (
-                       <div className="quick-deck-chips flex items-center gap-2 flex-wrap" role="region" aria-label="Quick deck switcher">
-                         <span className="text-stone-500 font-medium shrink-0 flex items-center gap-1">
-                           <Layers3 size={13} className="text-amber-700" />
-                           <span>{t.run.quickSwitch}</span>
-                         </span>
-                         <div className="flex items-center gap-1.5 flex-wrap">
-                           {availablePacks.map((item) => {
-                             const isSelected = item.id === pack.id;
-                             return (
-                               <button
-                                 key={item.id}
-                                 type="button"
-                                 onClick={() =>
-                                   handleSelectPackFromLibrary(
-                                     item.pack,
-                                     item.document,
-                                   )
-                                 }
-                                 className={`quick-deck-chip ${isSelected ? "selected" : ""}`}
-                                 title={`Switch active deck to ${item.title}`}
-                                 aria-pressed={isSelected}
-                               >
-                                 {isSelected && (
-                                   <Check
-                                     size={12}
-                                     className="inline mr-1 text-emerald-600"
-                                   />
-                                 )}
-                                 <span className="truncate max-w-[140px] inline-block align-bottom">
-                                   {item.title}
-                                 </span>
-                                 <span className="text-[10px] opacity-70 ml-1">
-                                   ({item.questionCount}Q)
-                                 </span>
-                               </button>
-                             );
-                           })}
-                           <button
-                             type="button"
-                             onClick={openLibrary}
-                             className="quick-deck-chip more-chip"
-                             title="Open Study Library to browse all or import JSON"
-                           >
-                             <span>{t.run.moreInLibrary}</span>
-                           </button>
-                         </div>
-                       </div>
-                     )}
-                     <div className="field-label flex items-center justify-between">
-                       <span>{t.run.sessionLength}</span>
-                       {tier === "contender" && (
-                         <span
-                           suppressHydrationWarning
-                           className="text-[11px] font-semibold text-amber-700 dark:text-amber-400"
-                         >
-                           {t.run.contenderMax10Q}
-                         </span>
-                       )}
-                     </div>
-                     <div className="flex items-center gap-2 mb-4" role="group" aria-label="Question count selection">
-                       {[10, 20, 30].map((count) => {
-                         const isLocked = count > limits.maxQuestionsPerRun;
-                         const isSelected = questionCount === count;
-                         return (
-                           <button
-                             key={count}
-                             type="button"
-                             onClick={() => {
-                               if (isLocked) {
-                                 setPricingReason(
-                                   language === "vi"
-                                     ? `Chế độ ${count} câu hỏi yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc Clutch Pro.`
-                                     : `Full ${count}-question runs require a 7-Day Cram Pass or Clutch Pro.`,
-                                 );
-                                 setPricingOpen(true);
-                                 return;
-                               }
-                               setQuestionCount(count);
-                             }}
-                             className={`flex-1 p-2.5 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                               isSelected
-                                 ? "border-amber-600 bg-amber-50 text-amber-900 dark:bg-amber-950/40 dark:border-amber-500 dark:text-amber-200 shadow-xs"
-                                 : "border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 text-stone-600 dark:text-stone-300 hover:border-stone-300"
-                             }`}
-                           >
-                             <span>{count} {t.run.questionsUnit}</span>
-                             {isLocked && (
-                               <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500 text-stone-950">
-                                 Pro
-                                </span>
-                             )}
-                           </button>
-                         );
-                       })}
-                     </div>
+                              {/* Knowledge Map & Arena Rules Card */}
+                              <section className="how-card deck-intel-card">
+                                <div className="deck-intel-header">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="deck-intel-eyebrow text-[11px] font-bold text-[#4a573e] tracking-wider uppercase">
+                                      {t.run.deckConcepts}
+                                    </span>
+                                    <span className="deck-intel-count text-xs font-semibold text-stone-500">
+                                      {topics.length} khái niệm
+                                    </span>
+                                  </div>
+                                  <h3 className="deck-intel-title text-xl font-bold text-[#161c12]">
+                                    {topics.length} {t.run.keyConcepts}
+                                  </h3>
+                                  <div className="deck-intel-progress-track w-full h-2 rounded-full bg-[#e8eee0] mt-3 overflow-hidden">
+                                    <div
+                                      className="deck-intel-progress-fill h-full bg-gradient-to-r from-[#4a7732] to-[#609b40] rounded-full transition-all duration-300"
+                                      style={{
+                                        width: `${Math.max(8, Math.min(100, Math.round((topics.filter(tp => getMasteryLevel(masteryStore[normalizeTopicKey(tp.topic || tp.id)]).level === 'mastered').length / Math.max(1, topics.length)) * 100)))}%`
+                                      }}
+                                    />
+                                  </div>
+                                </div>
 
-                     <div className="field-label">
-                       {t.run.howPractice}
-                     </div>
-                     <div
-                       className="mode-options"
-                       role="group"
-                       aria-label="Practice mode"
-                     >
-                       <button
-                         aria-pressed={mode === "exact"}
-                         className={`mode-option ${mode === "exact" ? "selected" : ""}`}
-                         onClick={() => setMode("exact")}
-                       >
-                         <ListChecks size={20} />
-                         <div>
-                           <strong>{t.run.classicRecall}</strong>
-                           <span>{t.run.classicRecallDesc}</span>
-                         </div>
-                         <span className="radio">
-                           {mode === "exact" && <span />}
-                         </span>
-                       </button>
-                       <button
-                         aria-pressed={mode === "variants"}
-                         className={`mode-option ${mode === "variants" ? "selected" : ""}`}
-                         onClick={() => {
-                           if (!limits.canUseConceptRemix && unlockedRemixRuns === 0) {
-                             setPricingReason(
-                               language === "vi"
-                                 ? "Chế độ Biến thể Concept Remix yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc mở khóa bằng cách mời bạn bè!"
-                                 : "Concept Remix mode requires a 7-Day Cram Pass or Clutch Pro, or unlock free runs with Referrals!",
-                             );
-                             setPricingOpen(true);
-                             return;
-                           }
-                           setMode("variants");
-                         }}
-                       >
-                         <Layers3 size={20} />
-                         <div>
-                           <div className="flex items-center gap-1.5 flex-wrap">
-                             <strong>{t.run.conceptRemix}</strong>
-                             {!limits.canUseConceptRemix && (
-                               <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500 text-stone-950">
-                                 {unlockedRemixRuns > 0 ? `${unlockedRemixRuns} Pass` : "Pro"}
-                               </span>
-                             )}
-                           </div>
-                           <span>{t.run.conceptRemixDesc}</span>
-                         </div>
-                         <span className="radio">
-                           {mode === "variants" && <span />}
-                         </span>
-                       </button>
-                     </div>
-                     <div className="setup-details">
-                       <span>
-                         <Clock3 size={15} />
-                         {t.run.about2Minutes}
-                       </span>
-                       <span>
-                         <RotateCcw size={15} />
-                         {t.run.smartRetry}
-                       </span>
-                       <span>
-                         <Keyboard size={15} />
-                         {t.run.keyboardReady}
-                       </span>
-                     </div>
-                     <div className="start-actions-row flex items-center gap-3">
-                       <Button
-                         className="start-button flex-1"
-                         onClick={start}
-                         disabled={!pack.questions.length}
-                       >
-                         <Zap size={18} fill="currentColor" />
-                         {t.run.startRun}
-                         <ArrowRight size={19} />
-                       </Button>
-                       <Button
-                         variant="outline"
-                         className="flashcard-button"
-                         onClick={() => setShowFlashcards(true)}
-                         disabled={!pack.questions.length}
-                         title={t.run.reviewFlashcardsTooltip}
-                       >
-                         <Layers3 size={16} />
-                         {t.run.flashcards}
-                       </Button>
-                     </div>
-                     <div className="start-caption">
-                       <ShieldCheck size={13} />
-                       {t.run.noAccount}
-                     </div>
-                   </section>
-                  <aside className="setup-aside">
-                    {getWeakSpotsForPack(pack, masteryStore).length > 0 && (
-                      <div className="weak-spot-card">
-                        <div className="weak-spot-header">
-                          <span className="weak-spot-title">
-                            <Zap size={13} fill="currentColor" />
-                            {t.run.comebackSprintReady}
-                          </span>
-                          <span className="mastery-badge badge-weak">
-                            {getWeakSpotsForPack(pack, masteryStore).length} {getWeakSpotsForPack(pack, masteryStore).length > 1 ? t.run.weakSpotPlural : t.run.weakSpotSingle}
-                          </span>
-                        </div>
-                        <p className="weak-spot-desc">
-                          {t.run.weakSpotTargetPrefix} {getWeakSpotsForPack(pack, masteryStore).slice(0, 2).map((w) => w.topic).join(", ")}
-                          {getWeakSpotsForPack(pack, masteryStore).length > 2 ? ` +${getWeakSpotsForPack(pack, masteryStore).length - 2} ${t.run.weakSpotMore}` : ""} {t.run.weakSpotTargetSuffix}
-                        </p>
-                        <Button
-                          size="sm"
-                          variant="dark"
-                          className="weak-spot-action"
-                          onClick={handleLaunchWeakSpotSprint}
-                          type="button"
-                        >
-                          <Zap size={13} fill="currentColor" />
-                          {t.run.launchComeback}
-                        </Button>
-                      </div>
-                    )}
-                    <section className="how-card">
-                      <div className="section-heading">
-                        <span className="eyebrow">{t.run.deckConcepts}</span>
-                      </div>
-                      <h3>{topics.length} {t.run.keyConcepts}</h3>
-                      <div className="topic-list" style={{ marginTop: 16 }}>
-                        {topics.slice(0, 6).map((topic, i) => {
-                          const topicKey = normalizeTopicKey(topic.topic || topic.id);
-                          const stats = masteryStore[topicKey];
-                          const mastery = getMasteryLevel(stats);
-                          const masteryLabel =
-                            mastery.level === "untested"
-                              ? t.run.masteryUntested
-                              : mastery.level === "mastered"
-                                ? `${mastery.score}% ${t.run.masteryMastered}`
-                                : mastery.level === "weak"
-                                  ? `${mastery.score}% ${t.run.masteryNeedsReview}`
-                                  : `${mastery.score}% ${t.run.masteryLearning}`;
-                          return (
-                            <div className="topic" key={topic.id}>
-                              <span className="topic-number">
-                                {i + 1}
-                              </span>
-                              <div className="flex-1 min-w-0 pr-2">
-                                <strong className="truncate block">{topic.topic || t.nav.workspace}</strong>
-                                <small>{topic.chapter}</small>
-                              </div>
-                              <span className={`mastery-badge badge-${mastery.level}`}>
-                                {masteryLabel}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div
-                        className="setup-details"
-                        style={{
-                          marginTop: 18,
-                          paddingTop: 14,
-                          borderTop: "1px solid #e3e7db",
-                        }}
-                      >
-                        <span>
-                          <Heart size={14} /> {t.run.livesCount}
-                        </span>
-                        <span>
-                          <Clock3 size={14} /> {t.run.timerCount}
-                        </span>
-                        <span>
-                          <Flame size={14} /> {t.run.streakBonus}
-                        </span>
-                      </div>
-                      <button
-                        className="learn-link"
-                        onClick={() => openPanel("help")}
-                        style={{ marginTop: 14 }}
-                      >
-                        {t.run.howToPlay} <ArrowUpRight size={14} />
-                      </button>
-                    </section>
-                  </aside>
-                </div>
+                                <div className="topic-list mt-4 space-y-2">
+                                  {topics.slice(0, 6).map((topic, i) => {
+                                    const topicKey = normalizeTopicKey(topic.topic || topic.id);
+                                    const stats = masteryStore[topicKey];
+                                    const mastery = getMasteryLevel(stats);
+                                    const masteryLabel =
+                                      mastery.level === "untested"
+                                        ? t.run.masteryUntested
+                                        : mastery.level === "mastered"
+                                          ? `${mastery.score}% ${t.run.masteryMastered}`
+                                          : mastery.level === "weak"
+                                            ? `${mastery.score}% ${t.run.masteryNeedsReview}`
+                                            : `${mastery.score}% ${t.run.masteryLearning}`;
+                                    return (
+                                      <div className="topic-item flex items-center gap-3 p-2.5 rounded-xl bg-white border border-[#e5ecdc] hover:border-[#cbd7bf] transition-all" key={topic.id}>
+                                        <span className="topic-index w-7 h-7 rounded-lg bg-[#f0f4ea] text-[#3b4630] font-mono text-xs font-bold flex items-center justify-center shrink-0">
+                                          {i + 1}
+                                        </span>
+                                        <div className="topic-item-text flex-1 min-w-0 pr-2">
+                                          <strong className="topic-item-title text-xs sm:text-sm font-bold text-[#161c12] truncate block">
+                                            {topic.topic || t.nav.workspace}
+                                          </strong>
+                                          <small className="topic-item-sub text-[11px] text-[#5c6850] block truncate">
+                                            {topic.chapter || "Chương trọng tâm"}
+                                          </small>
+                                        </div>
+                                        <span className={`mastery-badge badge-${mastery.level} text-[10.5px] font-bold px-2 py-0.5 rounded-md shrink-0`}>
+                                          {masteryLabel}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+
+                                <div className="arena-rules-card mt-5 pt-4 border-t border-[#e2e7da]">
+                                  <div className="arena-rules-title text-[11px] font-bold text-[#4a573e] uppercase tracking-wider mb-2.5">
+                                    LUẬT THI ĐẤU ARENA
+                                  </div>
+                                  <div className="arena-rules-grid grid grid-cols-3 gap-2">
+                                    <div className="rule-tile p-2.5 rounded-xl bg-white border border-[#e5ecdc] text-center flex flex-col items-center gap-1 shadow-2xs">
+                                      <Heart size={16} className="text-rose-500" />
+                                      <strong className="text-xs font-bold text-[#161c12]">{t.run.livesCount}</strong>
+                                      <span className="text-[10px] text-[#5c6850]">Trượt 3 lần</span>
+                                    </div>
+                                    <div className="rule-tile p-2.5 rounded-xl bg-white border border-[#e5ecdc] text-center flex flex-col items-center gap-1 shadow-2xs">
+                                      <Clock3 size={16} className="text-amber-500" />
+                                      <strong className="text-xs font-bold text-[#161c12]">{t.run.timerCount}</strong>
+                                      <span className="text-[10px] text-[#5c6850]">Đếm ngược</span>
+                                    </div>
+                                    <div className="rule-tile p-2.5 rounded-xl bg-white border border-[#e5ecdc] text-center flex flex-col items-center gap-1 shadow-2xs">
+                                      <Flame size={16} className="text-orange-500" />
+                                      <strong className="text-xs font-bold text-[#161c12]">{t.run.streakBonus}</strong>
+                                      <span className="text-[10px] text-[#5c6850]">Nhân điểm</span>
+                                    </div>
+                                  </div>
+                                  <button
+                                    className="learn-link mt-3.5 flex items-center gap-1.5 text-xs font-bold text-[#3b4630] hover:text-[#d86e33] transition-colors"
+                                    onClick={() => openPanel("help")}
+                                  >
+                                    <span>{t.run.howToPlay}</span>
+                                    <ArrowUpRight size={14} />
+                                  </button>
+                                </div>
+                              </section>
+                            </aside>
+                          </div>
               </>
             )
           ) : state.phase === "finished" ? (

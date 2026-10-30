@@ -3,8 +3,8 @@
 @import "tw-animate-css";
 
 :root {
-  --background: #f8f9f5;
-  --foreground: #292c28;
+  --background: #fafbf9;
+  --foreground: #1c211a;
   --primary: #e96943;
   --primary-foreground: #fff;
   --muted: #eef0e9;
@@ -6090,6 +6090,336 @@ svg {
     justify-content: flex-start;
     margin-top: 8px;
     flex-wrap: wrap;
+  }
+}
+
+/* ==========================================================================
+   Redesigned Solo Arena Setup & Intel Deck UI
+   ========================================================================== */
+.setup-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.85fr) minmax(290px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.setup-card {
+  padding: 26px 28px;
+  background: #ffffff;
+  border: 1px solid #e1e7dc;
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02), 0 6px 16px rgba(0, 0, 0, 0.025);
+}
+
+/* Deck Hero Banner (No nested cards) */
+.deck-hero-banner {
+  padding-bottom: 20px;
+  border-bottom: 1px solid #edf2e8;
+}
+
+.deck-kicker-pill {
+  box-shadow: 0 1px 2px rgba(201, 81, 44, 0.08);
+}
+
+.deck-cover-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #fdf1ea 0%, #fae2d4 100%);
+  border: 1px solid #f6cfbe;
+  color: #d65027;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(214, 80, 39, 0.08);
+}
+
+.deck-hero-title {
+  font-size: 23px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: #151a11;
+  line-height: 1.25;
+}
+
+.deck-hero-meta {
+  font-size: 13px;
+  color: #556249;
+  margin-top: 3px;
+  font-weight: 500;
+}
+
+/* Segmented Control for Question Count */
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  background: #f3f6f0;
+  padding: 5px;
+  border-radius: 14px;
+  border: 1px solid #e1e8db;
+}
+
+.segmented-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  color: #4b5641;
+}
+
+.segmented-pill:hover:not(.selected):not(.locked) {
+  background: rgba(255, 255, 255, 0.65);
+  color: #171c12;
+}
+
+.segmented-pill.selected {
+  background: #ffffff;
+  border-color: #d6ded1;
+  color: #151b10;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+.segmented-pill.selected .segmented-pill-title {
+  color: #c9512c;
+}
+
+.segmented-pill-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.segmented-pill-sub {
+  font-size: 11px;
+  color: #637058;
+  margin-top: 3px;
+  font-weight: 500;
+}
+
+.segmented-pill.locked {
+  opacity: 0.72;
+  cursor: pointer;
+}
+
+.segmented-pill.locked:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* Mode Selection Cards */
+.mode-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.mode-card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 17px;
+  border-radius: 14px;
+  border: 1.5px solid #dce4d6;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+}
+
+.mode-card:hover:not(.selected) {
+  border-color: #bdcbb4;
+  background: #fafbf9;
+  transform: translateY(-1px);
+}
+
+.mode-card.selected {
+  border-color: #e5653b;
+  background: #fffbfa;
+  box-shadow: 0 0 0 1px #e5653b, 0 4px 14px rgba(229, 101, 59, 0.08);
+}
+
+.mode-card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  background: #f3f6ee;
+  color: #49563e;
+  border: 1px solid #e1e8db;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.mode-card.selected .mode-card-icon {
+  background: #fdf0ea;
+  color: #e5653b;
+  border-color: #facfbd;
+}
+
+.mode-card-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: #edf3e7;
+  color: #416229;
+}
+
+.pro-badge-glow {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: linear-gradient(135deg, #8b3de3 0%, #682db2 100%);
+  color: #ffffff;
+  box-shadow: 0 1px 4px rgba(139, 61, 227, 0.3);
+}
+
+.mode-card-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: #171d12;
+}
+
+.mode-card-desc {
+  font-size: 12px;
+  color: #556249;
+  margin-top: 3px;
+  line-height: 1.42;
+}
+
+.mode-card-radio {
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  border: 1.5px solid #cbd4c3;
+  display: grid;
+  place-items: center;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: all 0.18s ease;
+  background: #ffffff;
+}
+
+.mode-card.selected .mode-card-radio {
+  border-color: #e5653b;
+  background: #e5653b;
+}
+
+/* Launch Primary Button & Commands */
+.launch-primary-btn {
+  position: relative;
+  background: linear-gradient(135deg, #e95f32 0%, #d44c20 100%) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  font-size: 15px !important;
+  padding: 13px 22px !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  box-shadow: 0 4px 14px rgba(212, 76, 32, 0.32), 0 1px 2px rgba(0, 0, 0, 0.05) !important;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  cursor: pointer;
+}
+
+.launch-primary-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #f06a3e 0%, #dc5427 100%) !important;
+  transform: translateY(-1.5px);
+  box-shadow: 0 6px 18px rgba(212, 76, 32, 0.4) !important;
+}
+
+.launch-primary-btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+  box-shadow: 0 2px 6px rgba(212, 76, 32, 0.25) !important;
+}
+
+.launch-shortcut-kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.2);
+  color: rgba(255, 255, 255, 0.95);
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  margin-left: 10px;
+}
+
+.launch-flashcard-btn {
+  border-radius: 12px !important;
+  border: 1.5px solid #dce3d6 !important;
+  background: #ffffff !important;
+  color: #3b4632 !important;
+  font-weight: 600 !important;
+  font-size: 13.5px !important;
+  padding: 12px 18px !important;
+  transition: all 0.18s ease !important;
+}
+
+.launch-flashcard-btn:hover:not(:disabled) {
+  background: #f6f8f3 !important;
+  border-color: #cad3c1 !important;
+  color: #171c11 !important;
+  transform: translateY(-1px);
+}
+
+/* Deck Intel Right Column */
+.deck-intel-card {
+  background: #ffffff;
+  border: 1px solid #e1e7dc;
+  border-radius: 16px;
+  padding: 22px 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02), 0 4px 12px rgba(0, 0, 0, 0.02);
+}
+
+.deck-intel-progress-track {
+  background: #edf2e8;
+}
+
+.topic-item {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+.rule-tile {
+  background: #f9fbf7;
+  border: 1px solid #e3eada;
+  border-radius: 11px;
+  padding: 10px 6px;
+  text-align: center;
+  transition: all 0.15s ease;
+}
+
+.rule-tile:hover {
+  background: #ffffff;
+  border-color: #cad6c0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
+}
+
+@media (max-width: 980px) {
+  .setup-grid {
+    grid-template-columns: 1fr;
+  }
+  .mode-cards-grid {
+    grid-template-columns: 1fr;
   }
 }
 
