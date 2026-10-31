@@ -1828,6 +1828,7 @@ export function SoloEngine({
           }}
           onSelectPack={handleSelectPackFromLibrary}
           onHostArena={handleHostArena}
+          onOpenUpload={() => setActiveTab("ingest")}
         />
         {pack && (
           <PackShareDialog

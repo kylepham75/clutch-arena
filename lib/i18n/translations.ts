@@ -345,6 +345,7 @@ export interface TranslationDict {
     shareExportTooltip: string;
     deletePackTooltip: string;
     confirmDelete: string;
+    addDeck: string;
   };
   help: {
     title: string;
@@ -1207,6 +1208,7 @@ export const translations: Record<Language, TranslationDict> = {
       shareExportTooltip: "Share & Export",
       deletePackTooltip: "Delete saved pack",
       confirmDelete: "Are you sure you want to delete this study pack? This cannot be undone.",
+      addDeck: "Upload Notes",
     },
     help: {
       title: "How to Play Clutch Arena",
@@ -2067,6 +2069,7 @@ export const translations: Record<Language, TranslationDict> = {
       shareExportTooltip: "Chia sẻ & Xuất tệp",
       deletePackTooltip: "Xóa bộ đề đã lưu",
       confirmDelete: "Bạn có chắc chắn muốn xóa bộ đề này không? Thao tác này không thể hoàn tác.",
+      addDeck: "Tải tài liệu lên",
     },
     help: {
       title: "Hướng dẫn chơi Clutch Arena",

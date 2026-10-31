@@ -13,6 +13,7 @@ import {
   Upload,
   Share2,
   Users,
+  Plus,
 } from "lucide-react";
 import {
   readLibrary,
@@ -38,17 +39,24 @@ export function LibraryDialog({
   onOpenChange,
   onSelectPack,
   onHostArena,
+  onOpenUpload,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelectPack: (pack: StudyPack, doc?: ParsedDocument) => void;
   onHostArena?: (pack: StudyPack) => void;
+  onOpenUpload?: () => void;
 }) {
   const { t, language } = useLanguage();
   const [items, setItems] = useState<SavedStudyItem[]>([]);
   const [sharingPack, setSharingPack] = useState<StudyPack | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleOpenUpload = () => {
+    onOpenChange(false);
+    onOpenUpload?.();
+  };
 
   useEffect(() => {
     if (open) {
@@ -121,9 +129,9 @@ export function LibraryDialog({
       <div className="library-dialog-content">
         {/* User Saved Packs */}
         <div className="library-section">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <span className="field-label mb-0">{t.library.savedPacksHeader} ({items.length})</span>
-            <div>
+            <div className="flex items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -134,11 +142,23 @@ export function LibraryDialog({
               <Button
                 size="sm"
                 variant="outline"
+                className="h-8 px-2.5 text-xs font-medium rounded-lg border-stone-200 text-stone-700 hover:bg-stone-50 flex items-center gap-1.5"
                 onClick={() => fileInputRef.current?.click()}
               >
                 <Upload size={13} />
-                {t.library.importJson}
+                <span>{t.library.importJson}</span>
               </Button>
+              {onOpenUpload && (
+                <Button
+                  size="sm"
+                  variant="dark"
+                  className="h-8 px-3 text-xs font-semibold rounded-lg bg-stone-900 text-white hover:bg-stone-800 flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                  onClick={handleOpenUpload}
+                >
+                  <Plus size={14} />
+                  <span>{t.library.addDeck}</span>
+                </Button>
+              )}
             </div>
           </div>
           {importError && (
@@ -151,6 +171,17 @@ export function LibraryDialog({
               <FileText size={28} />
               <p>{t.library.noPacksSavedTitle}</p>
               <small>{t.library.noPacksSavedDesc}</small>
+              {onOpenUpload && (
+                <Button
+                  size="sm"
+                  variant="dark"
+                  className="mt-3.5 h-8 px-3.5 text-xs font-semibold rounded-lg bg-stone-900 text-white hover:bg-stone-800 flex items-center gap-1.5 cursor-pointer"
+                  onClick={handleOpenUpload}
+                >
+                  <Plus size={14} />
+                  <span>{t.library.addDeck}</span>
+                </Button>
+              )}
             </div>
           ) : (
             <div className="library-list" role="list">
