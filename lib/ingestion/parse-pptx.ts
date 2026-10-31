@@ -1245,7 +1245,7 @@ export const transcribeEquationImageWithGemini: VisionMathTranscriber = async ({
       (typeof process !== "undefined" &&
         (process.env.NOTES_AI_MODEL?.trim() ||
           process.env.GEMINI_MODEL?.trim())) ||
-      "gemini-3.5-flash";
+      "gemini-3.6-flash";
 
     const google = createGoogleGenerativeAI({ apiKey });
 

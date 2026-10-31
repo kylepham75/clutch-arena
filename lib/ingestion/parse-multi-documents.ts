@@ -2,6 +2,7 @@ import type { ParsedDocument, SourceBlock } from "@/lib/schemas/ingestion";
 import { parseDocument } from "./parse-document";
 import { IngestionError } from "./errors";
 import { MAX_EXTRACTED_CHARACTERS } from "./limits";
+import { computeDocumentContentHash } from "./content-hash";
 
 export async function parseMultiDocuments(
   files: File[],
@@ -31,6 +32,8 @@ export async function parseMultiDocuments(
 
   const compositeSources: SourceBlock[] = [];
   const compositeWarnings: string[] = [];
+  const aggregatedImageHashes: string[] = [];
+  const aggregatedLowConfidenceSourceIds: string[] = [];
   let totalCharacterCount = 0;
   let totalPageCount: number | null = 0;
 
@@ -45,6 +48,16 @@ export async function parseMultiDocuments(
       totalPageCount += doc.pageCount;
     } else {
       totalPageCount = null;
+    }
+
+    if (doc.imageHashes && Array.isArray(doc.imageHashes)) {
+      aggregatedImageHashes.push(...doc.imageHashes);
+    }
+
+    if (doc.lowConfidenceSourceIds && Array.isArray(doc.lowConfidenceSourceIds)) {
+      for (const srcId of doc.lowConfidenceSourceIds) {
+        aggregatedLowConfidenceSourceIds.push(`doc${fileIndex}_${srcId}`);
+      }
     }
 
     for (const source of doc.sources) {
@@ -82,6 +95,17 @@ export async function parseMultiDocuments(
       ? documents[0].fileName
       : `${documents.length} files (${documents.map((d) => d.fileName.slice(0, 20)).join(", ")})`;
 
+  const uniqueImageHashes =
+    aggregatedImageHashes.length > 0
+      ? Array.from(new Set(aggregatedImageHashes)).sort()
+      : undefined;
+
+  const compositeContentHash = computeDocumentContentHash({
+    sources: compositeSources,
+    pageCount: totalPageCount,
+    imageHashes: uniqueImageHashes,
+  });
+
   const compositeDocument: ParsedDocument = {
     fileName: compositeFileName,
     format,
@@ -89,6 +113,11 @@ export async function parseMultiDocuments(
     characterCount: totalCharacterCount,
     pageCount: totalPageCount,
     warnings: Array.from(new Set(compositeWarnings)),
+    contentHash: compositeContentHash,
+    ...(uniqueImageHashes ? { imageHashes: uniqueImageHashes } : {}),
+    ...(aggregatedLowConfidenceSourceIds.length > 0
+      ? { lowConfidenceSourceIds: aggregatedLowConfidenceSourceIds }
+      : {}),
   };
 
   return { compositeDocument, documents };

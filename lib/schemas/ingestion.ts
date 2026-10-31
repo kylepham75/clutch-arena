@@ -9,10 +9,25 @@ export const ingestionOptionsSchema = z
     language: z.enum(["en", "vi"]).default("en"),
     focus: z.string().trim().max(1000).default(""),
     multiFile: z.boolean().optional(),
+    rescanPages: z.array(z.number().int().min(1).max(150)).max(150).optional(),
   })
   .strict();
 export type IngestionOptions = z.infer<typeof ingestionOptionsSchema>;
 export type SourceBlock = { id: string; label: string; text: string };
+
+export type PageVisionMode = "native" | "equation_crop" | "full_page";
+export type PageVisionReason = "low_text" | "single_image_area" | "combined_image_area";
+export type PageVisionInfo = {
+  page: number;
+  flagged: boolean;
+  reasons: PageVisionReason[];
+  processed: boolean;
+  mode: PageVisionMode;
+  cached: boolean;
+  lowConfidence: boolean;
+  costUsd: number;
+};
+
 export type ParsedDocument = {
   fileName: string;
   format: "pdf" | "docx" | "txt" | "mixed";
@@ -20,6 +35,13 @@ export type ParsedDocument = {
   characterCount: number;
   pageCount: number | null;
   warnings: string[];
+  contentHash?: string;
+  fileSha256?: string;
+  imageHashes?: string[];
+  dedupedSlideCount?: number;
+  visionBanner?: string | null;
+  lowConfidenceSourceIds?: string[];
+  pageVisionStatus?: Record<string, PageVisionInfo>;
 };
 export type SourceReference = {
   sourceId: string;

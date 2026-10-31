@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 import type {
   FormulaLedgerEntry,
+  GroundedBullet,
   KeyTakeawaysItem,
   NoteFormula,
   NoteSection,
@@ -10,6 +11,11 @@ import type {
 import {
   extractDomainNumbers,
   extractFormulaSymbols,
+  extractNormalizedNumbers,
+  isNumberGrounded,
+  normalizeNumericToken,
+  resolveBulletNumericStep,
+  runBulletNumericCascade,
   runDeterministicVerifiers,
   verifyEvidenceQuoteMatch,
   verifyFormulaCoverage,
@@ -929,6 +935,372 @@ describe("Deterministic Verifiers", () => {
       expect(uncapturedWarning).toBeDefined();
       expect(uncapturedWarning).toBe("Uncaptured formula IDs: F3");
       expect(uncapturedWarning).not.toContain("F2");
+    });
+  });
+
+  describe("Unit-Aware Numeric Normalization", () => {
+    describe("normalizeNumericToken", () => {
+      it("normalizes percentages into canonical decimals", () => {
+        const token = normalizeNumericToken("5.8%");
+        expect(token).not.toBeNull();
+        expect(token?.unit).toBe("percent");
+        expect(token?.value).toBe(5.8);
+        expect(token?.canonicalValue).toBeCloseTo(0.058, 6);
+      });
+
+      it("normalizes basis points into canonical decimals", () => {
+        const token = normalizeNumericToken("5.8 bps");
+        expect(token).not.toBeNull();
+        expect(token?.unit).toBe("bps");
+        expect(token?.value).toBe(5.8);
+        expect(token?.canonicalValue).toBeCloseTo(0.00058, 6);
+
+        const tokenBp = normalizeNumericToken("580bp");
+        expect(tokenBp?.unit).toBe("bps");
+        expect(tokenBp?.value).toBe(580);
+        expect(tokenBp?.canonicalValue).toBeCloseTo(0.058, 6);
+      });
+
+      it("normalizes currency with magnitude ($M, $B, $K, and Vietnamese terms)", () => {
+        const tokM = normalizeNumericToken("$5M");
+        expect(tokM?.unit).toBe("currency_m");
+        expect(tokM?.value).toBe(5);
+        expect(tokM?.canonicalValue).toBe(5_000_000);
+
+        const tokB = normalizeNumericToken("$5B");
+        expect(tokB?.unit).toBe("currency_b");
+        expect(tokB?.value).toBe(5);
+        expect(tokB?.canonicalValue).toBe(5_000_000_000);
+
+        const tokK = normalizeNumericToken("$5K");
+        expect(tokK?.unit).toBe("currency_k");
+        expect(tokK?.value).toBe(5);
+        expect(tokK?.canonicalValue).toBe(5_000);
+
+        const tokTy = normalizeNumericToken("5 tỷ");
+        expect(tokTy?.unit).toBe("currency_b");
+        expect(tokTy?.canonicalValue).toBe(5_000_000_000);
+
+        const tokTrieu = normalizeNumericToken("5 triệu USD");
+        expect(tokTrieu?.unit).toBe("currency_m");
+        expect(tokTrieu?.canonicalValue).toBe(5_000_000);
+      });
+
+      it("normalizes plain currency, multipliers, and integers", () => {
+        const cur = normalizeNumericToken("$4.50");
+        expect(cur?.unit).toBe("currency");
+        expect(cur?.value).toBe(4.5);
+        expect(cur?.canonicalValue).toBe(4.5);
+
+        const mult = normalizeNumericToken("2.5x");
+        expect(mult?.unit).toBe("multiplier");
+        expect(mult?.value).toBe(2.5);
+
+        const plain = normalizeNumericToken("365");
+        expect(plain?.unit).toBe("plain");
+        expect(plain?.canonicalValue).toBe(365);
+      });
+
+      it("returns null for invalid or empty strings", () => {
+        expect(normalizeNumericToken("")).toBeNull();
+        expect(normalizeNumericToken("abc")).toBeNull();
+      });
+    });
+
+    describe("isNumberGrounded unit and magnitude guards", () => {
+      it("prevents false passes between % and bps (e.g., 5.8% vs 5.8 bps)", () => {
+        const corpusWithPercent = "The annualized coupon rate is 5.8% for senior notes.";
+        // 5.8 bps is 0.00058, which does not equal 5.8% (0.058)
+        expect(isNumberGrounded("5.8 bps", corpusWithPercent)).toBe(false);
+
+        const corpusWithBps = "Credit default swap spread increased by 5.8 bps.";
+        // 5.8% is 0.058, which does not equal 5.8 bps (0.00058)
+        expect(isNumberGrounded("5.8%", corpusWithBps)).toBe(false);
+      });
+
+      it("allows true equivalence between bps and percent when values match mathematically", () => {
+        const corpusWithPercent = "The yield spread widened by 0.50% today.";
+        // 50 bps = 50 * 0.0001 = 0.005 = 0.50%
+        expect(isNumberGrounded("50 bps", corpusWithPercent)).toBe(true);
+
+        const corpusWithBps = "Risk premium is set at 250 bps.";
+        // 2.5% = 0.025 = 250 * 0.0001
+        expect(isNumberGrounded("2.5%", corpusWithBps)).toBe(true);
+      });
+
+      it("prevents false passes between $M and $B", () => {
+        const corpusBillion = "Total enterprise value was reported at $5B.";
+        expect(isNumberGrounded("$5M", corpusBillion)).toBe(false);
+
+        const corpusMillion = "Operating income reached $5M this quarter.";
+        expect(isNumberGrounded("$5B", corpusMillion)).toBe(false);
+      });
+
+      it("grounds currency values matching exact magnitude", () => {
+        const corpusMillion = "Total capital expenditure was $5M in the expansion phase.";
+        expect(isNumberGrounded("$5M", corpusMillion)).toBe(true);
+        expect(isNumberGrounded("5M USD", corpusMillion)).toBe(true);
+
+        const corpusBillion = "Government debt ceiling stands at $5B.";
+        expect(isNumberGrounded("$5B", corpusBillion)).toBe(true);
+      });
+    });
+  });
+
+  describe("5-Step Per-Bullet Numeric Resolution Cascade", () => {
+    const testSources: SourceBlock[] = [
+      {
+        id: "slide_1",
+        label: "Slide 1",
+        text: "Corporate Finance Introduction. General concepts without specific figures.",
+      },
+      {
+        id: "slide_2",
+        label: "Slide 2",
+        text: "Dividend Growth Model: The dividend growth rate is 5.5% per annum. Required return is 10%.",
+      },
+      {
+        id: "slide_3",
+        label: "Slide 3",
+        text: "Capital Structure: Net income is $150M and Total Equity is $600M. Operating revenue is $500M with operating costs of $320M. Initial stock price rose from $50 to $65.",
+      },
+      {
+        id: "slide_4",
+        label: "Slide 4",
+        text: "Debt Financing: Cost of debt Rd is 7.5% due to high market leverage. Bond coupon is 8%.",
+      },
+    ];
+
+    it("Step 0 (VERIFIED): marks bullet verified when all domain numbers are grounded on cited slide", () => {
+      const bullet: GroundedBullet = {
+        text: "The dividend growth rate is 5.5% per annum with required return of 10%.",
+        slide: 2,
+        evidence: "The dividend growth rate is 5.5% per annum with required return of 10%.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources);
+      expect(res.action).toBe("VERIFIED");
+      expect(res.bullet.status).toBe("verified");
+      expect(res.ungroundedNumbers).toEqual([]);
+    });
+
+    it("Step 0 (VERIFIED): marks bullet verified when bullet contains no domain numbers", () => {
+      const bullet: GroundedBullet = {
+        text: "Stock value is equal to the present value of future cash flows.",
+        slide: 1,
+        evidence: "General concepts without specific figures.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources);
+      expect(res.action).toBe("VERIFIED");
+      expect(res.bullet.status).toBe("verified");
+      expect(res.ungroundedNumbers).toEqual([]);
+    });
+
+    it("Step 1 (PATCH): patches unambiguous single mismatched number from candidate quote on cited slide", () => {
+      // Note bullet hallucinated 6.5% instead of slide 2's 5.5%
+      const bullet: GroundedBullet = {
+        text: "The dividend growth rate is 6.5% per annum.",
+        slide: 2,
+        evidence: "The dividend growth rate is 5.5% per annum.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources);
+      expect(res.action).toBe("PATCH");
+      expect(res.bullet.text).toBe("The dividend growth rate is 5.5% per annum.");
+      expect(res.bullet.status).toBe("verified");
+      expect(res.ungroundedNumbers).toEqual([]);
+      expect(res.reason).toContain("Patched mismatched number 6.5% -> 5.5%");
+    });
+
+    it("Step 1 (PATCH guardrail): REFUSES to patch when 2 or more numbers mismatch in the bullet", () => {
+      // Bullet has two ungrounded numbers: 8.5% and 14% (slide 2 has 5.5% and 10%)
+      const bullet: GroundedBullet = {
+        text: "The dividend growth rate is 8.5% per annum with required return of 14%.",
+        slide: 2,
+        evidence: "The dividend growth rate is 5.5% per annum with required return of 10%.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources, undefined, { dropResidual: false });
+      // Cannot patch because ungrounded.length === 2 > 1 -> escalates to REPAIR
+      expect(res.action).not.toBe("PATCH");
+      expect(res.action).toBe("REPAIR");
+      expect(res.ungroundedNumbers).toContain("8.5%");
+      expect(res.ungroundedNumbers).toContain("14%");
+    });
+
+    it("Step 1 (PATCH guardrail): REFUSES to patch when candidate quote has different number count", () => {
+      // Bullet has 1 number (12%), while candidate quotes and slide sentence have 2 numbers (5.5% and 3.2%)
+      const customSources: SourceBlock[] = [
+        {
+          id: "slide_1",
+          label: "Slide 1",
+          text: "Slide text with both interest rate 5.5% and inflation rate 3.2% together.",
+        },
+      ];
+      const bullet: GroundedBullet = {
+        text: "Company growth forecast is 12%.",
+        slide: 1,
+        evidence: "Slide text with both interest rate 5.5% and inflation rate 3.2% together.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, customSources, undefined, { dropResidual: false });
+      expect(res.action).not.toBe("PATCH");
+    });
+
+    it("Step 2 (RE-CITE): re-cites to the matching slide when number and context exist on another slide", () => {
+      // Bullet mistakenly cites slide 1, but 7.5% and cost of debt context are on slide 4
+      const bullet: GroundedBullet = {
+        text: "Cost of debt Rd is 7.5% due to high market leverage.",
+        slide: 1,
+        evidence: "Corporate Finance Introduction",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources);
+      expect(res.action).toBe("RE_CITE");
+      expect(res.bullet.slide).toBe(4);
+      expect(res.bullet.status).toBe("verified");
+      expect(res.reason).toContain("Re-cited from slide 1 to slide 4");
+    });
+
+    it("Step 3 (KEEP AS DERIVED): recognizes and tags bullet where number is a ratio (a / b) of two slide numbers", () => {
+      // Slide 3 has Net income $150M and Total Equity $600M. 150 / 600 = 0.25 = 25% ROE.
+      const bullet: GroundedBullet = {
+        text: "Return on Equity (ROE) equals 25% based on current capital figures.",
+        slide: 3,
+        evidence: "Net income is $150M and Total Equity is $600M.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources);
+      expect(res.action).toBe("KEEP_AS_DERIVED");
+      expect(res.bullet.status).toBe("derived");
+      expect(res.reason).toContain("Derived from numbers on slide 3");
+    });
+
+    it("Step 3 (KEEP AS DERIVED): recognizes and tags bullet where number is a difference (a - b) of two slide numbers", () => {
+      // Slide 3 has revenue $500M and costs $320M. 500 - 320 = $180M operating profit.
+      const bullet: GroundedBullet = {
+        text: "Operating profit was calculated at $180M for the business unit.",
+        slide: 3,
+        evidence: "Operating revenue is $500M with operating costs of $320M.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources);
+      expect(res.action).toBe("KEEP_AS_DERIVED");
+      expect(res.bullet.status).toBe("derived");
+      expect(res.reason).toContain("Derived from numbers on slide 3");
+      expect(res.reason).toContain("500000000 - 320000000");
+    });
+
+    it("Step 3 (KEEP AS DERIVED): recognizes and tags bullet where number is a percent change ((b - a) / a)", () => {
+      // Slide 3 has price rose from $50 to $65. (65 - 50) / 50 = 15 / 50 = 30%.
+      const bullet: GroundedBullet = {
+        text: "The equity share price yielded a 30% capital gain.",
+        slide: 3,
+        evidence: "Initial stock price rose from $50 to $65.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources);
+      expect(res.action).toBe("KEEP_AS_DERIVED");
+      expect(res.bullet.status).toBe("derived");
+      expect(res.reason).toContain("Derived from numbers on slide 3");
+    });
+
+    it("Step 4 (REPAIR): queues residual unverified bullets for repair when dropResidual is false", () => {
+      const bullet: GroundedBullet = {
+        text: "Arbitrary ungrounded metric of 99.4% in high frequency trading.",
+        slide: 1,
+        evidence: "General concepts without specific figures.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources, undefined, { dropResidual: false });
+      expect(res.action).toBe("REPAIR");
+      expect(res.ungroundedNumbers).toContain("99.4%");
+      expect(res.reason).toContain("queued for targeted repair");
+    });
+
+    it("Step 5 (DROP): drops residual unverified bullets when dropResidual is true", () => {
+      const bullet: GroundedBullet = {
+        text: "Arbitrary ungrounded metric of 99.4% in high frequency trading.",
+        slide: 1,
+        evidence: "General concepts without specific figures.",
+      };
+
+      const res = resolveBulletNumericStep(bullet, testSources, undefined, { dropResidual: true });
+      expect(res.action).toBe("DROP");
+      expect(res.ungroundedNumbers).toContain("99.4%");
+      expect(res.reason).toContain("dropped");
+    });
+
+    it("runBulletNumericCascade processes sections and subsections across all 5 steps", () => {
+      const sections: NoteSection[] = [
+        createTestSection({
+          letter: "A",
+          titleVi: "A. CƠ CẤU VỐN",
+          sourceSlides: [2, 3],
+          groundedBullets: [
+            // Step 1 candidate (single mismatched number: 6.5% -> 5.5%)
+            {
+              text: "The dividend growth rate is 6.5% per annum.",
+              slide: 2,
+              evidence: "The dividend growth rate is 5.5% per annum.",
+            },
+            // Step 3 candidate (ratio: 150 / 600 = 25%)
+            {
+              text: "ROE đạt mức 25% dựa trên số liệu vốn chủ sở hữu.",
+              slide: 3,
+              evidence: "Net income is $150M and Total Equity is $600M.",
+            },
+            // Step 5 candidate (ungrounded 88.8% -> dropped)
+            {
+              text: "Chỉ số ảo không có trên slide 88.8%.",
+              slide: 2,
+              evidence: "The dividend growth rate is 5.5% per annum.",
+            },
+          ],
+          bulletPoints: [
+            "The dividend growth rate is 6.5% per annum.",
+            "ROE đạt mức 25% dựa trên số liệu vốn chủ sở hữu.",
+            "Chỉ số ảo không có trên slide 88.8%.",
+          ],
+          subSections: [
+            {
+              heading: "Vay nợ",
+              bulletPoints: [
+                "Cost of debt Rd is 7.5% due to high market leverage.",
+              ],
+              groundedBullets: [
+                // Step 2 candidate (re-cite from slide 1 to slide 4)
+                {
+                  text: "Cost of debt Rd is 7.5% due to high market leverage.",
+                  slide: 1,
+                  evidence: "Intro",
+                },
+              ],
+              formulas: [],
+            },
+          ],
+        }),
+      ];
+
+      const cascadeResult = runBulletNumericCascade(sections, testSources, undefined, {
+        dropResidual: true,
+      });
+
+      expect(cascadeResult.patchedCount).toBe(1);
+      expect(cascadeResult.reCitedCount).toBe(1);
+      expect(cascadeResult.derivedCount).toBe(1);
+      expect(cascadeResult.droppedCount).toBe(1);
+
+      // Section groundedBullets had 3 items: 1 patched, 1 derived, 1 dropped -> 2 kept
+      const secA = cascadeResult.sections[0];
+      expect(secA.groundedBullets?.length).toBe(2);
+      expect(secA.groundedBullets?.[0].text).toBe("The dividend growth rate is 5.5% per annum.");
+      expect(secA.bulletPoints).toContain("The dividend growth rate is 5.5% per annum.");
+      expect(secA.bulletPoints).not.toContain("Chỉ số ảo không có trên slide 88.8%.");
+
+      // SubSection bullet re-cited to slide 4
+      expect(secA.subSections?.[0].groundedBullets?.[0].slide).toBe(4);
     });
   });
 });

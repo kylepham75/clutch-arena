@@ -1,8 +1,16 @@
 import "@/lib/polyfills/pdf-node-polyfills";
 import { NextRequest } from "next/server";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { verifyProAccess } from "@/lib/auth/notes-guard";
-import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import {
+  checkRateLimit,
+  getClientIp,
+  computeContentHash,
+  getSharedDeckCache,
+  setSharedDeckCache,
+  checkAndReserveDeckQuota,
+  recordDeckGenerationCogs,
+} from "@/lib/rate-limit";
 import { parseSlideDeck } from "@/lib/notes/parse-slides";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
 import { IngestionError } from "@/lib/ingestion/errors";
@@ -16,6 +24,21 @@ import type { SourceBlock } from "@/lib/schemas/ingestion";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
+
+function getQuotaExceededMessage(reason?: string): string {
+  switch (reason) {
+    case "DAILY_BURST_EXCEEDED":
+      return "Daily deck generation burst limit reached. Please try again tomorrow or study from your unlocked decks.";
+    case "DECK_CREDITS_EXCEEDED":
+      return "You have used all new deck credits for your current plan. Upgrade your plan to unlock more decks.";
+    case "COGS_CEILING_EXCEEDED":
+      return "Subscription deck generation budget reached for this period. Cached class decks remain free and accessible.";
+    case "REGENERATION_LIMIT_EXCEEDED":
+      return "Maximum free regenerations reached for this document.";
+    default:
+      return "Deck generation quota exceeded. Please try again later or upgrade your plan.";
+  }
+}
 
 export async function POST(request: NextRequest) {
   const requestId = randomUUID();
@@ -65,7 +88,10 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. User rate limit: 30 conversions per day
-    const userIdentifier = proAuth.user?.id || `ip:${getClientIp(request)}`;
+    const userIdentifier =
+      (process.env.NODE_ENV === "test" && request.headers.get("x-test-user-id")) ||
+      proAuth.user?.id ||
+      `ip:${getClientIp(request)}`;
     const isTest = process.env.NODE_ENV === "test" && !request.headers.get("x-enforce-rate-limit");
 
     if (!isTest) {
@@ -297,7 +323,76 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 5. Generate Clutch Note via Academic Synthesis Engine
+    // 5. Shared deck cache lookup & durable quota reservation
+    const contentHash = computeContentHash({
+      normalizedText: sources.map((s) => s.text).join("\n"),
+      pageCount: slideCount,
+      imageHashes: parsedDeck?.imageHashes,
+    });
+    const normalizedFocus = (focus || "").trim().toLowerCase();
+    const focusHash = normalizedFocus
+      ? createHash("sha256").update(normalizedFocus).digest("hex").slice(0, 16)
+      : "";
+    const enforceQuota =
+      !isTest || Boolean(request.headers.get("x-enforce-quota"));
+    const effectiveTier = (proAuth.tier as any) || "pro";
+    const reservedCostUsd = 0.02;
+
+    if (enforceQuota) {
+      const cacheLookupKey = {
+        contentHash,
+        language: "en",
+        mode: "notes",
+        focusHash,
+        pipelineVersion: "notes-v1",
+        fileSha256: parsedDeck?.fileSha256 ?? null,
+      };
+
+      const cachedFromStore = await getSharedDeckCache(cacheLookupKey);
+      if (cachedFromStore?.clutchNote) {
+        return jsonResponse({
+          ok: true,
+          note: cachedFromStore.clutchNote,
+          warnings,
+          cached: true,
+        });
+      }
+
+      const quotaResult = await checkAndReserveDeckQuota(
+        userIdentifier,
+        effectiveTier,
+        contentHash,
+        {
+          ...cacheLookupKey,
+          estimatedCostUsd: reservedCostUsd,
+        },
+      );
+
+      if (quotaResult.cachedDeck?.clutchNote) {
+        return jsonResponse({
+          ok: true,
+          note: quotaResult.cachedDeck.clutchNote,
+          warnings,
+          cached: true,
+        });
+      }
+
+      if (!quotaResult.allowed) {
+        return jsonResponse(
+          {
+            ok: false,
+            error: {
+              code: quotaResult.reason || "QUOTA_EXCEEDED",
+              message: getQuotaExceededMessage(quotaResult.reason),
+            },
+          },
+          429,
+          { "Retry-After": "30" },
+        );
+      }
+    }
+
+    // 6. Generate Clutch Note via Academic Synthesis Engine
     const note = await generateClutchNote({
       fileName,
       slideCount,
@@ -311,6 +406,25 @@ export async function POST(request: NextRequest) {
           }
         : {}),
     });
+
+    if (enforceQuota) {
+      await recordDeckGenerationCogs(
+        userIdentifier,
+        effectiveTier,
+        reservedCostUsd,
+        reservedCostUsd,
+      );
+      await setSharedDeckCache({
+        contentHash,
+        fileSha256: parsedDeck?.fileSha256 ?? null,
+        language: "en",
+        mode: "notes",
+        focusHash,
+        pipelineVersion: "notes-v1",
+        questionPool: [],
+        clutchNote: note,
+      });
+    }
 
     return jsonResponse({
       ok: true,

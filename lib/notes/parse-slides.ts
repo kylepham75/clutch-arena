@@ -8,6 +8,11 @@ import {
   type OmmlTranscribedEquation,
   type ParsePptxOptions,
 } from "@/lib/ingestion/parse-pptx";
+import {
+  computeDocumentContentHash,
+  computeFileSha256,
+  deduplicateAnimationSlides,
+} from "@/lib/ingestion/content-hash";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 import {
   buildFormulaInventory,
@@ -24,6 +29,10 @@ export interface ParsedSlideDeck {
   ocrEquations?: OcrTranscribedEquation[];
   ommlEquations?: OmmlTranscribedEquation[];
   formulaInventory: FormulaInventoryItem[];
+  contentHash: string;
+  fileSha256: string;
+  imageHashes?: string[];
+  dedupedSlideCount?: number;
 }
 
 export function validateSlideFile(file: File): "pdf" | "pptx" {
@@ -98,6 +107,7 @@ export async function parseSlideDeck(
   let warnings: string[] = [];
   let ocrEquations: OcrTranscribedEquation[] | undefined;
   let ommlEquations: OmmlTranscribedEquation[] | undefined;
+  let imageHashes: string[] | undefined;
 
   if (format === "pptx") {
     const parsed = await parsePptx(bytes, signalOrOptions);
@@ -109,14 +119,29 @@ export async function parseSlideDeck(
   } else {
     // format === "pdf"
     const parsed = await parsePdf(bytes, signal ?? new AbortController().signal);
-    // Transform "Page X" to "Slide X" for clarity in lecture decks
-    sources = parsed.sources.map((src, index) => ({
-      id: `slide-${index + 1}`,
-      label: `Slide ${index + 1}`,
-      text: src.text,
-    }));
+    imageHashes = (parsed as { imageHashes?: string[] }).imageHashes;
+    // Transform "Page X" to "Slide X" preserving page number from src.id
+    sources = parsed.sources.map((src, index) => {
+      const match = src.id.match(/\d+/);
+      const pageNum = match ? parseInt(match[0], 10) : index + 1;
+      return {
+        id: `slide-${pageNum}`,
+        label: `Slide ${pageNum}`,
+        text: src.text,
+      };
+    });
     slideCount = parsed.pageCount;
     warnings = parsed.warnings;
+  }
+
+  // Deduplicate progressive animation slides for both formats
+  const dedupeResult = deduplicateAnimationSlides(sources);
+  sources = dedupeResult.sources;
+  const dedupedSlideCount = dedupeResult.droppedCount;
+  if (dedupedSlideCount > 0) {
+    warnings.push(
+      `Deduplicated ${dedupedSlideCount} incremental animation slide(s).`,
+    );
   }
 
   const characterCount = sources.reduce((sum, s) => sum + s.text.length, 0);
@@ -137,6 +162,13 @@ export async function parseSlideDeck(
     );
   }
 
+  const fileSha256 = computeFileSha256(bytes);
+  const contentHash = computeDocumentContentHash({
+    sources,
+    pageCount: slideCount,
+    imageHashes,
+  });
+
   const formulaInventory = buildFormulaInventory({
     sources,
     ommlEquations,
@@ -151,6 +183,10 @@ export async function parseSlideDeck(
     warnings,
     characterCount,
     formulaInventory,
+    contentHash,
+    fileSha256,
+    ...(imageHashes ? { imageHashes } : {}),
+    ...(dedupedSlideCount > 0 ? { dedupedSlideCount } : {}),
     ...(format === "pptx"
       ? {
           ocrEquations: ocrEquations ?? [],

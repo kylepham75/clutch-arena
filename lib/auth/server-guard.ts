@@ -1,7 +1,14 @@
 import "server-only";
 import { getSupabaseServerClient, isSupabaseServerConfigured } from "@/lib/supabase/server";
 import type { User } from "@supabase/supabase-js";
-import { calculateTierExpiration, type UserTier } from "@/lib/pricing/tiers";
+import {
+  isTierExpired,
+  normalizeTier,
+  resolveTierFromProfileRecord,
+  type UserTier,
+} from "@/lib/pricing/tiers";
+
+export { normalizeTier } from "@/lib/pricing/tiers";
 
 export type ServerTier = "guest" | UserTier;
 
@@ -9,6 +16,7 @@ export type AuthVerificationResult =
   | {
       authenticated: true;
       user: User;
+      token?: string;
       tier: UserTier;
       tierExpiresAt: string | null;
     }
@@ -18,6 +26,47 @@ export type AuthVerificationResult =
       tier: ServerTier;
       devMode: boolean;
     };
+
+export function extractAuthToken(request: Request): string | null {
+  const authHeader = request.headers.get("authorization");
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const bearer = authHeader.replace(/^Bearer\s+/i, "").trim();
+    if (bearer) return bearer;
+  }
+
+  const cookieHeader = request.headers.get("cookie");
+  if (cookieHeader) {
+    const parts = cookieHeader.split(";");
+    for (const part of parts) {
+      const [rawKey, ...rawVal] = part.trim().split("=");
+      if (rawKey && rawKey.includes("-auth-token")) {
+        const val = decodeURIComponent(rawVal.join("="));
+        try {
+          const parsed = JSON.parse(val);
+          if (parsed && typeof parsed.access_token === "string") {
+            return parsed.access_token;
+          }
+          if (Array.isArray(parsed) && parsed[0]?.access_token) {
+            return parsed[0].access_token;
+          }
+        } catch {
+          // Check if base64 encoded
+          try {
+            const decoded = Buffer.from(val, "base64").toString("utf-8");
+            const parsed = JSON.parse(decoded);
+            if (parsed?.access_token) {
+              return parsed.access_token;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
 
 export function isTestTierAllowed(): boolean {
   return (
@@ -44,47 +93,7 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
     };
   }
 
-  let token: string | null = null;
-  const authHeader = request.headers.get("authorization");
-  if (authHeader && authHeader.startsWith("Bearer ")) {
-    token = authHeader.replace(/^Bearer\s+/i, "").trim();
-  }
-
-  if (!token) {
-    const cookieHeader = request.headers.get("cookie");
-    if (cookieHeader) {
-      const parts = cookieHeader.split(";");
-      for (const part of parts) {
-        const [rawKey, ...rawVal] = part.trim().split("=");
-        if (rawKey && rawKey.includes("-auth-token")) {
-          const val = decodeURIComponent(rawVal.join("="));
-          try {
-            const parsed = JSON.parse(val);
-            if (parsed && typeof parsed.access_token === "string") {
-              token = parsed.access_token;
-              break;
-            }
-            if (Array.isArray(parsed) && parsed[0]?.access_token) {
-              token = parsed[0].access_token;
-              break;
-            }
-          } catch {
-            // Check if base64 encoded
-            try {
-              const decoded = Buffer.from(val, "base64").toString("utf-8");
-              const parsed = JSON.parse(decoded);
-              if (parsed?.access_token) {
-                token = parsed.access_token;
-                break;
-              }
-            } catch {
-              // ignore
-            }
-          }
-        }
-      }
-    }
-  }
+  const token = extractAuthToken(request);
 
   if (!token) {
     return {
@@ -134,10 +143,7 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       .maybeSingle();
 
     if (subData?.tier) {
-      const isSubExpired = subData.expires_at
-        ? !isNaN(new Date(subData.expires_at).getTime()) &&
-          new Date(subData.expires_at).getTime() <= Date.now()
-        : false;
+      const isSubExpired = isTierExpired(subData.expires_at);
 
       if (!isSubExpired) {
         resolvedTier = normalizeTier(subData.tier);
@@ -156,38 +162,10 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
         .eq("id", user.id)
         .maybeSingle();
 
-      if (profileData?.tier) {
-        const normTier = normalizeTier(profileData.tier);
-        if (normTier !== "contender") {
-          let isActive = false;
-          let tierExpiresAt: string | null = profileData.tier_expires_at ?? null;
-
-          if (!profileData.tier_expires_at) {
-            // Null tier_expires_at: treat as active (non-expiring / manual admin grant)
-            isActive = true;
-            tierExpiresAt = null;
-          } else {
-            const expMs = new Date(profileData.tier_expires_at).getTime();
-            const isExpired = !isNaN(expMs) && expMs <= Date.now();
-
-            if (!isExpired) {
-              isActive = true;
-              tierExpiresAt = profileData.tier_expires_at;
-            } else if (
-              profileData.updated_at &&
-              new Date(profileData.updated_at).getTime() > expMs
-            ) {
-              // Active manual grant updated after the previous expiration
-              isActive = true;
-              tierExpiresAt = calculateTierExpiration(normTier);
-            }
-          }
-
-          if (isActive) {
-            resolvedTier = normTier;
-            resolvedExpiresAt = tierExpiresAt;
-          }
-        }
+      const profileResolved = resolveTierFromProfileRecord(profileData);
+      if (profileResolved) {
+        resolvedTier = profileResolved.tier;
+        resolvedExpiresAt = profileResolved.expiresAt;
       }
     }
 
@@ -199,36 +177,10 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
         .eq("id", user.id)
         .maybeSingle();
 
-      if (userProfileData?.tier) {
-        const normTier = normalizeTier(userProfileData.tier);
-        if (normTier !== "contender") {
-          let isActive = false;
-          let tierExpiresAt: string | null = userProfileData.tier_expires_at ?? null;
-
-          if (!userProfileData.tier_expires_at) {
-            isActive = true;
-            tierExpiresAt = null;
-          } else {
-            const expMs = new Date(userProfileData.tier_expires_at).getTime();
-            const isExpired = !isNaN(expMs) && expMs <= Date.now();
-
-            if (!isExpired) {
-              isActive = true;
-              tierExpiresAt = userProfileData.tier_expires_at;
-            } else if (
-              userProfileData.updated_at &&
-              new Date(userProfileData.updated_at).getTime() > expMs
-            ) {
-              isActive = true;
-              tierExpiresAt = calculateTierExpiration(normTier);
-            }
-          }
-
-          if (isActive) {
-            resolvedTier = normTier;
-            resolvedExpiresAt = tierExpiresAt;
-          }
-        }
+      const userProfileResolved = resolveTierFromProfileRecord(userProfileData);
+      if (userProfileResolved) {
+        resolvedTier = userProfileResolved.tier;
+        resolvedExpiresAt = userProfileResolved.expiresAt;
       }
     }
 
@@ -250,17 +202,15 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       resolvedTier = normalizedTestTier;
     }
 
-    if (resolvedExpiresAt) {
-      const expMs = new Date(resolvedExpiresAt).getTime();
-      if (!isNaN(expMs) && expMs <= Date.now()) {
-        resolvedTier = "contender";
-        resolvedExpiresAt = null;
-      }
+    if (isTierExpired(resolvedExpiresAt)) {
+      resolvedTier = "contender";
+      resolvedExpiresAt = null;
     }
 
     return {
       authenticated: true,
       user,
+      token,
       tier: resolvedTier,
       tierExpiresAt: resolvedExpiresAt,
     };
@@ -272,13 +222,4 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       devMode: false,
     };
   }
-}
-
-export function normalizeTier(raw: unknown): UserTier {
-  if (typeof raw !== "string") return "contender";
-  const t = raw.toLowerCase().trim();
-  if (t === "cram_pass" || t === "crampass" || t === "cram-pass") return "cram_pass";
-  if (t === "pro") return "pro";
-  if (t === "tutor") return "tutor";
-  return "contender";
 }

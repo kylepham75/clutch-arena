@@ -23,6 +23,9 @@ export function DocumentViewer({
   onSelectSource,
   onAskCoachAboutSource,
   onOpenUpload,
+  onRescanPage,
+  onRescanRemaining,
+  rescanningPages,
 }: {
   document: ParsedDocument | null;
   highlightedSourceId?: string | null;
@@ -30,6 +33,9 @@ export function DocumentViewer({
   onSelectSource?: (sourceId: string) => void;
   onAskCoachAboutSource?: (source: SourceBlock) => void;
   onOpenUpload?: () => void;
+  onRescanPage?: (pageNumber: number) => void | Promise<void>;
+  onRescanRemaining?: (pageNumbers: number[]) => void | Promise<void>;
+  rescanningPages?: number[];
 }) {
   const { t } = useLanguage();
   const [search, setSearch] = useState("");
@@ -124,6 +130,38 @@ export function DocumentViewer({
         </div>
       </header>
 
+      {document.visionBanner && (
+        <div
+          className="doc-vision-banner px-4 py-2.5 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs flex items-center justify-between gap-3"
+          role="status"
+        >
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 text-amber-600 font-semibold" aria-hidden="true">
+              ⚠️
+            </span>
+            <span className="font-medium">{document.visionBanner}</span>
+          </div>
+          {onRescanRemaining && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs px-2.5 bg-white dark:bg-amber-900 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-800 shrink-0 cursor-pointer"
+              onClick={() => {
+                const remaining = document.pageVisionStatus
+                  ? Object.values(document.pageVisionStatus)
+                      .filter((p) => p.flagged && !p.processed)
+                      .map((p) => p.page)
+                  : [];
+                void onRescanRemaining(remaining);
+              }}
+              disabled={Boolean(rescanningPages && rescanningPages.length > 0)}
+            >
+              Re-scan Remaining
+            </Button>
+          )}
+        </div>
+      )}
+
       <div className="doc-blocks-container" role="feed" aria-label={t.docViewer.sourceBlocksAria}>
         {filteredSources.length === 0 ? (
           <div className="doc-no-matches">
@@ -157,6 +195,29 @@ export function DocumentViewer({
                     {source.label}
                   </span>
                   <div className="doc-block-actions" onClick={(e) => e.stopPropagation()}>
+                    {document.format === "pdf" && onRescanPage && (() => {
+                      const match = source.id.match(/^page-(\d+)$/i);
+                      const pageNum = match ? parseInt(match[1], 10) : null;
+                      if (pageNum === null) return null;
+                      const isRescanning = Boolean(rescanningPages?.includes(pageNum));
+                      return (
+                        <button
+                          type="button"
+                          className="doc-block-btn"
+                          title="Re-scan with Vision"
+                          aria-label={`Re-scan page ${pageNum} with Vision`}
+                          disabled={isRescanning}
+                          onClick={() => void onRescanPage(pageNum)}
+                        >
+                          {isRescanning ? (
+                            <span className="spinner h-3 w-3 inline-block animate-spin" />
+                          ) : (
+                            <Sparkles size={12} />
+                          )}
+                          <span>Re-scan with Vision</span>
+                        </button>
+                      );
+                    })()}
                     {onAskCoachAboutSource && (
                       <button
                         className="doc-block-btn"

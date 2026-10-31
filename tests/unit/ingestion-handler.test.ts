@@ -211,4 +211,140 @@ describe("ingestion HTTP handler", () => {
     await Promise.all(requests);
     expect((await handler(upload())).status).toBe(200);
   });
+
+  it("bypasses LLM generation on shared deck cache hit and returns cached result", async () => {
+    const generate = vi.fn();
+    const getDeckCache = vi.fn().mockResolvedValue({
+      id: "cached-deck-1",
+      contentHash: "hash-123",
+      language: "en",
+      mode: "variants",
+      focusHash: "",
+      pipelineVersion: "v1",
+      questionPool: mockMicroeconomics.questions,
+      studyMetadata: {
+        pack: mockMicroeconomics,
+        sourceKind: "lecture",
+        references: {},
+        warnings: ["Cached warning"],
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      },
+      hitCount: 2,
+    });
+
+    const handler = createIngestionHandler({
+      generate,
+      checkConfiguration: () => {},
+      getDeckCache,
+    });
+
+    const response = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 5,
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.cached).toBe(true);
+    expect(body.pack.questions.length).toBeLessThanOrEqual(5);
+    expect(getDeckCache).toHaveBeenCalledTimes(1);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("blocks generation with 429 and specific reason code when quotaReservation returns allowed: false", async () => {
+    const generate = vi.fn();
+    const getDeckCache = vi.fn().mockResolvedValue(null);
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: false,
+      reason: "DECK_CREDITS_EXCEEDED",
+      cacheHit: false,
+      creditConsumed: false,
+      isRegeneration: false,
+      creditsUsed: 2,
+      creditsLimit: 2,
+      dailyBurstUsed: 1,
+      dailyBurstLimit: 2,
+      cogsStatus: {} as any,
+      ledger: {} as any,
+    });
+
+    const handler = createIngestionHandler({
+      generate,
+      checkConfiguration: () => {},
+      getDeckCache,
+      quotaReservation,
+    });
+
+    const response = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 5,
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("DECK_CREDITS_EXCEEDED");
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("records COGS and populates shared deck cache on cache miss after generation succeeds", async () => {
+    const generate = vi.fn().mockResolvedValue(result);
+    const getDeckCache = vi.fn().mockResolvedValue(null);
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      cacheHit: false,
+      creditConsumed: true,
+      isRegeneration: false,
+      creditsUsed: 1,
+      creditsLimit: 2,
+      dailyBurstUsed: 1,
+      dailyBurstLimit: 2,
+      cogsStatus: {} as any,
+      ledger: {} as any,
+    });
+    const recordCogs = vi.fn().mockResolvedValue({
+      ledger: {} as any,
+      cogsStatus: {} as any,
+    });
+    const setDeckCache = vi.fn().mockResolvedValue({});
+
+    const handler = createIngestionHandler({
+      generate,
+      checkConfiguration: () => {},
+      getDeckCache,
+      quotaReservation,
+      recordCogs,
+      setDeckCache,
+    });
+
+    const response = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 5,
+        focus: "Elasticity",
+        language: "en",
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(quotaReservation).toHaveBeenCalledTimes(1);
+    expect(recordCogs).toHaveBeenCalledTimes(1);
+    expect(setDeckCache).toHaveBeenCalledTimes(1);
+    expect(setDeckCache).toHaveBeenCalledWith(
+      expect.objectContaining({
+        language: "en",
+        mode: "variants",
+        pipelineVersion: "v1",
+        questionPool: result.pack.questions,
+      }),
+    );
+  });
 });

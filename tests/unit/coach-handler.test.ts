@@ -77,6 +77,47 @@ describe("coach HTTP handler", () => {
     expect(json.error.code).toBe("AI_NOT_CONFIGURED");
   });
 
+  it("passes auth.tier to getModel when authenticated paid user sends request", async () => {
+    const mockModel: any = {
+      specificationVersion: "v2",
+      provider: "mock",
+      modelId: "mock-model",
+      supportedUrls: {},
+      doStream: vi.fn(async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: "text-delta", textDelta: "Pro coaching response." });
+            controller.close();
+          },
+        }),
+      })),
+    };
+    const getModelMock = vi.fn(() => mockModel);
+    const verifyAuthMock = vi.fn(async () => ({
+      authenticated: true as const,
+      user: { id: "user-1", email: "test@example.com" } as any,
+      tier: "pro" as const,
+      tierExpiresAt: null,
+    }));
+
+    const handler = createCoachHandler({
+      getModel: getModelMock,
+      verifyAuth: verifyAuthMock,
+      rateLimiter: vi.fn(async () => ({ allowed: true, limit: 10, remaining: 10, reset: 0, retryAfter: 0 })),
+    });
+
+    const res = await handler(
+      coachRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Explain price elasticity" }] }],
+        document: { fileName: doc.fileName, sources: doc.sources },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(getModelMock).toHaveBeenCalledTimes(1);
+    expect(getModelMock).toHaveBeenCalledWith("pro");
+  });
+
   it("streams response successfully with a configured model", async () => {
     const mockModel: any = {
       specificationVersion: "v2",
@@ -150,10 +191,10 @@ describe("coach HTTP handler", () => {
     expect(cleaned).toBe("For a stock with a beta of 1.29, expected to move by 1.29% for every 1% move in the market.");
   });
 
-  it("defaults to active gemini-3.5-flash model instead of deprecated 2.5", async () => {
+  it("defaults to active gemini-3.6-flash model instead of deprecated 2.5", async () => {
     vi.stubEnv("GEMINI_API_KEY", "test-key-abc-123");
     const { getGeminiModel } = await import("@/lib/ai/provider");
     const model: any = getGeminiModel();
-    expect(model.modelId).toBe("gemini-3.5-flash");
+    expect(model.modelId).toBe("gemini-3.6-flash");
   });
 });

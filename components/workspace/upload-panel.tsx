@@ -34,6 +34,7 @@ export function UploadPanel({
   onDocumentPreviewed,
   onPlayPack,
   onHostArena,
+  onSourceFileChanged,
 }: {
   onPackGenerated: (
     pack: StudyPack,
@@ -43,6 +44,7 @@ export function UploadPanel({
   onDocumentPreviewed: (doc: ParsedDocument) => void;
   onPlayPack: (pack: StudyPack) => void;
   onHostArena?: (pack: StudyPack) => void;
+  onSourceFileChanged?: (file: File | null) => void;
 }) {
   const { language: siteLang, t } = useLanguage();
   const { session, user, canGenerate, openAuthModal, incrementGuestUsage } = useAuth();
@@ -58,6 +60,16 @@ export function UploadPanel({
   useEffect(() => {
     setLanguage(siteLang);
   }, [siteLang]);
+
+  useEffect(() => {
+    if (onSourceFileChanged) {
+      const singlePdf =
+        files.length === 1 && files[0].name.toLowerCase().endsWith(".pdf")
+          ? files[0]
+          : null;
+      onSourceFileChanged(singlePdf);
+    }
+  }, [files, onSourceFileChanged]);
   const [focus, setFocus] = useState("");
   const [loading, setLoading] = useState(false);
   const [progressMsg, setProgressMsg] = useState("");

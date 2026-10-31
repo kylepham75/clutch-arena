@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+vi.mock("server-only", () => ({}));
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import {
   isPayosConfigured,
@@ -8,8 +10,91 @@ import {
   computePayosPaymentSignature,
   verifyPayosWebhookSignature,
   buildVietQrImageUrl,
+  fulfillPayosOrder,
   type PayosPlanId,
 } from "@/lib/payments/payos";
+import { POST as verifyPostRoute } from "@/app/api/payments/payos/verify/route";
+
+let mockSubRecord: { user_id: string; tier: string } | null = null;
+let mockAuthUser: { id: string } | null = null;
+const mockUpsertSubSpy = vi.fn();
+const mockUpsertProfileSpy = vi.fn();
+const mockUpsertUserProfileSpy = vi.fn();
+const mockAdminUpdateSpy = vi.fn();
+
+vi.mock("@/lib/supabase/server", () => {
+  const createChain = (getData: () => unknown) => {
+    const chain: Record<string, unknown> = {};
+    chain.eq = vi.fn(() => chain);
+    chain.order = vi.fn(() => chain);
+    chain.limit = vi.fn(() => chain);
+    chain.maybeSingle = vi.fn(async () => ({ data: getData(), error: null }));
+    return chain;
+  };
+
+  return {
+    isSupabaseServerConfigured: vi.fn(() => true),
+    getSupabaseServerClient: vi.fn((token?: string) => ({
+      from: vi.fn((table: string) => {
+        if (table === "user_subscriptions") {
+          return {
+            select: vi.fn(() => createChain(() => mockSubRecord)),
+            upsert: vi.fn(async (data: unknown) => {
+              mockUpsertSubSpy(data);
+              return { error: null };
+            }),
+          };
+        }
+        if (table === "profiles") {
+          return {
+            select: vi.fn(() => createChain(() => null)),
+            upsert: vi.fn(async (data: unknown) => {
+              mockUpsertProfileSpy(data);
+              return { error: null };
+            }),
+            update: vi.fn(() => ({
+              eq: vi.fn(async () => ({ error: null })),
+            })),
+          };
+        }
+        if (table === "user_profiles") {
+          return {
+            select: vi.fn(() => createChain(() => null)),
+            upsert: vi.fn(async (data: unknown) => {
+              mockUpsertUserProfileSpy(data);
+              return { error: null };
+            }),
+            update: vi.fn(() => ({
+              eq: vi.fn(async () => ({ error: null })),
+            })),
+          };
+        }
+        return {
+          select: vi.fn(() => createChain(() => null)),
+          upsert: vi.fn(async () => ({ error: null })),
+        };
+      }),
+      auth: {
+        getUser: vi.fn(async (t?: string) => {
+          const checkToken = t || token;
+          if (mockAuthUser && checkToken === "valid_token") {
+            return { data: { user: mockAuthUser }, error: null };
+          }
+          if (checkToken === "attacker_token") {
+            return { data: { user: { id: "attacker_user_id" } }, error: null };
+          }
+          return { data: { user: null }, error: new Error("Invalid token") };
+        }),
+        admin: {
+          updateUserById: vi.fn(async (id: string, metadata: unknown) => {
+            mockAdminUpdateSpy(id, metadata);
+            return { data: {}, error: null };
+          }),
+        },
+      },
+    })),
+  };
+});
 
 describe("PayOS Gateway Utilities", () => {
   const originalEnv = process.env;
@@ -346,6 +431,352 @@ describe("PayOS Gateway Utilities", () => {
       expect(url).toBe(
         "https://img.vietqr.io/image/970415-11336699-compact2.png?amount=299000&addInfo=CLUTCH%20PRO%20012342&accountName=NGUYEN%20VAN%20A",
       );
+    });
+  });
+
+  describe("fulfillPayosOrder anti-hijacking & ownership verification", () => {
+    beforeEach(() => {
+      mockSubRecord = null;
+      mockAuthUser = null;
+      mockUpsertSubSpy.mockClear();
+      mockUpsertProfileSpy.mockClear();
+      mockUpsertUserProfileSpy.mockClear();
+      mockAdminUpdateSpy.mockClear();
+    });
+
+    it("ignores hijacking attempts when an order is already bound to another user in database", async () => {
+      mockSubRecord = {
+        user_id: "victim_user_123",
+        tier: "cram_pass",
+      };
+
+      const result = await fulfillPayosOrder({
+        orderCode: 17300000012341,
+        amount: 69000,
+        fallbackUserId: "attacker_user_999",
+      });
+
+      expect(result.fulfilled).toBe(true);
+      expect(result.userId).toBe("victim_user_123");
+      expect(result.userId).not.toBe("attacker_user_999");
+      expect(result.tier).toBe("cram_pass");
+
+      // Verify DB was updated for victim, never for attacker
+      expect(mockUpsertSubSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "payos_17300000012341",
+          user_id: "victim_user_123",
+        }),
+      );
+      expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "victim_user_123",
+        }),
+      );
+      expect(mockUpsertProfileSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "attacker_user_999",
+        }),
+      );
+    });
+
+    it("fulfills for recorded user when no fallbackUserId is provided (e.g. webhook invocation)", async () => {
+      mockSubRecord = {
+        user_id: "legit_user_456",
+        tier: "pro",
+      };
+
+      const result = await fulfillPayosOrder({
+        orderCode: 17300000056782,
+        amount: 299000,
+      });
+
+      expect(result.fulfilled).toBe(true);
+      expect(result.userId).toBe("legit_user_456");
+      expect(result.tier).toBe("pro");
+    });
+
+    it("allows fallbackUserId ONLY when no user_id is in DB AND authenticated userToken matches fallbackUserId", async () => {
+      mockSubRecord = null;
+      mockAuthUser = { id: "authenticated_user_789" };
+
+      const result = await fulfillPayosOrder({
+        orderCode: 17300000056782,
+        amount: 299000,
+        fallbackUserId: "authenticated_user_789",
+        userToken: "valid_token",
+      });
+
+      expect(result.fulfilled).toBe(true);
+      expect(result.userId).toBe("authenticated_user_789");
+      expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "authenticated_user_789",
+        }),
+      );
+    });
+
+    it("refuses fallbackUserId when token does not match candidate fallbackUserId", async () => {
+      mockSubRecord = null;
+      // Token resolves to attacker_user_id, but fallbackUserId tries to claim for someone else
+      const result = await fulfillPayosOrder({
+        orderCode: 17300000056782,
+        amount: 299000,
+        fallbackUserId: "victim_user_123",
+        userToken: "attacker_token",
+      });
+
+      expect(result.fulfilled).toBe(false);
+      expect(result.userId).toBeNull();
+      expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
+    });
+
+    it("refuses unauthenticated fallbackUserId when no userToken is provided and Supabase is configured", async () => {
+      mockSubRecord = null;
+
+      const result = await fulfillPayosOrder({
+        orderCode: 17300000056782,
+        amount: 299000,
+        fallbackUserId: "unauthenticated_guest",
+      });
+
+      expect(result.fulfilled).toBe(false);
+      expect(result.userId).toBeNull();
+      expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
+    });
+
+    it("returns fulfilled: false when order has no DB record and no fallbackUserId is provided", async () => {
+      mockSubRecord = null;
+
+      const result = await fulfillPayosOrder({
+        orderCode: 17300000056782,
+        amount: 299000,
+      });
+
+      expect(result.fulfilled).toBe(false);
+      expect(result.userId).toBeNull();
+    });
+  });
+
+  describe("POST /api/payments/payos/verify Route Verification & Anti-Hijack Guard", () => {
+    const originalFetch = global.fetch;
+
+    beforeEach(() => {
+      mockSubRecord = null;
+      mockAuthUser = null;
+      mockUpsertSubSpy.mockClear();
+      mockUpsertProfileSpy.mockClear();
+
+      process.env.PAYOS_CLIENT_ID = "client_123";
+      process.env.PAYOS_API_KEY = "api_key_456";
+      process.env.PAYOS_CHECKSUM_KEY = "checksum_key_789";
+
+      global.fetch = vi.fn(async (url: string | URL | Request) => {
+        const urlStr = String(url);
+        if (urlStr.includes("api-merchant.payos.vn/v2/payment-requests")) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            json: async () => ({
+              code: "00",
+              desc: "success",
+              data: {
+                orderCode: 17300000012341,
+                status: "PAID",
+                amount: 69000,
+                amountPaid: 69000,
+                transactions: [],
+              },
+            }),
+          } as Response;
+        }
+        return originalFetch(url);
+      });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it("disallows unauthenticated arbitrary body.userId from fulfilling an unrecorded order", async () => {
+      mockSubRecord = null;
+
+      const req = new Request("http://localhost:3000/api/payments/payos/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderCode: 17300000012341,
+          userId: "arbitrary_attacker_id",
+        }),
+      });
+
+      const res = await verifyPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json).toEqual({
+        ok: true,
+        paid: true,
+        status: "PAID",
+        verified: false,
+        requiresAuth: true,
+      });
+
+      expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
+    });
+
+    it("fulfills an existing recorded order for the recorded user even if unauthenticated caller supplies a different userId", async () => {
+      mockSubRecord = {
+        user_id: "recorded_owner_123",
+        tier: "cram_pass",
+      };
+
+      const req = new Request("http://localhost:3000/api/payments/payos/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderCode: 17300000012341,
+          userId: "arbitrary_attacker_id",
+        }),
+      });
+
+      const res = await verifyPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.paid).toBe(true);
+      expect(json.fulfilled).toBe(true);
+      expect(json.tier).toBe("cram_pass");
+
+      expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "recorded_owner_123" }),
+      );
+      expect(mockUpsertProfileSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ id: "arbitrary_attacker_id" }),
+      );
+    });
+
+    it("allows authenticated caller to fulfill their own order", async () => {
+      mockSubRecord = null;
+      mockAuthUser = { id: "legit_logged_in_user" };
+
+      const req = new Request("http://localhost:3000/api/payments/payos/verify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer valid_token",
+        },
+        body: JSON.stringify({
+          orderCode: 17300000012341,
+        }),
+      });
+
+      const res = await verifyPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.paid).toBe(true);
+      expect(json.fulfilled).toBe(true);
+      expect(json.tier).toBe("cram_pass");
+
+      expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "legit_logged_in_user" }),
+      );
+    });
+
+    it("blocks an authenticated attacker from hijacking an order already recorded to another user", async () => {
+      mockSubRecord = {
+        user_id: "recorded_owner_123",
+        tier: "cram_pass",
+      };
+
+      const req = new Request("http://localhost:3000/api/payments/payos/verify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer attacker_token",
+        },
+        body: JSON.stringify({
+          orderCode: 17300000012341,
+        }),
+      });
+
+      const res = await verifyPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.paid).toBe(true);
+      // For attacker, fulfilled is false because attacker is not the owner
+      expect(json.fulfilled).toBe(false);
+
+      // Victim profile was updated, attacker profile was NOT
+      expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "recorded_owner_123" }),
+      );
+      expect(mockUpsertProfileSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ id: "attacker_user_id" }),
+      );
+    });
+
+    it("returns paid: false when PayOS reports status is not PAID", async () => {
+      global.fetch = vi.fn(async () => {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: async () => ({
+            code: "00",
+            desc: "success",
+            data: {
+              orderCode: 17300000012341,
+              status: "PENDING",
+              amount: 69000,
+              amountPaid: 0,
+              transactions: [],
+            },
+          }),
+        } as Response;
+      });
+
+      const req = new Request("http://localhost:3000/api/payments/payos/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderCode: 17300000012341,
+        }),
+      });
+
+      const res = await verifyPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json).toEqual({
+        ok: true,
+        paid: false,
+        status: "PENDING",
+        amount: 69000,
+      });
+    });
+
+    it("returns 400 when orderCode is invalid or non-positive", async () => {
+      const req = new Request("http://localhost:3000/api/payments/payos/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderCode: -5,
+        }),
+      });
+
+      const res = await verifyPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(json.ok).toBe(false);
+      expect(json.error).toContain("positive integer");
     });
   });
 });

@@ -118,6 +118,8 @@ export function SoloEngine({
     questionId?: string;
     citation?: string;
   } | null>(null);
+  const [activePdfFile, setActivePdfFile] = useState<File | null>(null);
+  const [rescanningPages, setRescanningPages] = useState<number[]>([]);
 
   // Prompt tutorial for first-time visitors / new accounts
   useEffect(() => {
@@ -552,6 +554,37 @@ export function SoloEngine({
     setShowDocViewer(true);
   }, []);
 
+  const handleRescanPages = useCallback(
+    async (pages: number[]) => {
+      if (!activePdfFile || pages.length === 0) return;
+      setRescanningPages((prev) => Array.from(new Set([...prev, ...pages])));
+      try {
+        const formData = new FormData();
+        formData.set("file", activePdfFile);
+        formData.set(
+          "options",
+          JSON.stringify({
+            operation: "preview",
+            rescanPages: pages,
+          }),
+        );
+        const res = await fetch("/api/ingest", {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json();
+        if (data?.ok && data?.document) {
+          setDocument(data.document);
+        }
+      } catch (err) {
+        console.error("Failed to re-scan pages with vision:", err);
+      } finally {
+        setRescanningPages((prev) => prev.filter((p) => !pages.includes(p)));
+      }
+    },
+    [activePdfFile],
+  );
+
   const completedOriginals = Math.min(
     state.attempts.filter((_, index) => !state.queue[index]?.review).length,
     pack ? pack.questions.length : 0,
@@ -859,6 +892,17 @@ export function SoloEngine({
                     });
                   }}
                   onOpenUpload={() => setActiveTab("ingest")}
+                  onRescanPage={
+                    activePdfFile && document?.format === "pdf"
+                      ? (pageNum) => void handleRescanPages([pageNum])
+                      : undefined
+                  }
+                  onRescanRemaining={
+                    activePdfFile && document?.format === "pdf"
+                      ? (pages) => void handleRescanPages(pages)
+                      : undefined
+                  }
+                  rescanningPages={rescanningPages}
                 />
               )}
 
@@ -875,6 +919,7 @@ export function SoloEngine({
                     onDocumentPreviewed={handleDocumentPreviewed}
                     onPlayPack={handlePlayPack}
                     onHostArena={handleHostArena}
+                    onSourceFileChanged={setActivePdfFile}
                   />
                 ) : activeTab === "notes" ? (
                   <ClutchNotesPanel />

@@ -22,7 +22,11 @@ import {
   runDeterministicVerifiers,
   verifyEvidenceQuoteMatch,
   verifyFormulaSymbolSet,
+  runBulletNumericCascade,
+  resolveBulletNumericStep,
   type DeterministicVerificationReport,
+  type BulletNumericResolutionItem,
+  type BulletNumericCascadeResult,
 } from "@/lib/notes/deterministic-verifiers";
 import {
   verifyNoteFormulasEquivalence,
@@ -36,12 +40,215 @@ import {
   type VerifiableNoteClaim,
 } from "@/lib/notes/verifier-llm";
 import { annotateNoteWithDivergenceNotices } from "@/lib/notes/domain-rule-packs";
-import { CLUTCH_NOTES_SYSTEM_PROMPT } from "@/lib/ai/prompts-notes";
+import {
+  CLUTCH_NOTES_SYSTEM_PROMPT,
+  type FinancialConventionPin,
+  extractFinancialConventions,
+  pinConventionsToSections,
+} from "@/lib/ai/prompts-notes";
 import {
   injectLedgerFormulasById,
   applyHallucinationShield,
   mapSynthesisSection,
 } from "@/lib/ai/generate-notes";
+
+export {
+  type FinancialConventionPin,
+  extractFinancialConventions,
+  pinConventionsToSections,
+};
+
+export type SectionQualityAction =
+  | "SHIP"
+  | "SHIP_AND_REGEN_BACKGROUND"
+  | "RETRY_OR_OMIT";
+
+export interface SectionQualityDecision {
+  sectionLetter: string;
+  titleVi: string;
+  initialBulletCount: number;
+  droppedBulletCount: number;
+  dropRate: number;
+  action: SectionQualityAction;
+  omitted: boolean;
+  notice?: string;
+}
+
+export interface SectionQualityGateResult {
+  sections: NoteSection[];
+  decisions: SectionQualityDecision[];
+  omittedNotices: string[];
+  backgroundRegenSections: string[];
+}
+
+/**
+ * Evaluates the claim/bullet drop rate of a section and assigns a quality gate action:
+ * - dropRate < 0.08 (< 8%) -> "SHIP"
+ * - 0.08 <= dropRate <= 0.20 (8% <= drop_rate <= 20%) -> "SHIP_AND_REGEN_BACKGROUND"
+ * - dropRate > 0.20 (> 20%) -> "RETRY_OR_OMIT"
+ */
+export function evaluateSectionDropRate(
+  initialBulletCount: number,
+  droppedBulletCount: number,
+): { dropRate: number; action: SectionQualityAction } {
+  if (initialBulletCount <= 0 || droppedBulletCount <= 0) {
+    return { dropRate: 0, action: "SHIP" };
+  }
+  const dropRate = droppedBulletCount / initialBulletCount;
+  if (dropRate < 0.08) {
+    return { dropRate, action: "SHIP" };
+  }
+  if (dropRate <= 0.20) {
+    return { dropRate, action: "SHIP_AND_REGEN_BACKGROUND" };
+  }
+  return { dropRate, action: "RETRY_OR_OMIT" };
+}
+
+function countSectionBullets(sec?: NoteSection): number {
+  if (!sec) return 0;
+  let count = 0;
+  if (Array.isArray(sec.groundedBullets) && sec.groundedBullets.length > 0) {
+    count += sec.groundedBullets.length;
+  } else if (Array.isArray(sec.bulletPoints) && sec.bulletPoints.length > 0) {
+    count += sec.bulletPoints.length;
+  }
+  if (Array.isArray(sec.subSections)) {
+    for (const sub of sec.subSections) {
+      if (Array.isArray(sub.groundedBullets) && sub.groundedBullets.length > 0) {
+        count += sub.groundedBullets.length;
+      } else if (Array.isArray(sub.bulletPoints) && sub.bulletPoints.length > 0) {
+        count += sub.bulletPoints.length;
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * Runs the Section-Level Quality Gate on verified sections:
+ * Evaluates drop rates, retains valid sections, triggers background regens for 8%-20%,
+ * and retries or cleanly omits sections with >20% dropped claims with student notices.
+ */
+export async function runSectionQualityGate(input: {
+  initialSections: NoteSection[];
+  verifiedSections: NoteSection[];
+  perSectionDroppedCounts?: Record<string, number>;
+  retrySectionFn?: (
+    section: NoteSection,
+    strictPrompt: string,
+  ) => Promise<NoteSection | null>;
+  onBackgroundRegenSection?: (section: NoteSection) => void | Promise<void>;
+}): Promise<SectionQualityGateResult> {
+  const decisions: SectionQualityDecision[] = [];
+  const omittedNotices: string[] = [];
+  const backgroundRegenSections: string[] = [];
+  const keptSections: NoteSection[] = [];
+
+  for (const sec of input.verifiedSections) {
+    const initialSec = input.initialSections.find(
+      (s) => s.letter === sec.letter || s.id === sec.id,
+    );
+    const initialBulletCount = initialSec
+      ? countSectionBullets(initialSec)
+      : countSectionBullets(sec);
+    const currentBulletCount = countSectionBullets(sec);
+    const droppedCount =
+      input.perSectionDroppedCounts?.[sec.letter] ??
+      Math.max(0, initialBulletCount - currentBulletCount);
+
+    const { dropRate, action } = evaluateSectionDropRate(
+      initialBulletCount,
+      droppedCount,
+    );
+
+    if (action === "SHIP") {
+      keptSections.push(sec);
+      decisions.push({
+        sectionLetter: sec.letter,
+        titleVi: sec.titleVi,
+        initialBulletCount,
+        droppedBulletCount: droppedCount,
+        dropRate,
+        action: "SHIP",
+        omitted: false,
+      });
+    } else if (action === "SHIP_AND_REGEN_BACKGROUND") {
+      keptSections.push(sec);
+      backgroundRegenSections.push(sec.letter);
+      decisions.push({
+        sectionLetter: sec.letter,
+        titleVi: sec.titleVi,
+        initialBulletCount,
+        droppedBulletCount: droppedCount,
+        dropRate,
+        action: "SHIP_AND_REGEN_BACKGROUND",
+        omitted: false,
+      });
+      if (input.onBackgroundRegenSection) {
+        try {
+          const res = input.onBackgroundRegenSection(sec);
+          if (res && typeof (res as Promise<void>).catch === "function") {
+            (res as Promise<void>).catch(console.warn);
+          }
+        } catch (err) {
+          console.warn(
+            `[runSectionQualityGate] Background regen callback failed for section ${sec.letter}:`,
+            err,
+          );
+        }
+      }
+    } else {
+      // RETRY_OR_OMIT (>20% drop rate)
+      let retriedSection: NoteSection | null = null;
+      if (input.retrySectionFn) {
+        const strictPrompt = `Section ${sec.letter} (${sec.titleVi}) had a ${(dropRate * 100).toFixed(1)}% claim drop rate due to ungrounded claims. Please regenerate this section with strict source slide grounding only. Omit unverified numbers and ungrounded statements.`;
+        try {
+          retriedSection = await input.retrySectionFn(sec, strictPrompt);
+        } catch (err) {
+          console.warn(
+            `[runSectionQualityGate] retrySectionFn failed for section ${sec.letter}:`,
+            err,
+          );
+        }
+      }
+
+      if (retriedSection && countSectionBullets(retriedSection) > 0) {
+        keptSections.push(retriedSection);
+        decisions.push({
+          sectionLetter: sec.letter,
+          titleVi: sec.titleVi,
+          initialBulletCount,
+          droppedBulletCount: droppedCount,
+          dropRate,
+          action: "RETRY_OR_OMIT",
+          omitted: false,
+        });
+      } else {
+        const notice = `Section ${sec.letter} (${sec.titleVi}) was omitted because >20% of its synthesized claims could not be verified against source slides.`;
+        omittedNotices.push(notice);
+        decisions.push({
+          sectionLetter: sec.letter,
+          titleVi: sec.titleVi,
+          initialBulletCount,
+          droppedBulletCount: droppedCount,
+          dropRate,
+          action: "RETRY_OR_OMIT",
+          omitted: true,
+          notice,
+        });
+      }
+    }
+  }
+
+  return {
+    sections: keptSections,
+    decisions,
+    omittedNotices,
+    backgroundRegenSections,
+  };
+}
+
+export const evaluateSectionQualityGate = runSectionQualityGate;
 
 export interface VerificationGateOptions {
   enableVerifierLlm?: boolean;
@@ -56,6 +263,13 @@ export interface VerificationGateOptions {
   throwOnContradictedFormula?: boolean;
   numericEquivalenceOptions?: EquivalenceCheckOptions;
   signal?: AbortSignal;
+  enforceSectionQualityGate?: boolean;
+  retrySectionFn?: (
+    section: NoteSection,
+    strictPrompt: string,
+  ) => Promise<NoteSection | null>;
+  onBackgroundRegenSection?: (section: NoteSection) => void | Promise<void>;
+  pinConventions?: boolean;
 }
 
 export interface VerificationGateInput {
@@ -73,6 +287,11 @@ export interface VerificationGateResult {
   contradictedFormulaCount: number;
   needsReviewCount: number;
   unsupportedClaimsRemoved: number;
+  decisions?: SectionQualityDecision[];
+  omittedNotices?: string[];
+  omittedSectionNotices?: string[];
+  backgroundRegenSections?: string[];
+  pinnedConventions?: FinancialConventionPin[];
 }
 
 export interface TargetedRepairPromptInput {
@@ -97,6 +316,7 @@ export interface TargetedRepairPromptInput {
     reason: string;
   }>;
   warnings?: string[];
+  residualNumericBullets?: BulletNumericResolutionItem[];
 }
 
 export interface VerificationPipelineReport {
@@ -172,8 +392,24 @@ export function buildTargetedRepairPrompt(
     parts.push("");
   }
 
+  if (input.residualNumericBullets && input.residualNumericBullets.length > 0) {
+    parts.push("### 4. UNGROUNDED NUMERIC BULLETS (REPAIR OR REMOVE)");
+    parts.push(
+      "The following bullets contain numbers that could not be verified on the cited slide. Correct the numbers to match the slide or remove the specific ungrounded claim:",
+    );
+    for (const b of input.residualNumericBullets) {
+      parts.push(
+        `- [Section ${b.sectionLetter}] Slide ${b.originalSlide}: "${b.originalText}"`,
+      );
+      if (b.ungroundedNumbers.length > 0) {
+        parts.push(`  Ungrounded numbers: ${b.ungroundedNumbers.join(", ")}`);
+      }
+    }
+    parts.push("");
+  }
+
   if (input.warnings && input.warnings.length > 0) {
-    parts.push("### 4. ADDITIONAL DEFECT WARNINGS");
+    parts.push("### 5. ADDITIONAL DEFECT WARNINGS");
     for (const w of input.warnings) {
       parts.push(`- ${w}`);
     }
@@ -746,27 +982,50 @@ export function applyMarkPolicyAndGate(input: {
 
 /**
  * Stage 4.4 Verification Gate & Targeted Repair Loop:
- * 1. Executes verification pipeline against sources and ledger.
- * 2. Determines if targeted repair (max 1 pass) is warranted.
- * 3. Runs targeted repair if triggered, post-processes with injection and shield, and re-verifies.
- * 4. Applies MARK policy and hard-fail enforcement.
- * 5. Returns final note sections and NoteVerificationRecord.
+ * 1. Financial convention detection and pinning.
+ * 2. 5-step numeric resolution cascade (Steps 1–3: PATCH, RE_CITE, KEEP_AS_DERIVED at $0 cost).
+ * 3. Executes verification pipeline against sources and ledger.
+ * 4. Determines if targeted repair (max 1 pass) is warranted (including residual numeric bullets).
+ * 5. Runs targeted repair if triggered, post-processes with injection and shield, and re-verifies.
+ * 6. Applies MARK policy and hard-fail enforcement.
+ * 7. Applies Step 5 (DROP) on residual ungrounded bullets with empty-section guardrail.
+ * 8. Evaluates Section-Level Quality Gate decisions.
+ * 9. Returns final note sections, decisions, and NoteVerificationRecord.
  */
 export async function runVerificationGate(
   input: VerificationGateInput,
 ): Promise<VerificationGateResult> {
   const { sections, sources, ledger, omitted, options } = input;
 
-  // Step 1: Initial verification pipeline run
+  // Step 0: Financial Convention Pinning
+  const shouldPinConventions = options?.pinConventions !== false;
+  const detectedConventions = shouldPinConventions
+    ? extractFinancialConventions(sources)
+    : [];
+  let currentSections = detectedConventions.length > 0
+    ? pinConventionsToSections(sections, detectedConventions)
+    : sections;
+
+  // Step 1: Run 5-step numeric cascade (Steps 1–3: PATCH, RE_CITE, KEEP_AS_DERIVED at $0 cost)
+  const preCascade = runBulletNumericCascade(
+    currentSections,
+    sources,
+    ledger,
+    { dropResidual: false },
+  );
+  currentSections = preCascade.sections;
+  const residualNumericBullets = preCascade.residualRepairBullets;
+
+  // Step 2: Initial verification pipeline run
   const initialPipeline = await executeVerificationPipeline({
-    sections,
+    sections: currentSections,
     sources,
     ledger,
     omitted,
     options,
   });
 
-  // Step 2: Check if targeted repair is warranted
+  // Step 3: Check if targeted repair is warranted
   const detCoverage = initialPipeline.deterministicReport.coverage;
   const unjustifiedUncaptured = detCoverage.uncapturedErrorIds;
 
@@ -775,17 +1034,21 @@ export async function runVerificationGate(
   const hasUncapturedFormulas = unjustifiedUncaptured.length > 0;
   const hasContradictedClaims =
     (initialPipeline.verifierLlmReport?.contradictedIds.length ?? 0) > 0;
+  const hasResidualNumericBullets = residualNumericBullets.length > 0;
 
   const repairWarranted =
-    hasContradictedFormula || hasUncapturedFormulas || hasContradictedClaims;
+    hasContradictedFormula ||
+    hasUncapturedFormulas ||
+    hasContradictedClaims ||
+    hasResidualNumericBullets;
+
   const canRepair =
     Boolean(options?.repairFn || options?.repairModel) &&
     (options?.maxRepairAttempts ?? 1) >= 1;
 
-  let currentSections = initialPipeline.annotatedSections;
   let repairAttempted = false;
 
-  // Step 3: Targeted repair loop (at most 1 repair pass)
+  // Step 4: Targeted repair loop (at most 1 repair pass)
   if (repairWarranted && canRepair) {
     repairAttempted = true;
 
@@ -831,6 +1094,7 @@ export async function runVerificationGate(
       uncapturedFormulas,
       contradictedClaims,
       warnings: initialPipeline.deterministicReport.summary.warnings,
+      residualNumericBullets,
     });
 
     try {
@@ -880,6 +1144,10 @@ export async function runVerificationGate(
           ledger,
         );
         currentSections = injected2;
+
+        if (detectedConventions.length > 0) {
+          currentSections = pinConventionsToSections(currentSections, detectedConventions);
+        }
       }
     } catch (err) {
       console.warn(
@@ -889,7 +1157,7 @@ export async function runVerificationGate(
     }
   }
 
-  // Step 4: Re-run verification pipeline after repair (or use initial report)
+  // Step 5: Re-run verification pipeline after repair (or use initial report)
   const finalPipeline = repairAttempted
     ? await executeVerificationPipeline({
         sections: currentSections,
@@ -900,8 +1168,8 @@ export async function runVerificationGate(
       })
     : initialPipeline;
 
-  // Step 5: Apply MARK policy and Hard-Fail enforcement
-  return applyMarkPolicyAndGate({
+  // Step 6: Apply MARK policy and Hard-Fail enforcement
+  const markResult = applyMarkPolicyAndGate({
     sections: finalPipeline.annotatedSections,
     sources,
     ledger,
@@ -910,4 +1178,143 @@ export async function runVerificationGate(
     options,
     repairAttempted,
   });
+
+  // Step 7: Apply Step 5 (DROP) on any residual bullets that still fail numeric grounding
+  const perSectionDroppedCounts: Record<string, number> = {};
+  const sectionsAfterDrop: NoteSection[] = JSON.parse(
+    JSON.stringify(markResult.sections),
+  );
+
+  for (const sec of sectionsAfterDrop) {
+    if (Array.isArray(sec.groundedBullets) && sec.groundedBullets.length > 0) {
+      const keptBullets: GroundedBullet[] = [];
+      const droppedOriginalTexts = new Set<string>();
+
+      for (const bullet of sec.groundedBullets) {
+        const stepRes = resolveBulletNumericStep(bullet, sources, ledger, {
+          dropResidual: true,
+        });
+        if (stepRes.action === "DROP") {
+          const hasOther =
+            hasOtherSectionContent(sec, bullet.text) || keptBullets.length > 0;
+          if (!hasOther) {
+            keptBullets.push({
+              ...bullet,
+              status: "needs_review",
+              reviewReason:
+                "Ungrounded numeric claim preserved to prevent empty section",
+            });
+          } else {
+            droppedOriginalTexts.add(bullet.text);
+            perSectionDroppedCounts[sec.letter] =
+              (perSectionDroppedCounts[sec.letter] || 0) + 1;
+          }
+        } else {
+          keptBullets.push(stepRes.bullet);
+        }
+      }
+
+      sec.groundedBullets = keptBullets;
+      if (Array.isArray(sec.bulletPoints)) {
+        sec.bulletPoints = sec.bulletPoints.filter(
+          (bp) => !droppedOriginalTexts.has(bp),
+        );
+      }
+    }
+
+    if (Array.isArray(sec.subSections)) {
+      for (const sub of sec.subSections) {
+        if (
+          Array.isArray(sub.groundedBullets) &&
+          sub.groundedBullets.length > 0
+        ) {
+          const keptSubBullets: GroundedBullet[] = [];
+          const droppedSubTexts = new Set<string>();
+
+          for (const bullet of sub.groundedBullets) {
+            const stepRes = resolveBulletNumericStep(bullet, sources, ledger, {
+              dropResidual: true,
+            });
+            if (stepRes.action === "DROP") {
+              const hasOther =
+                (Array.isArray(sub.formulas) && sub.formulas.length > 0) ||
+                keptSubBullets.length > 0;
+              if (!hasOther) {
+                keptSubBullets.push({
+                  ...bullet,
+                  status: "needs_review",
+                  reviewReason:
+                    "Ungrounded numeric claim preserved to prevent empty subsection",
+                });
+              } else {
+                droppedSubTexts.add(bullet.text);
+                perSectionDroppedCounts[sec.letter] =
+                  (perSectionDroppedCounts[sec.letter] || 0) + 1;
+              }
+            } else {
+              keptSubBullets.push(stepRes.bullet);
+            }
+          }
+
+          sub.groundedBullets = keptSubBullets;
+          if (Array.isArray(sub.bulletPoints)) {
+            sub.bulletPoints = sub.bulletPoints.filter(
+              (bp) => !droppedSubTexts.has(bp),
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // Step 8: Section-Level Quality Gate
+  let finalSections = sectionsAfterDrop;
+  let decisions: SectionQualityDecision[] = [];
+  let omittedNotices: string[] = [];
+  let backgroundRegenSections: string[] = [];
+
+  if (options?.enforceSectionQualityGate) {
+    const gateRes = await runSectionQualityGate({
+      initialSections: sections,
+      verifiedSections: finalSections,
+      perSectionDroppedCounts,
+      retrySectionFn: options?.retrySectionFn,
+      onBackgroundRegenSection: options?.onBackgroundRegenSection,
+    });
+    finalSections = gateRes.sections;
+    decisions = gateRes.decisions;
+    omittedNotices = gateRes.omittedNotices;
+    backgroundRegenSections = gateRes.backgroundRegenSections;
+  } else {
+    decisions = finalSections.map((sec) => {
+      const initialSec = sections.find((s) => s.letter === sec.letter);
+      const initialBulletCount = initialSec
+        ? countSectionBullets(initialSec)
+        : countSectionBullets(sec);
+      const droppedCount = perSectionDroppedCounts[sec.letter] || 0;
+      const { dropRate, action } = evaluateSectionDropRate(
+        initialBulletCount,
+        droppedCount,
+      );
+      return {
+        sectionLetter: sec.letter,
+        titleVi: sec.titleVi,
+        initialBulletCount,
+        droppedBulletCount: droppedCount,
+        dropRate,
+        action,
+        omitted: false,
+      };
+    });
+  }
+
+  return {
+    ...markResult,
+    sections: finalSections,
+    decisions,
+    omittedNotices,
+    omittedSectionNotices: omittedNotices,
+    backgroundRegenSections,
+    pinnedConventions: detectedConventions,
+  };
 }

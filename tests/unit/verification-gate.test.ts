@@ -26,7 +26,13 @@ import {
   applyMarkPolicyAndGate,
   buildTargetedRepairPrompt,
   executeVerificationPipeline,
+  evaluateSectionDropRate,
+  runSectionQualityGate,
+  extractFinancialConventions,
+  pinConventionsToSections,
+  type FinancialConventionPin,
 } from "@/lib/notes/verification-gate";
+import { buildNotesPrompt } from "@/lib/ai/prompts-notes";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
 
 function createSection(
@@ -961,6 +967,534 @@ describe("Stage 4.4 Verification Gate & Targeted Repair Loop", () => {
       // Entire note strictly valid against clutchNoteSchema
       const parseRes = clutchNoteSchema.safeParse(note);
       expect(parseRes.success).toBe(true);
+    });
+  });
+
+  describe("Section-Level Quality Gate Thresholds", () => {
+    describe("evaluateSectionDropRate", () => {
+      it("returns action 'SHIP' when drop rate is strictly less than 8% (< 8%)", () => {
+        // 0 / 10 = 0%
+        expect(evaluateSectionDropRate(10, 0)).toEqual({
+          dropRate: 0,
+          action: "SHIP",
+        });
+
+        // 1 / 20 = 5% (< 8%)
+        const res = evaluateSectionDropRate(20, 1);
+        expect(res.dropRate).toBe(0.05);
+        expect(res.action).toBe("SHIP");
+
+        // 7 / 100 = 7% (< 8%)
+        expect(evaluateSectionDropRate(100, 7).action).toBe("SHIP");
+      });
+
+      it("returns action 'SHIP_AND_REGEN_BACKGROUND' when drop rate is between 8% and 20% inclusive", () => {
+        // 8 / 100 = 8% (lower bound)
+        const res8 = evaluateSectionDropRate(100, 8);
+        expect(res8.dropRate).toBe(0.08);
+        expect(res8.action).toBe("SHIP_AND_REGEN_BACKGROUND");
+
+        // 1 / 10 = 10%
+        const res10 = evaluateSectionDropRate(10, 1);
+        expect(res10.dropRate).toBe(0.1);
+        expect(res10.action).toBe("SHIP_AND_REGEN_BACKGROUND");
+
+        // 2 / 10 = 20% (upper bound)
+        const res20 = evaluateSectionDropRate(10, 2);
+        expect(res20.dropRate).toBe(0.2);
+        expect(res20.action).toBe("SHIP_AND_REGEN_BACKGROUND");
+      });
+
+      it("returns action 'RETRY_OR_OMIT' when drop rate exceeds 20% (> 20%)", () => {
+        // 3 / 10 = 30% (> 20%)
+        const res30 = evaluateSectionDropRate(10, 3);
+        expect(res30.dropRate).toBe(0.3);
+        expect(res30.action).toBe("RETRY_OR_OMIT");
+
+        // 5 / 10 = 50%
+        const res50 = evaluateSectionDropRate(10, 5);
+        expect(res50.dropRate).toBe(0.5);
+        expect(res50.action).toBe("RETRY_OR_OMIT");
+      });
+    });
+
+    describe("runSectionQualityGate", () => {
+      it("ships section immediately when drop rate is < 8%", async () => {
+        const initialSection = createSection({
+          id: "sec-a",
+          letter: "A",
+          titleVi: "A. CƠ CẤU VỐN",
+          bulletPoints: Array(15).fill("Grounded bullet point"),
+          groundedBullets: Array(15).fill({
+            text: "Grounded bullet point",
+            slide: 1,
+            evidence: "Grounded evidence",
+          }),
+        });
+
+        // 1 dropped out of 15 (6.7% drop rate < 8%)
+        const verifiedSection = {
+          ...initialSection,
+          bulletPoints: Array(14).fill("Grounded bullet point"),
+          groundedBullets: Array(14).fill({
+            text: "Grounded bullet point",
+            slide: 1,
+            evidence: "Grounded evidence",
+          }),
+        };
+
+        const onRegen = vi.fn();
+        const gateRes = await runSectionQualityGate({
+          initialSections: [initialSection],
+          verifiedSections: [verifiedSection],
+          onBackgroundRegenSection: onRegen,
+        });
+
+        expect(gateRes.sections.length).toBe(1);
+        expect(gateRes.decisions[0].action).toBe("SHIP");
+        expect(gateRes.decisions[0].omitted).toBe(false);
+        expect(gateRes.backgroundRegenSections).toEqual([]);
+        expect(onRegen).not.toHaveBeenCalled();
+      });
+
+      it("ships section and triggers background regeneration when drop rate is between 8% and 20%", async () => {
+        const initialSection = createSection({
+          id: "sec-b",
+          letter: "B",
+          titleVi: "B. ĐỊNH GIÁ TRÁI PHIẾU",
+          bulletPoints: Array(10).fill("Grounded bullet point"),
+          groundedBullets: Array(10).fill({
+            text: "Grounded bullet point",
+            slide: 1,
+            evidence: "Grounded evidence",
+          }),
+        });
+
+        // 1 dropped out of 10 (10% drop rate -> 8% - 20%)
+        const verifiedSection = {
+          ...initialSection,
+          bulletPoints: Array(9).fill("Grounded bullet point"),
+          groundedBullets: Array(9).fill({
+            text: "Grounded bullet point",
+            slide: 1,
+            evidence: "Grounded evidence",
+          }),
+        };
+
+        const onRegen = vi.fn();
+        const gateRes = await runSectionQualityGate({
+          initialSections: [initialSection],
+          verifiedSections: [verifiedSection],
+          onBackgroundRegenSection: onRegen,
+        });
+
+        expect(gateRes.sections.length).toBe(1);
+        expect(gateRes.decisions[0].action).toBe("SHIP_AND_REGEN_BACKGROUND");
+        expect(gateRes.decisions[0].omitted).toBe(false);
+        expect(gateRes.backgroundRegenSections).toEqual(["B"]);
+        expect(onRegen).toHaveBeenCalledWith(verifiedSection);
+      });
+
+      it("retries once with stricter grounding and keeps retried section when retry succeeds", async () => {
+        const initialSection = createSection({
+          id: "sec-c",
+          letter: "C",
+          titleVi: "C. CHI PHÍ SỬ DỤNG VỐN",
+          bulletPoints: Array(10).fill("Original bullet"),
+          groundedBullets: Array(10).fill({
+            text: "Original bullet",
+            slide: 1,
+            evidence: "Evidence",
+          }),
+        });
+
+        // 4 dropped out of 10 (40% drop rate > 20%)
+        const verifiedSection = {
+          ...initialSection,
+          bulletPoints: Array(6).fill("Original bullet"),
+          groundedBullets: Array(6).fill({
+            text: "Original bullet",
+            slide: 1,
+            evidence: "Evidence",
+          }),
+        };
+
+        const retriedSection = {
+          ...initialSection,
+          overview: "Regenerated with strict source grounding",
+          bulletPoints: ["Strict bullet 1", "Strict bullet 2", "Strict bullet 3"],
+          groundedBullets: [
+            { text: "Strict bullet 1", slide: 1, evidence: "Evidence 1" },
+            { text: "Strict bullet 2", slide: 1, evidence: "Evidence 2" },
+            { text: "Strict bullet 3", slide: 1, evidence: "Evidence 3" },
+          ],
+        };
+
+        let capturedPrompt = "";
+        const retryFn = vi.fn().mockImplementation(async (sec: NoteSection, prompt: string) => {
+          capturedPrompt = prompt;
+          return retriedSection;
+        });
+
+        const gateRes = await runSectionQualityGate({
+          initialSections: [initialSection],
+          verifiedSections: [verifiedSection],
+          retrySectionFn: retryFn,
+        });
+
+        expect(retryFn).toHaveBeenCalledTimes(1);
+        expect(capturedPrompt).toContain("strict source slide grounding only");
+        expect(gateRes.sections.length).toBe(1);
+        expect(gateRes.sections[0].overview).toBe("Regenerated with strict source grounding");
+        expect(gateRes.decisions[0].action).toBe("RETRY_OR_OMIT");
+        expect(gateRes.decisions[0].omitted).toBe(false);
+        expect(gateRes.omittedNotices).toEqual([]);
+      });
+
+      it("omits section with student-facing omission notice when drop rate > 20% and retry fails/null", async () => {
+        const initialSection = createSection({
+          id: "sec-d",
+          letter: "D",
+          titleVi: "D. HOÁN ĐỔI LÃI SUẤT",
+          bulletPoints: Array(10).fill("Original bullet"),
+          groundedBullets: Array(10).fill({
+            text: "Original bullet",
+            slide: 1,
+            evidence: "Evidence",
+          }),
+        });
+
+        // 3 dropped out of 10 (30% drop rate > 20%)
+        const verifiedSection = {
+          ...initialSection,
+          bulletPoints: Array(7).fill("Original bullet"),
+          groundedBullets: Array(7).fill({
+            text: "Original bullet",
+            slide: 1,
+            evidence: "Evidence",
+          }),
+        };
+
+        // retrySectionFn returns null (failed retry)
+        const retryFn = vi.fn().mockResolvedValue(null);
+
+        const gateRes = await runSectionQualityGate({
+          initialSections: [initialSection],
+          verifiedSections: [verifiedSection],
+          retrySectionFn: retryFn,
+        });
+
+        expect(retryFn).toHaveBeenCalledTimes(1);
+        expect(gateRes.sections.length).toBe(0);
+        expect(gateRes.decisions[0].omitted).toBe(true);
+        expect(gateRes.decisions[0].action).toBe("RETRY_OR_OMIT");
+        expect(gateRes.decisions[0].notice).toContain(
+          "Section D (D. HOÁN ĐỔI LÃI SUẤT) was omitted because >20% of its synthesized claims could not be verified against source slides.",
+        );
+        expect(gateRes.omittedNotices).toHaveLength(1);
+        expect(gateRes.omittedNotices[0]).toBe(gateRes.decisions[0].notice);
+      });
+    });
+
+    describe("runVerificationGate with enforceSectionQualityGate", () => {
+      it("integrates section quality gate decisions and omitted notices into VerificationGateResult", async () => {
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 1",
+            text: "Gordon Growth model P_0 = D_1 / (R - g).",
+          },
+        ];
+
+        const ledger: FormulaLedgerEntry[] = [
+          {
+            id: "F1",
+            slide: 1,
+            raw: "P0 = D1 / (R - g)",
+            latex: "P_0 = \\frac{D_1}{R - g}",
+            origin: "text",
+            variables: [],
+          },
+        ];
+
+        // Section A has 10 bullets, but 3 residual ungrounded bullets that will be dropped by Step 5
+        const sectionA = createSection({
+          id: "sec-a",
+          letter: "A",
+          titleVi: "A. ĐỊNH GIÁ",
+          formulas: [
+            createFormula({
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              formulaRefs: ["F1"],
+              slide: 1,
+            }),
+          ],
+          groundedBullets: [
+            { text: "Valid bullet 1", slide: 1, evidence: "Gordon Growth" },
+            { text: "Valid bullet 2", slide: 1, evidence: "Gordon Growth" },
+            { text: "Valid bullet 3", slide: 1, evidence: "Gordon Growth" },
+            { text: "Valid bullet 4", slide: 1, evidence: "Gordon Growth" },
+            { text: "Valid bullet 5", slide: 1, evidence: "Gordon Growth" },
+            { text: "Valid bullet 6", slide: 1, evidence: "Gordon Growth" },
+            { text: "Valid bullet 7", slide: 1, evidence: "Gordon Growth" },
+            // Ungrounded bullets dropped by Step 5
+            { text: "Ungrounded claim with number 99.1%", slide: 1, evidence: "Gordon Growth" },
+            { text: "Ungrounded claim with number 99.2%", slide: 1, evidence: "Gordon Growth" },
+            { text: "Ungrounded claim with number 99.3%", slide: 1, evidence: "Gordon Growth" },
+          ],
+          bulletPoints: [
+            "Valid bullet 1",
+            "Valid bullet 2",
+            "Valid bullet 3",
+            "Valid bullet 4",
+            "Valid bullet 5",
+            "Valid bullet 6",
+            "Valid bullet 7",
+            "Ungrounded claim with number 99.1%",
+            "Ungrounded claim with number 99.2%",
+            "Ungrounded claim with number 99.3%",
+          ],
+        });
+
+        const onRegen = vi.fn();
+        const result = await runVerificationGate({
+          sections: [sectionA],
+          sources,
+          ledger,
+          options: {
+            skipVerifierLlm: true,
+            maxRepairAttempts: 0,
+            enforceSectionQualityGate: true,
+            onBackgroundRegenSection: onRegen,
+          },
+        });
+
+        // 3 dropped out of 10 = 30% drop rate > 20% -> retrySectionFn was not provided, so omitted!
+        expect(result.decisions).toBeDefined();
+        expect(result.decisions?.[0].sectionLetter).toBe("A");
+        expect(result.decisions?.[0].omitted).toBe(true);
+        expect(result.omittedNotices?.length).toBe(1);
+        expect(result.omittedSectionNotices?.length).toBe(1);
+        expect(result.sections.length).toBe(0);
+      });
+    });
+  });
+
+  describe("Financial Convention Pinning", () => {
+    describe("extractFinancialConventions", () => {
+      it("extracts day count conventions (30/360, Actual/365, Actual/360, Actual/Actual)", () => {
+        const slides = [
+          {
+            label: "Slide 1",
+            slide: 1,
+            text: "Bond accrual uses 30/360 day count convention in US corporate bond markets.",
+          },
+          {
+            label: "Slide 2",
+            slide: 2,
+            text: "Money market instruments use Actual/365 or Act/360 convention.",
+          },
+          {
+            label: "Slide 3",
+            slide: 3,
+            text: "Treasury bond coupon calculations use Act/Act day count convention.",
+          },
+        ];
+
+        const pins = extractFinancialConventions(slides);
+        expect(pins.some((p) => p.category === "day_count" && p.label === "30/360")).toBe(true);
+        expect(pins.some((p) => p.category === "day_count" && p.label === "Actual/365")).toBe(true);
+        expect(pins.some((p) => p.category === "day_count" && p.label === "Actual/360")).toBe(true);
+        expect(pins.some((p) => p.category === "day_count" && p.label === "Actual/Actual")).toBe(true);
+      });
+
+      it("extracts compounding frequency conventions (annual, semiannual, quarterly, monthly, continuous)", () => {
+        const slides = [
+          {
+            label: "Slide 1",
+            slide: 1,
+            text: "Annual percentage rate with semiannual compounding for treasury notes.",
+          },
+          {
+            label: "Slide 2",
+            slide: 2,
+            text: "Bank deposits feature monthly compounding or continuous compounding.",
+          },
+          {
+            label: "Slide 3",
+            slide: 3,
+            text: "Commercial paper yields are compounded quarterly or compounded annually.",
+          },
+          {
+            label: "Slide 4",
+            slide: 4,
+            text: "Trái phiếu doanh nghiệp ghép lãi bán niên theo quy chuẩn.",
+          },
+        ];
+
+        const pins = extractFinancialConventions(slides);
+        expect(pins.some((p) => p.category === "compounding" && p.label === "Semiannual Compounding")).toBe(true);
+        expect(pins.some((p) => p.category === "compounding" && p.label === "Monthly Compounding")).toBe(true);
+        expect(pins.some((p) => p.category === "compounding" && p.label === "Continuous Compounding")).toBe(true);
+        expect(pins.some((p) => p.category === "compounding" && p.label === "Quarterly Compounding")).toBe(true);
+        expect(pins.some((p) => p.category === "compounding" && p.label === "Annual Compounding")).toBe(true);
+      });
+
+      it("extracts timing conventions (beginning of period / annuity due vs end of period / ordinary annuity)", () => {
+        const slides = [
+          {
+            label: "Slide 1",
+            slide: 1,
+            text: "Lease payments are made at the beginning of each period (annuity due).",
+          },
+          {
+            label: "Slide 2",
+            slide: 2,
+            text: "Bond coupon payments are received at the end of each period (ordinary annuity).",
+          },
+          {
+            label: "Slide 3",
+            slide: 3,
+            text: "Các khoản thanh toán phát sinh đầu kỳ so với cuối kỳ.",
+          },
+        ];
+
+        const pins = extractFinancialConventions(slides);
+        expect(pins.some((p) => p.category === "timing" && p.label.includes("Beginning of Period"))).toBe(true);
+        expect(pins.some((p) => p.category === "timing" && p.label.includes("End of Period"))).toBe(true);
+      });
+    });
+
+    describe("pinConventionsToSections", () => {
+      it("pins detected conventions cleanly into section overview", () => {
+        const sections: NoteSection[] = [
+          createSection({
+            id: "sec-a",
+            letter: "A",
+            titleVi: "A. ĐỊNH GIÁ NIÊN KIM",
+            sourceSlides: [1],
+            overview: "Tổng quan định giá niên kim.",
+          }),
+        ];
+
+        const conventions: FinancialConventionPin[] = [
+          {
+            category: "day_count",
+            label: "30/360",
+            slide: 1,
+            rawMatch: "30/360",
+          },
+          {
+            category: "compounding",
+            label: "Semiannual Compounding",
+            slide: 1,
+            rawMatch: "semiannual compounding",
+          },
+          {
+            category: "timing",
+            label: "Beginning of Period (Annuity Due)",
+            slide: 1,
+            rawMatch: "beginning of period",
+          },
+        ];
+
+        const updated = pinConventionsToSections(sections, conventions);
+        expect(updated[0].overview).toContain("[Conventions:");
+        expect(updated[0].overview).toContain("30/360");
+        expect(updated[0].overview).toContain("Semiannual Compounding");
+        expect(updated[0].overview).toContain("Beginning of Period (Annuity Due)");
+      });
+
+      it("avoids redundant pinning if convention is already mentioned in section text", () => {
+        const sections: NoteSection[] = [
+          createSection({
+            id: "sec-b",
+            letter: "B",
+            titleVi: "B. QUY ƯỚC 30/360",
+            sourceSlides: [1],
+            overview: "Áp dụng quy ước 30/360 ngày cho toàn bộ tính toán trái phiếu.",
+          }),
+        ];
+
+        const conventions: FinancialConventionPin[] = [
+          {
+            category: "day_count",
+            label: "30/360",
+            slide: 1,
+            rawMatch: "30/360",
+          },
+        ];
+
+        const updated = pinConventionsToSections(sections, conventions);
+        // Already mentioned in overview, so no duplicate [Conventions: 30/360] tag added
+        expect(updated[0].overview).not.toContain("[Conventions:");
+      });
+    });
+
+    describe("runVerificationGate convention pinning integration", () => {
+      it("pins conventions and exposes pinnedConventions in result", async () => {
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 1",
+            text: "Fixed income notes use 30/360 day count with semiannual compounding.",
+          },
+        ];
+
+        const ledger: FormulaLedgerEntry[] = [];
+
+        const section = createSection({
+          id: "sec-a",
+          letter: "A",
+          titleVi: "A. CỐ ĐỊNH THU NHẬP",
+          sourceSlides: [1],
+          overview: "Định giá chứng khoán nợ.",
+          groundedBullets: [
+            { text: "Bullet text", slide: 1, evidence: "Fixed income notes" },
+          ],
+          bulletPoints: ["Bullet text"],
+        });
+
+        const result = await runVerificationGate({
+          sections: [section],
+          sources,
+          ledger,
+          options: {
+            skipVerifierLlm: true,
+            maxRepairAttempts: 0,
+            pinConventions: true,
+          },
+        });
+
+        expect(result.pinnedConventions).toBeDefined();
+        expect(result.pinnedConventions?.length).toBeGreaterThanOrEqual(2);
+        expect(result.sections[0].overview).toContain("[Conventions:");
+        expect(result.sections[0].overview).toContain("30/360");
+        expect(result.sections[0].overview).toContain("Semiannual Compounding");
+      });
+    });
+
+    describe("buildNotesPrompt convention integration", () => {
+      it("includes <pinned_conventions> block in prompt when slide deck contains conventions", () => {
+        const slides = [
+          {
+            label: "Slide 1",
+            slide: 1,
+            text: "Bond valuation under 30/360 day count with semiannual compounding and ordinary annuity payments at end of period.",
+          },
+        ];
+
+        const prompt = buildNotesPrompt({
+          fileName: "Bond_Valuation.pptx",
+          slides,
+        });
+
+        expect(prompt).toContain("<pinned_conventions>");
+        expect(prompt).toContain("30/360");
+        expect(prompt).toContain("Semiannual Compounding");
+        expect(prompt).toContain("End of Period (Ordinary Annuity)");
+        expect(prompt).toContain("Financial Convention Pinning");
+      });
     });
   });
 });

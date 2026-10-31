@@ -27,7 +27,21 @@ import {
   getStoredReferralState,
   awardReferralPass,
   consumeUnlockedRemixRun,
+  evaluateCogsDegradation,
+  formatDeckCreditsCounter,
 } from "@/lib/pricing/tiers";
+import {
+  checkAndReserveDeckQuota,
+  recordDeckGenerationCogs,
+  getUserQuotaLedger,
+  saveUserQuotaLedger,
+  getSharedDeckCache,
+  setSharedDeckCache,
+  computeContentHash,
+  computeFileSha256,
+  sampleQuestionsFromCachedPool,
+  resetQuotaLedgersForTests,
+} from "@/lib/rate-limit";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
 import {
   createRoom,
@@ -494,3 +508,362 @@ describe("Multiplayer Concurrency & Realtime Lifecycle", () => {
     expect(getRoom(room.code)).toBeNull();
   });
 });
+
+describe("Subscription Deck Credit Caps, Burst Limits & Regeneration Allowances", () => {
+  beforeEach(() => {
+    resetQuotaLedgersForTests();
+  });
+
+  it("verifies 7-Day Cram Pass and Semester Pro Pass tier limits, burst caps, and pricing", () => {
+    const cram = PRICING_PLANS.find((p) => p.id === "cram_pass")!;
+    expect(cram.priceUsd).toBe(3.99);
+    expect(cram.priceUsdFormatted).toBe("$3.99");
+    expect(TIER_LIMITS.cram_pass.newDeckCredits).toBe(12);
+    expect(TIER_LIMITS.cram_pass.dailyDeckBurstLimit).toBe(4);
+    expect(TIER_LIMITS.cram_pass.freeRegenerationsPerDeck).toBe(3);
+    expect(TIER_LIMITS.cram_pass.cogsCeilingUsd).toBe(1.25);
+
+    const pro = PRICING_PLANS.find((p) => p.id === "pro")!;
+    expect(pro.priceUsd).toBe(29.0);
+    expect(pro.priceUsdFormatted).toBe("$29");
+    expect(TIER_LIMITS.pro.newDeckCredits).toBe(60);
+    expect(TIER_LIMITS.pro.dailyDeckBurstLimit).toBe(6);
+    expect(TIER_LIMITS.pro.freeRegenerationsPerDeck).toBe(5);
+    expect(TIER_LIMITS.pro.cogsCeilingUsd).toBe(9.75);
+
+    expect(formatDeckCreditsCounter(3, 12)).toBe("3 of 12 decks used");
+    expect(formatDeckCreditsCounter(60, 60)).toBe("60 of 60 decks used");
+  });
+
+  it("enforces 4 decks/day burst limit for 7-Day Cram Pass", async () => {
+    const userId = "cram-burst-user";
+    for (let i = 1; i <= 4; i++) {
+      const res = await checkAndReserveDeckQuota(userId, "cram_pass", `deck-hash-${i}`);
+      expect(res.allowed).toBe(true);
+      expect(res.dailyBurstUsed).toBe(i);
+      expect(res.dailyBurstLimit).toBe(4);
+      expect(res.creditConsumed).toBe(true);
+    }
+
+    const fifth = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-hash-5");
+    expect(fifth.allowed).toBe(false);
+    expect(fifth.reason).toBe("DAILY_BURST_EXCEEDED");
+    expect(fifth.dailyBurstUsed).toBe(4);
+    expect(fifth.dailyBurstLimit).toBe(4);
+    expect(fifth.creditConsumed).toBe(false);
+  });
+
+  it("enforces 6 decks/day burst limit for Semester Pro Pass", async () => {
+    const userId = "pro-burst-user";
+    for (let i = 1; i <= 6; i++) {
+      const res = await checkAndReserveDeckQuota(userId, "pro", `pro-hash-${i}`);
+      expect(res.allowed).toBe(true);
+      expect(res.dailyBurstUsed).toBe(i);
+      expect(res.dailyBurstLimit).toBe(6);
+    }
+
+    const seventh = await checkAndReserveDeckQuota(userId, "pro", "pro-hash-7");
+    expect(seventh.allowed).toBe(false);
+    expect(seventh.reason).toBe("DAILY_BURST_EXCEEDED");
+    expect(seventh.dailyBurstUsed).toBe(6);
+  });
+
+  it("enforces 12 total deck credits cap for 7-Day Cram Pass", async () => {
+    const userId = "cram-credits-user";
+    const ledger = await getUserQuotaLedger(userId, "cram_pass");
+    ledger.deckCreditsUsed = 12;
+    ledger.dailyBurstUsed = 0;
+    await saveUserQuotaLedger(ledger);
+
+    const attempt = await checkAndReserveDeckQuota(userId, "cram_pass", "new-deck-13");
+    expect(attempt.allowed).toBe(false);
+    expect(attempt.reason).toBe("DECK_CREDITS_EXCEEDED");
+    expect(attempt.creditsUsed).toBe(12);
+    expect(attempt.creditsLimit).toBe(12);
+  });
+
+  it("enforces 60 total deck credits cap for Semester Pro Pass", async () => {
+    const userId = "pro-credits-user";
+    const ledger = await getUserQuotaLedger(userId, "pro");
+    ledger.deckCreditsUsed = 60;
+    ledger.dailyBurstUsed = 0;
+    await saveUserQuotaLedger(ledger);
+
+    const attempt = await checkAndReserveDeckQuota(userId, "pro", "pro-new-deck-61");
+    expect(attempt.allowed).toBe(false);
+    expect(attempt.reason).toBe("DECK_CREDITS_EXCEEDED");
+    expect(attempt.creditsUsed).toBe(60);
+    expect(attempt.creditsLimit).toBe(60);
+  });
+
+  it("enforces 3 free regenerations per deck for Cram Pass and rejects 4th regeneration", async () => {
+    const userId = "cram-regen-user";
+    const deckHash = "cram-math-deck";
+
+    const initRes = await checkAndReserveDeckQuota(userId, "cram_pass", deckHash);
+    expect(initRes.allowed).toBe(true);
+    expect(initRes.creditConsumed).toBe(true);
+    expect(initRes.isRegeneration).toBe(false);
+
+    for (let regen = 1; regen <= 3; regen++) {
+      const regenRes = await checkAndReserveDeckQuota(userId, "cram_pass", deckHash);
+      expect(regenRes.allowed).toBe(true);
+      expect(regenRes.isRegeneration).toBe(true);
+      expect(regenRes.creditConsumed).toBe(false);
+      expect(regenRes.creditsUsed).toBe(1);
+    }
+
+    const fourthRegen = await checkAndReserveDeckQuota(userId, "cram_pass", deckHash);
+    expect(fourthRegen.allowed).toBe(false);
+    expect(fourthRegen.reason).toBe("REGENERATION_LIMIT_EXCEEDED");
+    expect(fourthRegen.isRegeneration).toBe(true);
+  });
+
+  it("enforces 5 free regenerations per deck for Pro Pass and rejects 6th regeneration", async () => {
+    const userId = "pro-regen-user";
+    const deckHash = "pro-macro-deck";
+
+    const initRes = await checkAndReserveDeckQuota(userId, "pro", deckHash);
+    expect(initRes.allowed).toBe(true);
+
+    for (let regen = 1; regen <= 5; regen++) {
+      const regenRes = await checkAndReserveDeckQuota(userId, "pro", deckHash);
+      expect(regenRes.allowed).toBe(true);
+      expect(regenRes.isRegeneration).toBe(true);
+      expect(regenRes.creditConsumed).toBe(false);
+    }
+
+    const sixthRegen = await checkAndReserveDeckQuota(userId, "pro", deckHash);
+    expect(sixthRegen.allowed).toBe(false);
+    expect(sixthRegen.reason).toBe("REGENERATION_LIMIT_EXCEEDED");
+  });
+});
+
+describe("Shared Deck Cache & content_hash Zero-Credit Behavior", () => {
+  beforeEach(() => {
+    resetQuotaLedgersForTests();
+  });
+
+  it("computes deterministic content_hash and fileSha256", () => {
+    const hash1 = computeContentHash({
+      normalizedText: "Lecture 1: Time Value of Money\r\nFormula: PV = FV / (1 + r)^n",
+      pageCount: 15,
+      imageHashes: ["imgB", "imgA"],
+    });
+
+    const hash2 = computeContentHash({
+      normalizedText: "Lecture 1: Time Value of Money\nFormula: PV = FV / (1 + r)^n",
+      pageCount: 15,
+      imageHashes: ["imgA", "imgB"],
+    });
+
+    expect(hash1).toBe(hash2);
+    expect(hash1).toMatch(/^[a-f0-9]{64}$/);
+
+    const fileBuf = Buffer.from("Slide PDF Mock Content 2026");
+    const fileSha = computeFileSha256(fileBuf);
+    expect(fileSha).toMatch(/^[a-f0-9]{64}$/);
+    expect(computeFileSha256(fileBuf)).toBe(fileSha);
+  });
+
+  it("cache hit on content_hash consumes 0 deck credits and incurs $0.00 COGS", async () => {
+    const contentHash = "cached-finance-syllabus-hash";
+    const pipelineVersion = "3.0.0-final+gemini+claude";
+
+    await setSharedDeckCache({
+      contentHash,
+      language: "en",
+      mode: "generate",
+      focusHash: "",
+      pipelineVersion,
+      questionPool: [
+        { id: "q1", question: "What is WACC?", correctIndex: 0 },
+        { id: "q2", question: "What is CAPM?", correctIndex: 1 },
+      ],
+      studyMetadata: { topic: "Corporate Finance" },
+    });
+
+    const userId = "student-cram-caching";
+    const result = await checkAndReserveDeckQuota(userId, "cram_pass", contentHash, {
+      pipelineVersion,
+      language: "en",
+      mode: "generate",
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.cacheHit).toBe(true);
+    expect(result.creditConsumed).toBe(false);
+    expect(result.isRegeneration).toBe(false);
+    expect(result.creditsUsed).toBe(0);
+    expect(result.cachedDeck).toBeDefined();
+    expect(result.cachedDeck?.questionPool).toHaveLength(2);
+
+    const ledger = await getUserQuotaLedger(userId, "cram_pass");
+    expect(ledger.deckCreditsUsed).toBe(0);
+    expect(ledger.cogsSpentUsd).toBe(0);
+    expect(ledger.cogsReservedUsd).toBe(0);
+  });
+
+  it("cache hit succeeds even when user has exhausted all new deck credits", async () => {
+    const contentHash = "shared-exam-pack-hash";
+    const pipelineVersion = "3.0.0-final";
+
+    await setSharedDeckCache({
+      contentHash,
+      language: "en",
+      mode: "generate",
+      focusHash: "",
+      pipelineVersion,
+      questionPool: [{ id: "q-shared" }],
+    });
+
+    const userId = "exhausted-user";
+    const ledger = await getUserQuotaLedger(userId, "contender");
+    ledger.deckCreditsUsed = 2;
+    await saveUserQuotaLedger(ledger);
+
+    const res = await checkAndReserveDeckQuota(userId, "contender", contentHash, {
+      pipelineVersion,
+    });
+
+    expect(res.allowed).toBe(true);
+    expect(res.cacheHit).toBe(true);
+    expect(res.creditConsumed).toBe(false);
+  });
+
+  it("supports fast-path cache lookup by fileSha256", async () => {
+    const fileSha256 = "b7a8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8";
+    const contentHash = "derived-content-hash-123";
+    const pipelineVersion = "3.0.0-final";
+
+    await setSharedDeckCache({
+      contentHash,
+      fileSha256,
+      language: "en",
+      mode: "generate",
+      focusHash: "",
+      pipelineVersion,
+      questionPool: [{ id: "q-fastpath" }],
+    });
+
+    const cached = await getSharedDeckCache({
+      contentHash: "mismatched-content-hash",
+      fileSha256,
+      pipelineVersion,
+    });
+
+    expect(cached).not.toBeNull();
+    expect(cached?.fileSha256).toBe(fileSha256);
+    expect(cached?.hitCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("sampleQuestionsFromCachedPool returns deterministic subsets when seed is provided", () => {
+    const pool = Array.from({ length: 35 }, (_, i) => ({ id: `q-${i + 1}` }));
+    const sample1 = sampleQuestionsFromCachedPool(pool, 25, "seed-exam-2026");
+    const sample2 = sampleQuestionsFromCachedPool(pool, 25, "seed-exam-2026");
+    const sampleDiff = sampleQuestionsFromCachedPool(pool, 25, "seed-diff-9999");
+
+    expect(sample1).toHaveLength(25);
+    expect(sample2).toHaveLength(25);
+    expect(sample1.map((q) => q.id)).toEqual(sample2.map((q) => q.id));
+    expect(sample1.map((q) => q.id)).not.toEqual(sampleDiff.map((q) => q.id));
+  });
+});
+
+describe("Pre-Flight COGS Ceiling & Progressive 4-Tier Degradation Ladder", () => {
+  beforeEach(() => {
+    resetQuotaLedgersForTests();
+  });
+
+  it("Tier 1 (< 70%): full pipeline with vision OCR, cross-family verifier, and full question count", () => {
+    const status = evaluateCogsDegradation(0.5, 1.25, 0.0);
+    expect(status.mode).toBe("full");
+    expect(status.utilizationRatio).toBe(0.4);
+    expect(status.targetQuestionCount).toBe(25);
+    expect(status.allowVisionOcr).toBe(true);
+    expect(status.allowBorderlineVision).toBe(true);
+    expect(status.allowCrossFamilyVerifier).toBe(true);
+    expect(status.useCheaperGeneratorSlug).toBe(false);
+    expect(status.conciseExplanations).toBe(false);
+    expect(status.serveCachedPoolsOnly).toBe(false);
+    expect(status.bannerNotice).toBeNull();
+  });
+
+  it("Tier 2 (70% - 90%): gentle degradation with targeted vision, cheaper generator, concise explanations", () => {
+    const status = evaluateCogsDegradation(0.9, 1.25, 0.0);
+    expect(status.mode).toBe("gentle");
+    expect(status.utilizationRatio).toBe(0.72);
+    expect(status.targetQuestionCount).toBe(20);
+    expect(status.allowVisionOcr).toBe(true);
+    expect(status.allowBorderlineVision).toBe(false);
+    expect(status.allowCrossFamilyVerifier).toBe(true);
+    expect(status.useCheaperGeneratorSlug).toBe(true);
+    expect(status.conciseExplanations).toBe(true);
+    expect(status.serveCachedPoolsOnly).toBe(false);
+    expect(status.bannerNotice).toBeNull();
+  });
+
+  it("Tier 3 (90% - 100%): hard degradation with 15 questions, vision disabled, verifier bypassed", () => {
+    const status = evaluateCogsDegradation(1.15, 1.25, 0.0);
+    expect(status.mode).toBe("hard");
+    expect(status.utilizationRatio).toBe(0.92);
+    expect(status.targetQuestionCount).toBe(15);
+    expect(status.allowVisionOcr).toBe(false);
+    expect(status.allowBorderlineVision).toBe(false);
+    expect(status.allowCrossFamilyVerifier).toBe(false);
+    expect(status.useCheaperGeneratorSlug).toBe(true);
+    expect(status.conciseExplanations).toBe(true);
+    expect(status.serveCachedPoolsOnly).toBe(false);
+    expect(status.bannerNotice).toBeNull();
+  });
+
+  it("Tier 4 (> 100%): halts fresh generation, serves cached pools only, and sets banner notice", () => {
+    const status = evaluateCogsDegradation(1.3, 1.25, 0.0);
+    expect(status.mode).toBe("halted");
+    expect(status.utilizationRatio).toBe(1.04);
+    expect(status.targetQuestionCount).toBe(0);
+    expect(status.allowVisionOcr).toBe(false);
+    expect(status.allowBorderlineVision).toBe(false);
+    expect(status.allowCrossFamilyVerifier).toBe(false);
+    expect(status.serveCachedPoolsOnly).toBe(true);
+    expect(status.bannerNotice).toContain("Subscription deck generation budget reached for this period");
+  });
+
+  it("checkAndReserveDeckQuota blocks generation when projected COGS exceeds ceiling", async () => {
+    const userId = "cogs-exceeded-user";
+    const ledger = await getUserQuotaLedger(userId, "cram_pass");
+    ledger.cogsSpentUsd = 1.25;
+    await saveUserQuotaLedger(ledger);
+
+    const attempt = await checkAndReserveDeckQuota(userId, "cram_pass", "new-costly-deck", {
+      estimatedCostUsd: 0.03,
+    });
+
+    expect(attempt.allowed).toBe(false);
+    expect(attempt.reason).toBe("COGS_CEILING_EXCEEDED");
+    expect(attempt.cogsStatus.mode).toBe("halted");
+    expect(attempt.cogsStatus.serveCachedPoolsOnly).toBe(true);
+  });
+
+  it("recordDeckGenerationCogs accurately tracks spent COGS and releases reserved funds", async () => {
+    const userId = "cogs-ledger-tracker";
+    const res = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-actual-cost", {
+      estimatedCostUsd: 0.03,
+    });
+    expect(res.allowed).toBe(true);
+    expect(res.ledger.cogsReservedUsd).toBe(0.03);
+
+    const { ledger, cogsStatus } = await recordDeckGenerationCogs(
+      userId,
+      "cram_pass",
+      0.025,
+      0.03,
+    );
+
+    expect(ledger.cogsSpentUsd).toBe(0.025);
+    expect(ledger.cogsReservedUsd).toBe(0);
+    expect(cogsStatus.spentUsd).toBe(0.025);
+    expect(cogsStatus.mode).toBe("full");
+  });
+});
+

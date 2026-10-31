@@ -10,6 +10,8 @@ import {
   rematch,
 } from "@/lib/multiplayer/room-manager";
 import { roomActionSchema } from "@/lib/schemas/multiplayer";
+import { getPartyHost } from "@/lib/multiplayer/party-config";
+import PartySocket from "partysocket";
 import { z } from "zod";
 
 const requestPayloadSchema = z.preprocess(
@@ -42,20 +44,44 @@ export async function POST(
 ) {
   try {
     const { code } = await props.params;
-    const room = getRoom(code);
-    if (!room) {
-      return NextResponse.json(
-        { ok: false, error: { message: `Arena room "${code}" not found.` } },
-        { status: 404 },
-      );
-    }
-
     const json = await req.json();
     const parsed = requestPayloadSchema.safeParse(json);
     if (!parsed.success) {
       return NextResponse.json(
         { ok: false, error: parsed.error.flatten() },
         { status: 400 },
+      );
+    }
+
+    const partyHost = getPartyHost();
+    if (partyHost) {
+      try {
+        const partyRes = await PartySocket.fetch(
+          {
+            host: partyHost,
+            party: "arena",
+            room: code.toUpperCase(),
+            path: "/action",
+          },
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed.data),
+          },
+        );
+
+        const partyData = await partyRes.json();
+        return NextResponse.json(partyData, { status: partyRes.status });
+      } catch (partyErr) {
+        console.error("PartyKit action fallback to local:", partyErr);
+      }
+    }
+
+    const room = getRoom(code);
+    if (!room) {
+      return NextResponse.json(
+        { ok: false, error: { message: `Arena room "${code}" not found.` } },
+        { status: 404 },
       );
     }
 

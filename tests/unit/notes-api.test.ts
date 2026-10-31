@@ -5,6 +5,13 @@ import { NextRequest } from "next/server";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { MAX_EXTRACTED_CHARACTERS, MAX_PDF_PAGES } from "@/lib/ingestion/limits";
+import {
+  resetQuotaLedgersForTests,
+  getUserQuotaLedger,
+  saveUserQuotaLedger,
+  getSharedDeckCache,
+  computeContentHash,
+} from "@/lib/rate-limit";
 import type { ClutchNote } from "@/lib/schemas/notes";
 
 vi.mock("@/lib/ai/generate-notes", () => ({
@@ -41,6 +48,7 @@ const mockNote: ClutchNote = {
 describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetQuotaLedgersForTests();
   });
 
   it("rejects Free / Contender tier with 403 PRO_SUBSCRIPTION_REQUIRED", async () => {
@@ -424,5 +432,103 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     expect(data.ok).toBe(false);
     expect(data.error.code).toBe("TOO_MANY_PAGES");
     expect(data.error.message).toContain(`Upload at most ${MAX_PDF_PAGES} slides`);
+  });
+
+  it("populates shared deck cache and records COGS on cache miss, then serves cached note without calling LLM on cache hit", async () => {
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(mockNote);
+
+    const slideSources = [
+      {
+        id: "slide-1",
+        label: "Slide 1",
+        text: "CAPM Formula: E(Ri) = Rf + Beta_i * (E(Rm) - Rf). Systematic risk cannot be diversified away.",
+      },
+    ];
+
+    const makeRequest = () =>
+      new NextRequest("http://localhost:3000/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "pro",
+          "x-test-user-id": "user-notes-quota-1",
+          "x-enforce-quota": "true",
+          origin: "http://localhost:3000",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          fileName: "CAPM_Lecture.pptx",
+          sources: slideSources,
+        }),
+      });
+
+    // 1. First request: cache miss -> calls generateClutchNote, records COGS, populates cache
+    const firstRes = await POST(makeRequest());
+    expect(firstRes.status).toBe(200);
+    const firstData = await firstRes.json();
+    expect(firstData.ok).toBe(true);
+    expect(firstData.note).toEqual(mockNote);
+    expect(firstData.cached).toBeUndefined();
+    expect(vi.mocked(generateClutchNote)).toHaveBeenCalledTimes(1);
+
+    const ledger = await getUserQuotaLedger("user-notes-quota-1", "pro");
+    expect(ledger.deckCreditsUsed).toBe(1);
+    expect(ledger.cogsSpentUsd).toBeGreaterThan(0);
+
+    const contentHash = computeContentHash({
+      normalizedText: slideSources[0].text,
+      pageCount: 1,
+    });
+    const cachedEntry = await getSharedDeckCache({
+      contentHash,
+      language: "en",
+      mode: "notes",
+      focusHash: "",
+      pipelineVersion: "notes-v1",
+    });
+    expect(cachedEntry?.clutchNote).toEqual(mockNote);
+
+    // 2. Second request: cache hit -> bypasses generateClutchNote and returns cached: true
+    const secondRes = await POST(makeRequest());
+    expect(secondRes.status).toBe(200);
+    const secondData = await secondRes.json();
+    expect(secondData.ok).toBe(true);
+    expect(secondData.cached).toBe(true);
+    expect(secondData.note).toEqual(mockNote);
+    expect(vi.mocked(generateClutchNote)).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks notes generation with 429 and specific reason code when user quota is exhausted", async () => {
+    const exhaustedLedger = await getUserQuotaLedger("user-notes-exhausted", "cram_pass");
+    exhaustedLedger.deckCreditsUsed = exhaustedLedger.deckCreditsLimit;
+    await saveUserQuotaLedger(exhaustedLedger);
+
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "cram_pass",
+        "x-test-user-id": "user-notes-exhausted",
+        "x-enforce-quota": "true",
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: "Quota_Exhausted_Slides.pptx",
+        sources: [
+          {
+            id: "slide-1",
+            label: "Slide 1",
+            text: "Black-Scholes Option Pricing Model and implied volatility surface.",
+          },
+        ],
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(429);
+
+    const data = await response.json();
+    expect(data.ok).toBe(false);
+    expect(data.error.code).toBe("DECK_CREDITS_EXCEEDED");
+    expect(vi.mocked(generateClutchNote)).not.toHaveBeenCalled();
   });
 });

@@ -6,6 +6,12 @@ import {
   generateBotDecision,
   type BotProfile,
 } from "@/lib/multiplayer/bot-ai";
+import {
+  computeClassAnalytics,
+  finishQuestionRound,
+  type ServerRoom,
+} from "@/lib/multiplayer/room-manager";
+import { getMaxArenaPlayersForTier, type UserTier } from "@/lib/pricing/tiers";
 import type {
   ArenaPlayer,
   ArenaRoomState,
@@ -22,10 +28,17 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
+export const STALE_LOBBY_TIMEOUT_MS = 15 * 60_000;
+
 export type PartyRoomData = {
   code: string;
   title: string;
   hostId: string;
+  hostTier: UserTier;
+  maxPlayers: number;
+  lastActiveAt: number;
+  roundHistory: ServerRoom["roundHistory"];
+  earlyEliminatedIds: Set<string>;
   status: RoomStatus;
   mode: "exact" | "variants";
   pack: StudyPack;
@@ -71,10 +84,50 @@ export default class ArenaServer implements Party.Server {
       return;
     }
 
-    const stored = await this.room.storage.get<PartyRoomData>("room_data");
+    const stored = await this.room.storage.get<any>("room_data");
     if (stored) {
-      this.state = stored;
+      const rawEarly = stored.earlyEliminatedIds;
+      const earlyEliminated = Array.isArray(rawEarly)
+        ? rawEarly
+        : rawEarly instanceof Set
+        ? Array.from(rawEarly)
+        : [];
+      this.state = {
+        ...stored,
+        hostTier: stored.hostTier ?? "contender",
+        maxPlayers: stored.maxPlayers ?? getMaxArenaPlayersForTier("contender"),
+        lastActiveAt: stored.lastActiveAt ?? Date.now(),
+        roundHistory: stored.roundHistory ?? {},
+        earlyEliminatedIds: new Set(earlyEliminated),
+      };
+      await this.cleanupIfStaleLobby();
     }
+  }
+
+  async onAlarm() {
+    await this.cleanupIfStaleLobby();
+  }
+
+  /** Removes a room that has sat in the lobby with no activity past STALE_LOBBY_TIMEOUT_MS. */
+  private async cleanupIfStaleLobby(): Promise<boolean> {
+    if (!this.state || this.state.status !== "lobby") return false;
+    if (Date.now() - this.state.lastActiveAt < STALE_LOBBY_TIMEOUT_MS) return false;
+
+    const code = this.state.code;
+    this.clearTimers();
+    this.state = null;
+    await this.room.storage.deleteAll();
+    for (const conn of this.room.getConnections()) {
+      conn.close();
+    }
+    try {
+      await this.room.context.parties.arena
+        .get("__lobby__")
+        .fetch({ method: "DELETE", body: JSON.stringify({ code }) });
+    } catch {
+      // directory notification is non-blocking
+    }
+    return true;
   }
 
   // -------------------------------------------------------------
@@ -122,6 +175,21 @@ export default class ArenaServer implements Party.Server {
       }
 
       if (parsed.type === "JOIN_ROOM") {
+        if (
+          this.state &&
+          Object.keys(this.state.players).length >= (this.state.maxPlayers || 8)
+        ) {
+          sender.send(
+            JSON.stringify({
+              type: "ERROR",
+              code: "ROOM_FULL",
+              message: `Arena room "${this.room.id}" is full (maximum ${this.state.maxPlayers} players for ${this.state.hostTier} tier).`,
+              maxPlayers: this.state.maxPlayers,
+              hostTier: this.state.hostTier,
+            }),
+          );
+          return;
+        }
         const player = this.joinPlayer(parsed.payload);
         if (player) {
           sender.send(
@@ -202,6 +270,13 @@ export default class ArenaServer implements Party.Server {
         await this.room.storage.put("directory", Object.fromEntries(this.directory));
         return Response.json({ ok: true }, { headers: CORS_HEADERS });
       }
+
+      if (req.method === "DELETE") {
+        const { code } = (await req.json()) as { code: string };
+        this.directory.delete(code);
+        await this.room.storage.put("directory", Object.fromEntries(this.directory));
+        return Response.json({ ok: true }, { headers: CORS_HEADERS });
+      }
     }
 
     // Normal Room HTTP Handlers
@@ -241,6 +316,32 @@ export default class ArenaServer implements Party.Server {
 
       if (pathname.endsWith("/join")) {
         const body = (await req.json()) as any;
+        if (!this.state) {
+          return Response.json(
+            { ok: false, error: { message: `Arena room "${this.room.id}" not found.` } },
+            { status: 404, headers: CORS_HEADERS },
+          );
+        }
+        if (this.state.status !== "lobby") {
+          return Response.json(
+            { ok: false, error: { message: "This arena match has already started." } },
+            { status: 400, headers: CORS_HEADERS },
+          );
+        }
+        if (Object.keys(this.state.players).length >= (this.state.maxPlayers || 8)) {
+          return Response.json(
+            {
+              ok: false,
+              error: {
+                code: "ROOM_FULL",
+                message: `Arena room "${this.room.id}" is full (maximum ${this.state.maxPlayers} players for ${this.state.hostTier} tier).`,
+                maxPlayers: this.state.maxPlayers,
+                hostTier: this.state.hostTier,
+              },
+            },
+            { status: 403, headers: CORS_HEADERS },
+          );
+        }
         const player = this.joinPlayer(body);
         if (!player) {
           return Response.json(
@@ -287,6 +388,8 @@ export default class ArenaServer implements Party.Server {
     title?: string;
     mode?: "exact" | "variants";
     pack?: StudyPack;
+    maxPlayers?: number;
+    hostTier?: UserTier;
   }): { hostPlayer: ArenaPlayer } {
     this.clearTimers();
 
@@ -306,13 +409,33 @@ export default class ArenaServer implements Party.Server {
     };
 
     const pack = params.pack || mockMicroeconomics;
+    const hostTier: UserTier = params.hostTier || "contender";
+
+    let maxPlayers: number;
+    if (params.hostTier !== undefined) {
+      const tierCap = getMaxArenaPlayersForTier(params.hostTier);
+      maxPlayers =
+        params.maxPlayers !== undefined ? Math.min(params.maxPlayers, tierCap) : tierCap;
+    } else {
+      maxPlayers = params.maxPlayers ?? getMaxArenaPlayersForTier("contender");
+    }
+
+    let mode = params.mode || "exact";
+    if (hostTier === "contender") {
+      mode = "exact";
+    }
 
     this.state = {
       code: this.room.id,
       title: params.title?.trim() || `${pack.title} Arena`,
       hostId: hostPlayer.id,
+      hostTier,
+      maxPlayers,
+      lastActiveAt: Date.now(),
+      roundHistory: {},
+      earlyEliminatedIds: new Set(),
       status: "lobby",
-      mode: params.mode || "exact",
+      mode,
       pack,
       currentQuestionIndex: -1,
       totalQuestions: pack.questions.length,
@@ -331,6 +454,7 @@ export default class ArenaServer implements Party.Server {
 
   private joinPlayer(params: { nickname: string; avatar?: string }): ArenaPlayer | null {
     if (!this.state || this.state.status !== "lobby") return null;
+    if (Object.keys(this.state.players).length >= (this.state.maxPlayers || 8)) return null;
 
     const player: ArenaPlayer = {
       id: `player_${crypto.randomUUID().slice(0, 8)}`,
@@ -516,6 +640,7 @@ export default class ArenaServer implements Party.Server {
   private endRound() {
     if (!this.state) return;
     this.clearTimers();
+    finishQuestionRound(this.state as ServerRoom);
 
     this.state.status = "feedback";
     this.state.feedbackDeadline = Date.now() + 4_000;
@@ -537,6 +662,12 @@ export default class ArenaServer implements Party.Server {
   private endMatch() {
     if (!this.state) return;
     this.clearTimers();
+    if (
+      this.state.currentQuestionIndex >= 0 &&
+      !this.state.roundHistory[this.state.currentQuestionIndex]
+    ) {
+      finishQuestionRound(this.state as ServerRoom);
+    }
     this.state.status = "podium";
 
     const ranked = Object.values(this.state.players).sort((a, b) => {
@@ -565,6 +696,8 @@ export default class ArenaServer implements Party.Server {
     this.state.roundDeadline = 0;
     this.state.feedbackDeadline = 0;
     this.state.countdownEndsAt = 0;
+    this.state.roundHistory = {};
+    this.state.earlyEliminatedIds.clear();
 
     Object.values(this.state.players).forEach((p) => {
       p.score = 0;
@@ -593,6 +726,7 @@ export default class ArenaServer implements Party.Server {
   private addBot(hostId: string, botType?: BotProfile["type"]): boolean {
     if (!this.state || this.state.status !== "lobby") return false;
     if (this.state.hostId !== hostId) return false;
+    if (Object.keys(this.state.players).length >= (this.state.maxPlayers || 8)) return false;
 
     const existingBotNames = new Set(
       Object.values(this.state.players)
@@ -717,8 +851,11 @@ export default class ArenaServer implements Party.Server {
       currentQuestion,
       revealedFeedback,
       createdAt: this.state.createdAt,
+      maxPlayers: this.state.maxPlayers,
       mode: this.state.mode,
       packId: this.state.pack.id,
+      hostTier: this.state.hostTier,
+      classAnalytics: computeClassAnalytics(this.state as ServerRoom),
       podium: this.state.podium,
     };
   }
@@ -736,7 +873,15 @@ export default class ArenaServer implements Party.Server {
 
   private async persist() {
     if (this.state) {
-      await this.room.storage.put("room_data", this.state);
+      this.state.lastActiveAt = Date.now();
+      const serializable = {
+        ...this.state,
+        earlyEliminatedIds: Array.from(this.state.earlyEliminatedIds),
+      };
+      await this.room.storage.put("room_data", serializable);
+      if (this.state.status === "lobby") {
+        await this.room.storage.setAlarm(this.state.lastActiveAt + STALE_LOBBY_TIMEOUT_MS);
+      }
     }
   }
 

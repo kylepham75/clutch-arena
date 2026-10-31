@@ -5,12 +5,61 @@ import {
   type NoteSection,
   type SynthesisOmittedFormula,
   type NoteOmittedFormula,
+  type GroundedBullet,
 } from "@/lib/schemas/notes";
 import {
   convertUnicodeMath,
   normalizeInventoryFormulaKey,
   parseSlideNumber,
 } from "@/lib/notes/formula-inventory";
+
+export type NumberUnitType =
+  | "percent"
+  | "bps"
+  | "currency_m"
+  | "currency_b"
+  | "currency_k"
+  | "currency"
+  | "multiplier"
+  | "plain";
+
+export interface NormalizedNumberToken {
+  raw: string;
+  value: number;
+  unit: NumberUnitType;
+  canonicalValue: number;
+}
+
+export type BulletNumericResolutionAction =
+  | "VERIFIED"
+  | "PATCH"
+  | "RE_CITE"
+  | "KEEP_AS_DERIVED"
+  | "REPAIR"
+  | "DROP";
+
+export interface BulletNumericResolutionItem {
+  sectionLetter: string;
+  subHeading?: string;
+  bulletIndex: number;
+  action: BulletNumericResolutionAction;
+  originalText: string;
+  resolvedText: string;
+  originalSlide: number;
+  resolvedSlide: number;
+  ungroundedNumbers: string[];
+  reason?: string;
+}
+
+export interface BulletNumericCascadeResult {
+  sections: NoteSection[];
+  resolutions: BulletNumericResolutionItem[];
+  residualRepairBullets: BulletNumericResolutionItem[];
+  droppedCount: number;
+  patchedCount: number;
+  reCitedCount: number;
+  derivedCount: number;
+}
 
 export interface FormulaCoverageResult {
   totalLedgerCount: number;
@@ -593,6 +642,249 @@ export function verifySectionEvidenceQuotes(
 }
 
 /**
+ * Normalizes an individual numeric raw token into a structured unit-aware token.
+ */
+export function normalizeNumericToken(
+  raw: string,
+): NormalizedNumberToken | null {
+  if (!raw || typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (!s) return null;
+
+  // 1. Basis points: e.g. "5.8 bps", "5.8bps", "5.8 bp", "5.8bp", "580 bps"
+  const bpsMatch = s.match(/^(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:bps|bp)$/i);
+  if (bpsMatch) {
+    const val = parseFloat(bpsMatch[1].replace(/,/g, ""));
+    if (!isNaN(val)) {
+      return {
+        raw: s,
+        value: val,
+        unit: "bps",
+        canonicalValue: Number((val * 0.0001).toFixed(12)),
+      };
+    }
+  }
+
+  // 2. Percentage: e.g. "5.8%", "25%", "0.25%"
+  const pctMatch = s.match(/^(\d+(?:,\d{3})*(?:\.\d+)?)\s*%$/);
+  if (pctMatch) {
+    const val = parseFloat(pctMatch[1].replace(/,/g, ""));
+    if (!isNaN(val)) {
+      return {
+        raw: s,
+        value: val,
+        unit: "percent",
+        canonicalValue: Number((val / 100).toFixed(12)),
+      };
+    }
+  }
+
+  // 3. Currency with magnitude: $5M, $5 million, $5B, $5 billion, $5K, $5 thousand, 5M USD, 5 tỷ, 5 triệu, etc.
+  const curMagMatch = s.match(
+    /^(?:[\$€£₫]|USD|VND)?\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*(b(?:illion)?|m(?:illion)?|k(?:|thousand)|tỷ|triệu|nghìn|ngàn)\s*(?:[\$€£₫]|USD|VND)?$/i,
+  );
+  if (curMagMatch) {
+    const val = parseFloat(curMagMatch[1].replace(/,/g, ""));
+    const mag = curMagMatch[2].toLowerCase();
+    if (!isNaN(val)) {
+      if (mag.startsWith("b") || mag === "tỷ") {
+        return {
+          raw: s,
+          value: val,
+          unit: "currency_b",
+          canonicalValue: val * 1_000_000_000,
+        };
+      } else if (mag.startsWith("m") || mag === "triệu") {
+        return {
+          raw: s,
+          value: val,
+          unit: "currency_m",
+          canonicalValue: val * 1_000_000,
+        };
+      } else if (
+        mag.startsWith("k") ||
+        mag.startsWith("thous") ||
+        mag === "nghìn" ||
+        mag === "ngàn"
+      ) {
+        return {
+          raw: s,
+          value: val,
+          unit: "currency_k",
+          canonicalValue: val * 1_000,
+        };
+      }
+    }
+  }
+
+  // 4. Plain currency: e.g. "$4.50", "$50", "1,000 USD", "500 VND", "$1000"
+  const curPlainMatch = s.match(
+    /^(?:[\$€£₫]|USD|VND)\s*(\d+(?:,\d{3})*(?:\.\d+)?)$|^(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:[\$€£₫]|USD|VND)$/i,
+  );
+  if (curPlainMatch) {
+    const numStr = (curPlainMatch[1] || curPlainMatch[2]).replace(/,/g, "");
+    const val = parseFloat(numStr);
+    if (!isNaN(val)) {
+      return {
+        raw: s,
+        value: val,
+        unit: "currency",
+        canonicalValue: val,
+      };
+    }
+  }
+
+  // 5. Multipliers: e.g. "2.5x", "3x"
+  const multMatch = s.match(/^(\d+(?:\.\d+)?)\s*x$/i);
+  if (multMatch) {
+    const val = parseFloat(multMatch[1]);
+    if (!isNaN(val)) {
+      return {
+        raw: s,
+        value: val,
+        unit: "multiplier",
+        canonicalValue: val,
+      };
+    }
+  }
+
+  // 6. Plain numbers (decimal or multi-digit integer or simple integer)
+  const plainMatch = s.match(/^(\d+(?:,\d{3})*(?:\.\d+)?)$/);
+  if (plainMatch) {
+    const numStr = plainMatch[1].replace(/,/g, "");
+    const val = parseFloat(numStr);
+    if (!isNaN(val)) {
+      return {
+        raw: s,
+        value: val,
+        unit: "plain",
+        canonicalValue: val,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extracts all unit-aware normalized numeric tokens from arbitrary text corpus.
+ */
+export function extractNormalizedNumbers(text: string): NormalizedNumberToken[] {
+  if (!text || !text.trim()) return [];
+
+  let s = text;
+  // 1. Strip LaTeX subscripts and superscripts
+  s = s.replace(/_(?:\{[^{}]+\}|[0-9a-zA-Z])/g, " ");
+  s = s.replace(/\^(?:\{[^{}]+\}|[0-9a-zA-Z])/g, " ");
+
+  // 2. Strip benign mathematical identity expressions: 1 + R, 1 - T_C, g = 0
+  s = s.replace(/(?<!\d)\b1\s*[+\-*/]\s*[a-zA-Z]/g, " ");
+  s = s.replace(/[a-zA-Z]\s*[+\-*/]\s*1\b(?!\.\d)/g, " ");
+  s = s.replace(/[a-zA-Z]\s*=\s*0\b(?!\.\d)/g, " ");
+
+  // 3. Strip structural and pedagogical numbering
+  s = s.replace(
+    /\b(?:case|step|slide|page|chương|bước|phần|trang)\s+\d+\b/gi,
+    " ",
+  );
+  s = s.replace(/(?:^|[\r\n])\s*\d+[\.\)]\s+/g, " ");
+  s = s.replace(/\(\d+\)/g, " ");
+  s = s.replace(/\b\d+-(?:period|stage|year|giai đoạn|năm)\b/gi, " ");
+  s = s.replace(
+    /\b(?:1|2|3)\s+(?:period|stage|year|giai đoạn|năm|parts|phần)\b/gi,
+    " ",
+  );
+
+  const tokens: NormalizedNumberToken[] = [];
+
+  // A. Basis points: e.g. "5.8 bps", "5.8bp"
+  const bpsRegex = /\b(\d+(?:,\d{3})*(?:\.\d+)?)\s*(bps|bp)\b/gi;
+  let bMatch: RegExpExecArray | null;
+  while ((bMatch = bpsRegex.exec(s)) !== null) {
+    const rawTok = bMatch[0].trim();
+    const tok = normalizeNumericToken(rawTok);
+    if (tok) tokens.push(tok);
+  }
+  s = s.replace(bpsRegex, " ");
+
+  // B. Currency with magnitude: $5M, $5 billion, $5K, 5M USD, 5 tỷ, 5 triệu, etc.
+  const curMagRegex =
+    /(?:[\$€£₫]|USD|VND)\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*(b(?:illion)?|m(?:illion)?|k(?:|thousand)|tỷ|triệu|nghìn|ngàn)\b|\b(\d+(?:,\d{3})*(?:\.\d+)?)\s*(b(?:illion)?|m(?:illion)?|k(?:|thousand)|tỷ|triệu|nghìn|ngàn)\s*(?:[\$€£₫]|USD|VND)?\b/gi;
+  let cmMatch: RegExpExecArray | null;
+  while ((cmMatch = curMagRegex.exec(s)) !== null) {
+    const rawTok = cmMatch[0].trim();
+    const tok = normalizeNumericToken(rawTok);
+    if (tok) tokens.push(tok);
+  }
+  s = s.replace(curMagRegex, " ");
+
+  // C. Percentage: 25%, 15%, 0.25% (ignore 100% and 0% if benign)
+  const pctRegex = /(\d+(?:,\d{3})*(?:\.\d+)?)\s*%/g;
+  let pctMatch: RegExpExecArray | null;
+  while ((pctMatch = pctRegex.exec(s)) !== null) {
+    const rawTok = pctMatch[0].trim();
+    const val = parseFloat(pctMatch[1].replace(/,/g, ""));
+    if (val === 100 || val === 0) continue;
+    const tok = normalizeNumericToken(rawTok);
+    if (tok) tokens.push(tok);
+  }
+  s = s.replace(pctRegex, " ");
+
+  // D. Plain currency: $4.50, $50, 1,000 USD, 500 VND
+  const curPlainRegex =
+    /(?:[\$€£₫]|USD|VND)\s*(\d+(?:,\d{3})*(?:\.\d+)?)|(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:[\$€£₫]|USD|VND)/gi;
+  let cpMatch: RegExpExecArray | null;
+  while ((cpMatch = curPlainRegex.exec(s)) !== null) {
+    const rawTok = cpMatch[0].trim();
+    const tok = normalizeNumericToken(rawTok);
+    if (tok) tokens.push(tok);
+  }
+  s = s.replace(curPlainRegex, " ");
+
+  // E. Multipliers: 2.5x, 3x
+  const multRegex = /\b(\d+(?:\.\d+)?)\s*x\b/gi;
+  let multMatch: RegExpExecArray | null;
+  while ((multMatch = multRegex.exec(s)) !== null) {
+    const rawTok = multMatch[0].trim();
+    const tok = normalizeNumericToken(rawTok);
+    if (tok) tokens.push(tok);
+  }
+  s = s.replace(multRegex, " ");
+
+  // F. Decimals: 0.25, 12.5, 360.5
+  const decimalRegex = /\b(\d+\.\d+)\b/g;
+  let decMatch: RegExpExecArray | null;
+  while ((decMatch = decimalRegex.exec(s)) !== null) {
+    const rawTok = decMatch[1];
+    const tok = normalizeNumericToken(rawTok);
+    if (tok && tok.value !== 0 && tok.value !== 1) tokens.push(tok);
+  }
+  s = s.replace(decimalRegex, " ");
+
+  // G. Multi-digit integers: 360, 365, 2025, 1,000, 50
+  const intRegex = /\b(\d{1,3}(?:,\d{3})+|\d{2,})\b/g;
+  let intMatch: RegExpExecArray | null;
+  while ((intMatch = intRegex.exec(s)) !== null) {
+    const rawTok = intMatch[1];
+    const tok = normalizeNumericToken(rawTok);
+    if (tok && tok.value !== 0 && tok.value !== 1) tokens.push(tok);
+  }
+
+  // Deduplicate by unit + canonicalValue
+  const uniqueTokens: NormalizedNumberToken[] = [];
+  const seen = new Set<string>();
+  for (const t of tokens) {
+    const key = `${t.unit}:${t.canonicalValue}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueTokens.push(t);
+    }
+  }
+
+  return uniqueTokens;
+}
+
+/**
  * Extracts domain-significant numbers from note prose and formulas while ignoring
  * pedagogical numbering and benign mathematical identities.
  */
@@ -627,7 +919,40 @@ export function extractDomainNumbers(text: string): string[] {
 
   const found: string[] = [];
 
-  // Match currency values: $4.50, $50, 4.50$, 1,000 VND
+  // Match basis points: e.g. 5.8 bps, 5.8bp, 580 bps
+  const bpsRegex = /\b(\d+(?:,\d{3})*(?:\.\d+)?)\s*(bps|bp)\b/gi;
+  let bpsMatch: RegExpExecArray | null;
+  while ((bpsMatch = bpsRegex.exec(s)) !== null) {
+    const cleanVal = bpsMatch[1].replace(/,/g, "");
+    found.push(`${cleanVal} ${bpsMatch[2].toLowerCase()}`);
+  }
+  s = s.replace(bpsRegex, " ");
+
+  // Match currency with magnitude: $5M, $5 million, $5B, $5 billion, $5K, $5 thousand
+  const curMagRegex =
+    /(?:[\$€£₫]|USD|VND)\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*(b(?:illion)?|m(?:illion)?|k(?:|thousand)|tỷ|triệu|nghìn|ngàn)\b|\b(\d+(?:,\d{3})*(?:\.\d+)?)\s*(b(?:illion)?|m(?:illion)?|k(?:|thousand)|tỷ|triệu|nghìn|ngàn)\s*(?:[\$€£₫]|USD|VND)?\b/gi;
+  let cmMatch: RegExpExecArray | null;
+  while ((cmMatch = curMagRegex.exec(s)) !== null) {
+    const rawVal = cmMatch[1] || cmMatch[3];
+    const magRaw = (cmMatch[2] || cmMatch[4] || "").toLowerCase();
+    if (rawVal) {
+      const cleanVal = rawVal.replace(/,/g, "");
+      let magLetter = "M";
+      if (magRaw.startsWith("b") || magRaw === "tỷ") magLetter = "B";
+      else if (
+        magRaw.startsWith("k") ||
+        magRaw.startsWith("thous") ||
+        magRaw === "nghìn" ||
+        magRaw === "ngàn"
+      ) {
+        magLetter = "K";
+      }
+      found.push(`$${cleanVal}${magLetter}`);
+    }
+  }
+  s = s.replace(curMagRegex, " ");
+
+  // Match currency values without magnitude: $4.50, $50, 4.50$, 1,000 VND
   const currencyRegex =
     /(?:[\$€£₫]|USD|VND)\s*(\d+(?:,\d{3})*(?:\.\d+)?)|(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:[\$€£₫]|USD|VND)/gi;
   let curMatch: RegExpExecArray | null;
@@ -696,16 +1021,103 @@ export function extractDomainNumbers(text: string): string[] {
 
 /**
  * Checks whether an extracted domain number is grounded in the source corpus.
+ * Unit-aware: prevents incompatible units or different magnitudes (e.g. $5M vs $5B, 5% vs 5 bps)
+ * from false-passing.
  */
-function isNumberGrounded(numStr: string, sourceCorpus: string): boolean {
+export function isNumberGrounded(numStr: string, sourceCorpus: string): boolean {
   if (!numStr || !sourceCorpus) return false;
 
-  // Direct substring match
+  const target = normalizeNumericToken(numStr);
+  const sourceTokens = extractNormalizedNumbers(sourceCorpus);
+
+  if (target) {
+    for (const src of sourceTokens) {
+      const diff = Math.abs(src.canonicalValue - target.canonicalValue);
+      const isValueEqual = diff < 1e-9;
+      if (!isValueEqual) continue;
+
+      // Unit compatibility checks
+      // Rate units: percent and bps
+      const isTargetRate = target.unit === "percent" || target.unit === "bps";
+      const isSourceRate = src.unit === "percent" || src.unit === "bps";
+      if (isTargetRate && isSourceRate) {
+        return true;
+      }
+      if (isTargetRate && src.unit === "plain" && src.canonicalValue <= 1) {
+        return true;
+      }
+      if (target.unit === "plain" && isSourceRate && target.canonicalValue <= 1) {
+        return true;
+      }
+
+      // Currency units: currency, currency_k, currency_m, currency_b
+      const isTargetCurrency = target.unit.startsWith("currency");
+      const isSourceCurrency = src.unit.startsWith("currency");
+      if (isTargetCurrency && isSourceCurrency) {
+        return true;
+      }
+      if (isTargetCurrency && src.unit === "plain") {
+        return true;
+      }
+      if (target.unit === "plain" && isSourceCurrency) {
+        return true;
+      }
+
+      // Multiplier
+      if (
+        target.unit === "multiplier" &&
+        (src.unit === "multiplier" || src.unit === "plain")
+      ) {
+        return true;
+      }
+      if (target.unit === "plain" && src.unit === "multiplier") {
+        return true;
+      }
+
+      // Plain
+      if (target.unit === "plain" && src.unit === "plain") {
+        return true;
+      }
+    }
+
+    // Direct string match fallback ONLY if compatible
+    // Never allow currency magnitude or bps or percent to match an accidental substring
+    if (
+      target.unit === "currency_b" ||
+      target.unit === "currency_m" ||
+      target.unit === "currency_k" ||
+      target.unit === "bps" ||
+      target.unit === "multiplier"
+    ) {
+      return false;
+    }
+
+    if (target.unit === "percent") {
+      if (
+        sourceCorpus.includes(numStr) ||
+        sourceCorpus.includes(`${target.value} %`)
+      ) {
+        return true;
+      }
+      return false;
+    }
+
+    if (target.unit === "currency") {
+      return sourceCorpus.includes(numStr);
+    }
+  }
+
+  // Direct substring match for plain strings
   if (sourceCorpus.includes(numStr)) {
+    // If numStr is a plain integer e.g. "5", ensure word boundary
+    if (/^\d+$/.test(numStr)) {
+      const intRegex = new RegExp(`\\b${numStr}\\b`);
+      return intRegex.test(sourceCorpus);
+    }
     return true;
   }
 
-  // Percentage <-> Decimal equivalence
+  // Percentage <-> Decimal equivalence fallback (e.g. .25 for 0.25)
   if (numStr.endsWith("%")) {
     const pctVal = parseFloat(numStr.slice(0, -1));
     if (!isNaN(pctVal)) {
@@ -714,12 +1126,10 @@ function isNumberGrounded(numStr: string, sourceCorpus: string): boolean {
       if (sourceCorpus.includes(decStr)) {
         return true;
       }
-      // Alternative formats: e.g. .25 for 0.25
       if (decStr.startsWith("0.")) {
         const altDec = decStr.slice(1);
         if (sourceCorpus.includes(altDec)) return true;
       }
-      // Check spaced percentage e.g. "25 %"
       if (sourceCorpus.includes(`${pctVal} %`)) {
         return true;
       }
@@ -740,7 +1150,7 @@ function isNumberGrounded(numStr: string, sourceCorpus: string): boolean {
 
   // Currency decimal formatting: e.g. 4.5 vs 4.50
   const floatVal = parseFloat(numStr);
-  if (!isNaN(floatVal)) {
+  if (!isNaN(floatVal) && numStr.includes(".")) {
     const altFloatStr = floatVal.toString();
     if (altFloatStr !== numStr && sourceCorpus.includes(altFloatStr)) {
       return true;
@@ -1306,3 +1716,498 @@ export function runDeterministicVerifiers(input: {
     },
   };
 }
+
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractNonNumericTokens(text: string): string[] {
+  if (!text) return [];
+  const words =
+    text
+      .toLowerCase()
+      .match(/[a-z\u00C0-\u024F\u1EA0-\u1EF9]+/g) || [];
+  return words.filter((w) => w.length > 1);
+}
+
+function calculateNonNumericOverlap(textA: string, textB: string): number {
+  const tokensA = extractNonNumericTokens(textA);
+  const tokensB = new Set(extractNonNumericTokens(textB));
+  if (tokensA.length === 0) return 0;
+  const matchCount = tokensA.filter((t) => tokensB.has(t)).length;
+  return Number((matchCount / tokensA.length).toFixed(4));
+}
+
+function getSlideCorpus(
+  slideNumber: number,
+  sources: SourceBlock[],
+  ledger?: FormulaLedgerEntry[],
+): string {
+  const parts: string[] = [];
+  const targetSources = sources.filter(
+    (src, idx) => parseSlideNumber(src, idx) === slideNumber,
+  );
+  for (const s of targetSources) {
+    if (s.text) parts.push(s.text);
+  }
+  if (Array.isArray(ledger)) {
+    for (const entry of ledger) {
+      if (entry.slide === slideNumber) {
+        if (entry.raw) parts.push(entry.raw);
+        if (entry.latex) parts.push(entry.latex);
+        if (entry.label) parts.push(entry.label);
+        if (entry.evidence) parts.push(entry.evidence);
+      }
+    }
+  }
+  return parts.join("\n").replace(/(\d+),(\d{3})/g, "$1$2");
+}
+
+/**
+ * 5-Step numeric resolution cascade for a single grounded bullet:
+ * 0. Check if all domain numbers are grounded on cited slide -> VERIFIED
+ * 1. PATCH: If exactly 1 ungrounded number and reference quote has same number count and overlap >= 0.5
+ * 2. RE-CITE: If all numbers grounded on another slide with contextual overlap >= 0.35
+ * 3. KEEP_AS_DERIVED: If ungrounded numbers are difference, ratio, or percent change of slide numbers
+ * 4. REPAIR: Queue for LLM repair (when dropResidual is false)
+ * 5. DROP: Strip bullet (when dropResidual is true)
+ */
+export function resolveBulletNumericStep(
+  bullet: GroundedBullet,
+  sources: SourceBlock[],
+  ledger?: FormulaLedgerEntry[],
+  options?: { dropResidual?: boolean },
+): {
+  action: BulletNumericResolutionAction;
+  bullet: GroundedBullet;
+  ungroundedNumbers: string[];
+  reason?: string;
+} {
+  const bulletNumbers = extractDomainNumbers(bullet.text);
+
+  // If no numbers in bullet prose, it's already verified
+  if (bulletNumbers.length === 0) {
+    return {
+      action: "VERIFIED",
+      bullet: {
+        ...bullet,
+        status: bullet.status || "verified",
+      },
+      ungroundedNumbers: [],
+      reason: "No quantitative figures in bullet text",
+    };
+  }
+
+  const slideCorpus = getSlideCorpus(bullet.slide, sources, ledger);
+  const ungrounded = bulletNumbers.filter(
+    (num) => !isNumberGrounded(num, slideCorpus),
+  );
+
+  // Step 0: All numbers grounded on cited slide
+  if (ungrounded.length === 0) {
+    return {
+      action: "VERIFIED",
+      bullet: {
+        ...bullet,
+        status: bullet.status || "verified",
+      },
+      ungroundedNumbers: [],
+      reason: "All domain numbers grounded on cited slide",
+    };
+  }
+
+  // Step 1: PATCH (Deterministic, $0)
+  // Guard: NEVER patch if bullet has 2+ mismatched numbers, or quote has different count of numbers
+  if (ungrounded.length === 1) {
+    const mismatchedNum = ungrounded[0];
+    const targetSources = sources.filter(
+      (src, idx) => parseSlideNumber(src, idx) === bullet.slide,
+    );
+    const citedSlideText = targetSources.map((s) => s.text || "").join("\n");
+
+    // Gather candidate quotes: bullet.evidence and slide sentences
+    const candidates: string[] = [];
+    if (bullet.evidence && bullet.evidence.trim()) {
+      candidates.push(bullet.evidence.trim());
+    }
+    const sentences = citedSlideText
+      .split(/(?<=[.!?\n])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 5);
+    for (const st of sentences) {
+      if (!candidates.includes(st)) {
+        candidates.push(st);
+      }
+    }
+
+    for (const cand of candidates) {
+      const candNumbers = extractDomainNumbers(cand);
+      if (candNumbers.length !== bulletNumbers.length) {
+        continue;
+      }
+
+      const overlap = calculateNonNumericOverlap(bullet.text, cand);
+      if (overlap < 0.5) {
+        continue;
+      }
+
+      // Find the true replacement number
+      let trueNumber: string | null = null;
+      if (bulletNumbers.length === 1) {
+        trueNumber = candNumbers[0];
+      } else {
+        const remainingCandNums = [...candNumbers];
+        for (const bNum of bulletNumbers) {
+          if (bNum === mismatchedNum) continue;
+          const idx = remainingCandNums.findIndex((cNum) => {
+            const bTok = normalizeNumericToken(bNum);
+            const cTok = normalizeNumericToken(cNum);
+            if (bTok && cTok) {
+              return (
+                Math.abs(bTok.canonicalValue - cTok.canonicalValue) < 1e-9
+              );
+            }
+            return bNum === cNum;
+          });
+          if (idx !== -1) {
+            remainingCandNums.splice(idx, 1);
+          }
+        }
+        if (remainingCandNums.length === 1) {
+          trueNumber = remainingCandNums[0];
+        }
+      }
+
+      if (trueNumber && trueNumber !== mismatchedNum) {
+        const patchedText = bullet.text.replace(
+          new RegExp(escapeRegExp(mismatchedNum)),
+          trueNumber,
+        );
+        const checkUngrounded = extractDomainNumbers(patchedText).filter(
+          (n) => !isNumberGrounded(n, slideCorpus),
+        );
+        if (checkUngrounded.length === 0) {
+          return {
+            action: "PATCH",
+            bullet: {
+              ...bullet,
+              text: patchedText,
+              status: "verified",
+            },
+            ungroundedNumbers: [],
+            reason: `Patched mismatched number ${mismatchedNum} -> ${trueNumber} from quote with overlap ${(overlap * 100).toFixed(0)}%`,
+          };
+        }
+      }
+    }
+  }
+
+  // Step 2: RE-CITE (Deterministic, $0)
+  // Check other slides where ALL bullet numbers are grounded and contextual overlap >= 0.35
+  const otherSlideNumbers = Array.from(
+    new Set(sources.map((s, idx) => parseSlideNumber(s, idx))),
+  ).filter((sn) => sn !== bullet.slide && sn > 0);
+
+  let bestSlide: number | null = null;
+  let bestOverlap = 0;
+  let bestEvidence: string | undefined = undefined;
+
+  for (const otherSlide of otherSlideNumbers) {
+    const otherCorpus = getSlideCorpus(otherSlide, sources, ledger);
+    const allGrounded = bulletNumbers.every((n) =>
+      isNumberGrounded(n, otherCorpus),
+    );
+    if (!allGrounded) continue;
+
+    const overlapText = calculateNonNumericOverlap(bullet.text, otherCorpus);
+    const overlapEv = bullet.evidence
+      ? calculateNonNumericOverlap(bullet.evidence, otherCorpus)
+      : 0;
+    const maxOverlap = Math.max(overlapText, overlapEv);
+
+    if (maxOverlap >= 0.35 && maxOverlap > bestOverlap) {
+      bestOverlap = maxOverlap;
+      bestSlide = otherSlide;
+
+      const otherSlideSources = sources.filter(
+        (src, idx) => parseSlideNumber(src, idx) === otherSlide,
+      );
+      const otherSlideText = otherSlideSources.map((s) => s.text || "").join("\n");
+      const sents = otherSlideText
+        .split(/(?<=[.!?\n])\s+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 5);
+
+      let foundSent: string | undefined = undefined;
+      let sentOverlap = 0;
+      for (const sent of sents) {
+        const hasAllNums = bulletNumbers.every((n) => isNumberGrounded(n, sent));
+        if (hasAllNums) {
+          const so = calculateNonNumericOverlap(bullet.text, sent);
+          if (so > sentOverlap) {
+            sentOverlap = so;
+            foundSent = sent;
+          }
+        }
+      }
+      bestEvidence = foundSent || bullet.evidence;
+    }
+  }
+
+  if (bestSlide !== null) {
+    return {
+      action: "RE_CITE",
+      bullet: {
+        ...bullet,
+        slide: bestSlide,
+        evidence: bestEvidence || bullet.evidence,
+        status: "verified",
+      },
+      ungroundedNumbers: [],
+      reason: `Re-cited from slide ${bullet.slide} to slide ${bestSlide} with contextual token overlap ${(bestOverlap * 100).toFixed(0)}%`,
+    };
+  }
+
+  // Step 3: KEEP AS DERIVED (Deterministic, $0)
+  // Check if each ungrounded number is difference, ratio, or percent change of two numbers on cited slide
+  const slideTokens = extractNormalizedNumbers(slideCorpus);
+  const slideValuesSet = new Set<number>();
+  for (const st of slideTokens) {
+    slideValuesSet.add(st.canonicalValue);
+    slideValuesSet.add(st.value);
+  }
+  const slideVals = Array.from(slideValuesSet).filter((v) => !isNaN(v));
+
+  const derivationReasons: string[] = [];
+  let allDerived = true;
+
+  for (const unNum of ungrounded) {
+    const unTok = normalizeNumericToken(unNum);
+    const targetValues: number[] = [];
+    if (unTok) {
+      targetValues.push(unTok.canonicalValue);
+      targetValues.push(unTok.value);
+    } else {
+      const parsed = parseFloat(unNum);
+      if (!isNaN(parsed)) targetValues.push(parsed);
+    }
+
+    let foundDerivation = false;
+    for (let i = 0; i < slideVals.length; i++) {
+      if (foundDerivation) break;
+      for (let j = 0; j < slideVals.length; j++) {
+        if (i === j) continue;
+        const a = slideVals[i];
+        const b = slideVals[j];
+
+        // 1. Difference: a - b or |a - b|
+        const d1 = a - b;
+        const d2 = Math.abs(a - b);
+
+        // 2. Ratio: a / b
+        const r = Math.abs(b) > 1e-9 ? a / b : null;
+
+        // 3. Percent change: (b - a) / a, ((b - a) / a) * 100, |b - a| / a, etc.
+        const pc1 = Math.abs(a) > 1e-9 ? (b - a) / a : null;
+        const pc2 = Math.abs(a) > 1e-9 ? ((b - a) / a) * 100 : null;
+        const pc3 = Math.abs(a) > 1e-9 ? Math.abs((b - a) / a) : null;
+        const pc4 = Math.abs(a) > 1e-9 ? Math.abs((b - a) / a) * 100 : null;
+
+        const candidates = [
+          { val: d1, desc: `${a} - ${b}` },
+          { val: d2, desc: `|${a} - ${b}|` },
+          ...(r !== null ? [{ val: r, desc: `${a} / ${b}` }] : []),
+          ...(pc1 !== null ? [{ val: pc1, desc: `(${b} - ${a}) / ${a}` }] : []),
+          ...(pc2 !== null ? [{ val: pc2, desc: `((${b} - ${a}) / ${a}) * 100` }] : []),
+          ...(pc3 !== null ? [{ val: pc3, desc: `|${b} - ${a}| / ${a}` }] : []),
+          ...(pc4 !== null ? [{ val: pc4, desc: `(|${b} - ${a}| / ${a}) * 100` }] : []),
+        ];
+
+        for (const cand of candidates) {
+          for (const target of targetValues) {
+            const diff = Math.abs(cand.val - target);
+            const relDiff = target !== 0 ? diff / Math.abs(target) : diff;
+            if (diff <= 0.01 || relDiff <= 0.01) {
+              foundDerivation = true;
+              derivationReasons.push(`${unNum} = ${cand.desc} (≈ ${cand.val.toFixed(2)})`);
+              break;
+            }
+          }
+          if (foundDerivation) break;
+        }
+      }
+    }
+
+    if (!foundDerivation) {
+      allDerived = false;
+      break;
+    }
+  }
+
+  if (allDerived && derivationReasons.length > 0) {
+    return {
+      action: "KEEP_AS_DERIVED",
+      bullet: {
+        ...bullet,
+        status: "derived",
+      },
+      ungroundedNumbers: [],
+      reason: `Derived from numbers on slide ${bullet.slide}: ${derivationReasons.join(", ")}`,
+    };
+  }
+
+  // Step 4: REPAIR vs Step 5: DROP
+  if (options?.dropResidual) {
+    return {
+      action: "DROP",
+      bullet,
+      ungroundedNumbers: ungrounded,
+      reason: `Ungrounded number(s) [${ungrounded.join(", ")}] failed cascade resolution; dropped`,
+    };
+  }
+
+  return {
+    action: "REPAIR",
+    bullet,
+    ungroundedNumbers: ungrounded,
+    reason: `Ungrounded number(s) [${ungrounded.join(", ")}] queued for targeted repair`,
+  };
+}
+
+/**
+ * Runs the 5-step numeric resolution cascade on all grounded bullets across all sections.
+ */
+export function runBulletNumericCascade(
+  sections: NoteSection[],
+  sources: SourceBlock[],
+  ledger?: FormulaLedgerEntry[],
+  options?: { dropResidual?: boolean },
+): BulletNumericCascadeResult {
+  const clonedSections: NoteSection[] = JSON.parse(JSON.stringify(sections));
+
+  const resolutions: BulletNumericResolutionItem[] = [];
+  const residualRepairBullets: BulletNumericResolutionItem[] = [];
+  let droppedCount = 0;
+  let patchedCount = 0;
+  let reCitedCount = 0;
+  let derivedCount = 0;
+
+  for (const sec of clonedSections) {
+    // 1. Process Section-level groundedBullets
+    if (Array.isArray(sec.groundedBullets) && sec.groundedBullets.length > 0) {
+      const newGrounded: GroundedBullet[] = [];
+      const droppedOriginalTexts = new Set<string>();
+      const patchedTextMap = new Map<string, string>();
+
+      for (let i = 0; i < sec.groundedBullets.length; i++) {
+        const bullet = sec.groundedBullets[i];
+        const stepRes = resolveBulletNumericStep(bullet, sources, ledger, options);
+
+        const resItem: BulletNumericResolutionItem = {
+          sectionLetter: sec.letter,
+          bulletIndex: i,
+          action: stepRes.action,
+          originalText: bullet.text,
+          resolvedText: stepRes.bullet.text,
+          originalSlide: bullet.slide,
+          resolvedSlide: stepRes.bullet.slide,
+          ungroundedNumbers: stepRes.ungroundedNumbers,
+          reason: stepRes.reason,
+        };
+        resolutions.push(resItem);
+
+        if (stepRes.action === "DROP") {
+          droppedCount++;
+          droppedOriginalTexts.add(bullet.text);
+        } else {
+          if (stepRes.action === "PATCH") {
+            patchedCount++;
+            patchedTextMap.set(bullet.text, stepRes.bullet.text);
+          } else if (stepRes.action === "RE_CITE") {
+            reCitedCount++;
+          } else if (stepRes.action === "KEEP_AS_DERIVED") {
+            derivedCount++;
+          } else if (stepRes.action === "REPAIR") {
+            residualRepairBullets.push(resItem);
+          }
+          newGrounded.push(stepRes.bullet);
+        }
+      }
+
+      sec.groundedBullets = newGrounded;
+      if (Array.isArray(sec.bulletPoints)) {
+        sec.bulletPoints = sec.bulletPoints
+          .filter((bp) => !droppedOriginalTexts.has(bp))
+          .map((bp) => (patchedTextMap.has(bp) ? patchedTextMap.get(bp)! : bp));
+      }
+    }
+
+    // 2. Process SubSection-level groundedBullets
+    if (Array.isArray(sec.subSections)) {
+      for (const sub of sec.subSections) {
+        if (Array.isArray(sub.groundedBullets) && sub.groundedBullets.length > 0) {
+          const newSubGrounded: GroundedBullet[] = [];
+          const droppedOriginalTexts = new Set<string>();
+          const patchedTextMap = new Map<string, string>();
+
+          for (let j = 0; j < sub.groundedBullets.length; j++) {
+            const bullet = sub.groundedBullets[j];
+            const stepRes = resolveBulletNumericStep(bullet, sources, ledger, options);
+
+            const resItem: BulletNumericResolutionItem = {
+              sectionLetter: sec.letter,
+              subHeading: sub.heading,
+              bulletIndex: j,
+              action: stepRes.action,
+              originalText: bullet.text,
+              resolvedText: stepRes.bullet.text,
+              originalSlide: bullet.slide,
+              resolvedSlide: stepRes.bullet.slide,
+              ungroundedNumbers: stepRes.ungroundedNumbers,
+              reason: stepRes.reason,
+            };
+            resolutions.push(resItem);
+
+            if (stepRes.action === "DROP") {
+              droppedCount++;
+              droppedOriginalTexts.add(bullet.text);
+            } else {
+              if (stepRes.action === "PATCH") {
+                patchedCount++;
+                patchedTextMap.set(bullet.text, stepRes.bullet.text);
+              } else if (stepRes.action === "RE_CITE") {
+                reCitedCount++;
+              } else if (stepRes.action === "KEEP_AS_DERIVED") {
+                derivedCount++;
+              } else if (stepRes.action === "REPAIR") {
+                residualRepairBullets.push(resItem);
+              }
+              newSubGrounded.push(stepRes.bullet);
+            }
+          }
+
+          sub.groundedBullets = newSubGrounded;
+          if (Array.isArray(sub.bulletPoints)) {
+            sub.bulletPoints = sub.bulletPoints
+              .filter((bp) => !droppedOriginalTexts.has(bp))
+              .map((bp) => (patchedTextMap.has(bp) ? patchedTextMap.get(bp)! : bp));
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    sections: clonedSections,
+    resolutions,
+    residualRepairBullets,
+    droppedCount,
+    patchedCount,
+    reCitedCount,
+    derivedCount,
+  };
+}
+
+export const resolveBulletNumbersCascade = resolveBulletNumericStep;
+export const runBulletNumericCascadeOnSections = runBulletNumericCascade;
+

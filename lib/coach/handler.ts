@@ -82,7 +82,7 @@ export function selectCoachContextSources(
 
 export function createCoachHandler(
   dependencies: {
-    getModel?: typeof getGenerationModel;
+    getModel?: (tier?: string) => ReturnType<typeof getGenerationModel>;
     rateLimiter?: typeof checkRateLimit;
     verifyAuth?: typeof verifyAuthToken;
   } = {},
@@ -181,7 +181,7 @@ export function createCoachHandler(
 
     let model;
     try {
-      model = getModel();
+      model = getModel(auth.tier);
     } catch (error) {
       if (error instanceof IngestionError) {
         return Response.json(

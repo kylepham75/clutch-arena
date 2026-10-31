@@ -6,11 +6,20 @@ import {
   validateGeneratedStudy,
   splitIntoBatchCounts,
   partitionSourcesAcrossBatches,
+  groupSlidesByConcept,
+  computeOverGeneratedCount,
+  hasBannedNegationOrMetaOption,
+  shuffleQuestionOptions,
+  MCQ_GENERATION_TEMPERATURE,
+  MCQ_GENERATION_TOP_P,
 } from "@/lib/ai/generate-questions";
+import { ingestionSystemPrompt } from "@/lib/ai/prompts";
 import { getGenerationModel } from "@/lib/ai/provider";
+import { solveFinanceSpec } from "@/lib/math/finance-solver";
 import {
   ingestionOptionsSchema,
   type ParsedDocument,
+  type SourceBlock,
 } from "@/lib/schemas/ingestion";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
 import { studyText } from "../helpers/documents";
@@ -262,5 +271,300 @@ describe("structured generation", () => {
     expect(() => getGenerationModel()).toThrow(
       expect.objectContaining({ code: "AI_NOT_CONFIGURED" }),
     );
+  });
+
+  // ==========================================================================
+  // Stage 3 Task 3.2 Psychometric & Solver Integration Tests
+  // ==========================================================================
+
+  it("enforces psychometric rules in ingestionSystemPrompt (negation ban, <=2 items/slide, financeSpec, distractorRationale)", () => {
+    expect(ingestionSystemPrompt).toContain("EXCEPT");
+    expect(ingestionSystemPrompt).toContain("NOT");
+    expect(ingestionSystemPrompt).toContain("all of the above");
+    expect(ingestionSystemPrompt).toContain("none of the above");
+    expect(ingestionSystemPrompt).toContain("at most 2");
+    expect(ingestionSystemPrompt).toContain("financeSpec");
+    expect(ingestionSystemPrompt).toContain("distractorRationale");
+  });
+
+  it("groups contiguous worked-example slides together in groupSlidesByConcept", () => {
+    const slides: SourceBlock[] = [
+      {
+        id: "slide-1",
+        label: "Slide 1",
+        text: "Introduction to Capital Budgeting\nNet Present Value overview.",
+      },
+      {
+        id: "slide-2",
+        label: "Slide 2",
+        text: "Worked Example: Bond Valuation\nStep 1: Identify coupon payments of $50 and face value of $1,000.",
+      },
+      {
+        id: "slide-3",
+        label: "Slide 3",
+        text: "Worked Example: Bond Valuation (cont.)\nStep 2: Solution and discounting to present value.",
+      },
+      {
+        id: "slide-4",
+        label: "Slide 4",
+        text: "Weighted Average Cost of Capital\nWACC combines after-tax debt and equity costs.",
+      },
+    ];
+
+    const groups = groupSlidesByConcept(slides, 3);
+    expect(groups).toHaveLength(3);
+    expect(groups[0].map((s) => s.id)).toEqual(["slide-1"]);
+    // Slide 2 and Slide 3 (worked example + continuation) are never sliced apart
+    expect(groups[1].map((s) => s.id)).toEqual(["slide-2", "slide-3"]);
+    expect(groups[2].map((s) => s.id)).toEqual(["slide-4"]);
+  });
+
+  it("over-generates by +20% (computeOverGeneratedCount) and passes temperature=0.2, topP=0.95 to generateObject", async () => {
+    expect(computeOverGeneratedCount(5)).toBe(6);
+    expect(computeOverGeneratedCount(10)).toBe(12);
+    expect(computeOverGeneratedCount(25)).toBe(30);
+    expect(computeOverGeneratedCount(30)).toBe(36);
+
+    const model = modelFor(output());
+    await generateQuestions(
+      document,
+      ingestionOptionsSchema.parse({ questionCount: 5 }),
+      new AbortController().signal,
+      model,
+    );
+
+    const callArgs = model.doGenerate.mock.calls[0][0];
+    expect(callArgs.temperature).toBe(MCQ_GENERATION_TEMPERATURE);
+    expect(callArgs.topP).toBe(MCQ_GENERATION_TOP_P);
+
+    const promptText = JSON.stringify(callArgs.prompt);
+    // 5 requested -> 6 requested in the prompt (+20%)
+    expect(promptText).toContain('\\"questionCount\\":6');
+  });
+
+  it("delegates quantitative financeSpec items to the TypeScript solver in validateGeneratedStudy", () => {
+    const raw = output();
+    const bondSpec = {
+      solver: "bond_price" as const,
+      params: {
+        faceValue: 1000,
+        couponRate: 0.06,
+        rate: 0.08,
+        nper: 10,
+        frequency: 2,
+      },
+      unit: "$" as const,
+      decimals: 2,
+      distractorModes: [
+        "annual_instead_of_semiannual" as const,
+        "forgot_to_discount_face" as const,
+        "off_by_one_period" as const,
+      ],
+    };
+    const expectedSolved = solveFinanceSpec(bondSpec);
+
+    // Give LLM bogus mental-math options; validateGeneratedStudy must overwrite them with exact solver outputs
+    raw.questions[0] = {
+      ...raw.questions[0],
+      options: ["$999.99", "$111.11", "$222.22", "$333.33"],
+      correctIndex: 3,
+      financeSpec: bondSpec,
+    } as any;
+
+    const validated = validateGeneratedStudy(raw, document, options);
+    const q = validated.pack.questions[0];
+
+    expect(new Set(q.options)).toEqual(new Set(expectedSolved.options));
+    expect(q.options[q.correctIndex]).toBe(expectedSolved.correctOption);
+  });
+
+  it("enforces the hard gate on lowConfidenceSourceIds and drops questions from failed-vision pages", () => {
+    const twoSlideDoc: ParsedDocument = {
+      fileName: "slides.pdf",
+      format: "pdf",
+      sources: [
+        { id: "page-1", label: "Page 1", text: studyText },
+        { id: "page-2", label: "Page 2", text: studyText },
+      ],
+      characterCount: studyText.length * 2,
+      pageCount: 2,
+      warnings: [],
+      lowConfidenceSourceIds: ["page-1"],
+    };
+
+    const q1 = structuredClone(mockMicroeconomics.questions[0]);
+    q1.id = "q-low-conf";
+    const q2 = structuredClone(mockMicroeconomics.questions[0]);
+    q2.id = "q-high-conf";
+    q2.question = "When price elasticity of demand is greater than 1, how does quantity respond?";
+
+    const raw = {
+      title: "Elasticity",
+      sourceKind: "lecture",
+      questions: [q1, q2],
+      annotations: [
+        {
+          questionId: "q-low-conf",
+          sourceId: "page-1",
+          excerpt:
+            "Demand is elastic when the absolute price elasticity exceeds one.",
+          topic: "Elasticity",
+          chapter: "Chapter 4",
+          rule: "Elasticity rule",
+        },
+        {
+          questionId: "q-high-conf",
+          sourceId: "page-2",
+          excerpt:
+            "Demand is elastic when the absolute price elasticity exceeds one.",
+          topic: "Elasticity",
+          chapter: "Chapter 4",
+          rule: "Elasticity rule",
+        },
+      ],
+      warnings: [],
+    };
+
+    const result = validateGeneratedStudy(raw, twoSlideDoc, {
+      ...options,
+      questionCount: 2,
+    });
+    expect(result.pack.questions).toHaveLength(1);
+    expect(result.references["q-1"].sourceId).toBe("page-2");
+  });
+
+  it("detects and filters banned negation stems (EXCEPT, NOT) and meta-options ('all of the above', 'none of the above')", () => {
+    expect(
+      hasBannedNegationOrMetaOption({
+        question: "Which of the following is NOT a determinant of demand?",
+        options: ["Income", "Price of substitutes", "Tastes", "Consumer age"],
+      }),
+    ).toBe(true);
+
+    expect(
+      hasBannedNegationOrMetaOption({
+        question: "All of the following shift the demand curve EXCEPT:",
+        options: ["Income", "Own price", "Preferences", "Expectations"],
+      }),
+    ).toBe(true);
+
+    expect(
+      hasBannedNegationOrMetaOption({
+        question: "What causes a movement along the demand curve?",
+        options: [
+          "Change in income",
+          "Change in own price",
+          "All of the above",
+          "None of the above",
+        ],
+      }),
+    ).toBe(true);
+
+    expect(
+      hasBannedNegationOrMetaOption({
+        question: "What happens when absolute price elasticity exceeds one?",
+        options: [
+          "Demand is elastic",
+          "Demand is inelastic",
+          "Demand is unit elastic",
+          "Demand is zero",
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("shuffles question options deterministically in code, preserving the correct answer string and distributing correctIndex across 0..3", () => {
+    const seenIndices = new Set<number>();
+    for (let i = 0; i < 24; i++) {
+      const item = {
+        question: `Synthetic finance question #${i}: What is the present value of cash flow ${i * 100}?`,
+        options: [
+          `$${100 + i}.00 (Correct)`,
+          `$${200 + i}.00`,
+          `$${300 + i}.00`,
+          `$${400 + i}.00`,
+        ] as [string, string, string, string],
+        correctIndex: 0,
+      };
+      const shuffled = shuffleQuestionOptions(item);
+      expect(shuffled.options[shuffled.correctIndex]).toBe(
+        `$${100 + i}.00 (Correct)`,
+      );
+      expect(new Set(shuffled.options)).toEqual(new Set(item.options));
+      seenIndices.add(shuffled.correctIndex);
+    }
+    // Across 24 distinct questions, all 4 option positions (0, 1, 2, 3) are used
+    expect(seenIndices.size).toBe(4);
+  });
+
+  it("integrates cross-family blind verification in generateQuestions, silently dropping rejected items and trimming to questionCount", async () => {
+    const q1 = structuredClone(mockMicroeconomics.questions[0]);
+    q1.id = "cand-1";
+    q1.question = "Candidate 1: When absolute price elasticity exceeds one, demand is:";
+
+    const q2 = structuredClone(mockMicroeconomics.questions[0]);
+    q2.id = "cand-2";
+    q2.question = "Candidate 2: Which condition defines elastic demand in microeconomics?";
+
+    const q3 = structuredClone(mockMicroeconomics.questions[0]);
+    q3.id = "cand-3";
+    q3.question = "Candidate 3: Ambiguous question that the blind verifier rejects?";
+
+    const genPayload = {
+      title: "Price elasticity",
+      sourceKind: "lecture",
+      questions: [q1, q2, q3],
+      annotations: ["cand-1", "cand-2", "cand-3"].map((id) => ({
+        questionId: id,
+        sourceId: "lines-1-1",
+        excerpt:
+          "Demand is elastic when the absolute price elasticity exceeds one.",
+        topic: "Elasticity",
+        chapter: "Chapter 4",
+        rule: "Absolute elasticity > 1 means elastic demand.",
+      })),
+      warnings: [],
+    };
+
+    const generatorModel = modelFor(genPayload);
+    const verifierModel = modelFor({
+      verdicts: [
+        {
+          id: "cand-1",
+          selectedIndex: q1.correctIndex,
+          isAmbiguous: false,
+          confidence: "high",
+          reason: "Matches source directly.",
+        },
+        {
+          id: "cand-2",
+          selectedIndex: q2.correctIndex,
+          isAmbiguous: false,
+          confidence: "high",
+          reason: "Matches source directly.",
+        },
+        {
+          id: "cand-3",
+          selectedIndex: (q3.correctIndex + 1) % 4, // Disagrees with answer key -> dropped!
+          isAmbiguous: true,
+          confidence: "low",
+          reason: "Ambiguous options.",
+        },
+      ],
+    });
+
+    const result = await generateQuestions(
+      document,
+      ingestionOptionsSchema.parse({ questionCount: 1 }),
+      new AbortController().signal,
+      generatorModel,
+      { verifierModel },
+    );
+
+    expect(verifierModel.doGenerate).toHaveBeenCalledTimes(1);
+    expect(verifierModel.doGenerate.mock.calls[0][0].temperature).toBe(0.0);
+    // cand-3 was dropped by blind verifier, and surviving [cand-1, cand-2] was trimmed to questionCount=1
+    expect(result.pack.questions).toHaveLength(1);
+    expect(result.pack.questions[0].question).toContain("Candidate 1");
   });
 });

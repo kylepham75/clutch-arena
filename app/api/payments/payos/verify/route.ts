@@ -4,7 +4,7 @@ import {
   getPayosPaymentInfo,
   isPayosConfigured,
 } from "@/lib/payments/payos";
-import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { extractAuthToken, verifyAuthToken } from "@/lib/auth/server-guard";
 
 export const runtime = "nodejs";
 
@@ -39,30 +39,56 @@ export async function POST(request: Request) {
 
     const info = await getPayosPaymentInfo(orderCodeNum);
 
-    const authHeader = request.headers.get("authorization");
-    const userToken = authHeader?.startsWith("Bearer ")
-      ? authHeader.slice(7).trim()
-      : undefined;
+    const userToken = auth.authenticated
+      ? auth.token
+      : (extractAuthToken(request) ?? undefined);
 
     if (info.status === "PAID") {
+      if (!auth.authenticated) {
+        // Disallow arbitrary body.userId from unauthenticated callers.
+        // Only fulfill if this order is already bound to a recorded user in DB.
+        const result = await fulfillPayosOrder({
+          orderCode: orderCodeNum,
+          amount: info.amount,
+        });
+
+        if (!result.fulfilled) {
+          return NextResponse.json({
+            ok: true,
+            paid: true,
+            status: info.status,
+            verified: false,
+            requiresAuth: true,
+          });
+        }
+
+        return NextResponse.json({
+          ok: true,
+          paid: true,
+          status: info.status,
+          tier: result.tier,
+          expiresAt: result.expiresAt,
+          fulfilled: result.fulfilled,
+        });
+      }
+
+      // Authenticated caller: pass auth.user.id and extracted userToken
       const result = await fulfillPayosOrder({
         orderCode: orderCodeNum,
         amount: info.amount,
-        fallbackUserId: auth.authenticated
-          ? auth.user.id
-          : typeof body.userId === "string" && body.userId.trim()
-            ? body.userId.trim()
-            : undefined,
+        fallbackUserId: auth.user.id,
         userToken,
       });
+
+      const isOwner = !result.userId || result.userId === auth.user.id;
 
       return NextResponse.json({
         ok: true,
         paid: true,
         status: info.status,
-        tier: result.tier,
-        expiresAt: result.expiresAt,
-        fulfilled: result.fulfilled,
+        tier: isOwner ? result.tier : null,
+        expiresAt: isOwner ? result.expiresAt : null,
+        fulfilled: result.fulfilled && isOwner,
       });
     }
 

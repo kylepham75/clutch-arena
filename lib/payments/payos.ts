@@ -2,9 +2,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   calculateTierExpiration,
   PRICING_PLANS,
-  type UserTier,
 } from "@/lib/pricing/tiers";
-import { getSupabaseServerClient } from "@/lib/supabase/server";
+import {
+  getSupabaseServerClient,
+  isSupabaseServerConfigured,
+} from "@/lib/supabase/server";
 
 export type PayosPlanId = "cram_pass" | "pro";
 
@@ -406,6 +408,7 @@ export async function fulfillPayosOrder(
 ): Promise<FulfillPayosOrderResult> {
   let resolvedUserId: string | null = null;
   let resolvedTier: PayosPlanId | null = null;
+  let recordedUserId: string | null = null;
 
   const supabase = getSupabaseServerClient(params.userToken);
   if (supabase) {
@@ -417,6 +420,7 @@ export async function fulfillPayosOrder(
         .maybeSingle();
 
       if (sub?.user_id) {
+        recordedUserId = sub.user_id;
         resolvedUserId = sub.user_id;
       }
       if (sub?.tier === "cram_pass" || sub?.tier === "pro") {
@@ -427,8 +431,53 @@ export async function fulfillPayosOrder(
     }
   }
 
-  if (!resolvedUserId && params.fallbackUserId) {
-    resolvedUserId = params.fallbackUserId;
+  // Guard against order hijacking:
+  // 1. If an order was already recorded for a specific user_id in the database,
+  // ensure resolvedUserId strictly uses that database user_id.
+  if (recordedUserId) {
+    resolvedUserId = recordedUserId;
+    if (params.fallbackUserId && params.fallbackUserId !== recordedUserId) {
+      console.warn(
+        `[PayOS] Potential order hijack detected for orderCode ${params.orderCode}: fallbackUserId "${params.fallbackUserId}" does not match recorded owner "${recordedUserId}". Guarded against hijacking; keeping original owner.`,
+      );
+    }
+  } else if (params.fallbackUserId) {
+    // 2. If no user_id was previously recorded in DB, fallbackUserId is only accepted
+    // if verified against the calling context (e.g. valid auth token or offline/test mode).
+    const candidateUserId = params.fallbackUserId.trim();
+    if (candidateUserId) {
+      if (supabase && params.userToken) {
+        try {
+          const {
+            data: { user },
+            error: authError,
+          } = await supabase.auth.getUser(params.userToken);
+
+          if (!authError && user?.id === candidateUserId) {
+            resolvedUserId = candidateUserId;
+          } else {
+            console.warn(
+              `[PayOS] Refusing fallbackUserId "${candidateUserId}" for orderCode ${params.orderCode}: userToken does not authenticate this user.`,
+            );
+          }
+        } catch {
+          console.warn(
+            `[PayOS] Failed to authenticate fallbackUserId "${candidateUserId}" for orderCode ${params.orderCode}.`,
+          );
+        }
+      } else if (
+        !params.userToken &&
+        isSupabaseServerConfigured() &&
+        typeof supabase?.auth?.getUser === "function"
+      ) {
+        console.warn(
+          `[PayOS] Refusing unauthenticated fallbackUserId "${candidateUserId}" for orderCode ${params.orderCode}: no userToken provided.`,
+        );
+      } else {
+        // Fallback for tests or local environments without Supabase auth configured
+        resolvedUserId = candidateUserId;
+      }
+    }
   }
 
   if (!resolvedTier) {

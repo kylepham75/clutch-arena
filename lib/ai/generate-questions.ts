@@ -16,12 +16,82 @@ import type {
   SourceBlock,
 } from "@/lib/schemas/ingestion";
 import { IngestionError } from "@/lib/ingestion/errors";
-import { getGenerationModel, getGroqModel } from "./provider";
-import { buildIngestionPrompt, ingestionSystemPrompt } from "./prompts";
+import { getGenerationModel, getGroqModel, getOpenRouterApiKey } from "./provider";
+import {
+  buildIngestionPrompt,
+  ingestionSystemPrompt,
+} from "./prompts";
 import { budgetSourceBlocks } from "./budget-sources";
 import { repairCorruptedLatex } from "@/lib/math/latex";
+import {
+  applyFinanceSolverToItem,
+  distractorModeSchema,
+  financeSolverTypeSchema,
+  financeUnitSchema,
+} from "@/lib/math/finance-solver";
+import {
+  verifyQuestionsBlindly,
+  type VerifiableQuestionInput,
+} from "./verify-questions";
 import { recordTelemetryEvent } from "@/lib/telemetry/recorder";
 import type { CitationRejectionReason } from "@/lib/schemas/telemetry";
+
+export const MCQ_GENERATION_TEMPERATURE = 0.2;
+export const MCQ_GENERATION_TOP_P = 0.95;
+export const CONCEPT_GROUPING_TEMPERATURE = 0.0;
+export const MAX_ITEMS_PER_SLIDE = 2;
+
+export function computeOverGeneratedCount(requestedCount: number): number {
+  const safeCount = Math.max(1, Math.floor(requestedCount));
+  return Math.ceil(safeCount * 1.2);
+}
+
+const jsonSafeFinanceParamsSchema = z
+  .object({
+    rate: z.number().optional(),
+    nper: z.number().optional(),
+    pmt: z.number().optional(),
+    pv: z.number().optional(),
+    fv: z.number().optional(),
+    isDue: z.boolean().optional(),
+    type: z
+      .union([z.number(), z.enum(["ordinary", "due"]), z.string()])
+      .optional(),
+    target: z.string().optional(),
+    cashFlow: z.number().optional(),
+    dividend: z.number().optional(),
+    d0: z.number().optional(),
+    d1: z.number().optional(),
+    growth: z.number().optional(),
+    isD0: z.boolean().optional(),
+    faceValue: z.number().optional(),
+    couponRate: z.number().optional(),
+    frequency: z.number().optional(),
+    price: z.number().optional(),
+    cashFlows: z.array(z.number()).optional(),
+    initialInvestment: z.number().optional(),
+    equityWeight: z.number().optional(),
+    debtWeight: z.number().optional(),
+    costOfEquity: z.number().optional(),
+    costOfDebt: z.number().optional(),
+    taxRate: z.number().optional(),
+    equityValue: z.number().optional(),
+    debtValue: z.number().optional(),
+    riskFreeRate: z.number().optional(),
+    beta: z.number().optional(),
+    marketReturn: z.number().optional(),
+    marketRiskPremium: z.number().optional(),
+  });
+
+export const jsonSafeFinanceSpecSchema = z.object({
+  solver: financeSolverTypeSchema,
+  target: z.string().optional(),
+  params: jsonSafeFinanceParamsSchema,
+  unit: financeUnitSchema.optional(),
+  decimals: z.number().int().min(0).max(8).optional(),
+  distractor_modes: z.array(distractorModeSchema).optional(),
+  distractorModes: z.array(distractorModeSchema).optional(),
+});
 
 // Providers accept homogeneous JSON arrays. Convert to the strict tuple contract
 // only after generation, without weakening the game's QuestionItem schema.
@@ -30,7 +100,11 @@ const fields = {
   options: z.array(z.string().min(1).max(500)).length(4),
   correctIndex: z.number().int().min(0).max(3),
   explanation: z.string().min(1).max(2000),
+  financeSpec: jsonSafeFinanceSpecSchema.optional(),
+  distractorRationale: z.string().max(1000).optional(),
+  distractor_rationale: z.string().max(1000).optional(),
 };
+
 export const generatedStudySchema = z
   .object({
     title: z.string().min(1).max(120),
@@ -45,7 +119,7 @@ export const generatedStudySchema = z
           })
           .strict(),
       )
-      .max(30),
+      .max(45),
     annotations: z
       .array(
         z
@@ -56,13 +130,18 @@ export const generatedStudySchema = z
             topic: z.string().min(1).max(120),
             chapter: z.string().max(120),
             rule: z.string().min(1).max(500),
+            distractorRationale: z.string().max(1000).optional(),
+            distractor_rationale: z.string().max(1000).optional(),
+            quote: z.string().min(12).max(1000).optional(),
+            source_slide: z.string().min(1).max(100).optional(),
           })
           .strict(),
       )
-      .max(30),
+      .max(45),
     warnings: z.array(z.string().min(1).max(500)).max(10),
   })
   .strict();
+
 
 function normalize(text: string) {
   return text.normalize("NFC").replace(/\s+/g, " ").trim();
@@ -88,6 +167,104 @@ function stripPunctuation(text: string): string {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+const BANNED_META_OPTION_RE = /\b(all|none)\s+of\s+the\s+above\b/i;
+const BANNED_NEGATION_STEM_RE = /\b(EXCEPT|NOT)\b/;
+
+export function hasBannedNegationOrMetaOption(item: {
+  question: string;
+  options: readonly string[] | string[];
+  conceptVariant?: {
+    question: string;
+    options: readonly string[] | string[];
+  };
+}): boolean {
+  const checkSingle = (q: string, opts: readonly string[]): boolean => {
+    if (BANNED_NEGATION_STEM_RE.test(q) || BANNED_META_OPTION_RE.test(q)) {
+      return true;
+    }
+    return opts.some((opt) => BANNED_META_OPTION_RE.test(opt));
+  };
+
+  if (checkSingle(item.question, item.options)) {
+    return true;
+  }
+  if (
+    item.conceptVariant &&
+    checkSingle(item.conceptVariant.question, item.conceptVariant.options)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+const THREE_ELEMENT_PERMUTATIONS: ReadonlyArray<readonly [number, number, number]> = [
+  [0, 1, 2],
+  [0, 2, 1],
+  [1, 0, 2],
+  [1, 2, 0],
+  [2, 0, 1],
+  [2, 1, 0],
+];
+
+function hashStringDeterministic(input: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35) >>> 0;
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+export function shuffleQuestionOptions<
+  T extends {
+    question?: string;
+    options: [string, string, string, string] | string[];
+    correctIndex: number;
+  },
+>(item: T, seed?: string): T {
+  if (
+    !Array.isArray(item.options) ||
+    item.options.length !== 4 ||
+    item.correctIndex < 0 ||
+    item.correctIndex >= 4
+  ) {
+    return item;
+  }
+
+  const seedText =
+    seed !== undefined
+      ? seed
+      : `${item.question ?? ""}||${[...item.options].sort().join("||")}`;
+  const hash = hashStringDeterministic(seedText);
+
+  const targetCorrectIndex = hash % 4;
+  const distractorPerm = THREE_ELEMENT_PERMUTATIONS[Math.floor(hash / 4) % 6];
+
+  const correctOption = item.options[item.correctIndex];
+  const distractors = item.options.filter((_, idx) => idx !== item.correctIndex);
+
+  const shuffledOptions: [string, string, string, string] = ["", "", "", ""];
+  shuffledOptions[targetCorrectIndex] = correctOption;
+
+  let distractorSlot = 0;
+  for (let slot = 0; slot < 4; slot++) {
+    if (slot === targetCorrectIndex) continue;
+    shuffledOptions[slot] = distractors[distractorPerm[distractorSlot]];
+    distractorSlot++;
+  }
+
+  return {
+    ...item,
+    options: shuffledOptions,
+    correctIndex: targetCorrectIndex,
+  };
 }
 
 export function matchesText(sourceText: string, excerpt: string): boolean {
@@ -239,10 +416,37 @@ function notifyCitationRejection(params: {
   }
 }
 
+function isLowConfidenceSource(
+  sourceId: string,
+  resolvedSourceId: string | undefined,
+  lowConfidenceSet: Set<string>,
+): boolean {
+  if (lowConfidenceSet.size === 0) return false;
+  if (lowConfidenceSet.has(sourceId)) return true;
+  if (resolvedSourceId && lowConfidenceSet.has(resolvedSourceId)) return true;
+  for (const lowId of lowConfidenceSet) {
+    if (
+      sourceId === `doc0_${lowId}` ||
+      lowId === `doc0_${sourceId}` ||
+      (resolvedSourceId &&
+        (resolvedSourceId === `doc0_${lowId}` ||
+          lowId === `doc0_${resolvedSourceId}`))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export interface ValidateGeneratedStudyOptions {
+  preSolved?: boolean | Set<string>;
+}
+
 export function validateGeneratedStudy(
   raw: unknown,
   document: ParsedDocument,
   options: IngestionOptions,
+  validationOptions?: ValidateGeneratedStudyOptions,
 ): Omit<GenerationResult, "usage"> {
   const parsed = generatedStudySchema.safeParse(raw);
   if (!parsed.success)
@@ -256,16 +460,19 @@ export function validateGeneratedStudy(
       "The source could not support questions with these settings. Try a broader focus, concept variants, or a different document.",
       422,
     );
-  const bank = questionBankSchema.safeParse(output.questions);
-  if (!bank.success || output.questions.length > options.questionCount)
+
+  if (
+    new Set(output.questions.map((q) => q.id)).size !== output.questions.length
+  ) {
     return badOutput(
       "The AI returned duplicate IDs or an unexpected question count. Please retry.",
     );
-  const questions = bank.data;
+  }
+
   if (
-    output.annotations.length !== questions.length ||
+    output.annotations.length !== output.questions.length ||
     new Set(output.annotations.map((a) => a.questionId)).size !==
-      questions.length
+      output.questions.length
   ) {
     notifyCitationRejection({
       reason: "annotation_count_mismatch",
@@ -276,6 +483,7 @@ export function validateGeneratedStudy(
       "The AI did not provide one source reference per question. Please retry.",
     );
   }
+
   const metadata: StudyPack["metadata"] = Object.create(null);
   const references: Record<string, SourceReference> = Object.create(null);
   const sources = new Map(
@@ -285,29 +493,38 @@ export function validateGeneratedStudy(
   const entireSource = normalize(
     document.sources.map((source) => source.text).join("\n"),
   );
-  for (const question of questions) {
-    const annotation = annotations.get(question.id);
-    if (!annotation || normalize(annotation.excerpt).length < 12) {
+  const lowConfidenceSet = new Set(document.lowConfidenceSourceIds ?? []);
+  const slideItemCounts = new Map<string, number>();
+  const enforcePerSlideCap = document.sources.length >= 2;
+
+  const validatedQuestions: StudyPack["questions"] = [];
+  let droppedByQualityGate = 0;
+
+  for (const rawQuestion of output.questions) {
+    const annotation = annotations.get(rawQuestion.id);
+    const rawExcerpt = annotation?.excerpt ?? annotation?.quote ?? "";
+    const rawSourceId = annotation?.sourceId ?? annotation?.source_slide ?? "";
+
+    if (!annotation || normalize(rawExcerpt).length < 12) {
       notifyCitationRejection({
         reason: "missing_or_short_excerpt",
         document,
         sourceKind: output.sourceKind,
-        questionId: question.id,
-        sourceId: annotation?.sourceId,
-        excerpt: annotation?.excerpt,
+        questionId: rawQuestion.id,
+        sourceId: rawSourceId,
+        excerpt: rawExcerpt,
       });
       return badOutput(
         "A generated citation could not be verified against the uploaded text. Please retry.",
       );
     }
 
-    let source = sources.get(annotation.sourceId);
+    let source = sources.get(rawSourceId);
     if (!source) {
       // In multi-document ingestion, match by prefix or suffix (e.g. doc0_page-1 vs page-1)
       source = [...sources.values()].find(
         (s) =>
-          s.id === `doc0_${annotation.sourceId}` ||
-          s.id.endsWith(`_${annotation.sourceId}`),
+          s.id === `doc0_${rawSourceId}` || s.id.endsWith(`_${rawSourceId}`),
       );
     }
 
@@ -316,19 +533,19 @@ export function validateGeneratedStudy(
         reason: "unknown_source_id",
         document,
         sourceKind: output.sourceKind,
-        questionId: question.id,
-        sourceId: annotation.sourceId,
-        excerpt: annotation.excerpt,
+        questionId: rawQuestion.id,
+        sourceId: rawSourceId,
+        excerpt: rawExcerpt,
       });
       return badOutput(
         "A generated citation could not be verified against the uploaded text. Please retry.",
       );
     }
 
-    if (!matchesText(source.text, annotation.excerpt)) {
+    if (!matchesText(source.text, rawExcerpt)) {
       // 1. Check if another single source block matches
       const alternate = document.sources.find((s) =>
-        matchesText(s.text, annotation.excerpt),
+        matchesText(s.text, rawExcerpt),
       );
       if (alternate) {
         source = alternate;
@@ -337,16 +554,16 @@ export function validateGeneratedStudy(
         // 2. Check adjacent blocks (cross-page / cross-slide quote)
         const adjacentMatch = findAdjacentSourceMatch(
           document.sources,
-          annotation.excerpt,
+          rawExcerpt,
         );
         if (adjacentMatch) {
           source = adjacentMatch;
           annotation.sourceId = adjacentMatch.id;
-        } else if (matchesText(entireSource, annotation.excerpt)) {
+        } else if (matchesText(entireSource, rawExcerpt)) {
           // 3. Match found across document text
           const bestSource = findSourceWithMaxOverlap(
             document.sources,
-            annotation.excerpt,
+            rawExcerpt,
           );
           if (bestSource) {
             source = bestSource;
@@ -356,9 +573,9 @@ export function validateGeneratedStudy(
               reason: "unmatched_excerpt_in_source",
               document,
               sourceKind: output.sourceKind,
-              questionId: question.id,
-              sourceId: annotation.sourceId,
-              excerpt: annotation.excerpt,
+              questionId: rawQuestion.id,
+              sourceId: rawSourceId,
+              excerpt: rawExcerpt,
             });
             return badOutput(
               "A generated citation could not be verified against the uploaded text. Please retry.",
@@ -369,9 +586,9 @@ export function validateGeneratedStudy(
             reason: "unmatched_excerpt_in_source",
             document,
             sourceKind: output.sourceKind,
-            questionId: question.id,
-            sourceId: annotation.sourceId,
-            excerpt: annotation.excerpt,
+            questionId: rawQuestion.id,
+            sourceId: rawSourceId,
+            excerpt: rawExcerpt,
           });
           return badOutput(
             "A generated citation could not be verified against the uploaded text. Please retry.",
@@ -379,7 +596,75 @@ export function validateGeneratedStudy(
         }
       }
     }
-    for (const version of [question, question.conceptVariant]) {
+
+    // Section 4.5 Hard Gate on Failed Vision Pages: drop items derived from low_confidence pages
+    if (isLowConfidenceSource(rawSourceId, source.id, lowConfidenceSet)) {
+      droppedByQualityGate++;
+      continue;
+    }
+
+    // Psychometric Negation & Meta-Option Filter
+    if (
+      options.mode !== "exact" &&
+      hasBannedNegationOrMetaOption(rawQuestion)
+    ) {
+      droppedByQualityGate++;
+      continue;
+    }
+
+    // Anti-coverage cap: <= 2 items per slide when multiple slides exist
+    if (enforcePerSlideCap) {
+      const currentSlideCount = slideItemCounts.get(source.id) ?? 0;
+      if (currentSlideCount >= MAX_ITEMS_PER_SLIDE) {
+        droppedByQualityGate++;
+        continue;
+      }
+    }
+
+    // Deterministic Finance Solver Delegation (never trust LLM mental math)
+    let solvedBase = {
+      question: rawQuestion.question,
+      options: [...rawQuestion.options] as [string, string, string, string],
+      correctIndex: rawQuestion.correctIndex,
+      explanation: rawQuestion.explanation,
+    };
+    let solvedVariant = {
+      question: rawQuestion.conceptVariant.question,
+      options: [...rawQuestion.conceptVariant.options] as [
+        string,
+        string,
+        string,
+        string,
+      ],
+      correctIndex: rawQuestion.conceptVariant.correctIndex,
+      explanation: rawQuestion.conceptVariant.explanation,
+    };
+
+    const isPreSolved =
+      validationOptions?.preSolved instanceof Set
+        ? validationOptions.preSolved.has(rawQuestion.id)
+        : Boolean(validationOptions?.preSolved);
+
+    try {
+      if (rawQuestion.financeSpec && !isPreSolved) {
+        solvedBase = applyFinanceSolverToItem(
+          solvedBase,
+          rawQuestion.financeSpec,
+        );
+      }
+      if (rawQuestion.conceptVariant.financeSpec && !isPreSolved) {
+        solvedVariant = applyFinanceSolverToItem(
+          solvedVariant,
+          rawQuestion.conceptVariant.financeSpec,
+        );
+      }
+    } catch {
+      return badOutput(
+        "The AI returned invalid financial calculation parameters. Please retry.",
+      );
+    }
+
+    for (const version of [solvedBase, solvedVariant]) {
       if (
         new Set(
           version.options.map((option) =>
@@ -391,45 +676,51 @@ export function validateGeneratedStudy(
           "The AI returned duplicate answer choices. Please retry.",
         );
     }
-    if (
-      normalize(question.question) ===
-      normalize(question.conceptVariant.question)
-    )
+    if (normalize(solvedBase.question) === normalize(solvedVariant.question))
       return badOutput(
         "The AI repeated a question instead of creating a concept variant. Please retry.",
       );
     if (
       options.mode === "exact" &&
-      [question.question, ...question.options].some(
+      [solvedBase.question, ...solvedBase.options].some(
         (text) => !matchesText(entireSource, text),
       )
     )
       return badOutput(
         "Exact mode returned wording that does not match the source. Please retry or choose concept variants.",
       );
-    if (!source) {
-      notifyCitationRejection({
-        reason: "unknown_source_id",
-        document,
-        sourceKind: output.sourceKind,
-        questionId: question.id,
-        sourceId: annotation.sourceId,
-        excerpt: annotation.excerpt,
-      });
-      return badOutput(
-        "A generated citation could not be verified against the uploaded text. Please retry.",
-      );
+
+    // Code-level deterministic option shuffling after verification to eliminate LLM position bias
+    const finalBase =
+      options.mode === "exact"
+        ? solvedBase
+        : shuffleQuestionOptions(solvedBase);
+    const finalVariant =
+      options.mode === "exact"
+        ? solvedVariant
+        : shuffleQuestionOptions(solvedVariant);
+
+    if (validatedQuestions.length >= options.questionCount) {
+      break;
     }
 
+    slideItemCounts.set(source.id, (slideItemCounts.get(source.id) ?? 0) + 1);
+
     // Own the IDs instead of using model-provided object keys in the game state.
-    const safeId = `q-${Object.keys(metadata).length + 1}`;
-    question.id = safeId;
-    question.explanation = repairCorruptedLatex(question.explanation);
-    if (question.conceptVariant) {
-      question.conceptVariant.explanation = repairCorruptedLatex(
-        question.conceptVariant.explanation,
-      );
-    }
+    const safeId = `q-${validatedQuestions.length + 1}`;
+    validatedQuestions.push({
+      id: safeId,
+      question: finalBase.question,
+      options: finalBase.options,
+      correctIndex: finalBase.correctIndex,
+      explanation: repairCorruptedLatex(finalBase.explanation),
+      conceptVariant: {
+        question: finalVariant.question,
+        options: finalVariant.options,
+        correctIndex: finalVariant.correctIndex,
+        explanation: repairCorruptedLatex(finalVariant.explanation),
+      },
+    });
     metadata[safeId] = {
       topic: annotation.topic,
       chapter: annotation.chapter,
@@ -439,9 +730,28 @@ export function validateGeneratedStudy(
     references[safeId] = {
       sourceId: source.id,
       label: source.label,
-      excerpt: annotation.excerpt,
+      excerpt: rawExcerpt,
     };
   }
+
+  if (validatedQuestions.length === 0) {
+    throw new IngestionError(
+      "NO_SUPPORTED_QUESTIONS",
+      droppedByQualityGate > 0
+        ? "All candidate questions were filtered by vision confidence or psychometric quality gates."
+        : "The source could not support questions with these settings. Try a broader focus, concept variants, or a different document.",
+      422,
+    );
+  }
+
+  const bank = questionBankSchema.safeParse(validatedQuestions);
+  if (!bank.success) {
+    return badOutput(
+      "The AI returned duplicate IDs or an unexpected question count. Please retry.",
+    );
+  }
+  const questions = bank.data;
+
   const warnings = [...output.warnings];
   if (questions.length < options.questionCount)
     warnings.push(
@@ -459,6 +769,152 @@ export function validateGeneratedStudy(
     references,
     warnings,
   };
+}
+
+// ============================================================================
+// Concept-First Slide Grouping (8-15 Coherent Conceptual Units)
+// ============================================================================
+
+const CONTINUATION_MARKER_RE =
+  /\b(cont\.?|continued|part\s+[2-9ivx]+|step\s+[2-9]\b|solution\b|answer\s+key|derivation\s*\(cont|example\s*\(cont)/i;
+const WORKED_EXAMPLE_START_RE =
+  /\b(example|worked\s+example|problem|case\s+study|exercise|step\s+1)\b/i;
+const WORKED_EXAMPLE_FOLLOWUP_RE =
+  /\b(step\s+[2-9]|solution|calculation|computing|substituting|solving\s+for|result:|answer:|cont\.?|continued)\b/i;
+
+function extractSlideHeading(block: SourceBlock): string {
+  const firstLine =
+    block.text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "";
+  return firstLine
+    .replace(/\((cont\.?|continued|part\s+\d+)\)/gi, "")
+    .replace(/\b(cont\.?|continued|step\s+\d+|part\s+\d+)\b/gi, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+export function isContinuationSlide(
+  prev: SourceBlock,
+  curr: SourceBlock,
+): boolean {
+  const currFirstLine =
+    curr.text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "";
+
+  if (
+    CONTINUATION_MARKER_RE.test(curr.label) ||
+    CONTINUATION_MARKER_RE.test(currFirstLine)
+  ) {
+    return true;
+  }
+
+  // Worked example spanning consecutive slides
+  if (
+    WORKED_EXAMPLE_START_RE.test(prev.text) &&
+    WORKED_EXAMPLE_FOLLOWUP_RE.test(curr.text) &&
+    prev.text !== curr.text
+  ) {
+    return true;
+  }
+
+  // Formula or unfinished sentence continuation across slide boundary
+  const prevTrimmed = prev.text.trim();
+  const currTrimmed = curr.text.trim();
+  if (
+    prevTrimmed !== currTrimmed &&
+    (/[=+\-×:]\s*$/.test(prevTrimmed) ||
+      /^(where\b|therefore\b|thus\b|hence\b|=)/i.test(currTrimmed))
+  ) {
+    return true;
+  }
+
+  // Shared specific slide heading across distinct slides
+  if (prev.text !== curr.text) {
+    const prevHeading = extractSlideHeading(prev);
+    const currHeading = extractSlideHeading(curr);
+    if (
+      prevHeading.length >= 6 &&
+      prevHeading.length <= 80 &&
+      prevHeading === currHeading
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function computeGroupTopicSimilarity(
+  groupA: SourceBlock[],
+  groupB: SourceBlock[],
+): number {
+  const wordsOf = (group: SourceBlock[]) =>
+    new Set(
+      stripPunctuation(group.map((s) => s.text).join(" "))
+        .split(/\s+/)
+        .filter((w) => w.length >= 4),
+    );
+  const setA = wordsOf(groupA);
+  const setB = wordsOf(groupB);
+  if (setA.size === 0 || setB.size === 0) return 0;
+  let intersection = 0;
+  for (const w of setA) {
+    if (setB.has(w)) intersection++;
+  }
+  return intersection / Math.sqrt(setA.size * setB.size);
+}
+
+export function groupSlidesByConcept(
+  sources: SourceBlock[],
+  targetGroupCount?: number,
+): SourceBlock[][] {
+  if (sources.length === 0) return [];
+  if (sources.length === 1) return [[sources[0]]];
+
+  // Pass 1: Bind multi-slide worked examples & explicit continuations into unsplittable units
+  const atomicGroups: SourceBlock[][] = [[sources[0]]];
+  for (let i = 1; i < sources.length; i++) {
+    const prevGroup = atomicGroups[atomicGroups.length - 1];
+    const prevSlide = prevGroup[prevGroup.length - 1];
+    const currSlide = sources[i];
+    if (isContinuationSlide(prevSlide, currSlide)) {
+      prevGroup.push(currSlide);
+    } else {
+      atomicGroups.push([currSlide]);
+    }
+  }
+
+  const desiredMaxGroups =
+    targetGroupCount !== undefined
+      ? Math.max(1, targetGroupCount)
+      : atomicGroups.length > 15
+        ? Math.min(15, Math.max(8, Math.ceil(sources.length / 3)))
+        : atomicGroups.length;
+
+  const groups = atomicGroups.map((g) => [...g]);
+  while (groups.length > desiredMaxGroups) {
+    // Merge the adjacent pair with the highest topic similarity (tie-breaking by smallest combined size)
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < groups.length - 1; i++) {
+      const sim = computeGroupTopicSimilarity(groups[i], groups[i + 1]);
+      const combinedSlides = groups[i].length + groups[i + 1].length;
+      const score = sim - combinedSlides * 0.05;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    groups.splice(bestIdx, 2, [...groups[bestIdx], ...groups[bestIdx + 1]]);
+  }
+
+  return groups;
 }
 
 const MAX_QUESTIONS_PER_BATCH = 10;
@@ -480,13 +936,19 @@ export function partitionSourcesAcrossBatches(
   if (batchCount <= 1 || sources.length <= 1) {
     return Array.from({ length: batchCount }, () => sources);
   }
+
+  const conceptGroups = groupSlidesByConcept(sources, batchCount);
+  if (conceptGroups.length === batchCount) {
+    return conceptGroups;
+  }
+
   return Array.from({ length: batchCount }, (_, batchIndex) => {
-    const start = Math.floor((batchIndex * sources.length) / batchCount);
+    const start = Math.floor((batchIndex * conceptGroups.length) / batchCount);
     const end = Math.max(
       start + 1,
-      Math.floor(((batchIndex + 1) * sources.length) / batchCount),
+      Math.floor(((batchIndex + 1) * conceptGroups.length) / batchCount),
     );
-    const slice = sources.slice(start, end);
+    const slice = conceptGroups.slice(start, end).flat();
     return slice.length > 0 ? slice : sources;
   });
 }
@@ -539,11 +1001,26 @@ export function mergeAndDeduplicateBatches(
   };
 }
 
+export interface GenerateQuestionsVerificationConfig {
+  verifierModel?: LanguageModel | false;
+  skipSolverComputed?: boolean;
+}
+
+function isLanguageModelInstance(val: unknown): val is LanguageModel {
+  return (
+    Boolean(val) &&
+    typeof val === "object" &&
+    ("doGenerate" in (val as Record<string, unknown>) ||
+      "specificationVersion" in (val as Record<string, unknown>))
+  );
+}
+
 export async function generateQuestions(
   document: ParsedDocument,
-  options: IngestionOptions,
+  options: IngestionOptions & { verifierModel?: LanguageModel | false },
   signal: AbortSignal,
   model?: LanguageModel,
+  verificationConfig?: GenerateQuestionsVerificationConfig | LanguageModel,
 ): Promise<GenerationResult> {
   const resolvedModel = model ?? getGenerationModel();
 
@@ -552,7 +1029,9 @@ export async function generateQuestions(
 
   // Give full 8,192 token output capacity for Gemini (preventing finishReason: 'length' truncation),
   // while capping at 1,000 only when strictly on Groq free tier.
-  const isGroq = Boolean(process.env.GROQ_API_KEY && process.env.AI_PROVIDER === "groq");
+  const isGroq = Boolean(
+    process.env.GROQ_API_KEY && process.env.AI_PROVIDER === "groq",
+  );
   const maxOutputTokens = isGroq ? 1_000 : 8_192;
 
   const runBatch = async (
@@ -575,9 +1054,13 @@ export async function generateQuestions(
             .join(" — ")
             .slice(0, 300)
         : options.focus;
+    const overGeneratedBatchCount = Math.min(
+      45,
+      computeOverGeneratedCount(batchQuestionCount),
+    );
     const batchOptions: IngestionOptions = {
       ...options,
-      questionCount: batchQuestionCount,
+      questionCount: overGeneratedBatchCount,
       focus: batchFocus,
     };
     const batchPrompt = buildIngestionPrompt(batchDoc, batchOptions);
@@ -588,12 +1071,16 @@ export async function generateQuestions(
     try {
       if (canFallback) {
         const isLocal = Boolean(
-          process.env.AI_PROVIDER === "local" || process.env.AI_PROVIDER === "ollama",
+          process.env.AI_PROVIDER === "local" ||
+            process.env.AI_PROVIDER === "ollama",
         );
         const primaryTimeoutMs = isLocal ? 90_000 : 22_000;
         const primaryTimeout = new AbortController();
         const timer = setTimeout(
-          () => primaryTimeout.abort(new DOMException("Primary model timed out", "TimeoutError")),
+          () =>
+            primaryTimeout.abort(
+              new DOMException("Primary model timed out", "TimeoutError"),
+            ),
           primaryTimeoutMs,
         );
         const primarySignal = AbortSignal.any([signal, primaryTimeout.signal]);
@@ -603,6 +1090,8 @@ export async function generateQuestions(
             schema: generatedStudySchema,
             system: ingestionSystemPrompt,
             prompt: batchPrompt,
+            temperature: MCQ_GENERATION_TEMPERATURE,
+            topP: MCQ_GENERATION_TOP_P,
             abortSignal: primarySignal,
             maxRetries: 0,
             maxOutputTokens,
@@ -617,6 +1106,8 @@ export async function generateQuestions(
         schema: generatedStudySchema,
         system: ingestionSystemPrompt,
         prompt: batchPrompt,
+        temperature: MCQ_GENERATION_TEMPERATURE,
+        topP: MCQ_GENERATION_TOP_P,
         abortSignal: signal,
         maxRetries: 0,
         maxOutputTokens,
@@ -631,6 +1122,8 @@ export async function generateQuestions(
           schema: generatedStudySchema,
           system: ingestionSystemPrompt,
           prompt: batchPrompt,
+          temperature: MCQ_GENERATION_TEMPERATURE,
+          topP: MCQ_GENERATION_TOP_P,
           abortSignal: signal,
           maxRetries: 0,
           maxOutputTokens: 1_000,
@@ -653,15 +1146,125 @@ export async function generateQuestions(
       ),
     );
 
-    const rawObject =
+    const overGenTarget = computeOverGeneratedCount(options.questionCount);
+    let rawObject =
       batchResults.length === 1
         ? batchResults[0].object
         : mergeAndDeduplicateBatches(
             batchResults.map((r) => r.object),
-            options.questionCount,
+            overGenTarget,
           );
 
-    const validated = validateGeneratedStudy(rawObject, document, options);
+    // Resolve optional cross-family blind verifier
+    const explicitVerifier = isLanguageModelInstance(verificationConfig)
+      ? verificationConfig
+      : verificationConfig?.verifierModel !== undefined
+        ? verificationConfig.verifierModel
+        : options.verifierModel;
+
+    const shouldRunBlindVerifier =
+      explicitVerifier !== false &&
+      (Boolean(explicitVerifier) || (!model && Boolean(getOpenRouterApiKey())));
+
+    let wasPreSolved = false;
+    let verifierInputTokens = 0;
+    let verifierOutputTokens = 0;
+    let verifierTotalTokens = 0;
+
+    if (shouldRunBlindVerifier && rawObject.questions.length > 0) {
+      const annotationByQId = new Map(
+        rawObject.annotations.map((a) => [a.questionId, a]),
+      );
+      const sourcesById: Record<string, string> = Object.fromEntries(
+        document.sources.map((s) => [s.id, s.text]),
+      );
+
+      // Apply deterministic finance solver before blind verification so solver-computed items have exact keys
+      let preSolvedQuestions;
+      try {
+        preSolvedQuestions = rawObject.questions.map((q) => {
+          const solvedBase = q.financeSpec
+            ? applyFinanceSolverToItem(q, q.financeSpec)
+            : q;
+          const solvedVariant = q.conceptVariant.financeSpec
+            ? applyFinanceSolverToItem(
+                q.conceptVariant,
+                q.conceptVariant.financeSpec,
+              )
+            : q.conceptVariant;
+          return {
+            ...solvedBase,
+            conceptVariant: solvedVariant,
+          };
+        });
+      } catch {
+        return badOutput(
+          "The AI returned invalid financial calculation parameters. Please retry.",
+        );
+      }
+      wasPreSolved = true;
+
+      const verifiableItems: VerifiableQuestionInput[] = preSolvedQuestions.map(
+        (q) => {
+          const ann = annotationByQId.get(q.id);
+          return {
+            id: q.id,
+            question: q.question,
+            options: q.options,
+            correctIndex: q.correctIndex,
+            explanation: q.explanation,
+            excerpt: ann?.excerpt,
+            sourceId: ann?.sourceId,
+            solverComputed: Boolean(q.financeSpec),
+            conceptVariant: {
+              question: q.conceptVariant.question,
+              options: q.conceptVariant.options,
+              correctIndex: q.conceptVariant.correctIndex,
+              explanation: q.conceptVariant.explanation,
+              solverComputed: Boolean(q.conceptVariant.financeSpec),
+            },
+          };
+        },
+      );
+
+      const skipSolverComputed =
+        !isLanguageModelInstance(verificationConfig) &&
+        verificationConfig?.skipSolverComputed !== undefined
+          ? verificationConfig.skipSolverComputed
+          : true;
+
+      const verifyRes = await verifyQuestionsBlindly(verifiableItems, {
+        verifierModel: isLanguageModelInstance(explicitVerifier)
+          ? explicitVerifier
+          : undefined,
+        sourcesById,
+        skipSolverComputed,
+        allowUnconfiguredSkip: true,
+      });
+
+      if (typeof verifyRes.usage.inputTokens === "number") {
+        verifierInputTokens = verifyRes.usage.inputTokens;
+      }
+      if (typeof verifyRes.usage.outputTokens === "number") {
+        verifierOutputTokens = verifyRes.usage.outputTokens;
+      }
+      if (typeof verifyRes.usage.totalTokens === "number") {
+        verifierTotalTokens = verifyRes.usage.totalTokens;
+      }
+
+      const verifiedIdSet = new Set(verifyRes.verifiedIds);
+      rawObject = {
+        ...rawObject,
+        questions: preSolvedQuestions.filter((q) => verifiedIdSet.has(q.id)),
+        annotations: rawObject.annotations.filter((a) =>
+          verifiedIdSet.has(a.questionId),
+        ),
+      };
+    }
+
+    const validated = validateGeneratedStudy(rawObject, document, options, {
+      preSolved: wasPreSolved,
+    });
     if (budget.wasBudgeted) {
       validated.warnings.push(
         "Document was large; questions were synthesized from key conceptual sections to fit AI rate limits.",
@@ -669,10 +1272,13 @@ export async function generateQuestions(
     }
 
     const sumTokens = (
-      selector: (u: (typeof batchResults)[number]["usage"]) => number | undefined,
+      selector: (
+        u: (typeof batchResults)[number]["usage"],
+      ) => number | undefined,
+      extra = 0,
     ) => {
-      let sum = 0;
-      let hasAny = false;
+      let sum = extra;
+      let hasAny = extra > 0;
       for (const res of batchResults) {
         const val = selector(res.usage);
         if (typeof val === "number") {
@@ -686,9 +1292,9 @@ export async function generateQuestions(
     return {
       ...validated,
       usage: {
-        inputTokens: sumTokens((u) => u.inputTokens),
-        outputTokens: sumTokens((u) => u.outputTokens),
-        totalTokens: sumTokens((u) => u.totalTokens),
+        inputTokens: sumTokens((u) => u.inputTokens, verifierInputTokens),
+        outputTokens: sumTokens((u) => u.outputTokens, verifierOutputTokens),
+        totalTokens: sumTokens((u) => u.totalTokens, verifierTotalTokens),
       },
     };
   } catch (error: any) {
@@ -704,7 +1310,8 @@ export async function generateQuestions(
       );
 
     const isRateLimit =
-      (APICallError.isInstance(error) && (error.statusCode === 429 || error.statusCode === 413)) ||
+      (APICallError.isInstance(error) &&
+        (error.statusCode === 429 || error.statusCode === 413)) ||
       error?.statusCode === 429 ||
       error?.statusCode === 413 ||
       error?.message?.includes("rate_limit") ||
@@ -730,7 +1337,9 @@ export async function generateQuestions(
         503,
       );
 
-    const detail = error?.message?.replace(/https?:\/\/[^\s]+/g, "")?.slice(0, 150);
+    const detail = error?.message
+      ?.replace(/https?:\/\/[^\s]+/g, "")
+      ?.slice(0, 150);
     throw new IngestionError(
       "AI_UNAVAILABLE",
       detail

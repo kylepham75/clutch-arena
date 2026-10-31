@@ -15,6 +15,13 @@ export interface TierLimits {
   hasCohortAnalytics: boolean;
   canUseClutchNotes: boolean;
   maxNotesPerDay: number;
+  // Stage 1 Section 7 Quota & COGS fields
+  newDeckCredits: number;
+  dailyDeckBurstLimit: number;
+  freeRegenerationsPerDeck: number;
+  cogsCeilingUsd: number;
+  verifiedPoolSize: number;
+  servedSubsetSize: number;
 }
 
 export const TIER_LIMITS: Record<UserTier, TierLimits> = {
@@ -31,6 +38,12 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     hasCohortAnalytics: false,
     canUseClutchNotes: false,
     maxNotesPerDay: 0,
+    newDeckCredits: 2,
+    dailyDeckBurstLimit: 2,
+    freeRegenerationsPerDeck: 0,
+    cogsCeilingUsd: 0.05,
+    verifiedPoolSize: 10,
+    servedSubsetSize: 10,
   },
   cram_pass: {
     tier: "cram_pass",
@@ -45,6 +58,12 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
     maxNotesPerDay: 30,
+    newDeckCredits: 12,
+    dailyDeckBurstLimit: 4,
+    freeRegenerationsPerDeck: 3,
+    cogsCeilingUsd: 1.25,
+    verifiedPoolSize: 35,
+    servedSubsetSize: 25,
   },
   pro: {
     tier: "pro",
@@ -59,6 +78,12 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
     maxNotesPerDay: 30,
+    newDeckCredits: 60,
+    dailyDeckBurstLimit: 6,
+    freeRegenerationsPerDeck: 5,
+    cogsCeilingUsd: 9.75,
+    verifiedPoolSize: 35,
+    servedSubsetSize: 25,
   },
   tutor: {
     tier: "tutor",
@@ -73,11 +98,136 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     hasCohortAnalytics: true,
     canUseClutchNotes: true,
     maxNotesPerDay: 30,
+    newDeckCredits: 120,
+    dailyDeckBurstLimit: 20,
+    freeRegenerationsPerDeck: 10,
+    cogsCeilingUsd: 7.00,
+    verifiedPoolSize: 35,
+    servedSubsetSize: 25,
   },
 };
 
 export function getMaxArenaPlayersForTier(tier: UserTier): number {
   return TIER_LIMITS[tier]?.maxArenaPlayers ?? 8;
+}
+
+export function formatDeckCreditsCounter(used: number, limit: number): string {
+  return `${used} of ${limit} decks used`;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  COGS Degradation Ladder & Unit Economic Protection Engine                */
+/* -------------------------------------------------------------------------- */
+
+export type CogsDegradationMode = "full" | "gentle" | "hard" | "halted";
+
+export interface CogsBudgetStatus {
+  mode: CogsDegradationMode;
+  spentUsd: number;
+  reservedUsd: number;
+  projectedUsd: number;
+  ceilingUsd: number;
+  utilizationRatio: number;
+  targetQuestionCount: number;
+  allowVisionOcr: boolean;
+  allowBorderlineVision: boolean;
+  allowCrossFamilyVerifier: boolean;
+  useCheaperGeneratorSlug: boolean;
+  conciseExplanations: boolean;
+  serveCachedPoolsOnly: boolean;
+  bannerNotice: string | null;
+}
+
+export function evaluateCogsDegradation(
+  spentUsd: number,
+  ceilingUsd: number,
+  estimatedCallCostUsd = 0,
+  reservedUsd = 0,
+): CogsBudgetStatus {
+  const res = reservedUsd ?? 0;
+  const est = estimatedCallCostUsd ?? 0;
+  const projectedUsd = Number((spentUsd + res + est).toFixed(6));
+  const utilizationRatio =
+    ceilingUsd > 0
+      ? Number((projectedUsd / ceilingUsd).toFixed(4))
+      : projectedUsd > 0
+        ? 1.01
+        : 0;
+
+  if (utilizationRatio > 1.0) {
+    return {
+      mode: "halted",
+      spentUsd,
+      reservedUsd: res,
+      projectedUsd,
+      ceilingUsd,
+      utilizationRatio,
+      targetQuestionCount: 0,
+      allowVisionOcr: false,
+      allowBorderlineVision: false,
+      allowCrossFamilyVerifier: false,
+      useCheaperGeneratorSlug: true,
+      conciseExplanations: true,
+      serveCachedPoolsOnly: true,
+      bannerNotice:
+        "Subscription deck generation budget reached for this period. Cached class decks remain free and instantly accessible.",
+    };
+  }
+
+  if (utilizationRatio > 0.9) {
+    return {
+      mode: "hard",
+      spentUsd,
+      reservedUsd: res,
+      projectedUsd,
+      ceilingUsd,
+      utilizationRatio,
+      targetQuestionCount: 15,
+      allowVisionOcr: false,
+      allowBorderlineVision: false,
+      allowCrossFamilyVerifier: false,
+      useCheaperGeneratorSlug: true,
+      conciseExplanations: true,
+      serveCachedPoolsOnly: false,
+      bannerNotice: null,
+    };
+  }
+
+  if (utilizationRatio >= 0.7) {
+    return {
+      mode: "gentle",
+      spentUsd,
+      reservedUsd: res,
+      projectedUsd,
+      ceilingUsd,
+      utilizationRatio,
+      targetQuestionCount: 20,
+      allowVisionOcr: true,
+      allowBorderlineVision: false,
+      allowCrossFamilyVerifier: true,
+      useCheaperGeneratorSlug: true,
+      conciseExplanations: true,
+      serveCachedPoolsOnly: false,
+      bannerNotice: null,
+    };
+  }
+
+  return {
+    mode: "full",
+    spentUsd,
+    reservedUsd: res,
+    projectedUsd,
+    ceilingUsd,
+    utilizationRatio,
+    targetQuestionCount: 25,
+    allowVisionOcr: true,
+    allowBorderlineVision: true,
+    allowCrossFamilyVerifier: true,
+    useCheaperGeneratorSlug: false,
+    conciseExplanations: false,
+    serveCachedPoolsOnly: false,
+    bannerNotice: null,
+  };
 }
 
 export interface PlanPricing {
@@ -260,6 +410,65 @@ export function calculateTierExpiration(tier: UserTier): string | null {
   return null;
 }
 
+/**
+ * Normalizes raw tier values from cloud profiles or external inputs to valid UserTier.
+ */
+export function normalizeTier(raw: unknown): UserTier {
+  if (typeof raw !== "string") return "contender";
+  const t = raw.toLowerCase().trim();
+  if (t === "cram_pass" || t === "crampass" || t === "cram-pass") return "cram_pass";
+  if (t === "pro") return "pro";
+  if (t === "tutor") return "tutor";
+  return "contender";
+}
+
+/**
+ * Checks if a tier expiration timestamp has elapsed.
+ */
+export function isTierExpired(expiresAt: string | null | undefined): boolean {
+  if (!expiresAt) return false;
+  const expMs = new Date(expiresAt).getTime();
+  if (isNaN(expMs)) return false;
+  return expMs <= Date.now();
+}
+
+export interface ProfileRecordLike {
+  tier?: string | null;
+  tier_expires_at?: string | null;
+  updated_at?: string | null;
+}
+
+/**
+ * Resolves active tier and expiration from a profiles or user_profiles database record.
+ * Handles manual admin non-expiring grants and grants updated after previous expiration.
+ */
+export function resolveTierFromProfileRecord(
+  record: ProfileRecordLike | null | undefined,
+): { tier: UserTier; expiresAt: string | null } | null {
+  if (!record?.tier) return null;
+
+  const normTier = normalizeTier(record.tier);
+  if (normTier === "contender") return null;
+
+  if (!record.tier_expires_at) {
+    return { tier: normTier, expiresAt: null };
+  }
+
+  const expMs = new Date(record.tier_expires_at).getTime();
+  if (!isNaN(expMs) && expMs > Date.now()) {
+    return { tier: normTier, expiresAt: record.tier_expires_at };
+  }
+
+  if (record.updated_at) {
+    const updatedMs = new Date(record.updated_at).getTime();
+    if (!isNaN(updatedMs) && !isNaN(expMs) && updatedMs > expMs) {
+      return { tier: normTier, expiresAt: calculateTierExpiration(normTier) };
+    }
+  }
+
+  return null;
+}
+
 export function getStoredTierExpires(): string | null {
   if (typeof window === "undefined") return null;
   try {
@@ -276,18 +485,13 @@ export function getStoredUserTier(): UserTier {
     const expiresRaw = localStorage.getItem(USER_TIER_EXPIRES_KEY);
 
     // If an expiration timestamp exists and has elapsed, revert to contender
-    if (expiresRaw) {
-      const expiresMs = new Date(expiresRaw).getTime();
-      if (!isNaN(expiresMs) && expiresMs <= Date.now()) {
-        localStorage.setItem(USER_TIER_STORAGE_KEY, "contender");
-        localStorage.removeItem(USER_TIER_EXPIRES_KEY);
-        return "contender";
-      }
+    if (isTierExpired(expiresRaw)) {
+      localStorage.setItem(USER_TIER_STORAGE_KEY, "contender");
+      localStorage.removeItem(USER_TIER_EXPIRES_KEY);
+      return "contender";
     }
 
-    if (raw && (raw === "contender" || raw === "cram_pass" || raw === "pro" || raw === "tutor")) {
-      return raw;
-    }
+    return normalizeTier(raw);
   } catch {
     // localStorage unavailable
   }
@@ -317,8 +521,8 @@ export function setStoredUserTier(tier: UserTier, expiresAt?: string | null): vo
     if (tier === "contender") {
       const currentTier = localStorage.getItem(USER_TIER_STORAGE_KEY);
       const currentExpires = localStorage.getItem(USER_TIER_EXPIRES_KEY);
-      if (currentTier && currentTier !== "contender") {
-        if (!currentExpires || new Date(currentExpires).getTime() > Date.now()) {
+      if (currentTier && normalizeTier(currentTier) !== "contender") {
+        if (!isTierExpired(currentExpires)) {
           // Active unexpired paid tier; do not downgrade client-side
           return;
         }
@@ -370,21 +574,13 @@ export async function syncUserTierToCloud(
     // Guard: Prevent downgrading if cloud profile currently has an active unexpired paid tier
     const { data: currentProfile } = await supabase
       .from("profiles")
-      .select("tier, tier_expires_at")
+      .select("tier, tier_expires_at, updated_at")
       .eq("id", user.id)
       .maybeSingle();
 
-    if (currentProfile?.tier && currentProfile.tier !== "contender") {
-      if (currentProfile.tier_expires_at) {
-        const expMs = new Date(currentProfile.tier_expires_at).getTime();
-        if (!isNaN(expMs) && expMs > Date.now()) {
-          // Cloud subscription is still active; block downgrade
-          return false;
-        }
-      } else {
-        // Non-expiring manual grant; block downgrade
-        return false;
-      }
+    if (resolveTierFromProfileRecord(currentProfile)) {
+      // Cloud subscription is still active; block downgrade
+      return false;
     }
 
     const now = new Date().toISOString();
@@ -460,10 +656,7 @@ export async function fetchCloudUserTier(): Promise<{
       .maybeSingle();
 
     if (!subErr && subData?.tier) {
-      const isSubExpired = subData.expires_at
-        ? !isNaN(new Date(subData.expires_at).getTime()) &&
-          new Date(subData.expires_at).getTime() <= Date.now()
-        : false;
+      const isSubExpired = isTierExpired(subData.expires_at);
 
       if (!isSubExpired) {
         cloudTier = subData.tier;
@@ -480,36 +673,11 @@ export async function fetchCloudUserTier(): Promise<{
         .eq("id", user.id)
         .maybeSingle();
 
-      if (!profileErr && profileData?.tier) {
-        const norm = profileData.tier.toLowerCase().trim();
-        const isPaid = norm === "cram_pass" || norm === "pro" || norm === "tutor";
-
-        if (isPaid) {
-          const normTier = (norm === "cram_pass" ? "cram_pass" : norm === "pro" ? "pro" : "tutor") as UserTier;
-
-          if (!profileData.tier_expires_at) {
-            // Non-expiring / manual admin grant
-            cloudTier = profileData.tier;
-            cloudExpiresAt = null;
-          } else {
-            const expMs = new Date(profileData.tier_expires_at).getTime();
-            const isExpired = !isNaN(expMs) && expMs <= Date.now();
-
-            if (!isExpired) {
-              cloudTier = profileData.tier;
-              cloudExpiresAt = profileData.tier_expires_at;
-            } else if (
-              profileData.updated_at &&
-              new Date(profileData.updated_at).getTime() > expMs
-            ) {
-              // Active manual admin grant updated after the previous expiration
-              cloudTier = profileData.tier;
-              cloudExpiresAt = calculateTierExpiration(normTier);
-            }
-          }
-        } else {
-          cloudTier = profileData.tier;
-          cloudExpiresAt = profileData.tier_expires_at;
+      if (!profileErr && profileData) {
+        const resolved = resolveTierFromProfileRecord(profileData);
+        if (resolved) {
+          cloudTier = resolved.tier;
+          cloudExpiresAt = resolved.expiresAt;
         }
       }
     }
@@ -522,34 +690,11 @@ export async function fetchCloudUserTier(): Promise<{
         .eq("id", user.id)
         .maybeSingle();
 
-      if (!userProfileErr && userProfileData?.tier) {
-        const norm = userProfileData.tier.toLowerCase().trim();
-        const isPaid = norm === "cram_pass" || norm === "pro" || norm === "tutor";
-
-        if (isPaid) {
-          const normTier = (norm === "cram_pass" ? "cram_pass" : norm === "pro" ? "pro" : "tutor") as UserTier;
-
-          if (!userProfileData.tier_expires_at) {
-            cloudTier = userProfileData.tier;
-            cloudExpiresAt = null;
-          } else {
-            const expMs = new Date(userProfileData.tier_expires_at).getTime();
-            const isExpired = !isNaN(expMs) && expMs <= Date.now();
-
-            if (!isExpired) {
-              cloudTier = userProfileData.tier;
-              cloudExpiresAt = userProfileData.tier_expires_at;
-            } else if (
-              userProfileData.updated_at &&
-              new Date(userProfileData.updated_at).getTime() > expMs
-            ) {
-              cloudTier = userProfileData.tier;
-              cloudExpiresAt = calculateTierExpiration(normTier);
-            }
-          }
-        } else {
-          cloudTier = userProfileData.tier;
-          cloudExpiresAt = userProfileData.tier_expires_at;
+      if (!userProfileErr && userProfileData) {
+        const resolved = resolveTierFromProfileRecord(userProfileData);
+        if (resolved) {
+          cloudTier = resolved.tier;
+          cloudExpiresAt = resolved.expiresAt;
         }
       }
     }
@@ -559,20 +704,14 @@ export async function fetchCloudUserTier(): Promise<{
       return defaultResult;
     }
 
-    let normalizedTier: UserTier = "contender";
-    if (cloudTier === "cram_pass" || cloudTier === "pro" || cloudTier === "tutor") {
-      normalizedTier = cloudTier;
-    }
+    const normalizedTier = normalizeTier(cloudTier);
 
     // Check if the cloud subscription has expired
-    if (cloudExpiresAt) {
-      const expiresMs = new Date(cloudExpiresAt).getTime();
-      if (!isNaN(expiresMs) && expiresMs <= Date.now()) {
-        // Expired! Downgrade local and cloud state to contender
-        setStoredUserTier("contender", null);
-        void syncUserTierToCloud("contender", null);
-        return { tier: "contender", expiresAt: null, isExpired: true };
-      }
+    if (isTierExpired(cloudExpiresAt)) {
+      // Expired! Downgrade local and cloud state to contender
+      setStoredUserTier("contender", null);
+      void syncUserTierToCloud("contender", null);
+      return { tier: "contender", expiresAt: null, isExpired: true };
     }
 
     // Update local storage with cloud source of truth
@@ -599,6 +738,8 @@ export async function fetchCloudUserTier(): Promise<{
     return defaultResult;
   }
 }
+
+export const syncUserTierWithCloud = fetchCloudUserTier;
 
 export function getStoredReferralState(): ReferralState {
   const defaultState: ReferralState = {
