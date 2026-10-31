@@ -116,6 +116,7 @@ export function LibraryDialog({
       onOpenChange={onOpenChange}
       title={t.library.title}
       description={t.library.subtitle}
+      className="library-dialog-modal"
     >
       <div className="library-dialog-content">
         {/* User Saved Packs */}
@@ -153,77 +154,88 @@ export function LibraryDialog({
             </div>
           ) : (
             <div className="library-list" role="list">
-              {items.map((item) => (
-                <div
-                  key={item.id}
-                  className="library-item"
-                  role="listitem"
-                  onClick={(e) => {
-                    if ((e.target as HTMLElement).closest(".library-item-actions")) return;
-                    handleSelect(item);
-                  }}
-                >
-                  <div className="library-item-icon">
-                    <Sparkles size={18} />
-                  </div>
-                  <div className="library-item-details">
-                    <div className="flex items-center gap-2">
-                      <strong>{item.title}</strong>
-                      <span className="tag">{item.format.toUpperCase()}</span>
-                    </div>
-                    <small>
-                      {item.fileName} · {item.questionCount} {t.library.questionsCount} ·{" "}
-                      {new Date(item.createdAt).toLocaleDateString(language === "vi" ? "vi-VN" : "en-US", {
-                        month: "short",
-                        day: "numeric",
-                      })}
-                    </small>
-                  </div>
+              {items.map((item) => {
+                const displayTitle =
+                  item.title?.trim() || item.fileName || t.run?.practiceConceptFallback || "Bộ đề ôn tập";
+                return (
                   <div
-                    className="library-item-actions flex items-center gap-1"
-                    onClick={(e) => e.stopPropagation()}
+                    key={item.id}
+                    className="library-item"
+                    role="listitem"
+                    onClick={(e) => {
+                      if ((e.target as HTMLElement).closest(".library-item-actions")) return;
+                      handleSelect(item);
+                    }}
                   >
-                    <Button
-                      size="sm"
-                      variant="dark"
-                      onClick={() => handleSelect(item)}
+                    <div className="library-item-main">
+                      <div className="library-item-icon">
+                        <Sparkles size={18} />
+                      </div>
+                      <div className="library-item-details">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <strong title={displayTitle}>
+                            {displayTitle}
+                          </strong>
+                          <span className="tag shrink-0">{item.format.toUpperCase()}</span>
+                        </div>
+                        <small title={`${item.fileName} · ${item.questionCount} ${t.library.questionsCount}`}>
+                          {item.fileName} · {item.questionCount} {t.library.questionsCount} ·{" "}
+                          {new Date(item.createdAt).toLocaleDateString(language === "vi" ? "vi-VN" : "en-US", {
+                            month: "short",
+                            day: "numeric",
+                          })}
+                        </small>
+                      </div>
+                    </div>
+                    <div
+                      className="library-item-actions"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      <Play size={12} fill="currentColor" />
-                      {t.library.playBtn}
-                    </Button>
-                    {onHostArena && (
                       <Button
                         size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          onHostArena(item.pack);
-                          onOpenChange(false);
-                        }}
-                        title={t.library.hostInArenaTooltip}
+                        variant="dark"
+                        className="library-action-play"
+                        onClick={() => handleSelect(item)}
                       >
-                        <Users size={12} />
-                        {t.library.arenaBtn}
+                        <Play size={12} fill="currentColor" />
+                        <span>{t.library.playBtn}</span>
                       </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setSharingPack(item.pack)}
-                      title={t.library.shareExportTooltip}
-                    >
-                      <Share2 size={13} />
-                    </Button>
-                    <button
-                      className="library-delete-btn"
-                      title={t.library.deletePackTooltip}
-                      aria-label={`${t.library.deleteBtn} ${item.title}`}
-                      onClick={(e) => handleDelete(item.id, e)}
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                      {onHostArena && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="library-action-arena"
+                          onClick={() => {
+                            onHostArena(item.pack);
+                            onOpenChange(false);
+                          }}
+                          title={t.library.hostInArenaTooltip}
+                        >
+                          <Users size={12} />
+                          <span>{t.library.arenaBtn}</span>
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="library-action-icon"
+                        onClick={() => setSharingPack(item.pack)}
+                        title={t.library.shareExportTooltip}
+                      >
+                        <Share2 size={13} />
+                      </Button>
+                      <button
+                        className="library-delete-btn"
+                        title={t.library.deletePackTooltip}
+                        aria-label={`${t.library.deleteBtn} ${displayTitle}`}
+                        onClick={(e) => handleDelete(item.id, e)}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
