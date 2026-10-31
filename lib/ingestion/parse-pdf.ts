@@ -125,8 +125,11 @@ export const defaultOpenRouterVisionTranscriber: PdfVisionTranscriber = async ({
       ? "Transcribe all mathematical equations, formulas, and data tables visible in this image into clean LaTeX or Markdown tables. Return only the transcription."
       : "Transcribe all visible text, formulas (in LaTeX), and tables (in Markdown) on this page accurately. Return clean Markdown text.";
 
+  const visionModelSlug =
+    process.env.OPENROUTER_VISION_MODEL?.trim() || "google/gemini-2.5-flash-lite";
+
   const result = await generateText({
-    model: openrouter("google/gemini-3.6-flash"),
+    model: openrouter(visionModelSlug),
     temperature: 0,
     messages: [
       {

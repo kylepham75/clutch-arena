@@ -444,6 +444,7 @@ describe("OpenRouter Unified Provider Architecture & Privacy Headers", () => {
     expect(getModelFamily("google/gemini-3.6-flash")).toBe("google");
     expect(getModelFamily("anthropic/claude-sonnet-5.5")).toBe("anthropic");
     expect(getModelFamily("openai/gpt-6.1-terra")).toBe("openai");
+    expect(getModelFamily("deepseek/deepseek-v4.1-flash")).toBe("deepseek");
     expect(getModelFamily("qwen/qwen-2.5-72b-instruct")).toBe("qwen");
 
     expect(() =>
@@ -489,7 +490,7 @@ describe("OpenRouter Unified Provider Architecture & Privacy Headers", () => {
     const fallbackVerifier = FALLBACK_VERIFIER_SLUG;
 
     expect(getModelFamily(generator)).toBe("google");
-    expect(getModelFamily(primaryVerifier)).toBe("anthropic");
+    expect(getModelFamily(primaryVerifier)).toBe("deepseek");
     expect(getModelFamily(fallbackVerifier)).toBe("openai");
 
     expect(() =>

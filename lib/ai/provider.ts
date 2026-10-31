@@ -8,11 +8,12 @@ import { IngestionError } from "@/lib/ingestion/errors";
 // Pinned OpenRouter Slugs & Privacy Config
 // ============================================================================
 
-export const DEFAULT_GENERATOR_SLUG = "google/gemini-3.6-flash";
-export const PRIORITY_GENERATOR_SLUG = "google/gemini-4-argon";
+export const DEFAULT_GENERATOR_SLUG = "google/gemini-2.5-flash";
+export const PRIORITY_GENERATOR_SLUG = "openai/gpt-6.1-terra";
 
-export const DEFAULT_VERIFIER_SLUG = "anthropic/claude-sonnet-5.5";
-export const FALLBACK_VERIFIER_SLUG = "openai/gpt-6.1-terra";
+export const DEFAULT_VERIFIER_SLUG = "deepseek/deepseek-v4.1-flash";
+export const FALLBACK_VERIFIER_SLUG = "openai/gpt-4o-mini";
+export const DEFAULT_VISION_SLUG = "google/gemini-2.5-flash-lite";
 
 export const OPENROUTER_PRIVACY_PROVIDER_CONFIG = {
   require_parameters: true,
@@ -66,7 +67,7 @@ export function isPinnedOpenRouterSlug(slug: string): boolean {
 // Cross-Family Pairing & Separation
 // ============================================================================
 
-export type ModelFamily = "google" | "anthropic" | "openai" | "qwen" | "other";
+export type ModelFamily = "google" | "anthropic" | "openai" | "deepseek" | "qwen" | "other";
 
 export function getModelFamily(slug: string): ModelFamily {
   if (!slug || typeof slug !== "string") return "other";
@@ -84,6 +85,7 @@ export function getModelFamily(slug: string): ModelFamily {
   ) {
     return "openai";
   }
+  if (s.startsWith("deepseek/") || s.includes("deepseek")) return "deepseek";
   if (s.startsWith("qwen/") || s.includes("qwen")) return "qwen";
   return "other";
 }
