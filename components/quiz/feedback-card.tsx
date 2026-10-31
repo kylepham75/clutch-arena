@@ -29,7 +29,7 @@ export function FeedbackCard({
   onCitationClick?: (citation: string) => void;
   onReportCitation?: () => void;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const [now, setNow] = useState(() => Date.now());
   const button = useRef<HTMLButtonElement>(null);
   const remaining = Math.max(0, Math.ceil((unlockAt - now) / 1000));
@@ -66,6 +66,14 @@ export function FeedbackCard({
           <div className="rule">
             <MathText content={metadata.rule} />
           </div>
+          {metadata.distractorRationale && (
+            <div className="distractor-rationale text-xs text-stone-600 dark:text-stone-300 bg-stone-50 dark:bg-stone-900/40 p-2 rounded border border-stone-200/60 dark:border-stone-800">
+              <span className="font-semibold text-stone-700 dark:text-stone-200">
+                {language === "vi" ? "Vì sao các đáp án khác sai: " : "Why other options are wrong: "}
+              </span>
+              <MathText content={metadata.distractorRationale} />
+            </div>
+          )}
           {onReportCitation ? (
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <small

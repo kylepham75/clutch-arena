@@ -270,6 +270,10 @@ export function UploadPanel({
       if (err.code === "AUTH_REQUIRED") {
         openAuthModal("auth_required");
       }
+      if (err.code === "TIER_UPGRADE_REQUIRED") {
+        setPricingReason(err.message);
+        setPricingOpen(true);
+      }
       if (err.name === "AbortError") {
         setError({ code: "CANCELLED", message: t.upload.cancelledError });
       } else {
@@ -509,6 +513,19 @@ export function UploadPanel({
           <div>
             <strong>{t.upload.errorPrefix} ({error.code}):</strong>
             <p>{error.message}</p>
+            {error.code === "TIER_UPGRADE_REQUIRED" && (
+              <Button
+                size="sm"
+                variant="default"
+                className="mt-2 text-xs"
+                onClick={() => {
+                  setPricingReason(error.message);
+                  setPricingOpen(true);
+                }}
+              >
+                {siteLang === "vi" ? "Mua Vé Cram Pass / Nâng Cấp Pro" : "Get Cram Pass or Upgrade to Pro"}
+              </Button>
+            )}
             {error.code === "AI_NOT_CONFIGURED" && (
               <small className="block mt-1 text-xs">
                 {t.upload.apiTip}

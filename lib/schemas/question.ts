@@ -34,6 +34,7 @@ export type QuestionMetadata = {
   chapter: string;
   citation: string;
   rule: string;
+  distractorRationale?: string;
 };
 export type StudyPack = {
   id: string;
@@ -50,6 +51,7 @@ export const questionMetadataSchema = z.object({
   chapter: z.string().max(300).default(""),
   citation: z.string().max(5000).default(""),
   rule: z.string().max(5000).default(""),
+  distractorRationale: z.string().max(5000).optional(),
 });
 
 /**

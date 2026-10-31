@@ -36,7 +36,12 @@ import {
 } from "@/lib/notes/formula-inventory";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { OMITTED_BY_RULE_REASON_REGEX } from "@/lib/notes/deterministic-verifiers";
-import { getGenerationModel, getGroqModel } from "./provider";
+import {
+  assertPromptTokenCliff,
+  getGenerationModel,
+  getGroqModel,
+  getNoteSummarizerModel,
+} from "./provider";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
 import {
   repairCorruptedLatex,
@@ -237,6 +242,8 @@ export interface GenerateClutchNoteOptions {
   slideCount: number;
   sources: SourceBlock[];
   focus?: string;
+  tier?: string;
+  isShortNote?: boolean;
   modelOverride?: LanguageModel;
   signal?: AbortSignal;
   ommlEquations?: OmmlTranscribedEquation[];
@@ -1976,8 +1983,16 @@ export async function generateClutchNote(
   const noteId = `note-${randomUUID().slice(0, 8)}`;
   let model: LanguageModel;
 
+  const summarizerTier = options.tier || "pro";
+  const isFreeTier =
+    summarizerTier === "contender" ||
+    summarizerTier === "guest" ||
+    summarizerTier === "free";
+
   try {
-    model = options.modelOverride ?? getGenerationModel("notes");
+    model =
+      options.modelOverride ??
+      getNoteSummarizerModel(isFreeTier ? "contender" : "pro");
     if (!model) {
       throw new IngestionError(
         "AI_NOT_CONFIGURED",
@@ -2034,13 +2049,15 @@ export async function generateClutchNote(
     }
   }
 
-  // Step 2: Build the prompt
+  // Step 2: Build the prompt (one prompt template, one schema per tier)
+  const isShortNote = isFreeTier || Boolean(options.isShortNote);
   const prompt = buildNotesPrompt({
     fileName: options.fileName,
     slides: options.sources.map((s) => ({ label: s.label, text: s.text })),
     focus: options.focus,
     formulaLedger: ledger,
     extractedClaims,
+    isShortNote,
   });
 
   const isGroqPrimary = Boolean(
@@ -2055,6 +2072,17 @@ export async function generateClutchNote(
     maxOutputTokens: number,
     timeoutMs?: number,
   ): Promise<NoteSection[]> => {
+    // Check prompt token cliff warning for Haiku 5.5
+    // Free tier users cannot proceed past 90K tokens and must upgrade to Cram Pass or Pro
+    const isPaidNotes =
+      options.tier === "cram_pass" ||
+      options.tier === "pro" ||
+      options.tier === "tutor";
+    assertPromptTokenCliff(prompt, (targetModel as any)?.modelId, {
+      tier: options.tier,
+      throwOnExceeded: !isPaidNotes,
+    });
+
     const timeoutController = timeoutMs ? new AbortController() : null;
     const timer = timeoutController
       ? setTimeout(
@@ -2078,7 +2106,7 @@ export async function generateClutchNote(
         schema: synthesisSchema,
         system: CLUTCH_NOTES_SYSTEM_PROMPT,
         prompt,
-        temperature: 0,
+        temperature: 0.35,
         abortSignal: combinedSignal,
         maxRetries: timeoutMs ? 0 : 1,
         maxOutputTokens,

@@ -133,7 +133,7 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(contender.priceUsdFormatted).toBe("$0");
     expect(TIER_LIMITS.contender.maxUploadsPerWeek).toBe(2);
     expect(TIER_LIMITS.contender.maxFilesPerUpload).toBe(1);
-    expect(TIER_LIMITS.contender.maxQuestionsPerRun).toBe(10);
+    expect(TIER_LIMITS.contender.maxQuestionsPerRun).toBe(15);
     expect(TIER_LIMITS.contender.canUseConceptRemix).toBe(false);
     expect(TIER_LIMITS.contender.canHostArenaRemix).toBe(false);
     expect(TIER_LIMITS.contender.maxArenaPlayers).toBe(8);
@@ -143,7 +143,7 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(cramPass.priceUsdFormatted).toBe("$3.99");
     expect(cramPass.cycle).toBe("one_time");
     expect(TIER_LIMITS.cram_pass.maxFilesPerUpload).toBe(10);
-    expect(TIER_LIMITS.cram_pass.maxQuestionsPerRun).toBe(30);
+    expect(TIER_LIMITS.cram_pass.maxQuestionsPerRun).toBe(35);
     expect(TIER_LIMITS.cram_pass.canUseConceptRemix).toBe(true);
     expect(TIER_LIMITS.cram_pass.canExportCheatSheet).toBe(true);
     expect(TIER_LIMITS.cram_pass.maxArenaPlayers).toBe(15);
@@ -526,13 +526,13 @@ describe("Subscription Deck Credit Caps, Burst Limits & Regeneration Allowances"
     const pro = PRICING_PLANS.find((p) => p.id === "pro")!;
     expect(pro.priceUsd).toBe(29.0);
     expect(pro.priceUsdFormatted).toBe("$29");
-    expect(TIER_LIMITS.pro.newDeckCredits).toBe(60);
+    expect(TIER_LIMITS.pro.newDeckCredits).toBe(50);
     expect(TIER_LIMITS.pro.dailyDeckBurstLimit).toBe(6);
     expect(TIER_LIMITS.pro.freeRegenerationsPerDeck).toBe(5);
     expect(TIER_LIMITS.pro.cogsCeilingUsd).toBe(9.75);
 
     expect(formatDeckCreditsCounter(3, 12)).toBe("3 of 12 decks used");
-    expect(formatDeckCreditsCounter(60, 60)).toBe("60 of 60 decks used");
+    expect(formatDeckCreditsCounter(50, 50)).toBe("50 of 50 decks used");
   });
 
   it("enforces 4 decks/day burst limit for 7-Day Cram Pass", async () => {
@@ -582,18 +582,18 @@ describe("Subscription Deck Credit Caps, Burst Limits & Regeneration Allowances"
     expect(attempt.creditsLimit).toBe(12);
   });
 
-  it("enforces 60 total deck credits cap for Semester Pro Pass", async () => {
+  it("enforces 50 total deck credits cap for Semester Pro Pass", async () => {
     const userId = "pro-credits-user";
     const ledger = await getUserQuotaLedger(userId, "pro");
-    ledger.deckCreditsUsed = 60;
+    ledger.deckCreditsUsed = 50;
     ledger.dailyBurstUsed = 0;
     await saveUserQuotaLedger(ledger);
 
-    const attempt = await checkAndReserveDeckQuota(userId, "pro", "pro-new-deck-61");
+    const attempt = await checkAndReserveDeckQuota(userId, "pro", "pro-new-deck-51");
     expect(attempt.allowed).toBe(false);
     expect(attempt.reason).toBe("DECK_CREDITS_EXCEEDED");
-    expect(attempt.creditsUsed).toBe(60);
-    expect(attempt.creditsLimit).toBe(60);
+    expect(attempt.creditsUsed).toBe(50);
+    expect(attempt.creditsLimit).toBe(50);
   });
 
   it("enforces 3 free regenerations per deck for Cram Pass and rejects 4th regeneration", async () => {

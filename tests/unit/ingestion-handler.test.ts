@@ -81,7 +81,7 @@ describe("ingestion HTTP handler", () => {
   });
   it.each([
     { questionCount: 0 },
-    { questionCount: 31 },
+    { questionCount: 36 },
     { questionCount: "5" },
     { language: "xx" },
     { mode: "anything" },

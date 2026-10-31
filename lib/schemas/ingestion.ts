@@ -5,10 +5,11 @@ export const ingestionOptionsSchema = z
   .object({
     operation: z.enum(["preview", "generate"]).default("generate"),
     mode: z.enum(["exact", "variants"]).default("variants"),
-    questionCount: z.number().int().min(1).max(30).default(10),
+    questionCount: z.number().int().min(1).max(35).default(15),
     language: z.enum(["en", "vi"]).default("en"),
     focus: z.string().trim().max(1000).default(""),
     multiFile: z.boolean().optional(),
+    tier: z.string().optional(),
     rescanPages: z.array(z.number().int().min(1).max(150)).max(150).optional(),
   })
   .strict();
@@ -58,4 +59,7 @@ export type GenerationResult = {
     outputTokens: number | null;
     totalTokens: number | null;
   };
+  pipelineVersion?: string;
+  servedModel?: string | null;
+  costUsd?: number;
 };

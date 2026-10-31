@@ -319,11 +319,13 @@ describe("structured generation", () => {
     expect(groups[2].map((s) => s.id)).toEqual(["slide-4"]);
   });
 
-  it("over-generates by +20% (computeOverGeneratedCount) and passes temperature=0.2, topP=0.95 to generateObject", async () => {
+  it("over-generates by +20% (computeOverGeneratedCount) and passes generator temp (0.3-0.4), topP=0.95 to generateObject", async () => {
     expect(computeOverGeneratedCount(5)).toBe(6);
     expect(computeOverGeneratedCount(10)).toBe(12);
     expect(computeOverGeneratedCount(25)).toBe(30);
     expect(computeOverGeneratedCount(30)).toBe(36);
+    expect(MCQ_GENERATION_TEMPERATURE).toBeGreaterThanOrEqual(0.3);
+    expect(MCQ_GENERATION_TEMPERATURE).toBeLessThanOrEqual(0.4);
 
     const model = modelFor(output());
     await generateQuestions(

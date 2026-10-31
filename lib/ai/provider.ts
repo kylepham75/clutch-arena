@@ -8,10 +8,10 @@ import { IngestionError } from "@/lib/ingestion/errors";
 // Pinned OpenRouter Slugs & Privacy Config
 // ============================================================================
 
-export const DEFAULT_GENERATOR_SLUG = "google/gemini-2.5-flash";
-export const PRIORITY_GENERATOR_SLUG = "openai/gpt-6.1-terra";
+export const DEFAULT_GENERATOR_SLUG = "anthropic/claude-haiku-5.5";
+export const PRIORITY_GENERATOR_SLUG = "anthropic/claude-sonnet-5.5";
 
-export const DEFAULT_VERIFIER_SLUG = "deepseek/deepseek-v4.1-flash";
+export const DEFAULT_VERIFIER_SLUG = "deepseek/deepseek-v4.1-flash-1017";
 export const FALLBACK_VERIFIER_SLUG = "openai/gpt-4o-mini";
 export const DEFAULT_VISION_SLUG = "google/gemini-2.5-flash-lite";
 
@@ -21,14 +21,70 @@ export const OPENROUTER_PRIVACY_PROVIDER_CONFIG = {
   zdr: true,
 };
 
+export const OPENROUTER_VERIFIER_PROVIDER_CONFIG = {
+  ...OPENROUTER_PRIVACY_PROVIDER_CONFIG,
+  allow_fallbacks: false,
+};
+
 export const OPENROUTER_PROVIDER_OPTIONS = {
   provider: OPENROUTER_PRIVACY_PROVIDER_CONFIG,
 };
 
-export function getOpenRouterRequestConfig() {
+export function getOpenRouterRequestConfig(options?: { allowFallbacks?: boolean }) {
   return {
-    provider: { ...OPENROUTER_PRIVACY_PROVIDER_CONFIG },
+    provider: {
+      ...OPENROUTER_PRIVACY_PROVIDER_CONFIG,
+      ...(options?.allowFallbacks === false ? { allow_fallbacks: false } : {}),
+    },
   };
+}
+
+// ============================================================================
+// Token Cliff Assertion (Haiku 5.5 100K 5x Price Cliff Warning)
+// ============================================================================
+
+export const HAIKU_TOKEN_CLIFF_THRESHOLD = 90_000;
+
+export function estimateTokenCount(text: string): number {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
+}
+
+export interface TokenCliffOptions {
+  tier?: string;
+  throwOnExceeded?: boolean;
+}
+
+export interface TokenCliffResult {
+  estimatedTokens: number;
+  isCliffWarning: boolean;
+  warning?: string;
+  customerMessage?: string;
+}
+
+export function assertPromptTokenCliff(
+  prompt: string,
+  modelSlug?: string,
+  options?: TokenCliffOptions,
+): TokenCliffResult {
+  const estimatedTokens = estimateTokenCount(prompt);
+  if (estimatedTokens > HAIKU_TOKEN_CLIFF_THRESHOLD) {
+    const customerMessage =
+      "This document exceeds the free plan limit. Please buy a 7-Day Cram Pass or upgrade to Pro plan to proceed.";
+    const warning = `[TokenCliffWarning] Prompt exceeds threshold (~${estimatedTokens.toLocaleString()} estimated tokens, model: ${modelSlug || "unknown"}). Document exceeds free plan limit. Customer must buy a Cram Pass or upgrade to Pro plan to proceed (Claude Haiku 5.5 has a 5x price cliff at 100K tokens ($0.10/$0.50 -> $0.50/$2.50)).`;
+    console.warn(warning);
+
+    if (options?.throwOnExceeded) {
+      throw new IngestionError(
+        "TIER_UPGRADE_REQUIRED",
+        customerMessage,
+        403,
+      );
+    }
+
+    return { estimatedTokens, isCliffWarning: true, warning, customerMessage };
+  }
+  return { estimatedTokens, isCliffWarning: false };
 }
 
 export function assertPinnedOpenRouterSlug(slug: string): void {
@@ -216,7 +272,10 @@ export function getOpenRouterApiKey(): string | null {
   return null;
 }
 
-export function getOpenRouterModel(modelId: string) {
+export function getOpenRouterModel(
+  modelId: string,
+  options?: { allowFallbacks?: boolean },
+) {
   assertPinnedOpenRouterSlug(modelId);
   const apiKey = getOpenRouterApiKey();
   if (!apiKey) {
@@ -227,16 +286,21 @@ export function getOpenRouterModel(modelId: string) {
     );
   }
 
+  const providerConfig = {
+    ...OPENROUTER_PRIVACY_PROVIDER_CONFIG,
+    ...(options?.allowFallbacks === false ? { allow_fallbacks: false } : {}),
+  };
+
   const openrouter = createOpenRouter({
     apiKey,
     extraBody: {
-      provider: OPENROUTER_PRIVACY_PROVIDER_CONFIG,
+      provider: providerConfig,
     },
   });
 
   return openrouter(modelId, {
     extraBody: {
-      provider: OPENROUTER_PRIVACY_PROVIDER_CONFIG,
+      provider: providerConfig,
     },
   });
 }
@@ -245,21 +309,33 @@ export function getOpenRouterGeneratorModel(
   tier: string = "contender",
   options?: { degraded?: boolean; modelOverride?: string },
 ) {
-  const isPriority = tier === "cram_pass" || tier === "pro" || tier === "tutor";
+  const isPaid = tier === "cram_pass" || tier === "pro" || tier === "tutor";
   let slug: string;
 
   if (options?.modelOverride?.trim()) {
     slug = options.modelOverride.trim();
-  } else if (isPriority && !options?.degraded) {
+  } else if (isPaid && !options?.degraded) {
     slug =
-      process.env.OPENROUTER_PRIORITY_MODEL?.trim() || PRIORITY_GENERATOR_SLUG;
+      process.env.OPENROUTER_PAID_GENERATOR_MODEL?.trim() ||
+      process.env.OPENROUTER_PRIORITY_MODEL?.trim() ||
+      PRIORITY_GENERATOR_SLUG;
   } else {
     slug =
-      process.env.OPENROUTER_GENERATOR_MODEL?.trim() || DEFAULT_GENERATOR_SLUG;
+      process.env.OPENROUTER_FREE_GENERATOR_MODEL?.trim() ||
+      process.env.OPENROUTER_GENERATOR_MODEL?.trim() ||
+      DEFAULT_GENERATOR_SLUG;
   }
 
   assertPinnedOpenRouterSlug(slug);
   return getOpenRouterModel(slug);
+}
+
+export function getNoteSummarizerModel(
+  tier: string = "contender",
+  options?: { degraded?: boolean; modelOverride?: string },
+) {
+  // NOTE SUMMARIZER: same model as the tier's generator (one prompt template, one schema, one eval set per tier)
+  return getOpenRouterGeneratorModel(tier, options);
 }
 
 export function getVerifierModel(options?: {
@@ -278,9 +354,19 @@ export function getVerifierModel(options?: {
 
   assertCrossFamilyVerifier(generatorSlug, verifierSlug);
 
+  // Verifier must differ in family from the generator; never fall back into Anthropic
+  if (getModelFamily(verifierSlug) === "anthropic") {
+    throw new IngestionError(
+      "CROSS_FAMILY_VIOLATION",
+      `Verifier model "${verifierSlug}" cannot be in the Anthropic family. Verifier must differ in family from generator and never use Anthropic.`,
+      400,
+    );
+  }
+
   const openRouterKey = getOpenRouterApiKey();
   if (openRouterKey) {
-    return getOpenRouterModel(verifierSlug);
+    // verifier: allow_fallbacks = false (fallback into Anthropic destroys independence silently)
+    return getOpenRouterModel(verifierSlug, { allowFallbacks: false });
   }
 
   throw new IngestionError(
@@ -306,9 +392,17 @@ export function getFallbackVerifierModel(options?: {
 
   assertCrossFamilyVerifier(generatorSlug, fallbackSlug);
 
+  if (getModelFamily(fallbackSlug) === "anthropic") {
+    throw new IngestionError(
+      "CROSS_FAMILY_VIOLATION",
+      `Fallback verifier model "${fallbackSlug}" cannot be in the Anthropic family. Fallback into Anthropic is strictly prohibited.`,
+      400,
+    );
+  }
+
   const openRouterKey = getOpenRouterApiKey();
   if (openRouterKey) {
-    return getOpenRouterModel(fallbackSlug);
+    return getOpenRouterModel(fallbackSlug, { allowFallbacks: false });
   }
 
   throw new IngestionError(
@@ -381,7 +475,7 @@ export function getGenerationModel(
   // 2. High-retention synthesis routing for Clutch Notes
   if (tier === "notes") {
     if (openRouterKey && provider !== "gemini" && provider !== "groq") {
-      return getOpenRouterGeneratorModel("notes", options);
+      return getNoteSummarizerModel("pro", options);
     }
     const noteModel = process.env.NOTES_AI_MODEL?.trim() || "gemini-3.6-flash";
     const gemini = getGeminiModel(noteModel);

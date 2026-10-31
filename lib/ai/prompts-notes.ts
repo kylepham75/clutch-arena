@@ -329,6 +329,7 @@ export function buildNotesPrompt(input: {
   focus?: string;
   formulaLedger?: FormulaLedgerEntry[];
   extractedClaims?: ExtractedSlideClaim[];
+  isShortNote?: boolean;
 }): string {
   const sanitizedFocus = input.focus
     ? input.focus.slice(0, 300).replace(/[\r\n`]/g, " ").trim()
@@ -378,7 +379,11 @@ export function buildNotesPrompt(input: {
           .join("\n")}\n</pinned_conventions>\n`
       : "";
 
-  return `Distill the following lecture slides into a concise, high-yield revision handout following all source-grounded transformation rules.
+  const tierFormatBlock = input.isShortNote
+    ? "\nFormat Specification (Free Tier - 1 Short Summary Note): Synthesize a single, concise high-yield revision note focusing on the primary core concept and governing formula rules in 1 tight section.\n"
+    : "\nFormat Specification (Paid Tier - Full, Sectioned Summary Notes): Synthesize a comprehensive, multi-sectioned revision handout covering all distinct conceptual topics in the lecture slides.\n";
+
+  return `Distill the following lecture slides into a concise, high-yield revision handout following all source-grounded transformation rules.${tierFormatBlock}
 
 Document Title: ${input.fileName}${focusBlock}${ledgerBlock}${claimsBlock}${conventionsBlock}
 CRITICAL SECURITY & GROUNDING DIRECTIVE:

@@ -16,7 +16,15 @@ import type {
   SourceBlock,
 } from "@/lib/schemas/ingestion";
 import { IngestionError } from "@/lib/ingestion/errors";
-import { getGenerationModel, getGroqModel, getOpenRouterApiKey } from "./provider";
+import {
+  assertPromptTokenCliff,
+  computePipelineVersion,
+  extractOpenRouterProvenance,
+  getGenerationModel,
+  getGroqModel,
+  getOpenRouterApiKey,
+  HAIKU_TOKEN_CLIFF_THRESHOLD,
+} from "./provider";
 import {
   buildIngestionPrompt,
   ingestionSystemPrompt,
@@ -36,10 +44,20 @@ import {
 import { recordTelemetryEvent } from "@/lib/telemetry/recorder";
 import type { CitationRejectionReason } from "@/lib/schemas/telemetry";
 
-export const MCQ_GENERATION_TEMPERATURE = 0.2;
+export const MCQ_GENERATION_TEMPERATURE = 0.35;
 export const MCQ_GENERATION_TOP_P = 0.95;
 export const CONCEPT_GROUPING_TEMPERATURE = 0.0;
 export const MAX_ITEMS_PER_SLIDE = 2;
+
+export function capExplanationToTwoSentences(text: string): string {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return "";
+  const sentences = trimmed.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g);
+  if (!sentences || sentences.length <= 2) {
+    return trimmed;
+  }
+  return sentences.slice(0, 2).map((s) => s.trim()).join(" ");
+}
 
 export function computeOverGeneratedCount(requestedCount: number): number {
   const safeCount = Math.max(1, Math.floor(requestedCount));
@@ -713,19 +731,44 @@ export function validateGeneratedStudy(
       question: finalBase.question,
       options: finalBase.options,
       correctIndex: finalBase.correctIndex,
-      explanation: repairCorruptedLatex(finalBase.explanation),
+      explanation: capExplanationToTwoSentences(
+        repairCorruptedLatex(finalBase.explanation),
+      ),
       conceptVariant: {
         question: finalVariant.question,
         options: finalVariant.options,
         correctIndex: finalVariant.correctIndex,
-        explanation: repairCorruptedLatex(finalVariant.explanation),
+        explanation: capExplanationToTwoSentences(
+          repairCorruptedLatex(finalVariant.explanation),
+        ),
       },
     });
+
+    const isPaid =
+      options.tier === "cram_pass" ||
+      options.tier === "pro" ||
+      options.tier === "tutor";
+
+    const rawDistractorRationale =
+      annotation.distractorRationale ??
+      annotation.distractor_rationale ??
+      rawQuestion.distractorRationale ??
+      rawQuestion.distractor_rationale ??
+      "";
+
     metadata[safeId] = {
       topic: annotation.topic,
       chapter: annotation.chapter,
       citation: `${document.fileName} · ${source.label}`,
       rule: repairCorruptedLatex(annotation.rule),
+      // Distractor rationale ("why the others are wrong"): Free -> ❌ | Paid -> ✅
+      ...(isPaid && rawDistractorRationale.trim()
+        ? {
+            distractorRationale: repairCorruptedLatex(
+              rawDistractorRationale.trim(),
+            ),
+          }
+        : {}),
     };
     references[safeId] = {
       sourceId: source.id,
@@ -1017,12 +1060,12 @@ function isLanguageModelInstance(val: unknown): val is LanguageModel {
 
 export async function generateQuestions(
   document: ParsedDocument,
-  options: IngestionOptions & { verifierModel?: LanguageModel | false },
+  options: IngestionOptions & { verifierModel?: LanguageModel | false; tier?: string },
   signal: AbortSignal,
   model?: LanguageModel,
   verificationConfig?: GenerateQuestionsVerificationConfig | LanguageModel,
 ): Promise<GenerationResult> {
-  const resolvedModel = model ?? getGenerationModel();
+  const resolvedModel = model ?? getGenerationModel(options.tier);
 
   // Budget source blocks so the prompt stays safely within AI rate limits (e.g. Groq 8k TPM)
   const budget = budgetSourceBlocks(document.sources, 14_000, options.focus);
@@ -1058,12 +1101,24 @@ export async function generateQuestions(
       45,
       computeOverGeneratedCount(batchQuestionCount),
     );
-    const batchOptions: IngestionOptions = {
+    const batchOptions: IngestionOptions & { tier?: string } = {
       ...options,
       questionCount: overGeneratedBatchCount,
       focus: batchFocus,
+      tier: options.tier,
     };
     const batchPrompt = buildIngestionPrompt(batchDoc, batchOptions);
+
+    // Assertion: warn if any prompt exceeds 90K tokens (Haiku 5.5 price cliff at 100K)
+    // Free tier users cannot proceed past 90K tokens to protect COGS and encourage upgrading to Cram Pass or Pro
+    const isPaidGeneration =
+      options.tier === "cram_pass" ||
+      options.tier === "pro" ||
+      options.tier === "tutor";
+    assertPromptTokenCliff(batchPrompt, (resolvedModel as any)?.modelId, {
+      tier: options.tier,
+      throwOnExceeded: !isPaidGeneration,
+    });
 
     const fallback = getGroqModel();
     const canFallback = Boolean(fallback && resolvedModel !== fallback);
@@ -1146,6 +1201,16 @@ export async function generateQuestions(
       ),
     );
 
+    const batchProvenances = batchResults.map((r) => extractOpenRouterProvenance(r));
+    for (const res of batchResults) {
+      const inputTokens = (res.usage as any)?.inputTokens ?? (res.usage as any)?.promptTokens;
+      if (typeof inputTokens === "number" && inputTokens > HAIKU_TOKEN_CLIFF_THRESHOLD) {
+        console.warn(
+          `[TokenCliffWarning] Prompt input tokens (${inputTokens.toLocaleString()}) exceeded 90K token limit. You need to buy a Cram Pass or upgrade to Pro plan to proceed (Claude Haiku 5.5 has a 5x price cliff at 100K ($0.10/$0.50 -> $0.50/$2.50)).`,
+        );
+      }
+    }
+
     const overGenTarget = computeOverGeneratedCount(options.questionCount);
     let rawObject =
       batchResults.length === 1
@@ -1170,6 +1235,8 @@ export async function generateQuestions(
     let verifierInputTokens = 0;
     let verifierOutputTokens = 0;
     let verifierTotalTokens = 0;
+    let verifierCostUsd = 0;
+    let servedVerifierModel: string | undefined = undefined;
 
     if (shouldRunBlindVerifier && rawObject.questions.length > 0) {
       const annotationByQId = new Map(
@@ -1242,6 +1309,11 @@ export async function generateQuestions(
         allowUnconfiguredSkip: true,
       });
 
+      if (verifyRes) {
+        verifierCostUsd = verifyRes.costUsd || 0;
+        servedVerifierModel = verifyRes.servedVerifierModel || undefined;
+      }
+
       if (typeof verifyRes.usage.inputTokens === "number") {
         verifierInputTokens = verifyRes.usage.inputTokens;
       }
@@ -1289,6 +1361,29 @@ export async function generateQuestions(
       return hasAny ? sum : null;
     };
 
+    const servedGeneratorModel =
+      batchProvenances.find((p) => p.servedModel)?.servedModel ||
+      (typeof (resolvedModel as any)?.modelId === "string"
+        ? (resolvedModel as any).modelId
+        : "unknown");
+
+    const pipelineVersion = computePipelineVersion(
+      servedGeneratorModel,
+      servedVerifierModel,
+    );
+
+    const generatorCostUsd = batchProvenances.reduce(
+      (acc, p) => acc + (p.costUsd || 0),
+      0,
+    );
+    const totalCostUsd = Number(
+      (generatorCostUsd + (typeof verifierCostUsd === "number" ? verifierCostUsd : 0)).toFixed(6),
+    );
+
+    console.log(
+      `[AI Pipeline] Returned models: generator=${servedGeneratorModel}, verifier=${servedVerifierModel || "none"}. Pipeline version: ${pipelineVersion}. Total cost USD: $${totalCostUsd.toFixed(6)}`,
+    );
+
     return {
       ...validated,
       usage: {
@@ -1296,6 +1391,9 @@ export async function generateQuestions(
         outputTokens: sumTokens((u) => u.outputTokens, verifierOutputTokens),
         totalTokens: sumTokens((u) => u.totalTokens, verifierTotalTokens),
       },
+      pipelineVersion,
+      servedModel: servedGeneratorModel,
+      costUsd: totalCostUsd,
     };
   } catch (error: any) {
     signal.throwIfAborted();

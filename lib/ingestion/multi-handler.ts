@@ -1,7 +1,11 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { generateQuestions } from "@/lib/ai/generate-questions";
-import { getGenerationModel } from "@/lib/ai/provider";
+import {
+  getGenerationModel,
+  estimateTokenCount,
+  HAIKU_TOKEN_CLIFF_THRESHOLD,
+} from "@/lib/ai/provider";
 import { IngestionError } from "./errors";
 import { parseMultiDocuments } from "./parse-multi-documents";
 import { readMultiUpload } from "./read-multi-upload";
@@ -110,10 +114,10 @@ export function createMultiIngestionHandler(
       const { files, options } = await readMultiUpload(request, signal);
       const clientIp = getClientIp(request);
       const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
+      const isPaid =
+        auth.tier === "cram_pass" || auth.tier === "pro" || auth.tier === "tutor";
 
       if (options.operation === "generate") {
-        const isPaid =
-          auth.tier === "cram_pass" || auth.tier === "pro" || auth.tier === "tutor";
         const enforceTier = !(
           process.env.NODE_ENV === "test" && dependencies.verifyAuth === undefined
         );
@@ -163,6 +167,23 @@ export function createMultiIngestionHandler(
           document: compositeDocument,
           documents,
         });
+      }
+
+      const totalSourceText = compositeDocument.sources.map((s) => s.text).join("\n");
+      const estimatedDocTokens = estimateTokenCount(totalSourceText);
+      if (!isPaid && estimatedDocTokens > HAIKU_TOKEN_CLIFF_THRESHOLD) {
+        return json(
+          {
+            ok: false,
+            requestId,
+            error: {
+              code: "TIER_UPGRADE_REQUIRED",
+              message:
+                "This document exceeds the free plan limit. Please buy a 7-Day Cram Pass or upgrade to Pro plan to proceed.",
+            },
+          },
+          403,
+        );
       }
 
       const contentHash =
@@ -276,7 +297,11 @@ export function createMultiIngestionHandler(
         }
       }
 
-      const result = await generate(compositeDocument, options, signal);
+      const result = await generate(
+        compositeDocument,
+        { ...options, tier: auth.tier },
+        signal,
+      );
       signal.throwIfAborted();
 
       if (!isQuotaTestBypass) {
@@ -292,12 +317,14 @@ export function createMultiIngestionHandler(
           );
         }, 0);
         const tokenCostUsd =
-          result.usage?.totalTokens && result.usage.totalTokens > 0
-            ? Math.max(
-                0.000001,
-                Number(((result.usage.totalTokens / 1_000_000) * 0.5).toFixed(6)),
-              )
-            : reservedCostUsd;
+          typeof result.costUsd === "number" && result.costUsd > 0
+            ? result.costUsd
+            : result.usage?.totalTokens && result.usage.totalTokens > 0
+              ? Math.max(
+                  0.000001,
+                  Number(((result.usage.totalTokens / 1_000_000) * 0.5).toFixed(6)),
+                )
+              : reservedCostUsd;
         const actualCostUsd = Number((tokenCostUsd + visionCostUsd).toFixed(6));
 
         await recordCogs(rateLimitKey, auth.tier, actualCostUsd, reservedCostUsd);
@@ -307,7 +334,7 @@ export function createMultiIngestionHandler(
           language: options.language,
           mode: options.mode,
           focusHash,
-          pipelineVersion: "v1",
+          pipelineVersion: result.pipelineVersion ?? "v1",
           questionPool: result.pack.questions,
           studyMetadata: {
             pack: result.pack,
@@ -315,6 +342,8 @@ export function createMultiIngestionHandler(
             references: result.references,
             warnings: result.warnings,
             usage: result.usage,
+            pipelineVersion: result.pipelineVersion,
+            costUsd: actualCostUsd,
           },
         });
       }

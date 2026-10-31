@@ -1,7 +1,11 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { generateQuestions } from "@/lib/ai/generate-questions";
-import { getGenerationModel } from "@/lib/ai/provider";
+import {
+  getGenerationModel,
+  estimateTokenCount,
+  HAIKU_TOKEN_CLIFF_THRESHOLD,
+} from "@/lib/ai/provider";
 import { IngestionError } from "./errors";
 import { parseDocument } from "./parse-document";
 import { readUpload } from "./read-upload";
@@ -106,12 +110,12 @@ export function createIngestionHandler(
       validateFile(file);
       const clientIp = getClientIp(request);
       const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
+      const isPaid =
+        auth.tier === "cram_pass" || auth.tier === "pro" || auth.tier === "tutor";
+
       // Fail fast without parsing when generation cannot be configured or rate limit is reached.
       if (options.operation === "generate") {
-        const isPaid =
-          auth.tier === "cram_pass" || auth.tier === "pro" || auth.tier === "tutor";
-
-        if (!isPaid && options.questionCount > 10) {
+        if (!isPaid && options.questionCount > 15) {
           return json(
             {
               ok: false,
@@ -119,7 +123,7 @@ export function createIngestionHandler(
               error: {
                 code: "TIER_UPGRADE_REQUIRED",
                 message:
-                  "Free and Guest tiers support up to 10 questions per run. Upgrade to Cram Pass or Pro for up to 30 questions.",
+                  "Free and Guest tiers support up to 15 questions per run. Upgrade to Cram Pass or Pro for up to 35 questions.",
               },
             },
             403,
@@ -152,6 +156,23 @@ export function createIngestionHandler(
       });
       if (options.operation === "preview")
         return json({ ok: true, requestId, operation: "preview", document });
+
+      const totalSourceText = document.sources.map((s) => s.text).join("\n");
+      const estimatedDocTokens = estimateTokenCount(totalSourceText);
+      if (!isPaid && estimatedDocTokens > HAIKU_TOKEN_CLIFF_THRESHOLD) {
+        return json(
+          {
+            ok: false,
+            requestId,
+            error: {
+              code: "TIER_UPGRADE_REQUIRED",
+              message:
+                "This document exceeds the free plan limit. Please buy a 7-Day Cram Pass or upgrade to Pro plan to proceed.",
+            },
+          },
+          403,
+        );
+      }
 
       const contentHash =
         document.contentHash ||
@@ -263,7 +284,11 @@ export function createIngestionHandler(
         }
       }
 
-      const result = await generate(document, options, signal);
+      const result = await generate(
+        document,
+        { ...options, tier: auth.tier },
+        signal,
+      );
       signal.throwIfAborted();
 
       if (!isQuotaTestBypass) {
@@ -274,12 +299,14 @@ export function createIngestionHandler(
             )
           : 0;
         const tokenCostUsd =
-          result.usage?.totalTokens && result.usage.totalTokens > 0
-            ? Math.max(
-                0.000001,
-                Number(((result.usage.totalTokens / 1_000_000) * 0.5).toFixed(6)),
-              )
-            : reservedCostUsd;
+          typeof result.costUsd === "number" && result.costUsd > 0
+            ? result.costUsd
+            : result.usage?.totalTokens && result.usage.totalTokens > 0
+              ? Math.max(
+                  0.000001,
+                  Number(((result.usage.totalTokens / 1_000_000) * 0.5).toFixed(6)),
+                )
+              : reservedCostUsd;
         const actualCostUsd = Number((tokenCostUsd + visionCostUsd).toFixed(6));
 
         await recordCogs(rateLimitKey, auth.tier, actualCostUsd, reservedCostUsd);
@@ -289,7 +316,7 @@ export function createIngestionHandler(
           language: options.language,
           mode: options.mode,
           focusHash,
-          pipelineVersion: "v1",
+          pipelineVersion: result.pipelineVersion ?? "v1",
           questionPool: result.pack.questions,
           studyMetadata: {
             pack: result.pack,
@@ -297,6 +324,8 @@ export function createIngestionHandler(
             references: result.references,
             warnings: result.warnings,
             usage: result.usage,
+            pipelineVersion: result.pipelineVersion,
+            costUsd: actualCostUsd,
           },
         });
       }

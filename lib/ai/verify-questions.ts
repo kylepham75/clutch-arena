@@ -287,6 +287,7 @@ export interface VerifyQuestionsBlindlyOptions {
   requireConceptVariantVerdict?: boolean;
   skipSolverComputed?: boolean;
   allowUnconfiguredSkip?: boolean;
+  allowFallbacks?: boolean;
 }
 
 export interface BlindVerificationUsage {
@@ -322,15 +323,18 @@ function selectSafeFallbackVerifierSlug(
 
   const genFamily = getModelFamily(generatorSlug);
   const defaultFallbackFamily = getModelFamily(FALLBACK_VERIFIER_SLUG);
-  if (genFamily !== defaultFallbackFamily) {
+  if (genFamily !== defaultFallbackFamily && defaultFallbackFamily !== "anthropic") {
     return FALLBACK_VERIFIER_SLUG;
   }
 
-  // If generator happens to be OpenAI family, fall back to Anthropic or Google
-  if (getModelFamily(DEFAULT_VERIFIER_SLUG) !== genFamily) {
+  // Under no circumstance should a verifier fallback be in the Anthropic family
+  if (
+    getModelFamily(DEFAULT_VERIFIER_SLUG) !== genFamily &&
+    getModelFamily(DEFAULT_VERIFIER_SLUG) !== "anthropic"
+  ) {
     return DEFAULT_VERIFIER_SLUG;
   }
-  return DEFAULT_GENERATOR_SLUG;
+  return FALLBACK_VERIFIER_SLUG;
 }
 
 export async function verifyQuestionsBlindly<
@@ -442,11 +446,27 @@ export async function verifyQuestionsBlindly<
       prompt,
     });
   } catch (primaryError) {
+    const allowFallbacks =
+      options?.allowFallbacks ??
+      (options?.fallbackVerifierModel !== undefined);
+
+    if (!allowFallbacks) {
+      throw primaryError;
+    }
+
     const fallbackSlug = selectSafeFallbackVerifierSlug(
       generatorSlug,
       options?.fallbackVerifierSlug,
     );
     assertCrossFamilyVerifier(generatorSlug, fallbackSlug);
+
+    if (getModelFamily(fallbackSlug) === "anthropic") {
+      throw new IngestionError(
+        "CROSS_FAMILY_VIOLATION",
+        `Fallback verifier "${fallbackSlug}" is in the Anthropic family. Verifier must never fall back into Anthropic.`,
+        400,
+      );
+    }
 
     const fallbackModel =
       options?.fallbackVerifierModel ??
