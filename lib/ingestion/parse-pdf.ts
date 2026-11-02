@@ -146,7 +146,6 @@ export const defaultOpenRouterVisionTranscriber: PdfVisionTranscriber = async ({
         provider: {
           require_parameters: true,
           data_collection: "deny",
-          zdr: true,
         },
       },
     },
@@ -518,7 +517,8 @@ export async function parsePdf(
               } else {
                 visionFailed = true;
               }
-            } catch {
+            } catch (err) {
+              console.warn("[parsePdf:vision:crop] Crop OCR failed:", err);
               visionFailed = true;
             }
           }
@@ -624,7 +624,8 @@ export async function parsePdf(
                   visionFailed = true;
                   processed = true;
                 }
-              } catch {
+              } catch (err) {
+                console.warn("[parsePdf:vision:full] Full-page OCR failed:", err);
                 visionFailed = true;
                 processed = false;
               }
