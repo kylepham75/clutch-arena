@@ -95,8 +95,24 @@ export function getPdfVisionCacheEntry(
   return cached;
 }
 
-function hasValidOpenRouterKey(): boolean {
-  const key = process.env.OPENROUTER_API_KEY?.trim();
+export function hasValidGeminiKey(): boolean {
+  const key =
+    process.env.GEMINI_API_KEY?.trim() ||
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim();
+  return Boolean(
+    key &&
+      key !== "your-gemini-key-here" &&
+      key !== "your-api-key-here" &&
+      !key.includes("placeholder") &&
+      key.length > 10,
+  );
+}
+
+export function hasValidOpenRouterKey(): boolean {
+  const key = (
+    process.env.OPENROUTER_API_KEY ||
+    process.env.OPEN_ROUTER_API_KEY
+  )?.trim();
   return Boolean(
     key &&
       key !== "your-openrouter-key-here" &&
@@ -106,60 +122,118 @@ function hasValidOpenRouterKey(): boolean {
   );
 }
 
+export function hasValidVisionKey(): boolean {
+  return hasValidOpenRouterKey() || hasValidGeminiKey();
+}
+
 export const defaultOpenRouterVisionTranscriber: PdfVisionTranscriber = async ({
   imageBytes,
   mimeType,
   mode,
   signal,
 }) => {
-  if (!hasValidOpenRouterKey()) return null;
-  const { generateText } = await import("ai");
-  const { createOpenRouter } = await import("@openrouter/ai-sdk-provider");
-
-  const openrouter = createOpenRouter({
-    apiKey: process.env.OPENROUTER_API_KEY!.trim(),
-  });
-
   const prompt =
     mode === "equation_crop"
       ? "Transcribe all mathematical equations, formulas, and data tables visible in this image into clean LaTeX or Markdown tables. Return only the transcription."
       : "Transcribe all visible text, formulas (in LaTeX), and tables (in Markdown) on this page accurately. Return clean Markdown text.";
 
-  const visionModelSlug =
-    process.env.OPENROUTER_VISION_MODEL?.trim() || "google/gemini-2.5-flash-lite";
+  // 1. Primary: OpenRouter if configured
+  if (hasValidOpenRouterKey()) {
+    try {
+      const { generateText } = await import("ai");
+      const { createOpenRouter } = await import("@openrouter/ai-sdk-provider");
 
-  const result = await generateText({
-    model: openrouter(visionModelSlug),
-    temperature: 0,
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: prompt },
-          { type: "image", image: imageBytes },
+      const apiKey = (
+        process.env.OPENROUTER_API_KEY ||
+        process.env.OPEN_ROUTER_API_KEY
+      )!.trim();
+
+      const openrouter = createOpenRouter({ apiKey });
+      const visionModelSlug =
+        process.env.OPENROUTER_VISION_MODEL?.trim() || "google/gemini-2.5-flash-lite";
+
+      const result = await generateText({
+        model: openrouter(visionModelSlug),
+        temperature: 0,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image", image: imageBytes },
+            ],
+          },
         ],
-      },
-    ],
-    abortSignal: signal,
-    providerOptions: {
-      openrouter: {
-        provider: {
-          require_parameters: true,
-          data_collection: "deny",
+        abortSignal: signal,
+        providerOptions: {
+          openrouter: {
+            provider: {
+              require_parameters: true,
+              data_collection: "deny",
+            },
+          },
         },
-      },
-    },
-  });
+      });
 
-  const text = result.text.trim();
-  return {
-    text,
-    confidence: text.length > 0 ? 0.95 : 0.0,
-    costUsd:
-      mode === "equation_crop"
-        ? ESTIMATED_EQUATION_CROP_OCR_USD
-        : ESTIMATED_FULL_PAGE_OCR_USD,
-  };
+      const text = result.text.trim();
+      return {
+        text,
+        confidence: text.length > 0 ? 0.95 : 0.0,
+        costUsd:
+          mode === "equation_crop"
+            ? ESTIMATED_EQUATION_CROP_OCR_USD
+            : ESTIMATED_FULL_PAGE_OCR_USD,
+      };
+    } catch (openRouterErr) {
+      console.warn("[parsePdf:vision] OpenRouter OCR attempt encountered error, checking fallback:", openRouterErr);
+      if (!hasValidGeminiKey()) {
+        throw openRouterErr;
+      }
+    }
+  }
+
+  // 2. Direct Google Gemini SDK (if GEMINI_API_KEY is present or OpenRouter failed)
+  if (hasValidGeminiKey()) {
+    try {
+      const { generateText } = await import("ai");
+      const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
+
+      const googleApiKey = (
+        process.env.GEMINI_API_KEY ||
+        process.env.GOOGLE_GENERATIVE_AI_API_KEY
+      )!.trim();
+
+      const google = createGoogleGenerativeAI({ apiKey: googleApiKey });
+      const geminiModel = process.env.GEMINI_VISION_MODEL?.trim() || "gemini-3.5-flash-lite";
+
+      const result = await generateText({
+        model: google(geminiModel),
+        temperature: 0,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image", image: imageBytes },
+            ],
+          },
+        ],
+        abortSignal: signal,
+      });
+
+      const text = result.text.trim();
+      return {
+        text,
+        confidence: text.length > 0 ? 0.95 : 0.0,
+        costUsd: 0,
+      };
+    } catch (geminiErr) {
+      console.warn("[parsePdf:vision] Direct Google Gemini OCR attempt failed:", geminiErr);
+      throw geminiErr;
+    }
+  }
+
+  return null;
 };
 
 /**
@@ -319,11 +393,11 @@ export async function parsePdf(
     }
 
     const isVisionAvailable = Boolean(
-      options?.visionTranscriber || hasValidOpenRouterKey(),
+      options?.visionTranscriber || hasValidVisionKey(),
     );
     const visionTranscriber =
       options?.visionTranscriber ??
-      (hasValidOpenRouterKey()
+      (hasValidVisionKey()
         ? defaultOpenRouterVisionTranscriber
         : undefined);
 
