@@ -70,36 +70,15 @@ const jsonSafeFinanceParamsSchema = z
     nper: z.number().optional(),
     pmt: z.number().optional(),
     pv: z.number().optional(),
-    fv: z.number().optional(),
-    isDue: z.boolean().optional(),
-    type: z
-      .union([z.number(), z.enum(["ordinary", "due"]), z.string()])
-      .optional(),
-    target: z.string().optional(),
-    cashFlow: z.number().optional(),
-    dividend: z.number().optional(),
-    d0: z.number().optional(),
-    d1: z.number().optional(),
-    growth: z.number().optional(),
-    isD0: z.boolean().optional(),
-    faceValue: z.number().optional(),
-    couponRate: z.number().optional(),
-    frequency: z.number().optional(),
-    price: z.number().optional(),
-    cashFlows: z.array(z.number()).optional(),
-    initialInvestment: z.number().optional(),
-    equityWeight: z.number().optional(),
-    debtWeight: z.number().optional(),
-    costOfEquity: z.number().optional(),
-    costOfDebt: z.number().optional(),
-    taxRate: z.number().optional(),
-    equityValue: z.number().optional(),
-    debtValue: z.number().optional(),
-    riskFreeRate: z.number().optional(),
-    beta: z.number().optional(),
-    marketReturn: z.number().optional(),
-    marketRiskPremium: z.number().optional(),
-  });
+  })
+  .catchall(
+    z.union([
+      z.number(),
+      z.boolean(),
+      z.string(),
+      z.array(z.number()),
+    ]),
+  );
 
 export const jsonSafeFinanceSpecSchema = z.object({
   solver: financeSolverTypeSchema,
@@ -107,8 +86,8 @@ export const jsonSafeFinanceSpecSchema = z.object({
   params: jsonSafeFinanceParamsSchema,
   unit: financeUnitSchema.optional(),
   decimals: z.number().int().min(0).max(8).optional(),
-  distractor_modes: z.array(distractorModeSchema).optional(),
   distractorModes: z.array(distractorModeSchema).optional(),
+  distractor_modes: z.array(distractorModeSchema).optional(),
 });
 
 // Providers accept homogeneous JSON arrays. Convert to the strict tuple contract
@@ -120,7 +99,6 @@ const fields = {
   explanation: z.string().min(1).max(2000),
   financeSpec: jsonSafeFinanceSpecSchema.optional(),
   distractorRationale: z.string().max(1000).optional(),
-  distractor_rationale: z.string().max(1000).optional(),
 };
 
 export const generatedStudySchema = z
@@ -753,7 +731,7 @@ export function validateGeneratedStudy(
       annotation.distractorRationale ??
       annotation.distractor_rationale ??
       rawQuestion.distractorRationale ??
-      rawQuestion.distractor_rationale ??
+      (rawQuestion as any).distractor_rationale ??
       "";
 
     metadata[safeId] = {
@@ -1129,7 +1107,7 @@ export async function generateQuestions(
           process.env.AI_PROVIDER === "local" ||
             process.env.AI_PROVIDER === "ollama",
         );
-        const primaryTimeoutMs = isLocal ? 90_000 : 22_000;
+        const primaryTimeoutMs = isLocal ? 90_000 : 75_000;
         const primaryTimeout = new AbortController();
         const timer = setTimeout(
           () =>

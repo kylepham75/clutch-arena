@@ -175,7 +175,6 @@ export const defaultOpenRouterVisionTranscriber: PdfVisionTranscriber = async ({
         providerOptions: {
           openrouter: {
             provider: {
-              require_parameters: true,
               data_collection: "deny",
             },
           },

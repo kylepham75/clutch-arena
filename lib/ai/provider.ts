@@ -293,6 +293,8 @@ export function getOpenRouterModel(
 
   const providerConfig = {
     ...OPENROUTER_PRIVACY_PROVIDER_CONFIG,
+    require_parameters: false,
+    zdr: false,
     ...(options?.allowFallbacks === false ? { allow_fallbacks: false } : {}),
   };
 
