@@ -261,7 +261,12 @@ export function extractOpenRouterProvenance(
 // ============================================================================
 
 export function getOpenRouterApiKey(): string | null {
-  const key = process.env.OPENROUTER_API_KEY?.trim();
+  const key = (
+    process.env.OPENROUTER_API_KEY ||
+    process.env.OPEN_ROUTER_API_KEY ||
+    process.env.OPENROUTER_KEY ||
+    process.env.OPEN_ROUTER_KEY
+  )?.trim();
   if (
     key &&
     key !== "your-openrouter-key-here" &&
@@ -413,9 +418,12 @@ export function getFallbackVerifierModel(options?: {
 }
 
 export function getGeminiModel(modelOverride?: string) {
-  const googleApiKey =
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
-    process.env.GEMINI_API_KEY?.trim();
+  const googleApiKey = (
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GEMINI_KEY ||
+    process.env.GOOGLE_API_KEY
+  )?.trim();
   if (
     googleApiKey &&
     googleApiKey !== "your-gemini-key-here" &&

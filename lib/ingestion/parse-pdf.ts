@@ -96,9 +96,12 @@ export function getPdfVisionCacheEntry(
 }
 
 export function hasValidGeminiKey(): boolean {
-  const key =
-    process.env.GEMINI_API_KEY?.trim() ||
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim();
+  const key = (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+    process.env.GEMINI_KEY ||
+    process.env.GOOGLE_API_KEY
+  )?.trim();
   return Boolean(
     key &&
       key !== "your-gemini-key-here" &&
@@ -111,7 +114,9 @@ export function hasValidGeminiKey(): boolean {
 export function hasValidOpenRouterKey(): boolean {
   const key = (
     process.env.OPENROUTER_API_KEY ||
-    process.env.OPEN_ROUTER_API_KEY
+    process.env.OPEN_ROUTER_API_KEY ||
+    process.env.OPENROUTER_KEY ||
+    process.env.OPEN_ROUTER_KEY
   )?.trim();
   return Boolean(
     key &&
@@ -145,7 +150,9 @@ export const defaultOpenRouterVisionTranscriber: PdfVisionTranscriber = async ({
 
       const apiKey = (
         process.env.OPENROUTER_API_KEY ||
-        process.env.OPEN_ROUTER_API_KEY
+        process.env.OPEN_ROUTER_API_KEY ||
+        process.env.OPENROUTER_KEY ||
+        process.env.OPEN_ROUTER_KEY
       )!.trim();
 
       const openrouter = createOpenRouter({ apiKey });
@@ -200,7 +207,9 @@ export const defaultOpenRouterVisionTranscriber: PdfVisionTranscriber = async ({
 
       const googleApiKey = (
         process.env.GEMINI_API_KEY ||
-        process.env.GOOGLE_GENERATIVE_AI_API_KEY
+        process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+        process.env.GEMINI_KEY ||
+        process.env.GOOGLE_API_KEY
       )!.trim();
 
       const google = createGoogleGenerativeAI({ apiKey: googleApiKey });
@@ -414,6 +423,7 @@ export async function parsePdf(
 
     let flaggedCount = 0;
     let processedFlaggedCount = 0;
+    let lastVisionError: any = null;
 
     for (let page = 1; page <= totalPages; page++) {
       signal.throwIfAborted();
@@ -593,6 +603,7 @@ export async function parsePdf(
               }
             } catch (err) {
               console.warn("[parsePdf:vision:crop] Crop OCR failed:", err);
+              lastVisionError = err;
               visionFailed = true;
             }
           }
@@ -700,6 +711,7 @@ export async function parsePdf(
                 }
               } catch (err) {
                 console.warn("[parsePdf:vision:full] Full-page OCR failed:", err);
+                lastVisionError = err;
                 visionFailed = true;
                 processed = false;
               }
@@ -755,6 +767,23 @@ export async function parsePdf(
     }
 
     if (!sources.length) {
+      if (lastVisionError) {
+        const errorDetail =
+          lastVisionError?.message ||
+          (typeof lastVisionError === "string" ? lastVisionError : "Provider rejected request");
+        throw new IngestionError(
+          "OCR_REQUIRED",
+          `Vision OCR failed: ${errorDetail}. Please check your OpenRouter / Gemini API key and account credits.`,
+          422,
+        );
+      }
+      if (!isVisionAvailable) {
+        throw new IngestionError(
+          "OCR_REQUIRED",
+          "This PDF has no extractable text. Vision OCR is currently disabled because OPENROUTER_API_KEY (or GEMINI_API_KEY) is not active in this Vercel deployment. Add it in Vercel Project Settings and trigger a Redeploy.",
+          422,
+        );
+      }
       throw new IngestionError(
         "OCR_REQUIRED",
         "This PDF has no extractable text. Run OCR or upload a text-based PDF, DOCX, or TXT file.",
