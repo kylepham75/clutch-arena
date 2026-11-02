@@ -21,6 +21,7 @@ import {
   computePipelineVersion,
   extractOpenRouterProvenance,
   getGenerationModel,
+  getGeminiModel,
   getGroqModel,
   getOpenRouterApiKey,
   HAIKU_TOKEN_CLIFF_THRESHOLD,
@@ -65,12 +66,7 @@ export function computeOverGeneratedCount(requestedCount: number): number {
 }
 
 const jsonSafeFinanceParamsSchema = z
-  .object({
-    rate: z.number().optional(),
-    nper: z.number().optional(),
-    pmt: z.number().optional(),
-    pv: z.number().optional(),
-  })
+  .object({})
   .catchall(
     z.union([
       z.number(),
@@ -87,7 +83,6 @@ export const jsonSafeFinanceSpecSchema = z.object({
   unit: financeUnitSchema.optional(),
   decimals: z.number().int().min(0).max(8).optional(),
   distractorModes: z.array(distractorModeSchema).optional(),
-  distractor_modes: z.array(distractorModeSchema).optional(),
 });
 
 // Providers accept homogeneous JSON arrays. Convert to the strict tuple contract
@@ -127,9 +122,6 @@ export const generatedStudySchema = z
             chapter: z.string().max(120),
             rule: z.string().min(1).max(500),
             distractorRationale: z.string().max(1000).optional(),
-            distractor_rationale: z.string().max(1000).optional(),
-            quote: z.string().min(12).max(1000).optional(),
-            source_slide: z.string().min(1).max(100).optional(),
           })
           .strict(),
       )
@@ -498,8 +490,8 @@ export function validateGeneratedStudy(
 
   for (const rawQuestion of output.questions) {
     const annotation = annotations.get(rawQuestion.id);
-    const rawExcerpt = annotation?.excerpt ?? annotation?.quote ?? "";
-    const rawSourceId = annotation?.sourceId ?? annotation?.source_slide ?? "";
+    const rawExcerpt = annotation?.excerpt ?? "";
+    const rawSourceId = annotation?.sourceId ?? "";
 
     if (!annotation || normalize(rawExcerpt).length < 12) {
       notifyCitationRejection({
@@ -729,9 +721,7 @@ export function validateGeneratedStudy(
 
     const rawDistractorRationale =
       annotation.distractorRationale ??
-      annotation.distractor_rationale ??
       rawQuestion.distractorRationale ??
-      (rawQuestion as any).distractor_rationale ??
       "";
 
     metadata[safeId] = {
@@ -1053,7 +1043,7 @@ export async function generateQuestions(
   const isGroq = Boolean(
     process.env.GROQ_API_KEY && process.env.AI_PROVIDER === "groq",
   );
-  const maxOutputTokens = isGroq ? 1_000 : 8_192;
+  const maxOutputTokens = isGroq ? 4_096 : 8_192;
 
   const runBatch = async (
     batchSources: SourceBlock[],
@@ -1098,7 +1088,7 @@ export async function generateQuestions(
       throwOnExceeded: !isPaidGeneration,
     });
 
-    const fallback = getGroqModel();
+    const fallback = getGeminiModel() || getGroqModel();
     const canFallback = Boolean(fallback && resolvedModel !== fallback);
 
     try {
@@ -1147,8 +1137,12 @@ export async function generateQuestions(
       });
     } catch (primaryErr: any) {
       if (canFallback && fallback) {
+        const fallbackName =
+          (fallback as any)?.modelId ||
+          (fallback as any)?.provider ||
+          "fallback model";
         console.warn(
-          `[generateQuestions] Primary AI model failed (${primaryErr?.message || primaryErr}). Instant auto-failover to Groq LPU...`,
+          `[generateQuestions] Primary AI model failed (${primaryErr?.message || primaryErr}). Instant auto-failover to ${fallbackName}...`,
         );
         return await generateObject({
           model: fallback,
@@ -1159,7 +1153,7 @@ export async function generateQuestions(
           topP: MCQ_GENERATION_TOP_P,
           abortSignal: signal,
           maxRetries: 0,
-          maxOutputTokens: 1_000,
+          maxOutputTokens: 4_096,
         });
       }
       throw primaryErr;
