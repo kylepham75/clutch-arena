@@ -198,36 +198,36 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
   });
 
   describe("3. Caps (Free vs Paid Tier Benefit)", () => {
-    it("configures free tier (contender) caps: 3 decks, 15 items, 1 regen, verification ON", () => {
+    it("configures free tier (contender) caps: 2 decks, 10 items, 1 regen, verification ON", () => {
       const free = TIER_LIMITS.contender;
-      expect(free.newDeckCredits).toBe(3);
-      expect(free.maxQuestionsPerRun).toBe(15);
+      expect(free.newDeckCredits).toBe(2);
+      expect(free.maxQuestionsPerRun).toBe(10);
       expect(free.freeRegenerationsPerDeck).toBe(1);
       expect(free.canUseClutchNotes).toBe(true);
       expect(free.maxNotesPerDay).toBe(1); // 1 short summary note
     });
 
-    it("configures paid tier (cram_pass, pro) caps: 50 decks, 35 items, 5 regens, verification ON", () => {
+    it("configures paid tier (cram_pass, pro) caps: 5/60 decks, 30 items, 3/5 regens, verification ON", () => {
       const cram = TIER_LIMITS.cram_pass;
-      expect(cram.newDeckCredits).toBe(12);
-      expect(cram.maxQuestionsPerRun).toBe(35);
+      expect(cram.newDeckCredits).toBe(5);
+      expect(cram.maxQuestionsPerRun).toBe(30);
       expect(cram.freeRegenerationsPerDeck).toBe(3);
 
       const pro = TIER_LIMITS.pro;
-      expect(pro.newDeckCredits).toBe(50);
-      expect(pro.maxQuestionsPerRun).toBe(35);
+      expect(pro.newDeckCredits).toBe(60);
+      expect(pro.maxQuestionsPerRun).toBe(30);
       expect(pro.freeRegenerationsPerDeck).toBe(5);
     });
 
     it("presents distinct tier benefits in PRICING_PLANS", () => {
       const contenderPlan = PRICING_PLANS.find((p) => p.id === "contender")!;
-      expect(contenderPlan.featuresEn.some((f) => f.includes("15 questions"))).toBe(true);
-      expect(contenderPlan.featuresEn.some((f) => f.includes("3 document deck credits"))).toBe(true);
+      expect(contenderPlan.featuresEn.some((f) => f.includes("10 questions"))).toBe(true);
+      expect(contenderPlan.featuresEn.some((f) => f.includes("2 document deck credits"))).toBe(true);
       expect(contenderPlan.featuresEn.some((f) => f.includes("no distractor rationale"))).toBe(true);
 
       const proPlan = PRICING_PLANS.find((p) => p.id === "pro")!;
-      expect(proPlan.featuresEn.some((f) => f.includes("35 questions"))).toBe(true);
-      expect(proPlan.featuresEn.some((f) => f.includes("50 document deck credits"))).toBe(true);
+      expect(proPlan.featuresEn.some((f) => f.includes("30 questions"))).toBe(true);
+      expect(proPlan.featuresEn.some((f) => f.includes("60 document deck credits"))).toBe(true);
       expect(proPlan.featuresEn.some((f) => f.includes("Full distractor rationale"))).toBe(true);
     });
   });

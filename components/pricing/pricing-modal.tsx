@@ -28,6 +28,13 @@ import {
   type UserTier,
   type PlanPricing,
 } from "@/lib/pricing/tiers";
+import {
+  getBillingRegionClient,
+  setBillingRegionClient,
+  getEffectiveCurrency,
+  getPlanRegionalPrice,
+  type BillingRegion,
+} from "@/lib/pricing/region";
 import { useUserTier } from "@/hooks/use-user-tier";
 import { useAuth } from "@/lib/auth/context";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -59,8 +66,11 @@ export function PricingModal({
   const { user, session, openAuthModal } = useAuth();
   const openAuthDialog = openAuthModal;
 
+  const [billingRegion, setBillingRegion] = useState<BillingRegion>(() =>
+    getBillingRegionClient(),
+  );
   const [currency, setCurrency] = useState<"vnd" | "usd">(() =>
-    language === "vi" ? "vnd" : "usd",
+    getEffectiveCurrency(getBillingRegionClient()).toLowerCase() as "vnd" | "usd",
   );
   const [selectedPlan, setSelectedPlan] = useState<PlanPricing | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
@@ -77,12 +87,29 @@ export function PricingModal({
 
   const isVi = language === "vi";
 
+  // When modal opens, sync state from client billing region cookie
   useEffect(() => {
-    setCurrency(language === "vi" ? "vnd" : "usd");
-  }, [language]);
+    if (open) {
+      const currentRegion = getBillingRegionClient();
+      setBillingRegion(currentRegion);
+      setCurrency(getEffectiveCurrency(currentRegion).toLowerCase() as "vnd" | "usd");
+    }
+  }, [open]);
+
+  const handleSelectVnd = () => {
+    setBillingRegion("VN");
+    setCurrency("vnd");
+    setBillingRegionClient("VN");
+  };
+
+  const handleSelectUsd = () => {
+    setBillingRegion("ROW");
+    setCurrency("usd");
+    setBillingRegionClient("ROW");
+  };
 
   const sendSmokeTestTelemetry = (
-    planId: "cram_pass" | "pro" | "tutor",
+    planId: "cram_pass" | "pro" | "pro_monthly" | "tutor",
     action: "plan_selected" | "verify_clicked" | "early_access_requested",
     contact?: string,
   ) => {
@@ -102,7 +129,7 @@ export function PricingModal({
 
   const createPayosOrder = useCallback(
     async (plan: PlanPricing) => {
-      if (plan.id !== "cram_pass" && plan.id !== "pro") return;
+      if (plan.id !== "cram_pass" && plan.id !== "pro" && plan.id !== "pro_monthly") return;
       if (isCreatingRef.current) return;
       isCreatingRef.current = true;
       setCreatingOrder(true);
@@ -162,7 +189,7 @@ export function PricingModal({
         isCreatingRef.current = false;
       }
     },
-    [session?.access_token, isVi],
+    [session?.access_token, user?.id, isVi],
   );
 
   useEffect(() => {
@@ -173,11 +200,14 @@ export function PricingModal({
       return;
     }
 
-    if (
-      currency === "vnd" &&
+    const isVnCheckout = billingRegion === "VN" || currency === "vnd";
+    const isPayosPlan =
       selectedPlan &&
-      (selectedPlan.id === "cram_pass" || selectedPlan.id === "pro")
-    ) {
+      (selectedPlan.id === "cram_pass" ||
+        selectedPlan.id === "pro" ||
+        selectedPlan.id === "pro_monthly");
+
+    if (isVnCheckout && isPayosPlan) {
       if (payosOrder && payosOrder.orderCode) {
         return;
       }
@@ -187,7 +217,7 @@ export function PricingModal({
       setCreatingOrder(false);
       setAuthRequiredForPayment(false);
     }
-  }, [open, currency, selectedPlan?.id, user?.id, payosOrder, createPayosOrder]);
+  }, [open, billingRegion, currency, selectedPlan?.id, user?.id, payosOrder, createPayosOrder]);
 
   // Automatic 4-second Polling for PayOS transaction confirmation
   useEffect(() => {
@@ -250,7 +280,7 @@ export function PricingModal({
       isMounted = false;
       clearInterval(interval);
     };
-  }, [open, payosOrder?.orderCode, paymentSuccess, session?.access_token, refreshTier, onClose]);
+  }, [open, payosOrder?.orderCode, paymentSuccess, session?.access_token, user?.id, refreshTier, onClose]);
 
   const handleSelectPlan = (plan: PlanPricing) => {
     if (plan.comingSoon || plan.id === "tutor") return;
@@ -258,10 +288,17 @@ export function PricingModal({
       onClose();
       return;
     }
-    if (plan.id === "cram_pass" && (tier === "pro" || tier === "tutor")) {
+    if (
+      (plan.id === "cram_pass" || plan.id === "pro_monthly") &&
+      (tier === "pro" || tier === "tutor")
+    ) {
       return;
     }
-    if (plan.id === "cram_pass" || plan.id === "pro") {
+    if (
+      plan.id === "cram_pass" ||
+      plan.id === "pro" ||
+      plan.id === "pro_monthly"
+    ) {
       sendSmokeTestTelemetry(plan.id, "plan_selected");
     }
     setSelectedPlan(plan);
@@ -287,6 +324,7 @@ export function PricingModal({
     if (
       selectedPlan.id === "cram_pass" ||
       selectedPlan.id === "pro" ||
+      selectedPlan.id === "pro_monthly" ||
       selectedPlan.id === "tutor"
     ) {
       sendSmokeTestTelemetry(selectedPlan.id, "verify_clicked");
@@ -342,7 +380,11 @@ export function PricingModal({
       }
 
       const updated = await refreshTier();
-      if (updated === selectedPlan.id || updated === "pro" || updated === "cram_pass") {
+      if (
+        updated === selectedPlan.id ||
+        updated === "pro" ||
+        updated === "cram_pass"
+      ) {
         setPaymentSuccess(true);
         setTimeout(() => {
           onClose();
@@ -419,8 +461,8 @@ export function PricingModal({
             <div className="flex items-center bg-stone-100 dark:bg-stone-800 p-0.5 rounded-lg border border-stone-200 dark:border-stone-700 text-xs font-semibold">
               <button
                 type="button"
-                onClick={() => setCurrency("vnd")}
-                className={`px-2.5 py-1 rounded transition-all ${
+                onClick={handleSelectVnd}
+                className={`px-2.5 py-1 rounded transition-all cursor-pointer ${
                   currency === "vnd"
                     ? "bg-white dark:bg-stone-900 text-amber-700 dark:text-amber-400 shadow-xs font-bold"
                     : "text-stone-500 hover:text-stone-800"
@@ -430,8 +472,8 @@ export function PricingModal({
               </button>
               <button
                 type="button"
-                onClick={() => setCurrency("usd")}
-                className={`px-2.5 py-1 rounded transition-all ${
+                onClick={handleSelectUsd}
+                className={`px-2.5 py-1 rounded transition-all cursor-pointer ${
                   currency === "usd"
                     ? "bg-white dark:bg-stone-900 text-amber-700 dark:text-amber-400 shadow-xs font-bold"
                     : "text-stone-500 hover:text-stone-800"
@@ -508,7 +550,7 @@ export function PricingModal({
                     : `Your ${selectedPlan.nameEn} is now active across all devices.`}
                 </p>
               </div>
-            ) : currency === "vnd" ? (
+            ) : billingRegion === "VN" || currency === "vnd" ? (
               /* Vietnam VietQR Checkout */
               <div className="vietqr-checkout grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
                 <div className="flex flex-col items-center justify-center p-4 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800 shadow-sm text-center">
@@ -582,16 +624,19 @@ export function PricingModal({
                       {isVi ? selectedPlan.nameVi : selectedPlan.nameEn} ·{" "}
                       {payosOrder
                         ? `${payosOrder.amount.toLocaleString(isVi ? "vi-VN" : "en-US")}đ`
-                        : selectedPlan.priceVndFormatted}
-                      {selectedPlan.cycle === "semester"
-                        ? isVi
-                          ? " / 4 tháng"
-                          : " / 4 months"
-                        : selectedPlan.cycle === "monthly"
+                        : getPlanRegionalPrice(selectedPlan.id, "VN").formatted}
+                      {!payosOrder &&
+                      !getPlanRegionalPrice(selectedPlan.id, "VN").formatted.includes("/") ? (
+                        selectedPlan.cycle === "semester"
                           ? isVi
-                            ? " / tháng"
-                            : " / mo"
-                          : ""}
+                            ? " / 4 tháng"
+                            : " / 4 months"
+                          : selectedPlan.cycle === "monthly"
+                            ? isVi
+                              ? " / tháng"
+                              : " / mo"
+                            : ""
+                      ) : null}
                     </div>
                   </div>
 
@@ -693,18 +738,20 @@ export function PricingModal({
                     {isVi ? selectedPlan.nameVi : selectedPlan.nameEn}
                   </div>
                   <div className="text-2xl font-bold text-stone-900 dark:text-stone-100 mt-0.5">
-                    {selectedPlan.priceUsdFormatted}
-                    <span className="text-sm font-semibold text-stone-500 ml-1">
-                      {selectedPlan.cycle === "semester"
-                        ? isVi
-                          ? " / 4 tháng"
-                          : " / 4 months"
-                        : selectedPlan.cycle === "monthly"
+                    {getPlanRegionalPrice(selectedPlan.id, "ROW").formatted}
+                    {!getPlanRegionalPrice(selectedPlan.id, "ROW").formatted.includes("/") && (
+                      <span className="text-sm font-semibold text-stone-500 ml-1">
+                        {selectedPlan.cycle === "semester"
                           ? isVi
-                            ? " / tháng"
-                            : " / mo"
-                          : ""}
-                    </span>
+                            ? " / 4 tháng"
+                            : " / 4 months"
+                          : selectedPlan.cycle === "monthly"
+                            ? isVi
+                              ? " / tháng"
+                              : " / mo"
+                            : ""}
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-stone-500 mt-1">
                     {selectedPlan.cycle === "one_time"
@@ -789,7 +836,11 @@ export function PricingModal({
                           type="button"
                           size="sm"
                           onClick={() => {
-                            if (selectedPlan.id === "cram_pass" || selectedPlan.id === "pro") {
+                            if (
+                              selectedPlan.id === "cram_pass" ||
+                              selectedPlan.id === "pro" ||
+                              selectedPlan.id === "pro_monthly"
+                            ) {
                               sendSmokeTestTelemetry(
                                 selectedPlan.id,
                                 "early_access_requested",
@@ -810,14 +861,15 @@ export function PricingModal({
             )}
           </div>
         ) : (
-          /* 4-Tier Grid Comparison */
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          /* 5-Plan Comparison Grid */
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
             {PRICING_PLANS.map((plan) => {
               const isCurrent = tier === plan.id;
-              const isRecommended = plan.recommended;
+              const isRecommended = plan.id === "pro";
               const isIncluded =
                 (plan.id === "contender" && tier !== "contender") ||
-                (plan.id === "cram_pass" && (tier === "pro" || tier === "tutor"));
+                ((plan.id === "cram_pass" || plan.id === "pro_monthly") &&
+                  (tier === "pro" || tier === "tutor"));
               const isButtonDisabled = isCurrent || Boolean(plan.comingSoon) || isIncluded;
 
               const buttonLabel = plan.comingSoon
@@ -832,13 +884,27 @@ export function PricingModal({
                     ? isVi
                       ? "Gói cơ bản"
                       : "Included"
-                    : plan.id === "cram_pass" && (tier === "pro" || tier === "tutor")
+                    : (plan.id === "cram_pass" || plan.id === "pro_monthly") &&
+                        (tier === "pro" || tier === "tutor")
                       ? isVi
                         ? "Đã có trong gói Pro"
                         : "Included in Pro"
                       : isVi
                         ? "Mở khóa ngay"
                         : "Unlock Now";
+
+              let badgeLabel: string | null = null;
+              if (plan.id === "cram_pass") {
+                badgeLabel = isVi ? "Nước rút 48h" : "48h Exam Sprint";
+              } else if (plan.id === "pro") {
+                badgeLabel = "Best Value";
+              } else if (plan.comingSoon) {
+                badgeLabel = isVi ? plan.badgeVi ?? "Sắp ra mắt" : plan.badgeEn ?? "Coming Soon";
+              } else if (plan.badgeEn) {
+                badgeLabel = isVi ? plan.badgeVi ?? plan.badgeEn : plan.badgeEn;
+              }
+
+              const regionalPrice = getPlanRegionalPrice(plan.id, billingRegion);
 
               return (
                 <div
@@ -852,9 +918,9 @@ export function PricingModal({
                   <div>
                     {/* Top row: badge & icon */}
                     <div className="flex items-center justify-between h-6 mb-2">
-                      {plan.badgeEn ? (
+                      {badgeLabel ? (
                         <span className="inline-flex items-center text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500 text-stone-950 shadow-xs whitespace-nowrap">
-                          {isVi ? plan.badgeVi : plan.badgeEn}
+                          {badgeLabel}
                         </span>
                       ) : (
                         <span />
@@ -864,6 +930,8 @@ export function PricingModal({
                           <Users size={17} />
                         ) : plan.id === "pro" ? (
                           <Zap size={17} className="text-amber-500 fill-amber-500/20" />
+                        ) : plan.id === "pro_monthly" ? (
+                          <Sparkles size={17} className="text-amber-500" />
                         ) : plan.id === "cram_pass" ? (
                           <Flame size={17} className="text-amber-600 fill-amber-600/20" />
                         ) : (
@@ -884,42 +952,67 @@ export function PricingModal({
                     <div className="my-3 py-2 px-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/40 border border-stone-200/70 dark:border-stone-800">
                       <div className="flex items-baseline gap-1.5 flex-wrap">
                         <span className="text-xl sm:text-2xl font-black text-stone-900 dark:text-stone-50 tracking-tight whitespace-nowrap">
-                          {currency === "vnd" ? plan.priceVndFormatted : plan.priceUsdFormatted}
+                          {regionalPrice.formatted}
                         </span>
-                        <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wide">
-                          {plan.cycle === "free"
+                        {!regionalPrice.formatted.includes("/") && (
+                          <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wide">
+                            {plan.cycle === "free"
+                              ? isVi
+                                ? "/ Vĩnh viễn"
+                                : "/ Forever"
+                              : plan.cycle === "one_time"
+                                ? isVi
+                                  ? "/ 7 ngày"
+                                  : "/ 7 days"
+                                : plan.cycle === "semester"
+                                  ? isVi
+                                    ? "/ 4 tháng"
+                                    : "/ 4 months"
+                                  : isVi
+                                    ? "/ Tháng"
+                                    : "/ Month"}
+                          </span>
+                        )}
+                      </div>
+
+                      {plan.id === "pro" && (
+                        <div className="mt-1">
+                          <span className="inline-flex items-center text-[10px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 px-1.5 py-0.5 rounded">
+                            {billingRegion === "VN"
+                              ? isVi
+                                ? "Tiết kiệm 31%"
+                                : "Save 31%"
+                              : isVi
+                                ? "Tiết kiệm 27%"
+                                : "Save 27%"}
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="text-[10px] text-stone-500 dark:text-stone-400 font-medium mt-0.5">
+                        {plan.id === "pro"
+                          ? billingRegion === "VN"
                             ? isVi
-                              ? "/ Vĩnh viễn"
-                              : "/ Forever"
+                              ? "Trọn kỳ học (Tiết kiệm 31%)"
+                              : "Full semester pass (Save 31%)"
+                            : isVi
+                              ? "Trọn kỳ học (Tiết kiệm 27%)"
+                              : "Full semester pass (Save 27%)"
+                          : plan.cycle === "free"
+                            ? isVi
+                              ? "Không cần tài khoản thẻ"
+                              : "No credit card required"
                             : plan.cycle === "one_time"
                               ? isVi
-                                ? "/ 7 ngày"
-                                : "/ 7 days"
-                              : plan.cycle === "semester"
+                                ? "Mua 1 lần · Không gia hạn"
+                                : "One-time pass · No renew"
+                              : plan.id === "pro_monthly"
                                 ? isVi
-                                  ? "/ 4 tháng"
-                                  : "/ 4 months"
+                                  ? "Hủy đăng ký bất cứ lúc nào"
+                                  : "Cancel anytime"
                                 : isVi
-                                  ? "/ Tháng"
-                                  : "/ Month"}
-                        </span>
-                      </div>
-                      <div className="text-[10px] text-stone-500 dark:text-stone-400 font-medium mt-0.5">
-                        {plan.cycle === "free"
-                          ? isVi
-                            ? "Không cần tài khoản thẻ"
-                            : "No credit card required"
-                          : plan.cycle === "one_time"
-                            ? isVi
-                              ? "Mua 1 lần · Không gia hạn"
-                              : "One-time pass · No renew"
-                            : plan.cycle === "semester"
-                              ? isVi
-                                ? "Trọn kỳ học (tiết kiệm 25%)"
-                                : "Full semester pass (save 25%)"
-                              : isVi
-                                ? "Hủy đăng ký bất cứ lúc nào"
-                                : "Cancel anytime"}
+                                  ? "Hủy đăng ký bất cứ lúc nào"
+                                  : "Cancel anytime"}
                       </div>
                     </div>
 
@@ -986,17 +1079,28 @@ export function PricingModal({
         </div>
 
         {/* Footer Guarantee */}
-        <div className="mt-4 pt-3 border-t border-stone-100 dark:border-stone-800 text-[11px] text-stone-500 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5">
-            <ShieldCheck size={14} className="text-emerald-600" />
-            <span>
-              {isVi
-                ? "Không tự động trừ tiền kỳ tiếp theo khi mua Vé Ôn Thi Cấp Tốc."
-                : "No surprise subscription renewals on Cram Passes. Cancel anytime on recurring."}
-            </span>
+        <div className="mt-4 pt-3 border-t border-stone-100 dark:border-stone-800 text-[11px] text-stone-500 flex flex-col gap-2">
+          <div className="flex items-start gap-1.5 bg-emerald-50/70 dark:bg-emerald-950/20 p-2.5 rounded-lg border border-emerald-200/60 dark:border-emerald-800/40 text-stone-700 dark:text-stone-300">
+            <ShieldCheck size={16} className="text-emerald-600 shrink-0 mt-0.5" />
+            <div>
+              <strong className="font-semibold text-emerald-900 dark:text-emerald-200 block mb-0.5">
+                {isVi
+                  ? "Cam kết trích dẫn nguyên văn 100% từ tài liệu của bạn — Hoàn tiền ngay nếu AI tự bịa kiến thức ngoài giáo trình."
+                  : "100% Verbatim Citation Guarantee — Every question & formula links to your exact slide/page, or get a full refund."}
+              </strong>
+            </div>
           </div>
-          <div>
-            Clutch Arena · {isVi ? "Ôn thi chủ động chuẩn PPP" : "Active Recall & Grounded Learning"}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <span>
+                {isVi
+                  ? "Không tự động trừ tiền kỳ tiếp theo khi mua Vé Ôn Thi Cấp Tốc."
+                  : "No surprise subscription renewals on Cram Passes. Cancel anytime on recurring."}
+              </span>
+            </div>
+            <div>
+              Clutch Arena · {isVi ? "Ôn thi chủ động chuẩn PPP" : "Active Recall & Grounded Learning"}
+            </div>
           </div>
         </div>
       </div>

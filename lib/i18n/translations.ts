@@ -714,6 +714,8 @@ export interface TranslationDict {
     modalProp4Desc: string;
     modalUpgradeBtn: string;
     modalDemoBtn: string;
+    coachTeaserTitle: string;
+    coachTeaserDesc: string;
   };
   auth: {
     myAccount: string;
@@ -1567,8 +1569,8 @@ export const translations: Record<Language, TranslationDict> = {
       modalTakeaway3Suffix: ", otherwise the model breaks down",
       modalAfterFooter: "89% Noise Stripped · Bilingual Anchoring",
       modalKatexPdfBadge: "KaTeX & PDF",
-      modalProp1Title: "30 Decks / Day",
-      modalProp1Desc: "Up to 25MB PDF/PPTX",
+      modalProp1Title: "Up to 60 Decks / Sem",
+      modalProp1Desc: "Max 10 / day burst cap · 25MB",
       modalProp2Title: "Bilingual EN/VI",
       modalProp2Desc: "Academic terms in context",
       modalProp3Title: "LaTeX Math",
@@ -1577,6 +1579,9 @@ export const translations: Record<Language, TranslationDict> = {
       modalProp4Desc: "Exam revision sheets",
       modalUpgradeBtn: "View Plans & Unlock (From 69.000đ)",
       modalDemoBtn: "Try Interactive Demo Note",
+      coachTeaserTitle: "Free AI Coach Debrief Included",
+      coachTeaserDesc:
+        "Contender free accounts include 2 Socratic Coach debrief messages per completed run. Upgrade to Cram Pass or Pro for unlimited 1-on-1 exam coaching.",
     },
     auth: {
       myAccount: "My Account",
@@ -2428,8 +2433,8 @@ export const translations: Record<Language, TranslationDict> = {
       modalTakeaway3Suffix: ", nếu không mô hình sẽ bị vô nghiệm",
       modalAfterFooter: "Lọc 89% nhiễu · Neo thuật ngữ song ngữ",
       modalKatexPdfBadge: "KaTeX & PDF",
-      modalProp1Title: "30 Bộ Slide / Ngày",
-      modalProp1Desc: "PDF/PPTX tối đa 25MB",
+      modalProp1Title: "Tối đa 60 Bộ Slide / Kỳ",
+      modalProp1Desc: "Tối đa 10 bộ / ngày · 25MB",
       modalProp2Title: "Song ngữ EN/VI",
       modalProp2Desc: "Thuật ngữ học thuật theo ngữ cảnh",
       modalProp3Title: "Công thức LaTeX",
@@ -2438,6 +2443,9 @@ export const translations: Record<Language, TranslationDict> = {
       modalProp4Desc: "Cẩm nang ôn thi cấp tốc",
       modalUpgradeBtn: "Xem Gói & Mở Khóa (Từ 69.000đ)",
       modalDemoBtn: "Trải Nghiệm Bản Tóm Tắt Mẫu",
+      coachTeaserTitle: "Bao gồm gia sư AI phản hồi miễn phí",
+      coachTeaserDesc:
+        "Tài khoản miễn phí được tặng 2 tin nhắn phản hồi từ gia sư AI Socratic sau mỗi lượt chơi. Nâng cấp Vé Cấp Tốc hoặc Pro để hỏi đáp không giới hạn.",
     },
     auth: {
       myAccount: "Tài khoản của tôi",

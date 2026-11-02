@@ -14,6 +14,7 @@ import {
   Layers,
   Printer,
   ChevronRight,
+  GraduationCap,
 } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -202,6 +203,26 @@ export function BeforeAfterModal({
             <Printer size={18} className="mx-auto text-[#e96b44] mb-1.5" />
             <div className="text-xs font-bold text-[#1f261b]">{t.notes.modalProp4Title}</div>
             <div className="text-[11px] text-[#717b68]">{t.notes.modalProp4Desc}</div>
+          </div>
+        </div>
+
+        {/* Socratic Coach Debrief Teaser Banner */}
+        <div className="mb-6 p-3.5 sm:p-4 rounded-xl bg-[#fffbf6] border border-[#fcdccb] flex items-start sm:items-center gap-3.5 shadow-2xs">
+          <div className="p-2 sm:p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 shrink-0">
+            <GraduationCap size={20} className="text-emerald-700" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <span className="text-xs sm:text-sm font-bold text-[#1f261b]">
+                {t.notes.coachTeaserTitle}
+              </span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-100/90 text-emerald-800 border border-emerald-200">
+                {t.auth.freeBadge}
+              </span>
+            </div>
+            <p className="text-xs text-[#5f6857] leading-relaxed">
+              {t.notes.coachTeaserDesc}
+            </p>
           </div>
         </div>
 

@@ -1,14 +1,27 @@
 export type UserTier = "contender" | "cram_pass" | "pro" | "tutor";
 
+export type TierKey = UserTier | "pro_monthly";
+
+export type PlanId = TierKey | "pro_semester" | "tutor_guild";
+
 export type BillingCycle = "free" | "one_time" | "monthly" | "semester";
 
+export type BillingRegion = "VN" | "ROW";
+
+export interface RegionalPrice {
+  amount: number;
+  currency: "VND" | "USD";
+  formatted: string;
+}
+
 export interface TierLimits {
-  tier: UserTier;
+  tier: TierKey;
   maxUploadsPerWeek: number;
   maxFilesPerUpload: number;
   maxQuestionsPerRun: number;
   canUseConceptRemix: boolean;
   canDebriefWithCoach: boolean;
+  maxCoachDebriefRepliesPerRun?: number;
   canExportCheatSheet: boolean;
   canHostArenaRemix: boolean;
   maxArenaPlayers: number;
@@ -19,37 +32,46 @@ export interface TierLimits {
   newDeckCredits: number;
   dailyDeckBurstLimit: number;
   freeRegenerationsPerDeck: number;
-  cogsCeilingUsd: number;
+  cogsCeilingUsd: number | { VN: number; ROW: number };
   verifiedPoolSize: number;
   servedSubsetSize: number;
 }
 
-export const TIER_LIMITS: Record<UserTier, TierLimits> = {
+export type RegionalCogsCeiling = { VN: number; ROW: number };
+
+function createRegionalCeiling(vn: number, row: number): number & RegionalCogsCeiling {
+  const boxed = new Number(vn);
+  Object.assign(boxed, { VN: vn, ROW: row });
+  return boxed as unknown as number & RegionalCogsCeiling;
+}
+
+export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number & RegionalCogsCeiling }> = {
   contender: {
     tier: "contender",
     maxUploadsPerWeek: 2,
     maxFilesPerUpload: 1,
-    maxQuestionsPerRun: 15,
+    maxQuestionsPerRun: 10,
     canUseConceptRemix: false,
-    canDebriefWithCoach: false,
+    canDebriefWithCoach: true,
+    maxCoachDebriefRepliesPerRun: 2,
     canExportCheatSheet: false,
     canHostArenaRemix: false,
     maxArenaPlayers: 8,
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
     maxNotesPerDay: 1,
-    newDeckCredits: 3,
-    dailyDeckBurstLimit: 3,
+    newDeckCredits: 2,
+    dailyDeckBurstLimit: 2,
     freeRegenerationsPerDeck: 1,
-    cogsCeilingUsd: 0.05,
+    cogsCeilingUsd: createRegionalCeiling(0.03, 0.05),
     verifiedPoolSize: 15,
     servedSubsetSize: 15,
   },
   cram_pass: {
     tier: "cram_pass",
     maxUploadsPerWeek: Infinity,
-    maxFilesPerUpload: 10,
-    maxQuestionsPerRun: 35,
+    maxFilesPerUpload: 5,
+    maxQuestionsPerRun: 30,
     canUseConceptRemix: true,
     canDebriefWithCoach: true,
     canExportCheatSheet: true,
@@ -57,19 +79,39 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     maxArenaPlayers: 15,
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
-    maxNotesPerDay: 30,
-    newDeckCredits: 12,
+    maxNotesPerDay: 5,
+    newDeckCredits: 5,
     dailyDeckBurstLimit: 4,
     freeRegenerationsPerDeck: 3,
-    cogsCeilingUsd: 1.25,
+    cogsCeilingUsd: createRegionalCeiling(0.45, 1.10),
     verifiedPoolSize: 35,
-    servedSubsetSize: 25,
+    servedSubsetSize: 30,
+  },
+  pro_monthly: {
+    tier: "pro_monthly",
+    maxUploadsPerWeek: Infinity,
+    maxFilesPerUpload: 10,
+    maxQuestionsPerRun: 30,
+    canUseConceptRemix: true,
+    canDebriefWithCoach: true,
+    canExportCheatSheet: true,
+    canHostArenaRemix: true,
+    maxArenaPlayers: 15,
+    hasCohortAnalytics: false,
+    canUseClutchNotes: true,
+    maxNotesPerDay: 8,
+    newDeckCredits: 15,
+    dailyDeckBurstLimit: 8,
+    freeRegenerationsPerDeck: 5,
+    cogsCeilingUsd: createRegionalCeiling(0.75, 2.25),
+    verifiedPoolSize: 35,
+    servedSubsetSize: 30,
   },
   pro: {
     tier: "pro",
     maxUploadsPerWeek: Infinity,
     maxFilesPerUpload: 10,
-    maxQuestionsPerRun: 35,
+    maxQuestionsPerRun: 30,
     canUseConceptRemix: true,
     canDebriefWithCoach: true,
     canExportCheatSheet: true,
@@ -77,19 +119,19 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     maxArenaPlayers: 15,
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
-    maxNotesPerDay: 30,
-    newDeckCredits: 50,
-    dailyDeckBurstLimit: 6,
+    maxNotesPerDay: 10,
+    newDeckCredits: 60,
+    dailyDeckBurstLimit: 10,
     freeRegenerationsPerDeck: 5,
-    cogsCeilingUsd: 9.75,
+    cogsCeilingUsd: createRegionalCeiling(2.20, 7.50),
     verifiedPoolSize: 35,
-    servedSubsetSize: 35,
+    servedSubsetSize: 30,
   },
   tutor: {
     tier: "tutor",
     maxUploadsPerWeek: Infinity,
     maxFilesPerUpload: 10,
-    maxQuestionsPerRun: 35,
+    maxQuestionsPerRun: 30,
     canUseConceptRemix: true,
     canDebriefWithCoach: true,
     canExportCheatSheet: true,
@@ -97,17 +139,17 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     maxArenaPlayers: 50,
     hasCohortAnalytics: true,
     canUseClutchNotes: true,
-    maxNotesPerDay: 50,
-    newDeckCredits: 50,
-    dailyDeckBurstLimit: 50,
+    maxNotesPerDay: 25,
+    newDeckCredits: 150,
+    dailyDeckBurstLimit: 25,
     freeRegenerationsPerDeck: 5,
-    cogsCeilingUsd: 7.00,
+    cogsCeilingUsd: createRegionalCeiling(3.00, 6.50),
     verifiedPoolSize: 35,
-    servedSubsetSize: 35,
+    servedSubsetSize: 30,
   },
 };
 
-export function getMaxArenaPlayersForTier(tier: UserTier): number {
+export function getMaxArenaPlayersForTier(tier: UserTier | TierKey): number {
   return TIER_LIMITS[tier]?.maxArenaPlayers ?? 8;
 }
 
@@ -140,16 +182,21 @@ export interface CogsBudgetStatus {
 
 export function evaluateCogsDegradation(
   spentUsd: number,
-  ceilingUsd: number,
+  ceilingUsd: number | { VN: number; ROW: number },
   estimatedCallCostUsd = 0,
   reservedUsd = 0,
+  billingRegion: BillingRegion = "VN",
 ): CogsBudgetStatus {
+  const effectiveCeiling =
+    typeof ceilingUsd === "number"
+      ? ceilingUsd
+      : (ceilingUsd[billingRegion] ?? ceilingUsd.VN);
   const res = reservedUsd ?? 0;
   const est = estimatedCallCostUsd ?? 0;
   const projectedUsd = Number((spentUsd + res + est).toFixed(6));
   const utilizationRatio =
-    ceilingUsd > 0
-      ? Number((projectedUsd / ceilingUsd).toFixed(4))
+    effectiveCeiling > 0
+      ? Number((projectedUsd / effectiveCeiling).toFixed(4))
       : projectedUsd > 0
         ? 1.01
         : 0;
@@ -160,7 +207,7 @@ export function evaluateCogsDegradation(
       spentUsd,
       reservedUsd: res,
       projectedUsd,
-      ceilingUsd,
+      ceilingUsd: effectiveCeiling,
       utilizationRatio,
       targetQuestionCount: 0,
       allowVisionOcr: false,
@@ -180,7 +227,7 @@ export function evaluateCogsDegradation(
       spentUsd,
       reservedUsd: res,
       projectedUsd,
-      ceilingUsd,
+      ceilingUsd: effectiveCeiling,
       utilizationRatio,
       targetQuestionCount: 15,
       allowVisionOcr: false,
@@ -199,7 +246,7 @@ export function evaluateCogsDegradation(
       spentUsd,
       reservedUsd: res,
       projectedUsd,
-      ceilingUsd,
+      ceilingUsd: effectiveCeiling,
       utilizationRatio,
       targetQuestionCount: 20,
       allowVisionOcr: true,
@@ -217,7 +264,7 @@ export function evaluateCogsDegradation(
     spentUsd,
     reservedUsd: res,
     projectedUsd,
-    ceilingUsd,
+    ceilingUsd: effectiveCeiling,
     utilizationRatio,
     targetQuestionCount: 25,
     allowVisionOcr: true,
@@ -231,7 +278,7 @@ export function evaluateCogsDegradation(
 }
 
 export interface PlanPricing {
-  id: UserTier;
+  id: PlanId;
   cycle: BillingCycle;
   nameEn: string;
   nameVi: string;
@@ -239,6 +286,7 @@ export interface PlanPricing {
   taglineVi: string;
   badgeEn?: string;
   badgeVi?: string;
+  pricing: Record<BillingRegion, RegionalPrice>;
   priceVnd: number;
   priceVndFormatted: string;
   priceUsd: number;
@@ -257,22 +305,28 @@ export const PRICING_PLANS: PlanPricing[] = [
     nameVi: "Người Thách Đấu",
     taglineEn: "Zero-cost viral entry for solo recall & friendly lobbies",
     taglineVi: "Bắt đầu miễn phí cho ôn tập cá nhân & tham gia phòng đấu",
+    pricing: {
+      VN: { amount: 0, currency: "VND", formatted: "0đ" },
+      ROW: { amount: 0, currency: "USD", formatted: "$0" },
+    },
     priceVnd: 0,
     priceVndFormatted: "0đ",
     priceUsd: 0,
     priceUsdFormatted: "$0",
     featuresEn: [
-      "3 document deck credits (15 questions per pack)",
+      "2 document deck credits / month (10 questions per pack)",
       "1 free regeneration per deck",
-      "1 short summary note",
+      "1 short summary note preview / month",
+      "2 free AI Coach debrief replies per completed run",
       "Cross-family blind AI verification ON",
       "Unlimited joining of friend /arena rooms (100% free)",
       "Basic document grounding & citations (no distractor rationale)",
     ],
     featuresVi: [
-      "3 lượt tạo bộ đề tài liệu (15 câu hỏi / bộ)",
+      "2 lượt tạo bộ đề tài liệu / tháng (10 câu hỏi / bộ)",
       "1 lần tạo lại miễn phí cho mỗi bộ đề",
-      "1 bản tóm tắt ngắn",
+      "1 bản tóm tắt ngắn xem trước / tháng",
+      "2 tin nhắn gia sư AI phản hồi miễn phí sau mỗi lượt chơi",
       "Hệ thống kiểm định chéo AI độc lập bật 100%",
       "Tham gia phòng đấu /arena của bạn bè không giới hạn (100% miễn phí)",
       "Trích dẫn căn cứ gốc (không kèm giải thích bẫy đáp án nhiễu)",
@@ -285,32 +339,74 @@ export const PRICING_PLANS: PlanPricing[] = [
     nameVi: "Vé Ôn Thi Cấp Tốc (7 Ngày)",
     taglineEn: "No subscription. Instant unlock 48h before exams",
     taglineVi: "Thanh toán 1 lần, không gia hạn. Dành cho 48h nước rút trước kỳ thi",
-    badgeEn: "Most Popular for Finals",
-    badgeVi: "Được chọn nhiều nhất mùa thi",
-    recommended: true,
-    priceVnd: 5_000,
-    priceVndFormatted: "5.000đ",
-    priceUsd: 3.99,
-    priceUsdFormatted: "$3.99",
+    badgeEn: "48h Exam Sprint",
+    badgeVi: "Nước rút 48h",
+    recommended: false,
+    pricing: {
+      VN: { amount: 69_000, currency: "VND", formatted: "69.000đ" },
+      ROW: { amount: 4.99, currency: "USD", formatted: "$4.99" },
+    },
+    priceVnd: 69_000,
+    priceVndFormatted: "69.000đ",
+    priceUsd: 4.99,
+    priceUsdFormatted: "$4.99",
     featuresEn: [
       "7 days full Pro access (one-time purchase)",
-      "12 document deck credits (up to 35 questions per pack)",
+      "5 document deck credits (up to 30 questions per pack)",
       "Full distractor rationale ('why the others are wrong')",
-      "Full, sectioned Clutch Notes revision notes generator",
+      "Full Clutch Notes revision notes generator (up to 5 full notesheets)",
       "3 free regenerations per deck",
       "Cross-family blind AI verification ON",
-      "Multi-document synthesis (up to 10 files / 25MB)",
+      "Multi-document synthesis up to 5 files (15MB)",
       "Unlimited AI Coach deep debriefs",
     ],
     featuresVi: [
       "7 ngày toàn quyền Pro (mua 1 lần, không trừ tiền tự động)",
-      "12 lượt tạo bộ đề tài liệu (tối đa 35 câu hỏi / bộ)",
+      "5 lượt tạo bộ đề tài liệu (tối đa 30 câu hỏi / bộ)",
       "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
-      "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết",
+      "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (tối đa 5 bộ)",
       "3 lần tạo lại miễn phí cho mỗi bộ đề",
       "Hệ thống kiểm định chéo AI độc lập bật 100%",
-      "Tổng hợp đa tài liệu cùng lúc (tối đa 10 tệp / 25MB)",
+      "Tổng hợp đa tài liệu cùng lúc (tối đa 5 tệp / 15MB)",
       "Gia sư AI phản hồi và hướng dẫn chi tiết không giới hạn",
+    ],
+  },
+  {
+    id: "pro_monthly",
+    cycle: "monthly",
+    nameEn: "Clutch Pro (Monthly)",
+    nameVi: "Đấu Sĩ Pro (Hàng Tháng)",
+    taglineEn: "Flexible month-to-month access for active terms",
+    taglineVi: "Đăng ký theo tháng linh hoạt cho kỳ học",
+    pricing: {
+      VN: { amount: 109_000, currency: "VND", formatted: "109.000đ/tháng" },
+      ROW: { amount: 9.99, currency: "USD", formatted: "$9.99/mo" },
+    },
+    priceVnd: 109_000,
+    priceVndFormatted: "109.000đ",
+    priceUsd: 9.99,
+    priceUsdFormatted: "$9.99",
+    featuresEn: [
+      "Full access for 1 month (auto-renews or cancel anytime)",
+      "15 document deck credits (up to 30 questions per pack)",
+      "Full distractor rationale ('why the others are wrong')",
+      "Full Clutch Notes revision notes generator (max 8/day)",
+      "5 free regenerations per deck",
+      "Cross-family blind AI verification ON",
+      "Host Privileges: host 30Q remix rooms (friends play free!)",
+      "Multi-document synthesis up to 10 files (25MB)",
+      "1-Click PDF Cheat Sheet with verbatim citations",
+    ],
+    featuresVi: [
+      "Toàn quyền truy cập trong 1 tháng",
+      "15 lượt tạo bộ đề tài liệu (tối đa 30 câu hỏi / bộ)",
+      "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
+      "Tạo tài liệu Clutch Notes đầy đủ (tối đa 8 bộ/ngày)",
+      "5 lần tạo lại miễn phí cho mỗi bộ đề",
+      "Hệ thống kiểm định chéo AI độc lập bật 100%",
+      "Đặc quyền Chủ phòng: mở phòng 30 câu Remix cho bạn bè chơi miễn phí",
+      "Tổng hợp đa tài liệu cùng lúc lên đến 10 tệp (25MB)",
+      "Xuất cẩm nang Cheat Sheet PDF kèm trích dẫn gốc",
     ],
   },
   {
@@ -320,32 +416,37 @@ export const PRICING_PLANS: PlanPricing[] = [
     nameVi: "Đấu Sĩ Pro (Học Kỳ)",
     taglineEn: "Continuous mastery with host privileges all semester",
     taglineVi: "Đặc quyền Chủ phòng & làm chủ toàn bộ học kỳ không gián đoạn",
-    badgeEn: "Best Value ($7.25/mo)",
-    badgeVi: "Tiết kiệm nhất (74.750đ/tháng)",
+    recommended: true,
+    badgeEn: "Best Value (Save 27–31%)",
+    badgeVi: "Tiết kiệm nhất (Giảm 27–31%)",
+    pricing: {
+      VN: { amount: 299_000, currency: "VND", formatted: "299.000đ/kỳ (~74.750đ/tháng)" },
+      ROW: { amount: 29.0, currency: "USD", formatted: "$29.00/sem (~$7.25/mo)" },
+    },
     priceVnd: 299_000,
     priceVndFormatted: "299.000đ",
     priceUsd: 29.0,
     priceUsdFormatted: "$29",
     featuresEn: [
       "Full access for entire 4-month semester",
-      "50 document deck credits (up to 35 questions per pack)",
+      "60 document deck credits (up to 30 questions per pack)",
       "Full distractor rationale ('why the others are wrong')",
-      "Full, sectioned Clutch Notes revision notes generator (30 decks/day)",
+      "Full, sectioned Clutch Notes revision notes generator (max 10/day)",
       "5 free regenerations per deck",
       "Cross-family blind AI verification ON",
-      "Host Privileges: host 35Q remix rooms (friends play free!)",
-      "Multi-document synthesis up to 10 files",
+      "Host Privileges: host 30Q remix rooms (friends play free!)",
+      "Multi-document synthesis up to 10 files (25MB)",
       "1-Click PDF Cheat Sheet with verbatim citations",
     ],
     featuresVi: [
-      "Toàn quyền suốt 4 tháng học kỳ (tương đương 74.000đ/tháng)",
-      "50 lượt tạo bộ đề tài liệu (tối đa 35 câu hỏi / bộ)",
+      "Toàn quyền suốt 4 tháng học kỳ (tương đương 74.750đ/tháng)",
+      "60 lượt tạo bộ đề tài liệu (tối đa 30 câu hỏi / bộ)",
       "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
-      "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (30 bộ/ngày)",
+      "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (tối đa 10 bộ/ngày)",
       "5 lần tạo lại miễn phí cho mỗi bộ đề",
       "Hệ thống kiểm định chéo AI độc lập bật 100%",
-      "Đặc quyền Chủ phòng: mở phòng 35 câu Remix cho bạn bè chơi miễn phí",
-      "Tổng hợp đa tài liệu cùng lúc lên đến 10 tệp",
+      "Đặc quyền Chủ phòng: mở phòng 30 câu Remix cho bạn bè chơi miễn phí",
+      "Tổng hợp đa tài liệu cùng lúc lên đến 10 tệp (25MB)",
       "Xuất cẩm nang Cheat Sheet PDF kèm trích dẫn gốc",
       "Đồng bộ đám mây trên mọi thiết bị qua Supabase",
     ],
@@ -360,21 +461,27 @@ export const PRICING_PLANS: PlanPricing[] = [
     badgeEn: "Coming Soon",
     badgeVi: "Sắp ra mắt",
     comingSoon: true,
+    pricing: {
+      VN: { amount: 399_000, currency: "VND", formatted: "399.000đ/tháng" },
+      ROW: { amount: 24.99, currency: "USD", formatted: "$24.99/mo" },
+    },
     priceVnd: 399_000,
     priceVndFormatted: "399.000đ",
-    priceUsd: 19.99,
-    priceUsdFormatted: "$19.99",
+    priceUsd: 24.99,
+    priceUsdFormatted: "$24.99",
     featuresEn: [
-      "Clutch Notes AI: Slide-to-summary lecture notes generator",
-      "32+ player /arena lobbies for live classroom reviews",
+      "150 document deck credits / month (up to 30 questions per pack)",
+      "Full Clutch Notes revision notes generator (max 25/day)",
+      "50 player /arena lobbies for live classroom reviews",
       "Custom branded Base64 pack links (your name & logo)",
       "Cohort accuracy & missed-concept analytics",
       "Unlimited students join classroom rooms for $0",
       "Priority API queue for high-concurrency match starts",
     ],
     featuresVi: [
-      "Clutch Notes AI: Tóm tắt slide bài giảng PDF/PPTX thành tài liệu ôn thi",
-      "Phòng đấu /arena lên đến 32+ người cho lớp học trực tiếp",
+      "150 lượt tạo bộ đề tài liệu / tháng (tối đa 30 câu hỏi / bộ)",
+      "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (tối đa 25 bộ/ngày)",
+      "Phòng đấu /arena lên đến 50 người cho lớp học trực tiếp",
       "Mã chia sẻ Base64 gắn thương hiệu & logo riêng của bạn",
       "Bảng phân tích độ chính xác & lỗ hổng kiến thức chung của lớp",
       "Học viên tham gia phòng học hoàn toàn miễn phí ($0)",
@@ -401,19 +508,23 @@ export interface ReferralState {
 /**
  * Calculates default expiration ISO timestamp based on tier cycle.
  * - cram_pass: 7 days
+ * - pro_monthly: 30 days (1 month)
  * - pro: 120 days (4-month semester)
  * - tutor: 30 days (1 month)
  * - contender: null (permanent free)
  */
-export function calculateTierExpiration(tier: UserTier): string | null {
+export function calculateTierExpiration(tier: UserTier | PlanId | string): string | null {
   const now = Date.now();
   if (tier === "cram_pass") {
     return new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString();
   }
-  if (tier === "pro") {
+  if (tier === "pro_monthly") {
+    return new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString();
+  }
+  if (tier === "pro" || tier === "pro_semester") {
     return new Date(now + 120 * 24 * 60 * 60 * 1000).toISOString();
   }
-  if (tier === "tutor") {
+  if (tier === "tutor" || tier === "tutor_guild") {
     return new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString();
   }
   return null;
@@ -426,8 +537,9 @@ export function normalizeTier(raw: unknown): UserTier {
   if (typeof raw !== "string") return "contender";
   const t = raw.toLowerCase().trim();
   if (t === "cram_pass" || t === "crampass" || t === "cram-pass") return "cram_pass";
-  if (t === "pro") return "pro";
-  if (t === "tutor") return "tutor";
+  if (t === "pro_monthly" || t === "pro-monthly" || t === "monthly") return "pro";
+  if (t === "pro" || t === "pro_semester" || t === "pro-semester" || t === "semester") return "pro";
+  if (t === "tutor" || t === "tutor_guild" || t === "tutor-guild") return "tutor";
   return "contender";
 }
 

@@ -125,45 +125,121 @@ describe("PPP Tier Architecture & Limits", () => {
     mockServerSupabase = null;
   });
 
-  it("defines the 4 tiers with accurate PPP pricing and feature caps", () => {
-    expect(PRICING_PLANS).toHaveLength(4);
+  it("defines the 5 plans with accurate dual-market pricing and feature caps", () => {
+    expect(PRICING_PLANS).toHaveLength(5);
+    expect(PRICING_PLANS.map((p) => p.id)).toEqual([
+      "contender",
+      "cram_pass",
+      "pro_monthly",
+      "pro",
+      "tutor",
+    ]);
 
     const contender = PRICING_PLANS.find((p) => p.id === "contender")!;
+    expect(contender.pricing.VN.amount).toBe(0);
+    expect(contender.pricing.VN.formatted).toBe("0đ");
+    expect(contender.pricing.ROW.amount).toBe(0);
+    expect(contender.pricing.ROW.formatted).toBe("$0");
     expect(contender.priceVndFormatted).toBe("0đ");
     expect(contender.priceUsdFormatted).toBe("$0");
+    expect(TIER_LIMITS.contender.newDeckCredits).toBe(2);
+    expect(TIER_LIMITS.contender.dailyDeckBurstLimit).toBe(2);
+    expect(TIER_LIMITS.contender.maxQuestionsPerRun).toBe(10);
+    expect(TIER_LIMITS.contender.maxNotesPerDay).toBe(1);
+    expect(TIER_LIMITS.contender.maxCoachDebriefRepliesPerRun).toBe(2);
     expect(TIER_LIMITS.contender.maxUploadsPerWeek).toBe(2);
     expect(TIER_LIMITS.contender.maxFilesPerUpload).toBe(1);
-    expect(TIER_LIMITS.contender.maxQuestionsPerRun).toBe(15);
     expect(TIER_LIMITS.contender.canUseConceptRemix).toBe(false);
+    expect(TIER_LIMITS.contender.canDebriefWithCoach).toBe(true);
     expect(TIER_LIMITS.contender.canHostArenaRemix).toBe(false);
     expect(TIER_LIMITS.contender.maxArenaPlayers).toBe(8);
+    expect(TIER_LIMITS.contender.cogsCeilingUsd.VN).toBe(0.03);
+    expect(TIER_LIMITS.contender.cogsCeilingUsd.ROW).toBe(0.05);
 
     const cramPass = PRICING_PLANS.find((p) => p.id === "cram_pass")!;
-    expect(["5.000đ", "69.000đ"]).toContain(cramPass.priceVndFormatted);
-    expect(cramPass.priceUsdFormatted).toBe("$3.99");
+    expect(cramPass.pricing.VN.amount).toBe(69_000);
+    expect(cramPass.pricing.VN.formatted).toBe("69.000đ");
+    expect(cramPass.pricing.ROW.amount).toBe(4.99);
+    expect(cramPass.pricing.ROW.formatted).toBe("$4.99");
+    expect(cramPass.priceVndFormatted).toBe("69.000đ");
+    expect(cramPass.priceUsdFormatted).toBe("$4.99");
     expect(cramPass.cycle).toBe("one_time");
-    expect(TIER_LIMITS.cram_pass.maxFilesPerUpload).toBe(10);
-    expect(TIER_LIMITS.cram_pass.maxQuestionsPerRun).toBe(35);
+    expect(cramPass.recommended).toBe(false);
+    expect(cramPass.badgeEn).toBe("48h Exam Sprint");
+    expect(TIER_LIMITS.cram_pass.newDeckCredits).toBe(5);
+    expect(TIER_LIMITS.cram_pass.dailyDeckBurstLimit).toBe(4);
+    expect(TIER_LIMITS.cram_pass.maxQuestionsPerRun).toBe(30);
+    expect(TIER_LIMITS.cram_pass.maxNotesPerDay).toBe(5);
+    expect(TIER_LIMITS.cram_pass.maxFilesPerUpload).toBe(5);
     expect(TIER_LIMITS.cram_pass.canUseConceptRemix).toBe(true);
     expect(TIER_LIMITS.cram_pass.canExportCheatSheet).toBe(true);
+    expect(TIER_LIMITS.cram_pass.canHostArenaRemix).toBe(true);
     expect(TIER_LIMITS.cram_pass.maxArenaPlayers).toBe(15);
+    expect(TIER_LIMITS.cram_pass.cogsCeilingUsd.VN).toBe(0.45);
+    expect(TIER_LIMITS.cram_pass.cogsCeilingUsd.ROW).toBe(1.10);
+
+    const proMonthly = PRICING_PLANS.find((p) => p.id === "pro_monthly")!;
+    expect(proMonthly.pricing.VN.amount).toBe(109_000);
+    expect(proMonthly.pricing.VN.formatted).toBe("109.000đ/tháng");
+    expect(proMonthly.pricing.ROW.amount).toBe(9.99);
+    expect(proMonthly.pricing.ROW.formatted).toBe("$9.99/mo");
+    expect(proMonthly.priceVndFormatted).toBe("109.000đ");
+    expect(proMonthly.priceUsdFormatted).toBe("$9.99");
+    expect(proMonthly.cycle).toBe("monthly");
+    expect(TIER_LIMITS.pro_monthly.newDeckCredits).toBe(15);
+    expect(TIER_LIMITS.pro_monthly.dailyDeckBurstLimit).toBe(8);
+    expect(TIER_LIMITS.pro_monthly.maxQuestionsPerRun).toBe(30);
+    expect(TIER_LIMITS.pro_monthly.maxNotesPerDay).toBe(8);
+    expect(TIER_LIMITS.pro_monthly.maxFilesPerUpload).toBe(10);
+    expect(TIER_LIMITS.pro_monthly.canUseConceptRemix).toBe(true);
+    expect(TIER_LIMITS.pro_monthly.canExportCheatSheet).toBe(true);
+    expect(TIER_LIMITS.pro_monthly.canHostArenaRemix).toBe(true);
+    expect(TIER_LIMITS.pro_monthly.maxArenaPlayers).toBe(15);
+    expect(TIER_LIMITS.pro_monthly.cogsCeilingUsd.VN).toBe(0.75);
+    expect(TIER_LIMITS.pro_monthly.cogsCeilingUsd.ROW).toBe(2.25);
 
     const pro = PRICING_PLANS.find((p) => p.id === "pro")!;
+    expect(pro.pricing.VN.amount).toBe(299_000);
+    expect(pro.pricing.VN.formatted).toContain("299.000đ");
+    expect(pro.pricing.ROW.amount).toBe(29.0);
+    expect(pro.pricing.ROW.formatted).toContain("$29");
     expect(pro.priceVndFormatted).toBe("299.000đ");
     expect(pro.priceUsdFormatted).toBe("$29");
+    expect(pro.cycle).toBe("semester");
+    expect(pro.recommended).toBe(true);
+    expect(pro.badgeEn).toBe("Best Value (Save 27–31%)");
+    expect(TIER_LIMITS.pro.newDeckCredits).toBe(60);
+    expect(TIER_LIMITS.pro.dailyDeckBurstLimit).toBe(10);
+    expect(TIER_LIMITS.pro.maxQuestionsPerRun).toBe(30);
+    expect(TIER_LIMITS.pro.maxNotesPerDay).toBe(10);
+    expect(TIER_LIMITS.pro.maxFilesPerUpload).toBe(10);
     expect(TIER_LIMITS.pro.canHostArenaRemix).toBe(true);
     expect(TIER_LIMITS.pro.maxArenaPlayers).toBe(15);
+    expect(TIER_LIMITS.pro.cogsCeilingUsd.VN).toBe(2.20);
+    expect(TIER_LIMITS.pro.cogsCeilingUsd.ROW).toBe(7.50);
 
     const tutor = PRICING_PLANS.find((p) => p.id === "tutor")!;
+    expect(tutor.pricing.VN.amount).toBe(399_000);
+    expect(tutor.pricing.VN.formatted).toBe("399.000đ/tháng");
+    expect(tutor.pricing.ROW.amount).toBe(24.99);
+    expect(tutor.pricing.ROW.formatted).toBe("$24.99/mo");
     expect(tutor.priceVndFormatted).toBe("399.000đ");
-    expect(tutor.priceUsdFormatted).toBe("$19.99");
+    expect(tutor.priceUsdFormatted).toBe("$24.99");
     expect(tutor.comingSoon).toBe(true);
     expect(tutor.badgeEn).toBe("Coming Soon");
+    expect(TIER_LIMITS.tutor.newDeckCredits).toBe(150);
+    expect(TIER_LIMITS.tutor.dailyDeckBurstLimit).toBe(25);
+    expect(TIER_LIMITS.tutor.maxQuestionsPerRun).toBe(30);
+    expect(TIER_LIMITS.tutor.maxNotesPerDay).toBe(25);
+    expect(TIER_LIMITS.tutor.maxFilesPerUpload).toBe(10);
     expect(TIER_LIMITS.tutor.maxArenaPlayers).toBe(50);
     expect(TIER_LIMITS.tutor.hasCohortAnalytics).toBe(true);
+    expect(TIER_LIMITS.tutor.cogsCeilingUsd.VN).toBe(3.00);
+    expect(TIER_LIMITS.tutor.cogsCeilingUsd.ROW).toBe(6.50);
 
     expect(getMaxArenaPlayersForTier("contender")).toBe(8);
     expect(getMaxArenaPlayersForTier("cram_pass")).toBe(15);
+    expect(getMaxArenaPlayersForTier("pro_monthly")).toBe(15);
     expect(getMaxArenaPlayersForTier("pro")).toBe(15);
     expect(getMaxArenaPlayersForTier("tutor")).toBe(50);
   });
@@ -187,6 +263,13 @@ describe("PPP Tier Architecture & Limits", () => {
       (new Date(cramExpires!).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
     );
     expect(cramDiffDays).toBe(7);
+
+    const proMonthlyExpires = calculateTierExpiration("pro_monthly");
+    expect(proMonthlyExpires).not.toBeNull();
+    const proMonthlyDiffDays = Math.round(
+      (new Date(proMonthlyExpires!).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+    );
+    expect(proMonthlyDiffDays).toBe(30);
 
     const proExpires = calculateTierExpiration("pro");
     expect(proExpires).not.toBeNull();
@@ -514,25 +597,42 @@ describe("Subscription Deck Credit Caps, Burst Limits & Regeneration Allowances"
     resetQuotaLedgersForTests();
   });
 
-  it("verifies 7-Day Cram Pass and Semester Pro Pass tier limits, burst caps, and pricing", () => {
+  it("verifies 7-Day Cram Pass, Pro Monthly, and Semester Pro Pass tier limits, burst caps, and pricing", () => {
     const cram = PRICING_PLANS.find((p) => p.id === "cram_pass")!;
-    expect(cram.priceUsd).toBe(3.99);
-    expect(cram.priceUsdFormatted).toBe("$3.99");
-    expect(TIER_LIMITS.cram_pass.newDeckCredits).toBe(12);
+    expect(cram.priceUsd).toBe(4.99);
+    expect(cram.priceUsdFormatted).toBe("$4.99");
+    expect(cram.recommended).toBe(false);
+    expect(cram.badgeEn).toBe("48h Exam Sprint");
+    expect(TIER_LIMITS.cram_pass.newDeckCredits).toBe(5);
     expect(TIER_LIMITS.cram_pass.dailyDeckBurstLimit).toBe(4);
     expect(TIER_LIMITS.cram_pass.freeRegenerationsPerDeck).toBe(3);
-    expect(TIER_LIMITS.cram_pass.cogsCeilingUsd).toBe(1.25);
+    expect(TIER_LIMITS.cram_pass.cogsCeilingUsd.VN).toBe(0.45);
+    expect(TIER_LIMITS.cram_pass.cogsCeilingUsd.ROW).toBe(1.10);
+
+    const proMonthly = PRICING_PLANS.find((p) => p.id === "pro_monthly")!;
+    expect(proMonthly.priceUsd).toBe(9.99);
+    expect(proMonthly.priceUsdFormatted).toBe("$9.99");
+    expect(proMonthly.cycle).toBe("monthly");
+    expect(TIER_LIMITS.pro_monthly.newDeckCredits).toBe(15);
+    expect(TIER_LIMITS.pro_monthly.dailyDeckBurstLimit).toBe(8);
+    expect(TIER_LIMITS.pro_monthly.freeRegenerationsPerDeck).toBe(5);
+    expect(TIER_LIMITS.pro_monthly.cogsCeilingUsd.VN).toBe(0.75);
+    expect(TIER_LIMITS.pro_monthly.cogsCeilingUsd.ROW).toBe(2.25);
 
     const pro = PRICING_PLANS.find((p) => p.id === "pro")!;
     expect(pro.priceUsd).toBe(29.0);
     expect(pro.priceUsdFormatted).toBe("$29");
-    expect(TIER_LIMITS.pro.newDeckCredits).toBe(50);
-    expect(TIER_LIMITS.pro.dailyDeckBurstLimit).toBe(6);
+    expect(pro.recommended).toBe(true);
+    expect(pro.badgeEn).toBe("Best Value (Save 27–31%)");
+    expect(TIER_LIMITS.pro.newDeckCredits).toBe(60);
+    expect(TIER_LIMITS.pro.dailyDeckBurstLimit).toBe(10);
     expect(TIER_LIMITS.pro.freeRegenerationsPerDeck).toBe(5);
-    expect(TIER_LIMITS.pro.cogsCeilingUsd).toBe(9.75);
+    expect(TIER_LIMITS.pro.cogsCeilingUsd.VN).toBe(2.20);
+    expect(TIER_LIMITS.pro.cogsCeilingUsd.ROW).toBe(7.50);
 
-    expect(formatDeckCreditsCounter(3, 12)).toBe("3 of 12 decks used");
-    expect(formatDeckCreditsCounter(50, 50)).toBe("50 of 50 decks used");
+    expect(formatDeckCreditsCounter(3, 5)).toBe("3 of 5 decks used");
+    expect(formatDeckCreditsCounter(8, 15)).toBe("8 of 15 decks used");
+    expect(formatDeckCreditsCounter(60, 60)).toBe("60 of 60 decks used");
   });
 
   it("enforces 4 decks/day burst limit for 7-Day Cram Pass", async () => {
@@ -553,47 +653,60 @@ describe("Subscription Deck Credit Caps, Burst Limits & Regeneration Allowances"
     expect(fifth.creditConsumed).toBe(false);
   });
 
-  it("enforces 6 decks/day burst limit for Semester Pro Pass", async () => {
+  it("enforces 10 decks/day burst limit for Semester Pro Pass", async () => {
     const userId = "pro-burst-user";
-    for (let i = 1; i <= 6; i++) {
+    for (let i = 1; i <= 10; i++) {
       const res = await checkAndReserveDeckQuota(userId, "pro", `pro-hash-${i}`);
       expect(res.allowed).toBe(true);
       expect(res.dailyBurstUsed).toBe(i);
-      expect(res.dailyBurstLimit).toBe(6);
+      expect(res.dailyBurstLimit).toBe(10);
     }
 
-    const seventh = await checkAndReserveDeckQuota(userId, "pro", "pro-hash-7");
-    expect(seventh.allowed).toBe(false);
-    expect(seventh.reason).toBe("DAILY_BURST_EXCEEDED");
-    expect(seventh.dailyBurstUsed).toBe(6);
+    const eleventh = await checkAndReserveDeckQuota(userId, "pro", "pro-hash-11");
+    expect(eleventh.allowed).toBe(false);
+    expect(eleventh.reason).toBe("DAILY_BURST_EXCEEDED");
+    expect(eleventh.dailyBurstUsed).toBe(10);
   });
 
-  it("enforces 12 total deck credits cap for 7-Day Cram Pass", async () => {
+  it("enforces 5 total deck credits cap for 7-Day Cram Pass", async () => {
     const userId = "cram-credits-user";
     const ledger = await getUserQuotaLedger(userId, "cram_pass");
-    ledger.deckCreditsUsed = 12;
+    ledger.deckCreditsUsed = 5;
     ledger.dailyBurstUsed = 0;
     await saveUserQuotaLedger(ledger);
 
-    const attempt = await checkAndReserveDeckQuota(userId, "cram_pass", "new-deck-13");
+    const attempt = await checkAndReserveDeckQuota(userId, "cram_pass", "new-deck-6");
     expect(attempt.allowed).toBe(false);
     expect(attempt.reason).toBe("DECK_CREDITS_EXCEEDED");
-    expect(attempt.creditsUsed).toBe(12);
-    expect(attempt.creditsLimit).toBe(12);
+    expect(attempt.creditsUsed).toBe(5);
+    expect(attempt.creditsLimit).toBe(5);
   });
 
-  it("enforces 50 total deck credits cap for Semester Pro Pass", async () => {
+  it("enforces 60 total deck credits cap for Semester Pro Pass", async () => {
     const userId = "pro-credits-user";
     const ledger = await getUserQuotaLedger(userId, "pro");
-    ledger.deckCreditsUsed = 50;
+    ledger.deckCreditsUsed = 60;
     ledger.dailyBurstUsed = 0;
     await saveUserQuotaLedger(ledger);
 
-    const attempt = await checkAndReserveDeckQuota(userId, "pro", "pro-new-deck-51");
+    const attempt = await checkAndReserveDeckQuota(userId, "pro", "pro-new-deck-61");
     expect(attempt.allowed).toBe(false);
     expect(attempt.reason).toBe("DECK_CREDITS_EXCEEDED");
-    expect(attempt.creditsUsed).toBe(50);
-    expect(attempt.creditsLimit).toBe(50);
+    expect(attempt.creditsUsed).toBe(60);
+    expect(attempt.creditsLimit).toBe(60);
+  });
+
+  it("enforces burst limit (8) and credits quota (15) for Pro Monthly in TIER_LIMITS", () => {
+    expect(TIER_LIMITS.pro_monthly.dailyDeckBurstLimit).toBe(8);
+    expect(TIER_LIMITS.pro_monthly.newDeckCredits).toBe(15);
+    expect(TIER_LIMITS.pro_monthly.freeRegenerationsPerDeck).toBe(5);
+    expect(TIER_LIMITS.pro_monthly.maxFilesPerUpload).toBe(10);
+    expect(TIER_LIMITS.pro_monthly.maxNotesPerDay).toBe(8);
+    expect(TIER_LIMITS.pro_monthly.maxQuestionsPerRun).toBe(30);
+    expect(TIER_LIMITS.pro_monthly.cogsCeilingUsd.VN).toBe(0.75);
+    expect(TIER_LIMITS.pro_monthly.cogsCeilingUsd.ROW).toBe(2.25);
+    expect(formatDeckCreditsCounter(8, TIER_LIMITS.pro_monthly.newDeckCredits)).toBe("8 of 15 decks used");
+    expect(formatDeckCreditsCounter(15, TIER_LIMITS.pro_monthly.newDeckCredits)).toBe("15 of 15 decks used");
   });
 
   it("enforces 3 free regenerations per deck for Cram Pass and rejects 4th regeneration", async () => {
@@ -827,6 +940,59 @@ describe("Pre-Flight COGS Ceiling & Progressive 4-Tier Degradation Ladder", () =
     expect(status.allowCrossFamilyVerifier).toBe(false);
     expect(status.serveCachedPoolsOnly).toBe(true);
     expect(status.bannerNotice).toContain("Subscription deck generation budget reached for this period");
+  });
+
+  it("enforces regional COGS degradation ceilings (VN: $2.20 vs ROW: $7.50 for Semester Pro)", () => {
+    const proCeiling = TIER_LIMITS.pro.cogsCeilingUsd;
+
+    // VN Region: ceiling is $2.20
+    const vnFull = evaluateCogsDegradation(1.0, proCeiling, 0, 0, "VN");
+    expect(vnFull.ceilingUsd).toBe(2.2);
+    expect(vnFull.mode).toBe("full");
+
+    // VN Region: reaches gentle degradation at $1.54 (70% of $2.20)
+    const vnGentle = evaluateCogsDegradation(1.54, proCeiling, 0, 0, "VN");
+    expect(vnGentle.ceilingUsd).toBe(2.2);
+    expect(vnGentle.utilizationRatio).toBe(0.7);
+    expect(vnGentle.mode).toBe("gentle");
+    expect(vnGentle.targetQuestionCount).toBe(20);
+
+    // VN Region: reaches hard degradation at $1.98 with estimated incoming call (90%+)
+    const vnHard = evaluateCogsDegradation(1.98, proCeiling, 0.01, 0, "VN");
+    expect(vnHard.ceilingUsd).toBe(2.2);
+    expect(vnHard.utilizationRatio).toBeGreaterThan(0.9);
+    expect(vnHard.mode).toBe("hard");
+    expect(vnHard.targetQuestionCount).toBe(15);
+    expect(vnHard.allowVisionOcr).toBe(false);
+
+    // VN Region: halted when exceeding ceiling (> 100%)
+    const vnHalted = evaluateCogsDegradation(2.25, proCeiling, 0, 0, "VN");
+    expect(vnHalted.ceilingUsd).toBe(2.2);
+    expect(vnHalted.mode).toBe("halted");
+    expect(vnHalted.serveCachedPoolsOnly).toBe(true);
+
+    // ROW Region: ceiling is $7.50
+    const rowUnderVnCeiling = evaluateCogsDegradation(1.54, proCeiling, 0, 0, "ROW");
+    expect(rowUnderVnCeiling.ceilingUsd).toBe(7.5);
+    expect(rowUnderVnCeiling.utilizationRatio).toBeCloseTo(0.2053, 2);
+    expect(rowUnderVnCeiling.mode).toBe("full");
+
+    // ROW Region: reaches gentle degradation at $5.25 (70% of $7.50)
+    const rowGentle = evaluateCogsDegradation(5.25, proCeiling, 0, 0, "ROW");
+    expect(rowGentle.ceilingUsd).toBe(7.5);
+    expect(rowGentle.utilizationRatio).toBe(0.7);
+    expect(rowGentle.mode).toBe("gentle");
+
+    // ROW Region: reaches hard degradation at > 90% of $7.50 ($6.75)
+    const rowHard = evaluateCogsDegradation(6.75, proCeiling, 0.01, 0, "ROW");
+    expect(rowHard.ceilingUsd).toBe(7.5);
+    expect(rowHard.utilizationRatio).toBeGreaterThan(0.9);
+    expect(rowHard.mode).toBe("hard");
+
+    // ROW Region: halted when exceeding $7.50
+    const rowHalted = evaluateCogsDegradation(7.6, proCeiling, 0, 0, "ROW");
+    expect(rowHalted.ceilingUsd).toBe(7.5);
+    expect(rowHalted.mode).toBe("halted");
   });
 
   it("checkAndReserveDeckQuota blocks generation when projected COGS exceeds ceiling", async () => {

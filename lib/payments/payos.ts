@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   calculateTierExpiration,
+  normalizeTier,
   PRICING_PLANS,
 } from "@/lib/pricing/tiers";
 import {
@@ -8,13 +9,86 @@ import {
   isSupabaseServerConfigured,
 } from "@/lib/supabase/server";
 
-export type PayosPlanId = "cram_pass" | "pro";
+export type PayosPlanId =
+  | "cram_pass"
+  | "pro"
+  | "pro_monthly"
+  | "tutor"
+  | "pro_semester"
+  | "tutor_guild";
+
+export const SANDBOX_TEST_AMOUNT_VND = 5000;
+
+/**
+ * Checks whether the given email is in the admin test allowlist.
+ * Reads comma-separated list from process.env.ADMIN_TEST_EMAILS (case-insensitive, trimmed).
+ */
+export function isAdminTestEmail(email?: string | null): boolean {
+  if (!email || typeof email !== "string") {
+    return false;
+  }
+  const targetEmail = email.trim().toLowerCase();
+  if (!targetEmail) {
+    return false;
+  }
+  const rawList = process.env.ADMIN_TEST_EMAILS ?? "";
+  if (!rawList.trim()) {
+    return false;
+  }
+  const allowlist = rawList
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e.length > 0);
+  return allowlist.includes(targetEmail);
+}
+
+export const EXPECTED_PLAN_AMOUNTS_VND: Record<PayosPlanId, number> = {
+  cram_pass: 69_000,
+  pro: 299_000,
+  pro_semester: 299_000,
+  pro_monthly: 109_000,
+  tutor: 399_000,
+  tutor_guild: 399_000,
+};
+
+export function getPlanBillingCycle(
+  planId: PayosPlanId,
+): "one_time" | "semester" | "monthly" {
+  if (planId === "cram_pass") {
+    return "one_time";
+  }
+  if (planId === "pro" || planId === "pro_semester") {
+    return "semester";
+  }
+  if (
+    planId === "pro_monthly" ||
+    planId === "tutor" ||
+    planId === "tutor_guild"
+  ) {
+    return "monthly";
+  }
+  return "monthly";
+}
+
+export function mapPlanToUserTier(
+  planId: PayosPlanId,
+): "cram_pass" | "pro" | "tutor" {
+  if (planId === "cram_pass") {
+    return "cram_pass";
+  }
+  if (planId === "tutor" || planId === "tutor_guild") {
+    return "tutor";
+  }
+  return "pro";
+}
 
 export interface CreatePayosPaymentLinkInput {
   planId: PayosPlanId;
   origin: string;
   userId?: string;
   userToken?: string;
+  amount?: number;
+  userEmail?: string;
 }
 
 export interface PayosPaymentLinkResult {
@@ -43,6 +117,7 @@ export interface FulfillPayosOrderParams {
   amount?: number;
   fallbackUserId?: string;
   userToken?: string;
+  expectedAmount?: number;
 }
 
 export interface FulfillPayosOrderResult {
@@ -50,6 +125,7 @@ export interface FulfillPayosOrderResult {
   userId: string | null;
   tier: PayosPlanId | null;
   expiresAt: string | null;
+  cogsCeilingUsd?: number;
 }
 
 /**
@@ -71,7 +147,9 @@ let lastGeneratedTimestamp = 0;
 /**
  * Generates a unique safe integer order code encoding the plan in the final digit:
  * - 1 for cram_pass
- * - 2 for pro
+ * - 2 for pro or pro_semester
+ * - 3 for pro_monthly
+ * - 4 for tutor or tutor_guild
  * Safe within Number.MAX_SAFE_INTEGER (14-digit integer).
  */
 export function generatePayosOrderCode(planId: PayosPlanId): number {
@@ -80,7 +158,18 @@ export function generatePayosOrderCode(planId: PayosPlanId): number {
     now = lastGeneratedTimestamp + 1;
   }
   lastGeneratedTimestamp = now;
-  const planSuffix = planId === "pro" ? 2 : 1;
+
+  let planSuffix = 1;
+  if (planId === "pro" || planId === "pro_semester") {
+    planSuffix = 2;
+  } else if (planId === "pro_monthly") {
+    planSuffix = 3;
+  } else if (planId === "tutor" || planId === "tutor_guild") {
+    planSuffix = 4;
+  } else {
+    planSuffix = 1;
+  }
+
   return now * 10 + planSuffix;
 }
 
@@ -88,8 +177,12 @@ export function generatePayosOrderCode(planId: PayosPlanId): number {
  * Decodes the purchased plan from the orderCode's last digit or falls back to amount.
  * - orderCode % 10 === 1 -> "cram_pass"
  * - orderCode % 10 === 2 -> "pro"
+ * - orderCode % 10 === 3 -> "pro_monthly"
+ * - orderCode % 10 === 4 -> "tutor"
  * - amount === 5000 or 39000 or 69000 -> "cram_pass"
+ * - amount === 109000 -> "pro_monthly"
  * - amount === 149000 or 299000 -> "pro"
+ * - amount === 399000 -> "tutor"
  */
 export function decodePlanFromOrderCode(
   orderCode: number,
@@ -102,11 +195,23 @@ export function decodePlanFromOrderCode(
   if (lastDigit === 2) {
     return "pro";
   }
+  if (lastDigit === 3) {
+    return "pro_monthly";
+  }
+  if (lastDigit === 4) {
+    return "tutor";
+  }
   if (amount === 5000 || amount === 39000 || amount === 69000) {
     return "cram_pass";
   }
+  if (amount === 109000) {
+    return "pro_monthly";
+  }
   if (amount === 149000 || amount === 299000) {
     return "pro";
+  }
+  if (amount === 399000) {
+    return "tutor";
   }
   return null;
 }
@@ -119,7 +224,14 @@ export function buildPayosDescription(
   orderCode: number,
 ): string {
   const suffix = String(Math.abs(orderCode)).slice(-6);
-  const prefix = planId === "pro" ? "CLUTCH PRO" : "CLUTCH CRAM";
+  let prefix = "CLUTCH CRAM";
+  if (planId === "pro" || planId === "pro_semester") {
+    prefix = "CLUTCH PRO";
+  } else if (planId === "pro_monthly") {
+    prefix = "CLUTCH MONTHLY";
+  } else if (planId === "tutor" || planId === "tutor_guild") {
+    prefix = "CLUTCH TUTOR";
+  }
   const desc = `${prefix} ${suffix}`.toUpperCase().replace(/[^A-Z0-9 ]/g, "").trim();
   return desc.slice(0, 25);
 }
@@ -234,10 +346,87 @@ export function buildVietQrImageUrl(params: {
 export async function createPayosPaymentLink(
   input: CreatePayosPaymentLinkInput,
 ): Promise<PayosPaymentLinkResult> {
-  const plan = PRICING_PLANS.find((p) => p.id === input.planId);
+  const canonicalPlanId =
+    input.planId === "pro_semester"
+      ? "pro"
+      : input.planId === "tutor_guild"
+        ? "tutor"
+        : input.planId;
+
+  const plan = PRICING_PLANS.find((p) => p.id === canonicalPlanId);
   if (!plan) {
     throw new Error(`Plan "${input.planId}" not found in PRICING_PLANS`);
   }
+
+  const effectiveAmount =
+    typeof input.amount === "number" && input.amount > 0
+      ? input.amount
+      : (EXPECTED_PLAN_AMOUNTS_VND[input.planId] ?? plan.priceVnd);
+
+  if (effectiveAmount === SANDBOX_TEST_AMOUNT_VND || input.amount === SANDBOX_TEST_AMOUNT_VND) {
+    let userEmail: string | null = input.userEmail ?? null;
+    const supabase = getSupabaseServerClient(input.userToken);
+
+    if (supabase) {
+      if (!userEmail && input.userToken) {
+        try {
+          const { data: authData } = await supabase.auth.getUser(input.userToken);
+          if (authData?.user?.email) {
+            userEmail = authData.user.email;
+          }
+        } catch {
+          // Safe ignore auth lookup error
+        }
+      }
+
+      if (!userEmail && input.userId) {
+        try {
+          const { data: adminUser } = await supabase.auth.admin.getUserById(input.userId);
+          if (adminUser?.user?.email) {
+            userEmail = adminUser.user.email;
+          }
+        } catch {
+          // Safe ignore admin auth lookup error
+        }
+
+        if (!userEmail) {
+          try {
+            const { data: profile } = await supabase
+              .from("profiles")
+              .select("email")
+              .eq("id", input.userId)
+              .maybeSingle();
+            if (profile?.email) {
+              userEmail = profile.email;
+            }
+          } catch {
+            // Safe ignore profile lookup error
+          }
+        }
+
+        if (!userEmail) {
+          try {
+            const { data: userProfile } = await supabase
+              .from("user_profiles")
+              .select("email")
+              .eq("id", input.userId)
+              .maybeSingle();
+            if (userProfile?.email) {
+              userEmail = userProfile.email;
+            }
+          } catch {
+            // Safe ignore user profile lookup error
+          }
+        }
+      }
+    }
+
+    if (!isAdminTestEmail(userEmail)) {
+      throw new Error("Sandbox test payment unauthorized for this account");
+    }
+  }
+
+  const cycle = getPlanBillingCycle(input.planId);
 
   const orderCode = generatePayosOrderCode(input.planId);
   const description = buildPayosDescription(input.planId, orderCode);
@@ -245,7 +434,7 @@ export async function createPayosPaymentLink(
   const cancelUrl = `${input.origin}/?payment=cancelled&orderCode=${orderCode}`;
 
   const signature = computePayosPaymentSignature({
-    amount: plan.priceVnd,
+    amount: effectiveAmount,
     cancelUrl,
     description,
     orderCode,
@@ -260,8 +449,8 @@ export async function createPayosPaymentLink(
           id: `payos_${orderCode}`,
           user_id: input.userId,
           tier: input.planId,
-          cycle: plan.cycle,
-          amount: plan.priceVnd,
+          cycle,
+          amount: effectiveAmount,
           currency: "VND",
           payment_method: "payos_vietqr",
           status: "pending",
@@ -287,7 +476,7 @@ export async function createPayosPaymentLink(
       },
       body: JSON.stringify({
         orderCode,
-        amount: plan.priceVnd,
+        amount: effectiveAmount,
         description,
         cancelUrl,
         returnUrl,
@@ -296,7 +485,7 @@ export async function createPayosPaymentLink(
           {
             name: plan.nameVi || plan.nameEn,
             quantity: 1,
-            price: plan.priceVnd,
+            price: effectiveAmount,
           },
         ],
       }),
@@ -409,13 +598,14 @@ export async function fulfillPayosOrder(
   let resolvedUserId: string | null = null;
   let resolvedTier: PayosPlanId | null = null;
   let recordedUserId: string | null = null;
+  let recordedAmount: number | null = null;
 
   const supabase = getSupabaseServerClient(params.userToken);
   if (supabase) {
     try {
       const { data: sub } = await supabase
         .from("user_subscriptions")
-        .select("user_id, tier")
+        .select("user_id, tier, amount")
         .eq("id", `payos_${params.orderCode}`)
         .maybeSingle();
 
@@ -423,12 +613,88 @@ export async function fulfillPayosOrder(
         recordedUserId = sub.user_id;
         resolvedUserId = sub.user_id;
       }
-      if (sub?.tier === "cram_pass" || sub?.tier === "pro") {
+      if (
+        sub?.tier === "cram_pass" ||
+        sub?.tier === "pro" ||
+        sub?.tier === "pro_monthly" ||
+        sub?.tier === "tutor" ||
+        sub?.tier === "pro_semester" ||
+        sub?.tier === "tutor_guild"
+      ) {
         resolvedTier = sub.tier;
+      }
+      if (typeof sub?.amount === "number") {
+        recordedAmount = sub.amount;
       }
     } catch {
       // Safe ignore DB query error
     }
+
+    if (!recordedAmount) {
+      try {
+        const { data: po } = await supabase
+          .from("pending_orders")
+          .select("user_id, tier, amount, expected_amount_vnd")
+          .eq("id", `payos_${params.orderCode}`)
+          .maybeSingle();
+        if (typeof po?.amount === "number") {
+          recordedAmount = po.amount;
+        } else if (
+          typeof (po as { expected_amount_vnd?: number })?.expected_amount_vnd ===
+          "number"
+        ) {
+          recordedAmount =
+            (po as { expected_amount_vnd?: number }).expected_amount_vnd ?? null;
+        }
+        if (!recordedUserId && po?.user_id) {
+          recordedUserId = po.user_id;
+          resolvedUserId = po.user_id;
+        }
+        if (!resolvedTier && po?.tier) {
+          resolvedTier = po.tier as PayosPlanId;
+        }
+      } catch {
+        // Safe ignore pending_orders query error
+      }
+    }
+  }
+
+  // Verify expected amount matching pendingOrder.amount if available
+  const targetExpectedAmount =
+    typeof params.expectedAmount === "number"
+      ? params.expectedAmount
+      : recordedAmount;
+
+  if (
+    typeof params.amount === "number" &&
+    typeof targetExpectedAmount === "number" &&
+    params.amount !== targetExpectedAmount
+  ) {
+    console.warn(
+      `[PayOS] Refusing fulfillment for orderCode ${params.orderCode}: received amount ${params.amount} does not match expected amount ${targetExpectedAmount}.`,
+    );
+    return {
+      fulfilled: false,
+      userId: resolvedUserId ?? null,
+      tier: resolvedTier ?? null,
+      expiresAt: null,
+    };
+  }
+
+  if (
+    typeof params.expectedAmount === "number" &&
+    typeof recordedAmount === "number" &&
+    params.expectedAmount !== recordedAmount
+  ) {
+    console.warn(
+      `[PayOS] Refusing fulfillment for orderCode ${params.orderCode}: params.expectedAmount ${params.expectedAmount} does not match recorded DB amount ${recordedAmount}.`,
+    );
+    return {
+      fulfilled: false,
+      userId: resolvedUserId ?? null,
+      tier: resolvedTier ?? null,
+      expiresAt: null,
+    };
   }
 
   // Guard against order hijacking:
@@ -487,44 +753,77 @@ export async function fulfillPayosOrder(
   let expiresAt: string | null = null;
   const fulfilled = Boolean(resolvedUserId && resolvedTier);
 
+  const defaultPlanAmount =
+    resolvedTier && EXPECTED_PLAN_AMOUNTS_VND[resolvedTier]
+      ? EXPECTED_PLAN_AMOUNTS_VND[resolvedTier]
+      : 69000;
+  const finalAmount =
+    typeof params.amount === "number" && params.amount > 0
+      ? params.amount
+      : (targetExpectedAmount ?? defaultPlanAmount);
+
+  const isSandbox =
+    finalAmount === SANDBOX_TEST_AMOUNT_VND ||
+    recordedAmount === SANDBOX_TEST_AMOUNT_VND ||
+    params.expectedAmount === SANDBOX_TEST_AMOUNT_VND;
+
   if (fulfilled && resolvedUserId && resolvedTier) {
     expiresAt = calculateTierExpiration(resolvedTier);
     const now = new Date().toISOString();
-    const cycle = resolvedTier === "pro" ? "semester" : "one_time";
-    const amount =
-      params.amount ?? (resolvedTier === "pro" ? 299000 : 69000);
+    const cycle = getPlanBillingCycle(resolvedTier);
+    const profileTier = normalizeTier(resolvedTier);
 
     if (supabase) {
       try {
-        await supabase.from("user_subscriptions").upsert({
+        const subPayload: Record<string, unknown> = {
           id: `payos_${params.orderCode}`,
           user_id: resolvedUserId,
           tier: resolvedTier,
           cycle,
-          amount,
+          amount: finalAmount,
           currency: "VND",
           payment_method: "payos_vietqr",
           status: "active",
           starts_at: now,
           expires_at: expiresAt,
-        });
+        };
+        if (isSandbox) {
+          subPayload.cogs_ceiling_usd = 0.05;
+        }
+        const { error: subErr } = await supabase
+          .from("user_subscriptions")
+          .upsert(subPayload);
+        if (subErr && isSandbox) {
+          delete subPayload.cogs_ceiling_usd;
+          await supabase.from("user_subscriptions").upsert(subPayload);
+        }
       } catch {
         // Safe fallback
       }
 
       try {
-        await supabase.from("profiles").upsert({
+        const profilePayload: Record<string, unknown> = {
           id: resolvedUserId,
-          tier: resolvedTier,
+          tier: profileTier,
           tier_expires_at: expiresAt,
           updated_at: now,
-        });
+        };
+        if (isSandbox) {
+          profilePayload.cogs_ceiling_usd = 0.05;
+        }
+        const { error: profErr } = await supabase
+          .from("profiles")
+          .upsert(profilePayload);
+        if (profErr && isSandbox) {
+          delete profilePayload.cogs_ceiling_usd;
+          await supabase.from("profiles").upsert(profilePayload);
+        }
       } catch {
         try {
           await supabase
             .from("profiles")
             .update({
-              tier: resolvedTier,
+              tier: profileTier,
               tier_expires_at: expiresAt,
               updated_at: now,
             })
@@ -535,18 +834,28 @@ export async function fulfillPayosOrder(
       }
 
       try {
-        await supabase.from("user_profiles").upsert({
+        const userProfilePayload: Record<string, unknown> = {
           id: resolvedUserId,
-          tier: resolvedTier,
+          tier: profileTier,
           tier_expires_at: expiresAt,
           updated_at: now,
-        });
+        };
+        if (isSandbox) {
+          userProfilePayload.cogs_ceiling_usd = 0.05;
+        }
+        const { error: uProfErr } = await supabase
+          .from("user_profiles")
+          .upsert(userProfilePayload);
+        if (uProfErr && isSandbox) {
+          delete userProfilePayload.cogs_ceiling_usd;
+          await supabase.from("user_profiles").upsert(userProfilePayload);
+        }
       } catch {
         try {
           await supabase
             .from("user_profiles")
             .update({
-              tier: resolvedTier,
+              tier: profileTier,
               tier_expires_at: expiresAt,
               updated_at: now,
             })
@@ -557,11 +866,16 @@ export async function fulfillPayosOrder(
       }
 
       try {
+        const userMetadata: Record<string, unknown> = {
+          tier: profileTier,
+          tier_expires_at: expiresAt,
+        };
+        if (isSandbox) {
+          userMetadata.cogs_ceiling_usd = 0.05;
+          userMetadata.is_sandbox = true;
+        }
         await supabase.auth.admin.updateUserById(resolvedUserId, {
-          user_metadata: {
-            tier: resolvedTier,
-            tier_expires_at: expiresAt,
-          },
+          user_metadata: userMetadata,
         });
       } catch {
         // ignore admin auth failure
@@ -574,5 +888,6 @@ export async function fulfillPayosOrder(
     userId: resolvedUserId ?? null,
     tier: resolvedTier ?? null,
     expiresAt,
+    ...(isSandbox ? { cogsCeilingUsd: 0.05 } : {}),
   };
 }
