@@ -419,18 +419,27 @@ export function getFallbackVerifierModel(options?: {
   );
 }
 
-export function getGeminiModel(modelOverride?: string) {
-  const googleApiKey = (
+export function getGeminiApiKey(): string | null {
+  const key = (
     process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
     process.env.GEMINI_API_KEY ||
     process.env.GEMINI_KEY ||
     process.env.GOOGLE_API_KEY
   )?.trim();
   if (
-    googleApiKey &&
-    googleApiKey !== "your-gemini-key-here" &&
-    googleApiKey !== "your-api-key-here"
+    key &&
+    key !== "your-gemini-key-here" &&
+    key !== "your-api-key-here" &&
+    !key.includes("placeholder")
   ) {
+    return key;
+  }
+  return null;
+}
+
+export function getGeminiModel(modelOverride?: string) {
+  const googleApiKey = getGeminiApiKey();
+  if (googleApiKey) {
     const defaultModel = "gemini-3.6-flash";
     const modelId = modelOverride || process.env.GEMINI_MODEL?.trim() || defaultModel;
     return createGoogleGenerativeAI({ apiKey: googleApiKey })(modelId);
@@ -470,6 +479,7 @@ export function getGenerationModel(
   const provider = process.env.AI_PROVIDER?.trim().toLowerCase();
   const isPriority = tier === "cram_pass" || tier === "pro" || tier === "tutor";
   const openRouterKey = getOpenRouterApiKey();
+  const geminiKey = getGeminiApiKey();
 
   // If explicitly specified in .env.local
   if (provider === "local" || provider === "ollama") {
@@ -479,7 +489,9 @@ export function getGenerationModel(
 
   // 1. Check OPENROUTER_API_KEY first (if set and valid, return pinned OpenRouter generator model)
   if (openRouterKey && provider !== "gemini" && provider !== "groq") {
-    return getOpenRouterGeneratorModel(tier, options);
+    const model = getOpenRouterGeneratorModel(tier, options);
+    console.log(`[AI Routing] Tier=${tier} | Primary=OpenRouter (${(model as any)?.modelId || PRIORITY_GENERATOR_SLUG}) | AI_PROVIDER=${provider || "none"}`);
+    return model;
   }
 
   // 2. High-retention synthesis routing for Clutch Notes
@@ -513,7 +525,12 @@ export function getGenerationModel(
   // 4. Smart Model Routing for Cram Pass and Pro/Tutor users
   if (isPriority) {
     const geminiPro = getGeminiModel(process.env.GEMINI_MODEL?.trim() || "gemini-3.6-flash");
-    if (geminiPro) return geminiPro;
+    if (geminiPro) {
+      console.log(
+        `[AI Routing] Tier=${tier} | Primary=Gemini (${(geminiPro as any)?.modelId || "gemini-3.6-flash"}) (OpenRouter key was ${openRouterKey ? "bypassed due to AI_PROVIDER=" + provider : "missing"})`,
+      );
+      return geminiPro;
+    }
   }
 
   // 5. Lowest-cost default: Groq (ultra-fast, zero-cost) or Gemini 3.6 Flash
