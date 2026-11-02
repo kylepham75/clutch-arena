@@ -24,6 +24,7 @@ import {
   getGeminiModel,
   getGroqModel,
   getOpenRouterApiKey,
+  getOpenRouterGeneratorModel,
   HAIKU_TOKEN_CLIFF_THRESHOLD,
 } from "./provider";
 import {
@@ -1088,76 +1089,107 @@ export async function generateQuestions(
       throwOnExceeded: !isPaidGeneration,
     });
 
-    const fallback = getGeminiModel() || getGroqModel();
-    const canFallback = Boolean(fallback && resolvedModel !== fallback);
+    // Build ordered list of candidate models for robust multi-tier fallback
+    const candidateModels: { name: string; model: LanguageModel }[] = [];
+    const resolvedId =
+      (resolvedModel as any)?.modelId ||
+      (resolvedModel as any)?.provider ||
+      "Primary AI model";
+    candidateModels.push({ name: resolvedId, model: resolvedModel });
 
-    try {
-      if (canFallback) {
-        const isLocal = Boolean(
-          process.env.AI_PROVIDER === "local" ||
-            process.env.AI_PROVIDER === "ollama",
-        );
-        const primaryTimeoutMs = isLocal ? 90_000 : 75_000;
-        const primaryTimeout = new AbortController();
-        const timer = setTimeout(
-          () =>
-            primaryTimeout.abort(
-              new DOMException("Primary model timed out", "TimeoutError"),
-            ),
-          primaryTimeoutMs,
-        );
-        const primarySignal = AbortSignal.any([signal, primaryTimeout.signal]);
-        try {
-          return await generateObject({
-            model: resolvedModel,
-            schema: generatedStudySchema,
-            system: ingestionSystemPrompt,
-            prompt: batchPrompt,
-            temperature: MCQ_GENERATION_TEMPERATURE,
-            topP: MCQ_GENERATION_TOP_P,
-            abortSignal: primarySignal,
-            maxRetries: 0,
-            maxOutputTokens,
-          });
-        } finally {
-          clearTimeout(timer);
-        }
-      }
+    // Fallback 1: Google Gemini 3.6 Flash
+    const gemini = getGeminiModel();
+    if (gemini && (gemini as any)?.modelId !== resolvedId) {
+      candidateModels.push({ name: "Google Gemini 3.6 Flash", model: gemini });
+    }
 
-      return await generateObject({
-        model: resolvedModel,
-        schema: generatedStudySchema,
-        system: ingestionSystemPrompt,
-        prompt: batchPrompt,
-        temperature: MCQ_GENERATION_TEMPERATURE,
-        topP: MCQ_GENERATION_TOP_P,
-        abortSignal: signal,
-        maxRetries: 0,
-        maxOutputTokens,
+    // Fallback 2: Google Gemini 3.5 Flash-Lite (resilient during peak load / 503 high-demand spikes)
+    const geminiLite = getGeminiModel("gemini-3.5-flash-lite");
+    if (geminiLite && (geminiLite as any)?.modelId !== resolvedId) {
+      candidateModels.push({
+        name: "Google Gemini 3.5 Flash-Lite",
+        model: geminiLite,
       });
-    } catch (primaryErr: any) {
-      if (canFallback && fallback) {
-        const fallbackName =
-          (fallback as any)?.modelId ||
-          (fallback as any)?.provider ||
-          "fallback model";
-        console.warn(
-          `[generateQuestions] Primary AI model failed (${primaryErr?.message || primaryErr}). Instant auto-failover to ${fallbackName}...`,
-        );
+    }
+
+    // Fallback 3: OpenRouter generator (if primary was not OpenRouter)
+    if (getOpenRouterApiKey()) {
+      try {
+        const openRouterModel = getOpenRouterGeneratorModel(options.tier);
+        if (openRouterModel && (openRouterModel as any)?.modelId !== resolvedId) {
+          candidateModels.push({
+            name: "OpenRouter Generator",
+            model: openRouterModel,
+          });
+        }
+      } catch {
+        // ignore if not configured
+      }
+    }
+
+    // Fallback 4: Groq LPU
+    const groq = getGroqModel();
+    if (groq && (groq as any)?.modelId !== resolvedId) {
+      candidateModels.push({ name: "Groq LPU", model: groq });
+    }
+
+    let lastError: any = null;
+    for (let i = 0; i < candidateModels.length; i++) {
+      const { name, model: candidate } = candidateModels[i];
+      const isPrimary = i === 0;
+      const isLocal = Boolean(
+        process.env.AI_PROVIDER === "local" ||
+          process.env.AI_PROVIDER === "ollama",
+      );
+      const timeoutMs = isPrimary
+        ? isLocal
+          ? 90_000
+          : 75_000
+        : 45_000;
+      const timeoutController = new AbortController();
+      const timer = setTimeout(
+        () =>
+          timeoutController.abort(
+            new DOMException(`${name} timed out`, "TimeoutError"),
+          ),
+        timeoutMs,
+      );
+      const combinedSignal = AbortSignal.any([
+        signal,
+        timeoutController.signal,
+      ]);
+
+      try {
         return await generateObject({
-          model: fallback,
+          model: candidate,
           schema: generatedStudySchema,
           system: ingestionSystemPrompt,
           prompt: batchPrompt,
           temperature: MCQ_GENERATION_TEMPERATURE,
           topP: MCQ_GENERATION_TOP_P,
-          abortSignal: signal,
+          abortSignal: combinedSignal,
           maxRetries: 0,
           maxOutputTokens: 4_096,
         });
+      } catch (err: any) {
+        lastError = err;
+        const errMsg = err?.message || String(err);
+        if (i < candidateModels.length - 1) {
+          console.warn(
+            `[generateQuestions] ${name} failed (${errMsg}). Instant auto-failover to ${candidateModels[i + 1].name}...`,
+          );
+        } else {
+          console.error(
+            `[generateQuestions] All ${candidateModels.length} candidate AI models failed. Final error:`,
+            errMsg,
+          );
+        }
+      } finally {
+        clearTimeout(timer);
       }
-      throw primaryErr;
     }
+
+    throw lastError;
   };
 
   try {
