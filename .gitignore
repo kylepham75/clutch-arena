@@ -6,3 +6,7 @@ node_modules/
 *.bak
 test-results/
 playwright-report/
+*.md
+!README.md
+!docs/**/*.md
+!.agents/**/*.md
