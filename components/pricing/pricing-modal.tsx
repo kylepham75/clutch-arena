@@ -422,8 +422,8 @@ export function PricingModal({
       description={
         initialReason ||
         (isVi
-          ? "Giá địa phương hóa theo sức mua (PPP) - Không lo gia hạn thẻ tín dụng."
-          : "Localized student pricing with instant scan-to-pay & one-time passes.")
+          ? "Không lo gia hạn thẻ tín dụng."
+          : "Instant scan-to-pay & one-time passes.")
       }
     >
       <div className="pricing-modal-container w-full text-stone-900 dark:text-stone-100">
@@ -433,7 +433,7 @@ export function PricingModal({
             <div className="flex items-center gap-2">
               <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 px-2.5 py-0.5 rounded-full">
                 <Flame size={13} />
-                {isVi ? "Bảng Giá Chuẩn PPP Sinh Viên" : "PPP-Adjusted Student Pricing"}
+                {isVi ? "Bảng Giá Sinh Viên" : "Student Pricing"}
               </span>
               {tier !== "contender" && (
                 <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
@@ -451,8 +451,8 @@ export function PricingModal({
             <p className="text-xs sm:text-sm text-stone-600 dark:text-stone-400">
               {initialReason ||
                 (isVi
-                  ? "Giá địa phương hóa theo sức mua (PPP) - Không lo gia hạn thẻ tín dụng."
-                  : "Localized student pricing with instant scan-to-pay & one-time passes.")}
+                  ? "Không lo gia hạn thẻ tín dụng."
+                  : "Instant scan-to-pay & one-time passes.")}
             </p>
           </div>
 
@@ -909,7 +909,7 @@ export function PricingModal({
               return (
                 <div
                   key={plan.id}
-                  className={`tier-card relative flex flex-col justify-between p-4 sm:p-5 rounded-2xl border transition-all ${
+                  className={`tier-card relative flex flex-col justify-between p-4 sm:p-5 rounded-2xl border transition-all min-w-0 overflow-hidden ${
                     isRecommended
                       ? "border-amber-400 dark:border-amber-500/70 bg-gradient-to-b from-amber-50/70 to-white dark:from-amber-950/20 dark:to-stone-900 shadow-md ring-1 ring-amber-300 dark:ring-amber-500/30"
                       : "border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/60 shadow-xs"
@@ -1099,7 +1099,7 @@ export function PricingModal({
               </span>
             </div>
             <div>
-              Clutch Arena · {isVi ? "Ôn thi chủ động chuẩn PPP" : "Active Recall & Grounded Learning"}
+              Clutch Arena · {isVi ? "Ôn thi chủ động" : "Active Recall & Grounded Learning"}
             </div>
           </div>
         </div>

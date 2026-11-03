@@ -400,7 +400,7 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
         expect(vnPro).toEqual({
           amount: 299000,
           currency: "VND",
-          formatted: "299.000đ/kỳ (~74.750đ/tháng)",
+          formatted: "299.000đ/kỳ",
         });
         expect(vnSemester).toEqual(vnPro);
 
@@ -409,7 +409,7 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
         expect(rowPro).toEqual({
           amount: 29.0,
           currency: "USD",
-          formatted: "$29.00/sem (~$7.25/mo)",
+          formatted: "$29.00/sem",
         });
         expect(rowSemester).toEqual(rowPro);
       });

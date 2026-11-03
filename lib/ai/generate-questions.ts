@@ -458,6 +458,8 @@ export function validateGeneratedStudy(
     );
   }
 
+  let firstDefectMessage: string | null = null;
+
   if (
     output.annotations.length !== output.questions.length ||
     new Set(output.annotations.map((a) => a.questionId)).size !==
@@ -468,9 +470,13 @@ export function validateGeneratedStudy(
       document,
       sourceKind: output.sourceKind,
     });
-    return badOutput(
-      "The AI did not provide one source reference per question. Please retry.",
-    );
+    if (output.annotations.length === 0) {
+      return badOutput(
+        "The AI did not provide one source reference per question. Please retry.",
+      );
+    }
+    firstDefectMessage ??=
+      "The AI did not provide one source reference per question. Please retry.";
   }
 
   const metadata: StudyPack["metadata"] = Object.create(null);
@@ -503,9 +509,9 @@ export function validateGeneratedStudy(
         sourceId: rawSourceId,
         excerpt: rawExcerpt,
       });
-      return badOutput(
-        "A generated citation could not be verified against the uploaded text. Please retry.",
-      );
+      firstDefectMessage ??=
+        "A generated citation could not be verified against the uploaded text. Please retry.";
+      continue;
     }
 
     let source = sources.get(rawSourceId);
@@ -526,9 +532,9 @@ export function validateGeneratedStudy(
         sourceId: rawSourceId,
         excerpt: rawExcerpt,
       });
-      return badOutput(
-        "A generated citation could not be verified against the uploaded text. Please retry.",
-      );
+      firstDefectMessage ??=
+        "A generated citation could not be verified against the uploaded text. Please retry.";
+      continue;
     }
 
     if (!matchesText(source.text, rawExcerpt)) {
@@ -566,9 +572,9 @@ export function validateGeneratedStudy(
               sourceId: rawSourceId,
               excerpt: rawExcerpt,
             });
-            return badOutput(
-              "A generated citation could not be verified against the uploaded text. Please retry.",
-            );
+            firstDefectMessage ??=
+              "A generated citation could not be verified against the uploaded text. Please retry.";
+            continue;
           }
         } else {
           notifyCitationRejection({
@@ -579,9 +585,9 @@ export function validateGeneratedStudy(
             sourceId: rawSourceId,
             excerpt: rawExcerpt,
           });
-          return badOutput(
-            "A generated citation could not be verified against the uploaded text. Please retry.",
-          );
+          firstDefectMessage ??=
+            "A generated citation could not be verified against the uploaded text. Please retry.";
+          continue;
         }
       }
     }
@@ -648,11 +654,12 @@ export function validateGeneratedStudy(
         );
       }
     } catch {
-      return badOutput(
-        "The AI returned invalid financial calculation parameters. Please retry.",
-      );
+      firstDefectMessage ??=
+        "The AI returned invalid financial calculation parameters. Please retry.";
+      continue;
     }
 
+    let hasDuplicateOptions = false;
     for (const version of [solvedBase, solvedVariant]) {
       if (
         new Set(
@@ -660,24 +667,31 @@ export function validateGeneratedStudy(
             normalize(option).toLocaleLowerCase(),
           ),
         ).size !== 4
-      )
-        return badOutput(
-          "The AI returned duplicate answer choices. Please retry.",
-        );
+      ) {
+        hasDuplicateOptions = true;
+        break;
+      }
     }
-    if (normalize(solvedBase.question) === normalize(solvedVariant.question))
-      return badOutput(
-        "The AI repeated a question instead of creating a concept variant. Please retry.",
-      );
+    if (hasDuplicateOptions) {
+      firstDefectMessage ??=
+        "The AI returned duplicate answer choices. Please retry.";
+      continue;
+    }
+    if (normalize(solvedBase.question) === normalize(solvedVariant.question)) {
+      firstDefectMessage ??=
+        "The AI repeated a question instead of creating a concept variant. Please retry.";
+      continue;
+    }
     if (
       options.mode === "exact" &&
       [solvedBase.question, ...solvedBase.options].some(
         (text) => !matchesText(entireSource, text),
       )
-    )
-      return badOutput(
-        "Exact mode returned wording that does not match the source. Please retry or choose concept variants.",
-      );
+    ) {
+      firstDefectMessage ??=
+        "Exact mode returned wording that does not match the source. Please retry or choose concept variants.";
+      continue;
+    }
 
     // Code-level deterministic option shuffling after verification to eliminate LLM position bias
     const finalBase =
@@ -747,6 +761,9 @@ export function validateGeneratedStudy(
   }
 
   if (validatedQuestions.length === 0) {
+    if (firstDefectMessage) {
+      return badOutput(firstDefectMessage);
+    }
     throw new IngestionError(
       "NO_SUPPORTED_QUESTIONS",
       droppedByQualityGate > 0
@@ -929,7 +946,7 @@ export function groupSlidesByConcept(
   return groups;
 }
 
-const MAX_QUESTIONS_PER_BATCH = 10;
+export const MAX_QUESTIONS_PER_BATCH = 5;
 
 export function splitIntoBatchCounts(totalQuestions: number): number[] {
   if (totalQuestions <= MAX_QUESTIONS_PER_BATCH) return [totalQuestions];
@@ -977,21 +994,38 @@ export function mergeAndDeduplicateBatches(
   const mergedAnnotations: GeneratedStudyObject["annotations"] = [];
   const warningSet = new Set<string>();
 
-  batches.forEach((batch, batchIdx) => {
+  for (const batch of batches) {
     for (const w of batch.warnings) {
       if (warningSet.size < 10) warningSet.add(w);
     }
-    const annotationMap = new Map(
-      batch.annotations.map((a) => [a.questionId, a]),
-    );
-    for (const q of batch.questions) {
-      if (mergedQuestions.length >= maxQuestions) break;
+  }
+
+  const annotationMaps = batches.map(
+    (b) => new Map(b.annotations.map((a) => [a.questionId, a])),
+  );
+  const maxBatchLen = Math.max(0, ...batches.map((b) => b.questions.length));
+
+  roundLoop: for (let round = 0; round < maxBatchLen; round++) {
+    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      if (mergedQuestions.length >= maxQuestions) {
+        break roundLoop;
+      }
+      const batch = batches[batchIdx];
+      if (round >= batch.questions.length) continue;
+      const q = batch.questions[round];
       const normQuestion = stripPunctuation(q.question);
+      const normVariant = q.conceptVariant?.question
+        ? stripPunctuation(q.conceptVariant.question)
+        : "";
+
       if (!normQuestion || seenQuestions.has(normQuestion)) continue;
-      const ann = annotationMap.get(q.id);
+      if (normVariant && seenQuestions.has(normVariant)) continue;
+
+      const ann = annotationMaps[batchIdx].get(q.id);
       if (!ann) continue;
 
       seenQuestions.add(normQuestion);
+
       const uniqueId = `b${batchIdx + 1}_${q.id}`;
       mergedQuestions.push({
         ...q,
@@ -1002,7 +1036,7 @@ export function mergeAndDeduplicateBatches(
         questionId: uniqueId,
       });
     }
-  });
+  }
 
   return {
     title: first?.title || "Study Pack",
@@ -1097,25 +1131,16 @@ export async function generateQuestions(
       "Primary AI model";
     candidateModels.push({ name: resolvedId, model: resolvedModel });
 
-    // Fallback 1: Google Gemini 3.6 Flash
-    const gemini = getGeminiModel();
-    if (gemini && (gemini as any)?.modelId !== resolvedId) {
-      candidateModels.push({ name: "Google Gemini 3.6 Flash", model: gemini });
-    }
-
-    // Fallback 2: Google Gemini 3.5 Flash-Lite (resilient during peak load / 503 high-demand spikes)
-    const geminiLite = getGeminiModel("gemini-3.5-flash-lite");
-    if (geminiLite && (geminiLite as any)?.modelId !== resolvedId) {
-      candidateModels.push({
-        name: "Google Gemini 3.5 Flash-Lite",
-        model: geminiLite,
-      });
-    }
-
-    // Fallback 3: OpenRouter generator (if primary was not OpenRouter)
+    // Fallback 1: OpenRouter generator (if primary was not OpenRouter)
     if (getOpenRouterApiKey()) {
       try {
-        const openRouterModel = getOpenRouterGeneratorModel(options.tier);
+        const isPaid =
+          options.tier === "cram_pass" ||
+          options.tier === "pro" ||
+          options.tier === "tutor";
+        const openRouterModel = isPaid
+          ? getOpenRouterGeneratorModel(options.tier, { degraded: true })
+          : getOpenRouterGeneratorModel(options.tier);
         if (openRouterModel && (openRouterModel as any)?.modelId !== resolvedId) {
           candidateModels.push({
             name: "OpenRouter Generator",
@@ -1125,6 +1150,21 @@ export async function generateQuestions(
       } catch {
         // ignore if not configured
       }
+    }
+
+    // Fallback 2: Google Gemini 3.6 Flash
+    const gemini = getGeminiModel();
+    if (gemini && (gemini as any)?.modelId !== resolvedId) {
+      candidateModels.push({ name: "Google Gemini 3.6 Flash", model: gemini });
+    }
+
+    // Fallback 3: Google Gemini 3.5 Flash-Lite (resilient during peak load / 503 high-demand spikes)
+    const geminiLite = getGeminiModel("gemini-3.5-flash-lite");
+    if (geminiLite && (geminiLite as any)?.modelId !== resolvedId) {
+      candidateModels.push({
+        name: "Google Gemini 3.5 Flash-Lite",
+        model: geminiLite,
+      });
     }
 
     // Fallback 4: Groq LPU
@@ -1169,7 +1209,9 @@ export async function generateQuestions(
           topP: MCQ_GENERATION_TOP_P,
           abortSignal: combinedSignal,
           maxRetries: 0,
-          maxOutputTokens: 4_096,
+          maxOutputTokens: (candidate as any).provider?.includes("groq")
+            ? 4_096
+            : maxOutputTokens,
         });
       } catch (err: any) {
         lastError = err;
@@ -1199,11 +1241,25 @@ export async function generateQuestions(
       batchCounts.length,
     );
 
-    const batchResults = await Promise.all(
+    const settled = await Promise.allSettled(
       batchCounts.map((count, idx) =>
         runBatch(sourcePartitions[idx], count, idx, batchCounts.length),
       ),
     );
+
+    const fulfilled = settled.filter(
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof runBatch>>> =>
+        r.status === "fulfilled",
+    );
+    const rejected = settled.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+
+    if (fulfilled.length === 0) {
+      throw rejected[0].reason;
+    }
+
+    const batchResults = fulfilled.map((r) => r.value);
 
     const batchProvenances = batchResults.map((r) => extractOpenRouterProvenance(r));
     for (const res of batchResults) {
@@ -1251,9 +1307,9 @@ export async function generateQuestions(
       );
 
       // Apply deterministic finance solver before blind verification so solver-computed items have exact keys
-      let preSolvedQuestions;
-      try {
-        preSolvedQuestions = rawObject.questions.map((q) => {
+      let preSolvedQuestions: typeof rawObject.questions = [];
+      for (const q of rawObject.questions) {
+        try {
           const solvedBase = q.financeSpec
             ? applyFinanceSolverToItem(q, q.financeSpec)
             : q;
@@ -1263,12 +1319,15 @@ export async function generateQuestions(
                 q.conceptVariant.financeSpec,
               )
             : q.conceptVariant;
-          return {
+          preSolvedQuestions.push({
             ...solvedBase,
             conceptVariant: solvedVariant,
-          };
-        });
-      } catch {
+          });
+        } catch {
+          // Drop defective financeSpec item so blind verification can proceed with valid items
+        }
+      }
+      if (preSolvedQuestions.length === 0 && rawObject.questions.length > 0) {
         return badOutput(
           "The AI returned invalid financial calculation parameters. Please retry.",
         );

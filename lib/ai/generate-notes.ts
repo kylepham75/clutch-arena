@@ -41,6 +41,7 @@ import {
   getGenerationModel,
   getGroqModel,
   getNoteSummarizerModel,
+  getVerifierModel,
 } from "./provider";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
 import {
@@ -54,6 +55,7 @@ import {
   applyMarkPolicyAndGate,
   buildTargetedRepairPrompt,
   executeVerificationPipeline,
+  deduplicateNoteSections,
   type VerificationGateOptions,
   type VerificationGateResult,
   type VerificationPipelineReport,
@@ -66,6 +68,7 @@ export {
   applyMarkPolicyAndGate,
   buildTargetedRepairPrompt,
   executeVerificationPipeline,
+  deduplicateNoteSections,
   type VerificationGateOptions,
   type VerificationGateResult,
   type VerificationPipelineReport,
@@ -1362,7 +1365,9 @@ export function applyHallucinationShield(
     console.warn("[ClutchNotes][lint]", warnings);
   }
 
-  return processed.map(deduplicateSectionFormulas);
+  const formulaDeduped = processed.map(deduplicateSectionFormulas);
+  const { sections: finalDeduped } = deduplicateNoteSections(formulaDeduped);
+  return finalDeduped;
 }
 
 function sanitizeSubSection(sub: NoteSubSection): NoteSubSection {
@@ -2203,6 +2208,16 @@ export async function generateClutchNote(
     : [];
 
   // Step 4.4: Verification Gate, Targeted Repair Loop (max 1), and MARK Policy
+  let resolvedVerifierModel = options.verifierModel;
+  if (!resolvedVerifierModel && Boolean(process.env.OPENROUTER_API_KEY?.trim())) {
+    try {
+      resolvedVerifierModel = getVerifierModel();
+    } catch (err) {
+      console.warn("[generateClutchNote] Default verifierModel resolution failed:", err);
+      resolvedVerifierModel = undefined;
+    }
+  }
+
   const gateResult = await runVerificationGate({
     sections: preGateSections,
     sources: options.sources,
@@ -2210,7 +2225,7 @@ export async function generateClutchNote(
     omitted: rawOmitted,
     options: {
       enableVerifierLlm: options.enableVerifierLlm,
-      verifierModel: options.verifierModel,
+      verifierModel: resolvedVerifierModel,
       repairModel: options.repairModel,
       repairFn: options.repairFn,
       skipVerifierLlm: options.skipVerifierLlm,

@@ -6,6 +6,13 @@ import {
   deterministicFallbackCheck,
   verifyNoteClaimsWithLlm,
   extractSignificantTokens,
+  detectDuplicateNoteClaims,
+  deduplicateNoteSections,
+  normalizeClaimText,
+  computeJaccardSimilarity,
+  extractNumericTokens,
+  hasMatchingNumericTokens,
+  extractDeduplicationTokens,
   VERIFIER_SYSTEM_PROMPT,
   type VerifiableNoteClaim,
 } from "@/lib/notes/verifier-llm";
@@ -684,6 +691,505 @@ describe("verifier-llm", () => {
           abortSignal: controller.signal,
         }),
       );
+    });
+
+    it("flags both LLM-reported duplicates and deterministic duplicates in duplicateIds alongside unsupported claims", async () => {
+      const sections: NoteSection[] = [
+        createMockSection({
+          id: "sec-1",
+          letter: "A",
+          titleVi: "PHẦN A",
+          coreStatement: "The value of any asset is the PV of expected future cash flows.",
+          groundedBullets: [
+            {
+              text: "Dividends represent direct cash distribution to equity owners.",
+              slide: 1,
+              evidence: "Dividends represent direct cash distribution",
+            },
+            {
+              text: "Dividends represent direct cash distribution to equity owners.", // Deterministic duplicate of C2
+              slide: 1,
+              evidence: "Dividends represent direct cash distribution",
+            },
+            {
+              text: "Completely fabricated hallucination about quantum space arbitrage.",
+              slide: 1,
+              evidence: "Quantum space arbitrage",
+            },
+            {
+              text: "Cash distributions to equity owners are directly represented by dividends.", // LLM-reported duplicate of C2
+              slide: 1,
+              evidence: "Dividends represent direct cash distribution",
+            },
+          ],
+          sourceSlides: [1],
+        }),
+      ];
+
+      // Verifier returns verdicts for C1, C2, C3, C4, C5
+      // C1: Core statement (SUPPORTED)
+      // C2: First bullet (SUPPORTED)
+      // C3: Second bullet (deterministic duplicate of C2)
+      // C4: Third bullet (UNSUPPORTED)
+      // C5: Fourth bullet (LLM-reported duplicate of C2)
+      vi.mocked(generateObject).mockResolvedValueOnce({
+        object: {
+          verdicts: [
+            {
+              claimId: "C1",
+              slide: 1,
+              verdict: "SUPPORTED",
+              reason: "Grounded in slide 1",
+              isDuplicate: false,
+              duplicateOfClaimId: null,
+            },
+            {
+              claimId: "C2",
+              slide: 1,
+              verdict: "SUPPORTED",
+              reason: "Grounded in slide 1",
+              isDuplicate: false,
+              duplicateOfClaimId: null,
+            },
+            {
+              claimId: "C3",
+              slide: 1,
+              verdict: "SUPPORTED",
+              reason: "Grounded in slide 1",
+              // LLM didn't report duplicate, but deterministic check will catch it
+              isDuplicate: false,
+              duplicateOfClaimId: null,
+            },
+            {
+              claimId: "C4",
+              slide: 1,
+              verdict: "UNSUPPORTED",
+              reason: "Quantum space arbitrage is not in corporate finance slides",
+              isDuplicate: false,
+              duplicateOfClaimId: null,
+            },
+            {
+              claimId: "C5",
+              slide: 1,
+              verdict: "SUPPORTED",
+              reason: "Rephrases C2",
+              isDuplicate: true,
+              duplicateOfClaimId: "C2",
+            },
+          ],
+        },
+      } as any);
+
+      const report = await verifyNoteClaimsWithLlm({
+        sections,
+        sources,
+        model: mockModel,
+      });
+
+      expect(report.claims).toHaveLength(5);
+      expect(report.allSupported).toBe(false); // C4 is unsupported
+      expect(report.unsupportedIds).toEqual(["C4"]);
+      expect(report.supportedIds).toEqual(["C1", "C2", "C3", "C5"]);
+
+      // C3 is caught deterministically, C5 is reported by LLM
+      expect(report.duplicateIds).toContain("C3");
+      expect(report.duplicateIds).toContain("C5");
+      expect(report.duplicateIds).toHaveLength(2);
+
+      const v3 = report.verdicts.find((v) => v.claimId === "C3");
+      expect(v3?.isDuplicate).toBe(true);
+      expect(v3?.duplicateOfClaimId).toBe("C2");
+
+      const v5 = report.verdicts.find((v) => v.claimId === "C5");
+      expect(v5?.isDuplicate).toBe(true);
+      expect(v5?.duplicateOfClaimId).toBe("C2");
+    });
+
+    it("ignores invalid LLM duplicateOfClaimId references such as forward references or self references", async () => {
+      const sections: NoteSection[] = [
+        createMockSection({
+          id: "sec-1",
+          letter: "A",
+          titleVi: "PHẦN A",
+          coreStatement: "The value of any asset is the PV of expected future cash flows.",
+          groundedBullets: [
+            {
+              text: "First distinct bullet statement about valuation.",
+              slide: 1,
+              evidence: "First distinct bullet statement",
+            },
+          ],
+          sourceSlides: [1],
+        }),
+      ];
+
+      vi.mocked(generateObject).mockResolvedValueOnce({
+        object: {
+          verdicts: [
+            {
+              claimId: "C1",
+              slide: 1,
+              verdict: "SUPPORTED",
+              reason: "OK",
+              isDuplicate: true,
+              duplicateOfClaimId: "C2", // Forward reference: C1 cannot duplicate C2!
+            },
+            {
+              claimId: "C2",
+              slide: 1,
+              verdict: "SUPPORTED",
+              reason: "OK",
+              isDuplicate: true,
+              duplicateOfClaimId: "C2", // Self reference: C2 cannot duplicate C2!
+            },
+          ],
+        },
+      } as any);
+
+      const report = await verifyNoteClaimsWithLlm({
+        sections,
+        sources,
+        model: mockModel,
+      });
+
+      // Both invalid duplicate claims are rejected
+      expect(report.duplicateIds).toEqual([]);
+      expect(report.verdicts[0].isDuplicate).toBe(false);
+      expect(report.verdicts[1].isDuplicate).toBe(false);
+    });
+  });
+
+  describe("detectDuplicateNoteClaims", () => {
+    it("detects exact normalized duplicate claims across sections", () => {
+      const claims: VerifiableNoteClaim[] = [
+        {
+          claimId: "C1",
+          sectionLetter: "A",
+          kind: "bullet",
+          text: "The Gordon Growth Model requires that discount rate R exceeds growth rate g.",
+          slide: 1,
+        },
+        {
+          claimId: "C2",
+          sectionLetter: "B",
+          kind: "bullet",
+          text: "THE GORDON GROWTH MODEL REQUIRES THAT DISCOUNT RATE R EXCEEDS GROWTH RATE G.",
+          slide: 2,
+        },
+      ];
+
+      const duplicates = detectDuplicateNoteClaims(claims);
+      expect(duplicates.get("C2")).toBe("C1");
+    });
+
+    it("detects high-Jaccard token similarity (>= 0.82) duplicate rewordings", () => {
+      const claims: VerifiableNoteClaim[] = [
+        {
+          claimId: "C1",
+          sectionLetter: "A",
+          kind: "bullet",
+          text: "Capital gains represent share price appreciation over investment horizon.",
+          slide: 1,
+        },
+        {
+          claimId: "C2",
+          sectionLetter: "B",
+          kind: "bullet",
+          text: "Capital gains represent share price appreciation over the investment horizon.",
+          slide: 2,
+        },
+      ];
+
+      const duplicates = detectDuplicateNoteClaims(claims);
+      expect(duplicates.get("C2")).toBe("C1");
+    });
+
+    it("preserves claims with distinct numeric values (e.g. 99.1% vs 99.2%)", () => {
+      const claims: VerifiableNoteClaim[] = [
+        {
+          claimId: "C1",
+          sectionLetter: "A",
+          kind: "bullet",
+          text: "Ungrounded claim with number 99.1%",
+          slide: 1,
+        },
+        {
+          claimId: "C2",
+          sectionLetter: "A",
+          kind: "bullet",
+          text: "Ungrounded claim with number 99.2%",
+          slide: 1,
+        },
+        {
+          claimId: "C3",
+          sectionLetter: "A",
+          kind: "bullet",
+          text: "Ungrounded claim with number 99.3%",
+          slide: 1,
+        },
+      ];
+
+      const duplicates = detectDuplicateNoteClaims(claims);
+      expect(duplicates.size).toBe(0);
+      expect(duplicates.has("C2")).toBe(false);
+      expect(duplicates.has("C3")).toBe(false);
+    });
+
+    it("preserves claims when one claim has numbers and the other does not", () => {
+      const claims: VerifiableNoteClaim[] = [
+        {
+          claimId: "C1",
+          sectionLetter: "A",
+          kind: "bullet",
+          text: "Dividends grow at a constant rate indefinitely into the future.",
+          slide: 1,
+        },
+        {
+          claimId: "C2",
+          sectionLetter: "A",
+          kind: "bullet",
+          text: "Dividends grow at a constant rate of 5% indefinitely into the future.",
+          slide: 1,
+        },
+      ];
+
+      const duplicates = detectDuplicateNoteClaims(claims);
+      expect(duplicates.size).toBe(0);
+    });
+
+    it("maps duplicate chain to earlier root claim ID", () => {
+      const claims: VerifiableNoteClaim[] = [
+        {
+          claimId: "C1",
+          sectionLetter: "A",
+          kind: "bullet",
+          text: "Dividends represent direct cash distribution to equity owners.",
+          slide: 1,
+        },
+        {
+          claimId: "C2",
+          sectionLetter: "B",
+          kind: "bullet",
+          text: "Dividends represent direct cash distribution to equity owners.",
+          slide: 2,
+        },
+        {
+          claimId: "C3",
+          sectionLetter: "C",
+          kind: "bullet",
+          text: "Dividends represent direct cash distribution to equity owners.",
+          slide: 3,
+        },
+      ];
+
+      const duplicates = detectDuplicateNoteClaims(claims);
+      expect(duplicates.get("C2")).toBe("C1");
+      expect(duplicates.get("C3")).toBe("C1");
+    });
+
+    it("ignores short strings (< 20 chars)", () => {
+      const claims: VerifiableNoteClaim[] = [
+        {
+          claimId: "C1",
+          sectionLetter: "A",
+          kind: "bullet",
+          text: "Short text",
+          slide: 1,
+        },
+        {
+          claimId: "C2",
+          sectionLetter: "B",
+          kind: "bullet",
+          text: "Short text",
+          slide: 2,
+        },
+      ];
+
+      const duplicates = detectDuplicateNoteClaims(claims);
+      expect(duplicates.size).toBe(0);
+    });
+  });
+
+  describe("deduplicateNoteSections", () => {
+    it("removes exact and high-Jaccard duplicate bullets across sections and subsections", () => {
+      const sectionA = createMockSection({
+        id: "sec-a",
+        letter: "A",
+        titleVi: "PHẦN A",
+        coreStatement: "The value of any asset is the PV of expected future cash flows.",
+        groundedBullets: [
+          {
+            text: "Dividends represent direct cash distribution to equity owners.",
+            slide: 1,
+            evidence: "Direct cash distribution",
+          },
+        ],
+        bulletPoints: [
+          "Dividends represent direct cash distribution to equity owners.",
+        ],
+      });
+
+      const sectionB = createMockSection({
+        id: "sec-b",
+        letter: "B",
+        titleVi: "PHẦN B",
+        coreStatement: "Secondary valuation methods overview.",
+        groundedBullets: [
+          {
+            text: "Dividends represent direct cash distribution to equity owners.", // Exact duplicate of Section A
+            slide: 2,
+            evidence: "Direct cash distribution",
+          },
+          {
+            text: "Capital gains represent share price appreciation over time.",
+            slide: 2,
+            evidence: "Share price appreciation",
+          },
+        ],
+        bulletPoints: [
+          "Dividends represent direct cash distribution to equity owners.",
+          "Capital gains represent share price appreciation over time.",
+        ],
+        keyTakeaways: {
+          title: "KEY TAKEAWAYS",
+          items: [
+            {
+              point: "Capital gains represent share price appreciation over time.", // Duplicate of bullet in same section
+              subBullets: [],
+              slide: 2,
+            },
+          ],
+          summaryPoints: [],
+        },
+      });
+
+      const { sections, removedDuplicateCount } = deduplicateNoteSections([
+        sectionA,
+        sectionB,
+      ]);
+
+      expect(removedDuplicateCount).toBe(2);
+      expect(sections[0].groundedBullets).toHaveLength(1);
+      expect(sections[1].groundedBullets).toHaveLength(1);
+      expect(sections[1].groundedBullets?.[0].text).toContain("Capital gains");
+      expect(sections[1].bulletPoints).toEqual([
+        "Capital gains represent share price appreciation over time.",
+      ]);
+      expect(sections[1].keyTakeaways?.items).toHaveLength(0);
+    });
+
+    it("preserves bullets with distinct numeric values (e.g. 99.1% vs 99.2%) without false-positive removal", () => {
+      const section = createMockSection({
+        id: "sec-1",
+        letter: "A",
+        titleVi: "KIỂM TRA SỐ",
+        coreStatement: "Test core statement with numbers.",
+        groundedBullets: [
+          {
+            text: "Ungrounded claim with number 99.1%",
+            slide: 1,
+            evidence: "Ungrounded claim with number 99.1%",
+          },
+          {
+            text: "Ungrounded claim with number 99.2%",
+            slide: 1,
+            evidence: "Ungrounded claim with number 99.2%",
+          },
+          {
+            text: "Ungrounded claim with number 99.3%",
+            slide: 1,
+            evidence: "Ungrounded claim with number 99.3%",
+          },
+        ],
+        bulletPoints: [
+          "Ungrounded claim with number 99.1%",
+          "Ungrounded claim with number 99.2%",
+          "Ungrounded claim with number 99.3%",
+        ],
+      });
+
+      const { sections, removedDuplicateCount } = deduplicateNoteSections([
+        section,
+      ]);
+
+      expect(removedDuplicateCount).toBe(0);
+      expect(sections[0].groundedBullets).toHaveLength(3);
+      expect(sections[0].bulletPoints).toHaveLength(3);
+    });
+
+    it("respects duplicateClaimIds from VerifierLlmReport when provided", () => {
+      const sectionA = createMockSection({
+        id: "sec-a",
+        letter: "A",
+        titleVi: "PHẦN A",
+        groundedBullets: [
+          {
+            text: "First distinct bullet statement about equity returns.",
+            slide: 1,
+            evidence: "First distinct bullet statement",
+          },
+          {
+            text: "Second rephrased bullet flagged by LLM verifier as duplicate.",
+            slide: 1,
+            evidence: "Second rephrased bullet",
+          },
+        ],
+      });
+
+      const claims = extractVerifiableClaimsFromNote([sectionA]);
+      expect(claims).toHaveLength(2);
+
+      // C2 is flagged as duplicate in duplicateClaimIds
+      const duplicateClaimIds = new Set(["C2"]);
+      const { sections, removedDuplicateCount } = deduplicateNoteSections(
+        [sectionA],
+        duplicateClaimIds,
+        claims,
+      );
+
+      expect(removedDuplicateCount).toBe(1);
+      expect(sections[0].groundedBullets).toHaveLength(1);
+      expect(sections[0].groundedBullets?.[0].text).toContain("First distinct bullet");
+    });
+
+    it("honors the empty-section guardrail and keeps at least 1 bullet if section would otherwise become empty", () => {
+      const sectionA = createMockSection({
+        id: "sec-a",
+        letter: "A",
+        titleVi: "PHẦN A",
+        coreStatement: "Dividends represent direct cash distribution to equity owners.",
+      });
+
+      // Section B only has 1 bullet which duplicates Section A coreStatement
+      const sectionB = createMockSection({
+        id: "sec-b",
+        letter: "B",
+        titleVi: "PHẦN B",
+        coreStatement: undefined,
+        formulas: [],
+        subSections: [],
+        keyTakeaways: null,
+        groundedBullets: [
+          {
+            text: "Dividends represent direct cash distribution to equity owners.",
+            slide: 2,
+            evidence: "Direct cash distribution",
+          },
+        ],
+        bulletPoints: [
+          "Dividends represent direct cash distribution to equity owners.",
+        ],
+      });
+
+      const { sections, removedDuplicateCount } = deduplicateNoteSections([
+        sectionA,
+        sectionB,
+      ]);
+
+      // Guardrail prevented section B from being stripped down to 0 content
+      expect(removedDuplicateCount).toBe(0);
+      expect(sections[1].groundedBullets).toHaveLength(1);
+      expect(sections[1].groundedBullets?.[0].text).toContain("Dividends represent direct cash distribution");
     });
   });
 });

@@ -36,6 +36,7 @@ import {
 import {
   verifyNoteClaimsWithLlm,
   extractVerifiableClaimsFromNote,
+  deduplicateNoteSections,
   type VerifierLlmReport,
   type VerifiableNoteClaim,
 } from "@/lib/notes/verifier-llm";
@@ -56,6 +57,7 @@ export {
   type FinancialConventionPin,
   extractFinancialConventions,
   pinConventionsToSections,
+  deduplicateNoteSections,
 };
 
 export type SectionQualityAction =
@@ -913,6 +915,22 @@ export function applyMarkPolicyAndGate(input: {
         divergenceNotices: f.divergenceNotices || [],
       });
     }
+  }
+
+  // 5b. Deduplicate bullets and takeaways across sections and subsections
+  const duplicateClaimIds = new Set(
+    pipelineReport.verifierLlmReport?.duplicateIds || [],
+  );
+  const { sections: dedupedSections, removedDuplicateCount } =
+    deduplicateNoteSections(clonedSections, duplicateClaimIds, claims);
+  clonedSections.length = 0;
+  clonedSections.push(...dedupedSections);
+
+  if (removedDuplicateCount > 0) {
+    unsupportedClaimsRemoved += removedDuplicateCount;
+    warnings.push(
+      `Deduplication: removed ${removedDuplicateCount} duplicate bullet(s)/takeaway(s) across sections.`,
+    );
   }
 
   // 6. Hard-Fail ONLY on formulas that mathematically contradict the source

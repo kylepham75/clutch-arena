@@ -420,8 +420,8 @@ export const PRICING_PLANS: PlanPricing[] = [
     badgeEn: "Best Value (Save 27–31%)",
     badgeVi: "Tiết kiệm nhất (Giảm 27–31%)",
     pricing: {
-      VN: { amount: 299_000, currency: "VND", formatted: "299.000đ/kỳ (~74.750đ/tháng)" },
-      ROW: { amount: 29.0, currency: "USD", formatted: "$29.00/sem (~$7.25/mo)" },
+      VN: { amount: 299_000, currency: "VND", formatted: "299.000đ/kỳ" },
+      ROW: { amount: 29.0, currency: "USD", formatted: "$29.00/sem" },
     },
     priceVnd: 299_000,
     priceVndFormatted: "299.000đ",

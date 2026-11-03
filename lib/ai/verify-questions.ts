@@ -17,6 +17,7 @@ import { IngestionError } from "@/lib/ingestion/errors";
 // ============================================================================
 
 export const CONCEPT_VARIANT_ID_SUFFIX = "::conceptVariant";
+export const MAX_VERIFIER_ITEMS_PER_CALL = 20;
 
 export function getConceptVariantBlindId(questionId: string): string {
   return `${questionId}${CONCEPT_VARIANT_ID_SUFFIX}`;
@@ -72,15 +73,23 @@ export const blindVerificationVerdictSchema = z.object({
   isAmbiguous: z.boolean(),
   confidence: z.enum(["high", "medium", "low"]).optional().default("high"),
   reason: z.string().trim().max(200),
+  isGrounded: z.boolean().optional().default(true),
+  duplicateOfId: z.string().nullable().optional().default(null),
 });
 
 export const blindVerificationBatchSchema = z.object({
   verdicts: z.array(blindVerificationVerdictSchema),
 });
 
-export type BlindVerificationVerdict = z.infer<
-  typeof blindVerificationVerdictSchema
->;
+export type BlindVerificationVerdict = {
+  id: string;
+  selectedIndex: number;
+  isAmbiguous: boolean;
+  confidence?: "high" | "medium" | "low";
+  reason: string;
+  isGrounded?: boolean;
+  duplicateOfId?: string | null;
+};
 export type BlindVerificationBatch = z.infer<
   typeof blindVerificationBatchSchema
 >;
@@ -149,20 +158,54 @@ export function stripAnswerKeyForBlindSolve(
   return payload;
 }
 
+export interface BuildBlindVerificationPromptOptions {
+  priorQuestionStems?:
+    | readonly string[]
+    | readonly { id: string; stem: string }[];
+}
+
 export function buildBlindVerificationPrompt(
   blindItems: readonly BlindQuestionPayload[],
+  options?: BuildBlindVerificationPromptOptions,
 ): string {
-  return [
+  const instructions = [
     "You are an independent, adversarial blind exam verifier.",
     "Solve each multiple-choice question below from scratch using ONLY the provided question stem, options (indexed 0, 1, 2, 3), and optional sourceText.",
     "Rules:",
     "1. Select the single best option index (0, 1, 2, or 3). If NO option is valid or the question is unsolvable, set selectedIndex to -1.",
     "2. Set isAmbiguous to true if two or more options are defensible, if none of the options are correct, or if the question stem is underspecified or contradictory.",
-    "3. Keep reason concise (at most 200 characters).",
+    "3. Grounding & Anti-Hallucination (isGrounded: boolean):",
+    "   - Set isGrounded to false if a question requires or asserts facts/claims contradicted by or completely absent from its sourceText (when sourceText is provided and non-empty).",
+    "   - Set isGrounded to true when grounded in sourceText (or if sourceText is empty or omitted).",
+    "4. Semantic Deduplication (duplicateOfId: string | null):",
+    "   - IDs ending with '::conceptVariant' are intentional paired concept variants of their parent question ID. A concept variant MUST NOT be marked as a duplicate of its own parent question.",
+    "   - Only mark base questions that duplicate another base question's core question or test point, setting duplicateOfId to that earlier question's id, or null if unique.",
+    "5. Keep reason concise (at most 200 characters).",
+  ];
+
+  if (options?.priorQuestionStems && options.priorQuestionStems.length > 0) {
+    instructions.push(
+      "",
+      "Prior questions verified in earlier batches (for cross-chunk duplicate detection):",
+      JSON.stringify(options.priorQuestionStems, null, 2),
+    );
+  }
+
+  instructions.push(
     "",
     "Questions to solve blindly:",
     JSON.stringify(blindItems, null, 2),
-  ].join("\n");
+  );
+
+  return instructions.join("\n");
+}
+
+export function normalizeQuestionStem(text: string): string {
+  return (text || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ============================================================================
@@ -180,6 +223,8 @@ export interface FilterBlindVerifiedResult<
   verifiedQuestions: T[];
   verifiedIds: string[];
   droppedIds: string[];
+  rejectedIds?: string[];
+  duplicateIds?: string[];
 }
 
 function findVariantVerdict(
@@ -200,7 +245,9 @@ function findVariantVerdict(
  * Silently drops any question where:
  * - The blind solver's `selectedIndex !== question.correctIndex`, OR
  * - `isAmbiguous === true`, OR
- * - If `conceptVariant` was also blind-solved, its `selectedIndex !== question.conceptVariant.correctIndex` or `isAmbiguous === true`.
+ * - `isGrounded === false`, OR
+ * - Semantic or deterministic duplicate detected (`duplicateOfId` or identical stem), OR
+ * - If `conceptVariant` was also blind-solved, its `selectedIndex !== question.conceptVariant.correctIndex`, `isAmbiguous === true`, or `isGrounded === false`.
  */
 export function filterBlindVerifiedQuestions<
   T extends VerifiableQuestionInput,
@@ -214,9 +261,13 @@ export function filterBlindVerifiedQuestions<
     verdictById.set(verdict.id, verdict);
   }
 
+  const allQuestionIds = new Set(questions.map((q) => q.id));
+  const seenStems = new Set<string>();
+
   const verifiedQuestions: T[] = [];
   const verifiedIds: string[] = [];
   const droppedIds: string[] = [];
+  const duplicateIds: string[] = [];
 
   for (const question of questions) {
     const isBaseSolverComputed =
@@ -228,11 +279,45 @@ export function filterBlindVerifiedQuestions<
         !baseVerdict ||
         baseVerdict.isAmbiguous === true ||
         baseVerdict.selectedIndex < 0 ||
-        baseVerdict.selectedIndex !== question.correctIndex
+        baseVerdict.selectedIndex !== question.correctIndex ||
+        baseVerdict.isGrounded === false
       ) {
         droppedIds.push(question.id);
         continue;
       }
+
+      // Semantic duplicate check via LLM duplicateOfId
+      const dupId =
+        typeof baseVerdict.duplicateOfId === "string" &&
+        baseVerdict.duplicateOfId.trim()
+          ? baseVerdict.duplicateOfId.trim()
+          : null;
+
+      if (dupId !== null) {
+        const isSelf =
+          dupId === question.id ||
+          dupId === getConceptVariantBlindId(question.id) ||
+          dupId.startsWith(`${question.id}::`);
+
+        const referencesBatchItem =
+          !isSelf &&
+          (allQuestionIds.has(dupId) ||
+            allQuestionIds.has(dupId.replace(CONCEPT_VARIANT_ID_SUFFIX, "")));
+
+        if (referencesBatchItem) {
+          droppedIds.push(question.id);
+          duplicateIds.push(question.id);
+          continue;
+        }
+      }
+    }
+
+    // Deterministic stem/question deduplication
+    const normalizedStem = normalizeQuestionStem(question.question);
+    if (normalizedStem && seenStems.has(normalizedStem)) {
+      droppedIds.push(question.id);
+      duplicateIds.push(question.id);
+      continue;
     }
 
     if (question.conceptVariant) {
@@ -249,7 +334,8 @@ export function filterBlindVerifiedQuestions<
             variantVerdict.isAmbiguous === true ||
             variantVerdict.selectedIndex < 0 ||
             variantVerdict.selectedIndex !==
-              question.conceptVariant.correctIndex
+              question.conceptVariant.correctIndex ||
+            variantVerdict.isGrounded === false
           ) {
             droppedIds.push(question.id);
             continue;
@@ -261,6 +347,9 @@ export function filterBlindVerifiedQuestions<
       }
     }
 
+    if (normalizedStem) {
+      seenStems.add(normalizedStem);
+    }
     verifiedQuestions.push(question);
     verifiedIds.push(question.id);
   }
@@ -269,6 +358,8 @@ export function filterBlindVerifiedQuestions<
     verifiedQuestions,
     verifiedIds,
     droppedIds,
+    rejectedIds: droppedIds,
+    duplicateIds,
   };
 }
 
@@ -302,11 +393,60 @@ export interface VerifyQuestionsBlindlyResult<
   verifiedQuestions: T[];
   verifiedIds: string[];
   droppedIds: string[];
+  rejectedIds?: string[];
+  duplicateIds?: string[];
   verdicts: BlindVerificationVerdict[];
   servedVerifierModel: string | null;
   costUsd: number;
   usage: BlindVerificationUsage;
   skipped?: boolean;
+}
+
+export function chunkBlindQuestionsForVerification(
+  items: readonly BlindQuestionPayload[],
+  maxItemsPerCall = MAX_VERIFIER_ITEMS_PER_CALL,
+): BlindQuestionPayload[][] {
+  if (items.length <= maxItemsPerCall) {
+    return [items.slice()];
+  }
+
+  // Group items into atomic units: base question + its paired concept variant (if present)
+  const units: BlindQuestionPayload[][] = [];
+  let i = 0;
+  while (i < items.length) {
+    const current = items[i];
+    const unit: BlindQuestionPayload[] = [current];
+    if (
+      i + 1 < items.length &&
+      items[i + 1].id === getConceptVariantBlindId(current.id)
+    ) {
+      unit.push(items[i + 1]);
+      i += 2;
+    } else {
+      i += 1;
+    }
+    units.push(unit);
+  }
+
+  const chunks: BlindQuestionPayload[][] = [];
+  let currentChunk: BlindQuestionPayload[] = [];
+
+  for (const unit of units) {
+    if (
+      currentChunk.length > 0 &&
+      currentChunk.length + unit.length > maxItemsPerCall
+    ) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+    }
+    currentChunk.push(...unit);
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
 }
 
 function selectSafeFallbackVerifierSlug(
@@ -354,6 +494,8 @@ export async function verifyQuestionsBlindly<
       verifiedQuestions: [],
       verifiedIds: [],
       droppedIds: [],
+      rejectedIds: [],
+      duplicateIds: [],
       verdicts: [],
       servedVerifierModel: null,
       costUsd: 0,
@@ -390,6 +532,8 @@ export async function verifyQuestionsBlindly<
       verifiedQuestions: [...questions],
       verifiedIds: questions.map((q) => q.id),
       droppedIds: [],
+      rejectedIds: [],
+      duplicateIds: [],
       verdicts: [],
       servedVerifierModel: null,
       costUsd: 0,
@@ -416,6 +560,8 @@ export async function verifyQuestionsBlindly<
         verifiedQuestions: [...questions],
         verifiedIds: questions.map((q) => q.id),
         droppedIds: [],
+        rejectedIds: [],
+        duplicateIds: [],
         verdicts: [],
         servedVerifierModel: null,
         costUsd: 0,
@@ -430,99 +576,147 @@ export async function verifyQuestionsBlindly<
     includeConceptVariants: options?.includeConceptVariants,
     sourcesById: options?.sourcesById,
   });
-  const prompt = buildBlindVerificationPrompt(blindPayload);
 
-  let rawResult: Awaited<
-    ReturnType<typeof generateObject<typeof blindVerificationBatchSchema>>
-  >;
+  const chunks = chunkBlindQuestionsForVerification(
+    blindPayload,
+    MAX_VERIFIER_ITEMS_PER_CALL,
+  );
+
   let activeSlug = verifierSlug;
   let activeModel: LanguageModel = primaryModel;
+  const allVerdicts: BlindVerificationVerdict[] = [];
+  let servedVerifierModel: string | null = null;
+  let totalCostUsd = 0;
+  let totalInputTokens: number | null = null;
+  let totalOutputTokens: number | null = null;
+  let totalCombinedTokens: number | null = null;
 
-  try {
-    rawResult = await generateObject({
-      model: primaryModel,
-      schema: blindVerificationBatchSchema,
-      temperature: 0.0,
-      prompt,
+  const priorBaseQuestions: { id: string; stem: string }[] = [];
+
+  for (let c = 0; c < chunks.length; c++) {
+    const chunkItems = chunks[c];
+    const prompt = buildBlindVerificationPrompt(chunkItems, {
+      priorQuestionStems:
+        priorBaseQuestions.length > 0 ? priorBaseQuestions : undefined,
     });
-  } catch (primaryError) {
-    const allowFallbacks =
-      options?.allowFallbacks ??
-      (options?.fallbackVerifierModel !== undefined);
 
-    if (!allowFallbacks) {
-      throw primaryError;
-    }
+    let rawResult: Awaited<
+      ReturnType<typeof generateObject<typeof blindVerificationBatchSchema>>
+    >;
 
-    const fallbackSlug = selectSafeFallbackVerifierSlug(
-      generatorSlug,
-      options?.fallbackVerifierSlug,
-    );
-    assertCrossFamilyVerifier(generatorSlug, fallbackSlug);
+    try {
+      rawResult = await generateObject({
+        model: activeModel,
+        schema: blindVerificationBatchSchema,
+        temperature: 0.0,
+        maxOutputTokens: 8_192,
+        prompt,
+      });
+    } catch (primaryError) {
+      const allowFallbacks =
+        options?.allowFallbacks ??
+        (options?.fallbackVerifierModel !== undefined);
 
-    if (getModelFamily(fallbackSlug) === "anthropic") {
-      throw new IngestionError(
-        "CROSS_FAMILY_VIOLATION",
-        `Fallback verifier "${fallbackSlug}" is in the Anthropic family. Verifier must never fall back into Anthropic.`,
-        400,
+      if (!allowFallbacks) {
+        throw primaryError;
+      }
+
+      const fallbackSlug = selectSafeFallbackVerifierSlug(
+        generatorSlug,
+        options?.fallbackVerifierSlug,
       );
+      assertCrossFamilyVerifier(generatorSlug, fallbackSlug);
+
+      if (getModelFamily(fallbackSlug) === "anthropic") {
+        throw new IngestionError(
+          "CROSS_FAMILY_VIOLATION",
+          `Fallback verifier "${fallbackSlug}" is in the Anthropic family. Verifier must never fall back into Anthropic.`,
+          400,
+        );
+      }
+
+      const fallbackModel =
+        options?.fallbackVerifierModel ??
+        (options?.verifierModel && !options?.fallbackVerifierSlug
+          ? undefined
+          : getFallbackVerifierModel({
+              generatorSlug,
+              modelOverride: fallbackSlug,
+            }));
+
+      if (!fallbackModel) {
+        throw primaryError;
+      }
+
+      activeSlug = fallbackSlug;
+      activeModel = fallbackModel;
+      rawResult = await generateObject({
+        model: fallbackModel,
+        schema: blindVerificationBatchSchema,
+        temperature: 0.0,
+        maxOutputTokens: 8_192,
+        prompt,
+      });
     }
 
-    const fallbackModel =
-      options?.fallbackVerifierModel ??
-      (options?.verifierModel && !options?.fallbackVerifierSlug
-        ? undefined
-        : getFallbackVerifierModel({
-            generatorSlug,
-            modelOverride: fallbackSlug,
-          }));
+    const chunkVerdicts = rawResult.object.verdicts;
+    allVerdicts.push(...chunkVerdicts);
 
-    if (!fallbackModel) {
-      throw primaryError;
+    const provenance = extractOpenRouterProvenance(rawResult);
+    if (typeof provenance.costUsd === "number") {
+      totalCostUsd += provenance.costUsd;
     }
 
-    activeSlug = fallbackSlug;
-    activeModel = fallbackModel;
-    rawResult = await generateObject({
-      model: fallbackModel,
-      schema: blindVerificationBatchSchema,
-      temperature: 0.0,
-      prompt,
-    });
+    if (!servedVerifierModel) {
+      const modelIdFromInstance =
+        typeof (activeModel as unknown as { modelId?: unknown })?.modelId ===
+        "string"
+          ? ((activeModel as unknown as { modelId: string }).modelId || "").trim()
+          : null;
+      servedVerifierModel =
+        provenance.servedModel || modelIdFromInstance || activeSlug;
+    }
+
+    const rawUsage = (
+      rawResult as unknown as { usage?: Record<string, unknown> }
+    ).usage;
+    const inputTokens =
+      typeof rawUsage?.inputTokens === "number"
+        ? rawUsage.inputTokens
+        : typeof rawUsage?.promptTokens === "number"
+          ? rawUsage.promptTokens
+          : null;
+    const outputTokens =
+      typeof rawUsage?.outputTokens === "number"
+        ? rawUsage.outputTokens
+        : typeof rawUsage?.completionTokens === "number"
+          ? rawUsage.completionTokens
+          : null;
+    const totalTokens =
+      typeof rawUsage?.totalTokens === "number"
+        ? rawUsage.totalTokens
+        : inputTokens !== null && outputTokens !== null
+          ? inputTokens + outputTokens
+          : null;
+
+    if (inputTokens !== null) {
+      totalInputTokens = (totalInputTokens ?? 0) + inputTokens;
+    }
+    if (outputTokens !== null) {
+      totalOutputTokens = (totalOutputTokens ?? 0) + outputTokens;
+    }
+    if (totalTokens !== null) {
+      totalCombinedTokens = (totalCombinedTokens ?? 0) + totalTokens;
+    }
+
+    for (const item of chunkItems) {
+      if (!item.id.endsWith(CONCEPT_VARIANT_ID_SUFFIX)) {
+        priorBaseQuestions.push({ id: item.id, stem: item.question });
+      }
+    }
   }
 
-  const verdicts = rawResult.object.verdicts;
-  const provenance = extractOpenRouterProvenance(rawResult);
-  const modelIdFromInstance =
-    typeof (activeModel as unknown as { modelId?: unknown })?.modelId ===
-    "string"
-      ? ((activeModel as unknown as { modelId: string }).modelId || "").trim()
-      : null;
-  const servedVerifierModel =
-    provenance.servedModel || modelIdFromInstance || activeSlug;
-
-  const rawUsage = (rawResult as unknown as { usage?: Record<string, unknown> })
-    .usage;
-  const inputTokens =
-    typeof rawUsage?.inputTokens === "number"
-      ? rawUsage.inputTokens
-      : typeof rawUsage?.promptTokens === "number"
-        ? rawUsage.promptTokens
-        : null;
-  const outputTokens =
-    typeof rawUsage?.outputTokens === "number"
-      ? rawUsage.outputTokens
-      : typeof rawUsage?.completionTokens === "number"
-        ? rawUsage.completionTokens
-        : null;
-  const totalTokens =
-    typeof rawUsage?.totalTokens === "number"
-      ? rawUsage.totalTokens
-      : inputTokens !== null && outputTokens !== null
-        ? inputTokens + outputTokens
-        : null;
-
-  const filtered = filterBlindVerifiedQuestions(questions, verdicts, {
+  const filtered = filterBlindVerifiedQuestions(questions, allVerdicts, {
     skipSolverComputed: options?.skipSolverComputed,
     requireConceptVariantVerdict: options?.requireConceptVariantVerdict,
   });
@@ -531,13 +725,15 @@ export async function verifyQuestionsBlindly<
     verifiedQuestions: filtered.verifiedQuestions,
     verifiedIds: filtered.verifiedIds,
     droppedIds: filtered.droppedIds,
-    verdicts,
+    rejectedIds: filtered.rejectedIds,
+    duplicateIds: filtered.duplicateIds,
+    verdicts: allVerdicts,
     servedVerifierModel,
-    costUsd: provenance.costUsd,
+    costUsd: Number(totalCostUsd.toFixed(6)),
     usage: {
-      inputTokens,
-      outputTokens,
-      totalTokens,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      totalTokens: totalCombinedTokens,
     },
   };
 }

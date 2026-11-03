@@ -6524,8 +6524,8 @@ svg {
 
 /* Pricing & Tier Modal Dialog Styling */
 .pricing-dialog-content {
-  max-width: 1140px !important;
-  width: min(1140px, calc(100vw - 32px)) !important;
+  max-width: 1200px !important;
+  width: min(1200px, calc(100vw - 32px)) !important;
   max-height: 92vh !important;
   padding: 24px 28px !important;
   background: #fafbf8;

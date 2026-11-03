@@ -10,9 +10,12 @@ import {
   computeOverGeneratedCount,
   hasBannedNegationOrMetaOption,
   shuffleQuestionOptions,
+  mergeAndDeduplicateBatches,
+  MAX_QUESTIONS_PER_BATCH,
   MCQ_GENERATION_TEMPERATURE,
   MCQ_GENERATION_TOP_P,
 } from "@/lib/ai/generate-questions";
+import { filterBlindVerifiedQuestions } from "@/lib/ai/verify-questions";
 import { ingestionSystemPrompt } from "@/lib/ai/prompts";
 import { getGenerationModel } from "@/lib/ai/provider";
 import { solveFinanceSpec } from "@/lib/math/finance-solver";
@@ -85,10 +88,13 @@ describe("structured generation", () => {
     expect(result.usage.totalTokens).toBe(300);
     expect(model.doGenerate.mock.calls[0][0].responseFormat?.type).toBe("json");
   });
-  it("splits >10 question requests into parallel batches of <=10, deduplicates questions, and merges usage before citation matching", async () => {
-    expect(splitIntoBatchCounts(10)).toEqual([10]);
-    expect(splitIntoBatchCounts(25)).toEqual([9, 8, 8]);
-    expect(splitIntoBatchCounts(30)).toEqual([10, 10, 10]);
+  it("splits >5 question requests into parallel batches of <=5, deduplicates questions, and merges usage before citation matching", async () => {
+    expect(MAX_QUESTIONS_PER_BATCH).toBe(5);
+    expect(splitIntoBatchCounts(5)).toEqual([5]);
+    expect(splitIntoBatchCounts(10)).toEqual([5, 5]);
+    expect(splitIntoBatchCounts(15)).toEqual([5, 5, 5]);
+    expect(splitIntoBatchCounts(25)).toEqual([5, 5, 5, 5, 5]);
+    expect(splitIntoBatchCounts(30)).toEqual([5, 5, 5, 5, 5, 5]);
 
     const multiSectionDoc: ParsedDocument = {
       fileName: "notes.txt",
@@ -162,7 +168,7 @@ describe("structured generation", () => {
       },
     };
 
-    const batchOptions = ingestionOptionsSchema.parse({ questionCount: 25 });
+    const batchOptions = ingestionOptionsSchema.parse({ questionCount: 15 });
     const res = await generateQuestions(
       multiSectionDoc,
       batchOptions,
@@ -170,11 +176,133 @@ describe("structured generation", () => {
       batchModel,
     );
 
-    // 25 questions -> 3 parallel batch calls
+    // 15 questions -> 3 parallel batch calls of 5
     expect(batchModel.doGenerate).toHaveBeenCalledTimes(3);
     // 1 shared duplicate + 3 unique = 4 deduplicated questions
     expect(res.pack.questions).toHaveLength(4);
     expect(res.usage.totalTokens).toBe(900);
+  });
+  it("drops defective questions in a multi-question pack and returns valid questions without throwing INVALID_AI_OUTPUT", () => {
+    const raw = output();
+    // Valid question: raw.questions[0] (elasticity)
+
+    // Defective question 1: fabricated excerpt
+    const qFab = structuredClone(mockMicroeconomics.questions[0]);
+    qFab.id = "defective-fabricated";
+    qFab.question = "What is cross-price elasticity of demand?";
+    raw.questions.push(qFab);
+    raw.annotations.push({
+      questionId: "defective-fabricated",
+      sourceId: "lines-1-1",
+      excerpt: "Completely fabricated quote that is not found in document.",
+      topic: "Elasticity",
+      chapter: "Chapter 4",
+      rule: "Cross-price elasticity measures demand responsiveness to other goods.",
+    });
+
+    // Defective question 2: duplicate options
+    const qDup = structuredClone(mockMicroeconomics.questions[0]);
+    qDup.id = "defective-duplicate-opt";
+    qDup.question = "What is income elasticity of demand?";
+    qDup.options[1] = qDup.options[0];
+    raw.questions.push(qDup);
+    raw.annotations.push({
+      questionId: "defective-duplicate-opt",
+      sourceId: "lines-1-1",
+      excerpt: "Demand is elastic when the absolute price elasticity exceeds one.",
+      topic: "Elasticity",
+      chapter: "Chapter 4",
+      rule: "Income elasticity measures responsiveness to income changes.",
+    });
+
+    const result = validateGeneratedStudy(raw, document, {
+      ...options,
+      questionCount: 3,
+    });
+
+    // The two defective questions were dropped, leaving the 1 valid question
+    expect(result.pack.questions).toHaveLength(1);
+    expect(result.pack.questions[0].id).toBe("q-1");
+    expect(result.pack.questions[0].question).toBe(raw.questions[0].question);
+  });
+  it("interleaves questions in round-robin order and deduplicates collisions across batches in mergeAndDeduplicateBatches", () => {
+    const makeBatch = (idPrefix: string, questions: { q: string; v: string }[]) => ({
+      title: "Title",
+      sourceKind: "lecture" as const,
+      questions: questions.map((item, idx) => {
+        const q = structuredClone(mockMicroeconomics.questions[0]);
+        q.id = `${idPrefix}-q${idx + 1}`;
+        q.question = item.q;
+        q.conceptVariant.question = item.v;
+        return q;
+      }),
+      annotations: questions.map((_, idx) => ({
+        questionId: `${idPrefix}-q${idx + 1}`,
+        sourceId: "lines-1-1",
+        excerpt: "Demand is elastic when the absolute price elasticity exceeds one.",
+        topic: "Elasticity",
+        chapter: "Chapter 4",
+        rule: "Rule",
+      })),
+      warnings: [],
+    });
+
+    const batch1 = makeBatch("b1", [
+      { q: "Section 1 Question A?", v: "Section 1 Variant A?" },
+      { q: "Section 1 Question B?", v: "Section 1 Variant B?" },
+    ]);
+    const batch2 = makeBatch("b2", [
+      { q: "Section 2 Question C?", v: "Section 2 Variant C?" },
+      { q: "Section 1 Question A?", v: "Colliding Question Stem" },
+      { q: "Section 2 Question D?", v: "Section 1 Question B?" },
+      { q: "Section 2 Question E?", v: "Section 2 Variant E?" },
+    ]);
+
+    const merged = mergeAndDeduplicateBatches([batch1, batch2], 10);
+    expect(merged.questions.map((q) => q.question)).toEqual([
+      "Section 1 Question A?",
+      "Section 2 Question C?",
+      "Section 1 Question B?",
+      "Section 2 Question E?",
+    ]);
+    expect(merged.questions[0].id).toBe("b1_b1-q1");
+    expect(merged.questions[1].id).toBe("b2_b2-q1");
+    expect(merged.annotations[0].questionId).toBe("b1_b1-q1");
+  });
+  it("tolerates partial batch failure when at least one batch succeeds", async () => {
+    let callCount = 0;
+    const partialFailModel: TestModel = {
+      specificationVersion: "v2" as const,
+      provider: "test",
+      modelId: "fixture",
+      supportedUrls: {},
+      doGenerate: vi.fn<TestModel["doGenerate"]>(async () => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error("Temporary network timeout on batch 1");
+        }
+        return {
+          content: [{ type: "text", text: JSON.stringify(output()) }],
+          finishReason: "stop",
+          usage: { inputTokens: 100, outputTokens: 200, totalTokens: 300 },
+          warnings: [],
+        };
+      }),
+      doStream: async () => {
+        throw new Error("Streaming is not used by ingestion");
+      },
+    };
+
+    // 10 questions splits into [5, 5] (2 batches)
+    const result = await generateQuestions(
+      document,
+      ingestionOptionsSchema.parse({ questionCount: 10 }),
+      new AbortController().signal,
+      partialFailModel,
+    );
+
+    expect(partialFailModel.doGenerate).toHaveBeenCalledTimes(2);
+    expect(result.pack.questions).toHaveLength(1);
   });
   it.each([
     "missing-source",
@@ -568,5 +696,241 @@ describe("structured generation", () => {
     // cand-3 was dropped by blind verifier, and surviving [cand-1, cand-2] was trimmed to questionCount=1
     expect(result.pack.questions).toHaveLength(1);
     expect(result.pack.questions[0].question).toContain("Candidate 1");
+  });
+
+  it("enforces 5-question micro-batching partitions (splitIntoBatchCounts(15) -> [5, 5, 5], splitIntoBatchCounts(30) -> [5, 5, 5, 5, 5, 5])", () => {
+    expect(splitIntoBatchCounts(15)).toEqual([5, 5, 5]);
+    expect(splitIntoBatchCounts(30)).toEqual([5, 5, 5, 5, 5, 5]);
+  });
+
+  it("drops single-item bad citations or bad options and preserves valid items without failing the entire pack in validateGeneratedStudy", () => {
+    const raw = output();
+    // Valid item 1
+    const q1 = structuredClone(mockMicroeconomics.questions[0]);
+    q1.id = "valid-q1";
+    q1.question = "Valid Question 1: What is price elasticity of demand?";
+
+    // Defective item 2: bad citation (non-existent sourceId)
+    const q2BadCitation = structuredClone(mockMicroeconomics.questions[0]);
+    q2BadCitation.id = "bad-citation-q2";
+    q2BadCitation.question = "Bad Citation Question: What is cross elasticity?";
+
+    // Defective item 3: bad options (duplicate options)
+    const q3BadOptions = structuredClone(mockMicroeconomics.questions[0]);
+    q3BadOptions.id = "bad-options-q3";
+    q3BadOptions.question = "Bad Options Question: What is income elasticity?";
+    q3BadOptions.options[1] = q3BadOptions.options[0]; // duplicate options
+
+    // Valid item 4
+    const q4 = structuredClone(mockMicroeconomics.questions[0]);
+    q4.id = "valid-q4";
+    q4.question = "Valid Question 4: What is supply elasticity?";
+
+    raw.questions = [q1, q2BadCitation, q3BadOptions, q4];
+    raw.annotations = [
+      {
+        questionId: "valid-q1",
+        sourceId: "lines-1-1",
+        excerpt: "Demand is elastic when the absolute price elasticity exceeds one.",
+        topic: "Elasticity",
+        chapter: "Chapter 4",
+        rule: "Rule 1",
+      },
+      {
+        questionId: "bad-citation-q2",
+        sourceId: "missing-source-999", // Bad citation
+        excerpt: "Demand is elastic when the absolute price elasticity exceeds one.",
+        topic: "Elasticity",
+        chapter: "Chapter 4",
+        rule: "Rule 2",
+      },
+      {
+        questionId: "bad-options-q3",
+        sourceId: "lines-1-1",
+        excerpt: "Demand is elastic when the absolute price elasticity exceeds one.",
+        topic: "Elasticity",
+        chapter: "Chapter 4",
+        rule: "Rule 3",
+      },
+      {
+        questionId: "valid-q4",
+        sourceId: "lines-1-1",
+        excerpt: "Demand is elastic when the absolute price elasticity exceeds one.",
+        topic: "Elasticity",
+        chapter: "Chapter 4",
+        rule: "Rule 4",
+      },
+    ];
+
+    const result = validateGeneratedStudy(raw, document, {
+      ...options,
+      questionCount: 4,
+    });
+
+    // The two defective items (bad citation & bad options) are dropped, leaving 2 valid questions
+    expect(result.pack.questions).toHaveLength(2);
+    expect(result.pack.questions.map((q) => q.id)).toEqual(["q-1", "q-2"]);
+    expect(result.pack.questions[0].question).toBe(q1.question);
+    expect(result.pack.questions[1].question).toBe(q4.question);
+  });
+
+  it("drops both hallucinated items (isGrounded: false) and semantic duplicate items (duplicateOfId) in filterBlindVerifiedQuestions", () => {
+    const q1 = {
+      ...structuredClone(mockMicroeconomics.questions[0]),
+      id: "cand-1",
+      question: "What is price elasticity?",
+    };
+    const q2 = {
+      ...structuredClone(mockMicroeconomics.questions[0]),
+      id: "cand-2",
+      question: "Hallucinated claim about external market?",
+    };
+    const q3 = {
+      ...structuredClone(mockMicroeconomics.questions[0]),
+      id: "cand-3",
+      question: "Duplicate question on price elasticity?",
+    };
+    const q4 = {
+      ...structuredClone(mockMicroeconomics.questions[0]),
+      id: "cand-4",
+      question: "What is income elasticity?",
+    };
+
+    const verdicts = [
+      {
+        id: "cand-1",
+        selectedIndex: q1.correctIndex,
+        isAmbiguous: false,
+        confidence: "high" as const,
+        reason: "Directly grounded.",
+        isGrounded: true,
+        duplicateOfId: null,
+      },
+      {
+        id: "cand-2",
+        selectedIndex: q2.correctIndex,
+        isAmbiguous: false,
+        confidence: "high" as const,
+        reason: "Hallucinated concept not in source.",
+        isGrounded: false, // Hallucinated item
+        duplicateOfId: null,
+      },
+      {
+        id: "cand-3",
+        selectedIndex: q3.correctIndex,
+        isAmbiguous: false,
+        confidence: "high" as const,
+        reason: "Semantic duplicate of cand-1.",
+        isGrounded: true,
+        duplicateOfId: "cand-1", // Semantic duplicate item
+      },
+      {
+        id: "cand-4",
+        selectedIndex: q4.correctIndex,
+        isAmbiguous: false,
+        confidence: "high" as const,
+        reason: "Directly grounded.",
+        isGrounded: true,
+        duplicateOfId: null,
+      },
+    ];
+
+    const result = filterBlindVerifiedQuestions([q1, q2, q3, q4], verdicts);
+
+    expect(result.verifiedIds).toEqual(["cand-1", "cand-4"]);
+    expect(result.droppedIds).toEqual(["cand-2", "cand-3"]);
+    expect(result.duplicateIds).toEqual(["cand-3"]);
+    expect(result.verifiedQuestions).toHaveLength(2);
+    expect(result.verifiedQuestions[0].id).toBe("cand-1");
+    expect(result.verifiedQuestions[1].id).toBe("cand-4");
+  });
+
+  it("drops both hallucinated items (isGrounded: false) and semantic duplicate items (duplicateOfId) in generateQuestions with blind verifier", async () => {
+    const q1 = structuredClone(mockMicroeconomics.questions[0]);
+    q1.id = "cand-1";
+    q1.question = "Candidate 1: Grounded unique question on price elasticity";
+
+    const q2 = structuredClone(mockMicroeconomics.questions[0]);
+    q2.id = "cand-2";
+    q2.question = "Candidate 2: Hallucinated question not in text";
+
+    const q3 = structuredClone(mockMicroeconomics.questions[0]);
+    q3.id = "cand-3";
+    q3.question = "Candidate 3: Duplicate question repeating Candidate 1";
+
+    const q4 = structuredClone(mockMicroeconomics.questions[0]);
+    q4.id = "cand-4";
+    q4.question = "Candidate 4: Grounded unique question on demand curves";
+
+    const genPayload = {
+      title: "Price elasticity",
+      sourceKind: "lecture",
+      questions: [q1, q2, q3, q4],
+      annotations: ["cand-1", "cand-2", "cand-3", "cand-4"].map((id) => ({
+        questionId: id,
+        sourceId: "lines-1-1",
+        excerpt:
+          "Demand is elastic when the absolute price elasticity exceeds one.",
+        topic: "Elasticity",
+        chapter: "Chapter 4",
+        rule: "Rule",
+      })),
+      warnings: [],
+    };
+
+    const generatorModel = modelFor(genPayload);
+    const verifierModel = modelFor({
+      verdicts: [
+        {
+          id: "cand-1",
+          selectedIndex: q1.correctIndex,
+          isAmbiguous: false,
+          confidence: "high",
+          reason: "Grounded in lecture text.",
+          isGrounded: true,
+          duplicateOfId: null,
+        },
+        {
+          id: "cand-2",
+          selectedIndex: q2.correctIndex,
+          isAmbiguous: false,
+          confidence: "high",
+          reason: "Hallucinated assertion not found in sources.",
+          isGrounded: false, // Hallucinated item dropped
+          duplicateOfId: null,
+        },
+        {
+          id: "cand-3",
+          selectedIndex: q3.correctIndex,
+          isAmbiguous: false,
+          confidence: "high",
+          reason: "Duplicates test point of cand-1.",
+          isGrounded: true,
+          duplicateOfId: "cand-1", // Semantic duplicate item dropped
+        },
+        {
+          id: "cand-4",
+          selectedIndex: q4.correctIndex,
+          isAmbiguous: false,
+          confidence: "high",
+          reason: "Grounded in lecture text.",
+          isGrounded: true,
+          duplicateOfId: null,
+        },
+      ],
+    });
+
+    const result = await generateQuestions(
+      document,
+      ingestionOptionsSchema.parse({ questionCount: 2 }),
+      new AbortController().signal,
+      generatorModel,
+      { verifierModel },
+    );
+
+    // Both cand-2 (hallucinated) and cand-3 (duplicate) were dropped by blind verifier
+    expect(result.pack.questions).toHaveLength(2);
+    expect(result.pack.questions[0].question).toContain("Candidate 1");
+    expect(result.pack.questions[1].question).toContain("Candidate 4");
   });
 });

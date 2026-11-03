@@ -279,7 +279,10 @@ export function getOpenRouterApiKey(): string | null {
 
 export function getOpenRouterModel(
   modelId: string,
-  options?: { allowFallbacks?: boolean },
+  options?: {
+    allowFallbacks?: boolean;
+    reasoningEffort?: "low" | "medium" | "high" | "none";
+  },
 ) {
   assertPinnedOpenRouterSlug(modelId);
   const apiKey = getOpenRouterApiKey();
@@ -298,23 +301,30 @@ export function getOpenRouterModel(
     ...(options?.allowFallbacks === false ? { allow_fallbacks: false } : {}),
   };
 
+  const extraBody = {
+    provider: providerConfig,
+    reasoning: {
+      effort: options?.reasoningEffort ?? "low",
+    },
+  };
+
   const openrouter = createOpenRouter({
     apiKey,
-    extraBody: {
-      provider: providerConfig,
-    },
+    extraBody,
   });
 
   return openrouter(modelId, {
-    extraBody: {
-      provider: providerConfig,
-    },
+    extraBody,
   });
 }
 
 export function getOpenRouterGeneratorModel(
   tier: string = "contender",
-  options?: { degraded?: boolean; modelOverride?: string },
+  options?: {
+    degraded?: boolean;
+    modelOverride?: string;
+    reasoningEffort?: "low" | "medium" | "high" | "none";
+  },
 ) {
   const isPaid = tier === "cram_pass" || tier === "pro" || tier === "tutor";
   let slug: string;
@@ -334,7 +344,12 @@ export function getOpenRouterGeneratorModel(
   }
 
   assertPinnedOpenRouterSlug(slug);
-  return getOpenRouterModel(slug);
+  return getOpenRouterModel(
+    slug,
+    options?.reasoningEffort
+      ? { reasoningEffort: options.reasoningEffort }
+      : undefined,
+  );
 }
 
 export function getNoteSummarizerModel(
@@ -474,7 +489,10 @@ export function getLocalModel() {
 
 export function getGenerationModel(
   tier: string = "contender",
-  options?: { degraded?: boolean },
+  options?: {
+    degraded?: boolean;
+    reasoningEffort?: "low" | "medium" | "high" | "none";
+  },
 ) {
   const provider = process.env.AI_PROVIDER?.trim().toLowerCase();
   const isPriority = tier === "cram_pass" || tier === "pro" || tier === "tutor";
@@ -487,18 +505,23 @@ export function getGenerationModel(
     if (local) return local;
   }
 
+  const isExplicitOtherProvider =
+    provider === "local" ||
+    provider === "ollama" ||
+    provider === "gemini" ||
+    provider === "groq";
+
   // 1. Check OPENROUTER_API_KEY first (if set and valid, return pinned OpenRouter generator model)
-  if (openRouterKey && provider !== "gemini" && provider !== "groq") {
+  if (openRouterKey && !isExplicitOtherProvider) {
     const model = getOpenRouterGeneratorModel(tier, options);
-    console.log(`[AI Routing] Tier=${tier} | Primary=OpenRouter (${(model as any)?.modelId || PRIORITY_GENERATOR_SLUG}) | AI_PROVIDER=${provider || "none"}`);
+    console.log(
+      `[AI Routing] Tier=${tier} | Primary=OpenRouter (${(model as any)?.modelId || PRIORITY_GENERATOR_SLUG}) | AI_PROVIDER=${provider || "none"}`,
+    );
     return model;
   }
 
   // 2. High-retention synthesis routing for Clutch Notes
   if (tier === "notes") {
-    if (openRouterKey && provider !== "gemini" && provider !== "groq") {
-      return getNoteSummarizerModel("pro", options);
-    }
     const noteModel = process.env.NOTES_AI_MODEL?.trim() || "gemini-3.6-flash";
     const gemini = getGeminiModel(noteModel);
     if (gemini) return gemini;

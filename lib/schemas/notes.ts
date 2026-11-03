@@ -384,6 +384,15 @@ export const claimVerificationItemSchema = z
     slide: z.number().int().min(1).describe("1-based slide number"),
     verdict: claimVerdictValueSchema.describe("SUPPORTED, UNSUPPORTED, or CONTRADICTED"),
     reason: z.string().min(1).describe("Concise explanation for the verdict based strictly on slide text"),
+    isDuplicate: z
+      .boolean()
+      .optional()
+      .describe("True if this claim repeats the same point as an earlier claim across the note"),
+    duplicateOfClaimId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("Earlier claimId (e.g. 'C1') that this claim duplicates, or null"),
   })
   .strict();
 export type ClaimVerificationItem = z.infer<typeof claimVerificationItemSchema>;

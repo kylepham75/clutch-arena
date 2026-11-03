@@ -5,6 +5,8 @@ import {
   type ClaimVerificationItem,
   type ClaimVerdictValue,
   type NoteSection,
+  type GroundedBullet,
+  type KeyTakeawaysItem,
   type VerifierOutput,
 } from "@/lib/schemas/notes";
 import { parseSlideNumber } from "@/lib/notes/formula-inventory";
@@ -27,6 +29,7 @@ export interface VerifierLlmReport {
   supportedIds: string[];
   unsupportedIds: string[];
   contradictedIds: string[];
+  duplicateIds: string[];
   allSupported: boolean;
 }
 
@@ -97,6 +100,48 @@ export function extractSignificantTokens(text: string): string[] {
   const cleaned = text.replace(/[$`*_#]/g, " ");
   const words = cleaned.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
   return words.filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+}
+
+/**
+ * Extracts numeric tokens (e.g. "99.1", "100", "0.05") from text for deduplication.
+ */
+export function extractNumericTokens(text: string): string[] {
+  if (!text) return [];
+  const normalized = text.replace(/(\d),(\d)/g, "$1$2");
+  return normalized.match(/\d+(?:\.\d+)?/g) || [];
+}
+
+/**
+ * Checks if two numeric token lists match (same elements regardless of order).
+ */
+export function hasMatchingNumericTokens(
+  numsA: readonly string[],
+  numsB: readonly string[],
+): boolean {
+  if (numsA.length !== numsB.length) return false;
+  if (numsA.length === 0) return true;
+  const sortedA = [...numsA].sort();
+  const sortedB = [...numsB].sort();
+  return sortedA.every((val, idx) => val === sortedB[idx]);
+}
+
+/**
+ * Extracts significant tokens for deduplication, including word tokens and numeric tokens.
+ */
+export function extractDeduplicationTokens(text: string): {
+  tokens: Set<string>;
+  numbers: string[];
+} {
+  if (!text) {
+    return { tokens: new Set<string>(), numbers: [] };
+  }
+  const wordTokens = extractSignificantTokens(text);
+  const numbers = extractNumericTokens(text);
+  const tokens = new Set<string>(wordTokens);
+  for (const num of numbers) {
+    tokens.add(num);
+  }
+  return { tokens, numbers };
 }
 
 /**
@@ -248,6 +293,376 @@ export function extractVerifiableClaimsFromNote(
   return claims;
 }
 
+/**
+ * Normalizes text for cross-claim semantic deduplication:
+ * converts to lowercase, replaces math/markdown delimiters with spaces,
+ * strips non-alphanumeric characters, and collapses whitespace.
+ */
+export function normalizeClaimText(text: string): string {
+  if (!text) return "";
+  return text
+    .toLowerCase()
+    .replace(/[$`*_#]/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Computes Jaccard token similarity between two token sets.
+ * Returns intersection / union, or 0 if either set is empty.
+ */
+export function computeJaccardSimilarity(
+  tokensA: Set<string>,
+  tokensB: Set<string>,
+): number {
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  let intersection = 0;
+  for (const token of tokensA) {
+    if (tokensB.has(token)) {
+      intersection++;
+    }
+  }
+  const union = tokensA.size + tokensB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Validates that a target duplicate claim ID exists in the claims list and appears strictly earlier.
+ */
+export function isValidEarlierClaimId(
+  targetId: string,
+  currentId: string,
+  claims: readonly VerifiableNoteClaim[],
+): boolean {
+  if (!targetId || !currentId || targetId === currentId) return false;
+  const currentIndex = claims.findIndex((c) => c.claimId === currentId);
+  const targetIndex = claims.findIndex((c) => c.claimId === targetId);
+  return targetIndex !== -1 && currentIndex !== -1 && targetIndex < currentIndex;
+}
+
+/**
+ * Deterministically detects cross-claim duplicates across note sections by comparing
+ * normalized text or high Jaccard token similarity (>= 0.82), ignoring short strings (< 20 chars).
+ * Returns a map of `claimId -> earlierClaimId`.
+ */
+export function detectDuplicateNoteClaims(
+  claims: readonly VerifiableNoteClaim[],
+): Map<string, string> {
+  const duplicates = new Map<string, string>();
+  if (!claims || claims.length <= 1) return duplicates;
+
+  const prepared = claims.map((claim) => {
+    const rawText = (claim.text || "").trim();
+    const isTooShort = rawText.length < 20;
+    const { tokens, numbers } = isTooShort
+      ? { tokens: new Set<string>(), numbers: [] }
+      : extractDeduplicationTokens(rawText);
+    return {
+      claimId: claim.claimId,
+      rawText,
+      isTooShort,
+      normText: isTooShort ? "" : normalizeClaimText(rawText),
+      tokens,
+      numbers,
+    };
+  });
+
+  for (let i = 1; i < prepared.length; i++) {
+    const current = prepared[i];
+    if (current.isTooShort) continue;
+
+    for (let j = 0; j < i; j++) {
+      const earlier = prepared[j];
+      if (earlier.isTooShort) continue;
+
+      // 1. Exact normalized text match (>= 20 chars)
+      if (current.normText.length >= 20 && current.normText === earlier.normText) {
+        const rootId = duplicates.get(earlier.claimId) || earlier.claimId;
+        duplicates.set(current.claimId, rootId);
+        break;
+      }
+
+      // 2. High Jaccard token similarity >= 0.82 (requiring matching numbers if numbers exist)
+      if (current.tokens.size > 0 && earlier.tokens.size > 0) {
+        if (!hasMatchingNumericTokens(current.numbers, earlier.numbers)) {
+          continue;
+        }
+        const sim = computeJaccardSimilarity(current.tokens, earlier.tokens);
+        if (sim >= 0.82) {
+          const rootId = duplicates.get(earlier.claimId) || earlier.claimId;
+          duplicates.set(current.claimId, rootId);
+          break;
+        }
+      }
+    }
+  }
+
+  return duplicates;
+}
+
+function hasOtherSubstantiveContent(
+  sec: NoteSection,
+  bulletTextToExclude?: string,
+): boolean {
+  if (sec.coreStatement && sec.coreStatement.trim().length > 0) return true;
+  if (Array.isArray(sec.formulas) && sec.formulas.length > 0) return true;
+  if (Array.isArray(sec.subSections) && sec.subSections.length > 0) return true;
+  if (
+    sec.keyTakeaways &&
+    Array.isArray(sec.keyTakeaways.items) &&
+    sec.keyTakeaways.items.length > 0
+  ) {
+    return true;
+  }
+
+  const otherBullets = (sec.groundedBullets || []).filter(
+    (b) => b && b.text !== bulletTextToExclude,
+  );
+  if (otherBullets.length > 0) return true;
+
+  const otherBulletPoints = (sec.bulletPoints || []).filter(
+    (bp) => bp !== bulletTextToExclude,
+  );
+  if (otherBulletPoints.length > 0) return true;
+
+  return false;
+}
+
+/**
+ * Strips duplicate GroundedBullet items and duplicate keyTakeaways.items across
+ * sections and subsections using both duplicateClaimIds from VerifierLlmReport
+ * and deterministic normalized text / Jaccard token similarity >= 0.82.
+ * Keeps at least 1 bullet if a list would otherwise become empty and leave the
+ * section/subsection without any substantive content.
+ */
+export function deduplicateNoteSections(
+  sections: NoteSection[],
+  duplicateClaimIds?: ReadonlySet<string>,
+  claims?: readonly VerifiableNoteClaim[],
+): { sections: NoteSection[]; removedDuplicateCount: number } {
+  if (!Array.isArray(sections) || sections.length === 0) {
+    return { sections: [], removedDuplicateCount: 0 };
+  }
+
+  const clonedSections: NoteSection[] = JSON.parse(JSON.stringify(sections));
+  const claimList = claims || extractVerifiableClaimsFromNote(clonedSections);
+
+  // Map item identifiers to sequential claimIds
+  const claimKeyToId = new Map<string, string>();
+  for (const c of claimList) {
+    if (c.kind === "coreStatement") {
+      claimKeyToId.set(`${c.sectionLetter}:::coreStatement`, c.claimId);
+    } else if (c.kind === "bullet") {
+      const sub = c.subHeading ?? "";
+      claimKeyToId.set(`${c.sectionLetter}:::bullet:::${sub}:::${c.bulletIndex}`, c.claimId);
+    } else if (c.kind === "takeaway") {
+      claimKeyToId.set(`${c.sectionLetter}:::takeaway:::${c.takeawayIndex}`, c.claimId);
+    }
+  }
+
+  let removedDuplicateCount = 0;
+  const seenLedger: Array<{
+    text: string;
+    norm: string;
+    tokens: Set<string>;
+    numbers: string[];
+  }> = [];
+
+  function checkAndRecordText(text: string): boolean {
+    const trimmed = (text || "").trim();
+    if (trimmed.length < 20) {
+      return false;
+    }
+    const norm = normalizeClaimText(trimmed);
+    const { tokens, numbers } = extractDeduplicationTokens(trimmed);
+
+    for (const seen of seenLedger) {
+      if (seen.norm === norm) {
+        return true;
+      }
+      if (tokens.size > 0 && seen.tokens.size > 0) {
+        if (!hasMatchingNumericTokens(numbers, seen.numbers)) {
+          continue;
+        }
+        const sim = computeJaccardSimilarity(tokens, seen.tokens);
+        if (sim >= 0.82) {
+          return true;
+        }
+      }
+    }
+
+    seenLedger.push({ text: trimmed, norm, tokens, numbers });
+    return false;
+  }
+
+  for (const sec of clonedSections) {
+    // 1. Core Statement: if present and not duplicate, record it so subsequent bullets don't repeat it
+    if (sec.coreStatement && sec.coreStatement.trim().length >= 20) {
+      const coreClaimId = claimKeyToId.get(`${sec.letter}:::coreStatement`);
+      const isClaimDup = Boolean(coreClaimId && duplicateClaimIds?.has(coreClaimId));
+      if (!isClaimDup) {
+        checkAndRecordText(sec.coreStatement);
+      }
+    }
+
+    // 2. Section Grounded Bullets
+    if (Array.isArray(sec.groundedBullets) && sec.groundedBullets.length > 0) {
+      const keptGrounded: GroundedBullet[] = [];
+      const droppedTexts = new Set<string>();
+
+      for (let idx = 0; idx < sec.groundedBullets.length; idx++) {
+        const gb = sec.groundedBullets[idx];
+        if (!gb || !gb.text) continue;
+
+        const claimId = claimKeyToId.get(`${sec.letter}:::bullet::::::${idx}`);
+        const isClaimDup = Boolean(claimId && duplicateClaimIds?.has(claimId));
+        const isTextDup = checkAndRecordText(gb.text);
+        const isDuplicate = isClaimDup || isTextDup;
+
+        if (isDuplicate) {
+          const hasOther = hasOtherSubstantiveContent(sec, gb.text) || keptGrounded.length > 0;
+          if (!hasOther && idx === sec.groundedBullets.length - 1) {
+            keptGrounded.push(gb);
+          } else {
+            droppedTexts.add(gb.text);
+            removedDuplicateCount++;
+          }
+        } else {
+          keptGrounded.push(gb);
+        }
+      }
+
+      sec.groundedBullets = keptGrounded;
+      if (Array.isArray(sec.bulletPoints)) {
+        sec.bulletPoints = sec.bulletPoints.filter((bp) => !droppedTexts.has(bp));
+      }
+    } else if (Array.isArray(sec.bulletPoints) && sec.bulletPoints.length > 0) {
+      const keptPoints: string[] = [];
+
+      for (let idx = 0; idx < sec.bulletPoints.length; idx++) {
+        const bp = sec.bulletPoints[idx];
+        if (!bp || typeof bp !== "string") continue;
+
+        const claimId = claimKeyToId.get(`${sec.letter}:::bullet::::::${idx}`);
+        const isClaimDup = Boolean(claimId && duplicateClaimIds?.has(claimId));
+        const isTextDup = checkAndRecordText(bp);
+        const isDuplicate = isClaimDup || isTextDup;
+
+        if (isDuplicate) {
+          const hasOther = hasOtherSubstantiveContent(sec, bp) || keptPoints.length > 0;
+          if (!hasOther && idx === sec.bulletPoints.length - 1) {
+            keptPoints.push(bp);
+          } else {
+            removedDuplicateCount++;
+          }
+        } else {
+          keptPoints.push(bp);
+        }
+      }
+
+      sec.bulletPoints = keptPoints;
+    }
+
+    // 3. SubSection Bullets
+    if (Array.isArray(sec.subSections)) {
+      for (const sub of sec.subSections) {
+        if (!sub) continue;
+
+        if (Array.isArray(sub.groundedBullets) && sub.groundedBullets.length > 0) {
+          const keptSubGrounded: GroundedBullet[] = [];
+          const droppedSubTexts = new Set<string>();
+
+          for (let idx = 0; idx < sub.groundedBullets.length; idx++) {
+            const gb = sub.groundedBullets[idx];
+            if (!gb || !gb.text) continue;
+
+            const claimId = claimKeyToId.get(`${sec.letter}:::bullet:::${sub.heading}:::${idx}`);
+            const isClaimDup = Boolean(claimId && duplicateClaimIds?.has(claimId));
+            const isTextDup = checkAndRecordText(gb.text);
+            const isDuplicate = isClaimDup || isTextDup;
+
+            if (isDuplicate) {
+              const hasOther =
+                (Array.isArray(sub.formulas) && sub.formulas.length > 0) ||
+                keptSubGrounded.length > 0;
+              if (!hasOther && idx === sub.groundedBullets.length - 1) {
+                keptSubGrounded.push(gb);
+              } else {
+                droppedSubTexts.add(gb.text);
+                removedDuplicateCount++;
+              }
+            } else {
+              keptSubGrounded.push(gb);
+            }
+          }
+
+          sub.groundedBullets = keptSubGrounded;
+          if (Array.isArray(sub.bulletPoints)) {
+            sub.bulletPoints = sub.bulletPoints.filter((bp) => !droppedSubTexts.has(bp));
+          }
+        } else if (Array.isArray(sub.bulletPoints) && sub.bulletPoints.length > 0) {
+          const keptSubPoints: string[] = [];
+
+          for (let idx = 0; idx < sub.bulletPoints.length; idx++) {
+            const bp = sub.bulletPoints[idx];
+            if (!bp || typeof bp !== "string") continue;
+
+            const claimId = claimKeyToId.get(`${sec.letter}:::bullet:::${sub.heading}:::${idx}`);
+            const isClaimDup = Boolean(claimId && duplicateClaimIds?.has(claimId));
+            const isTextDup = checkAndRecordText(bp);
+            const isDuplicate = isClaimDup || isTextDup;
+
+            if (isDuplicate) {
+              const hasOther =
+                (Array.isArray(sub.formulas) && sub.formulas.length > 0) ||
+                keptSubPoints.length > 0;
+              if (!hasOther && idx === sub.bulletPoints.length - 1) {
+                keptSubPoints.push(bp);
+              } else {
+                removedDuplicateCount++;
+              }
+            } else {
+              keptSubPoints.push(bp);
+            }
+          }
+
+          sub.bulletPoints = keptSubPoints;
+        }
+      }
+    }
+
+    // 4. Key Takeaways
+    if (
+      sec.keyTakeaways &&
+      Array.isArray(sec.keyTakeaways.items) &&
+      sec.keyTakeaways.items.length > 0
+    ) {
+      const keptItems: KeyTakeawaysItem[] = [];
+
+      for (let idx = 0; idx < sec.keyTakeaways.items.length; idx++) {
+        const item = sec.keyTakeaways.items[idx];
+        if (!item || !item.point) continue;
+
+        const claimId = claimKeyToId.get(`${sec.letter}:::takeaway:::${idx}`);
+        const isClaimDup = Boolean(claimId && duplicateClaimIds?.has(claimId));
+        const isTextDup = checkAndRecordText(item.point);
+        const isDuplicate = isClaimDup || isTextDup;
+
+        if (isDuplicate) {
+          removedDuplicateCount++;
+        } else {
+          keptItems.push(item);
+        }
+      }
+
+      sec.keyTakeaways.items = keptItems;
+    }
+  }
+
+  return { sections: clonedSections, removedDuplicateCount };
+}
+
 export const VERIFIER_SYSTEM_PROMPT = `You are an independent, adversarial, zero-trust academic verifier and fact-checker.
 Your role is to critically evaluate study note claims against raw lecture slides to ensure 100% faithful source grounding.
 
@@ -271,7 +686,12 @@ CRITICAL VERIFICATION PRINCIPLES:
 3. CLAIM-BY-CLAIM EVALUATION:
    - For every claim in <claims_to_verify>, identify its 'claimId' (e.g. C1, C2).
    - Check the slide indicated by 'slide' (and neighboring slides if context spans multiple slides).
-   - Return a verdict ("SUPPORTED", "UNSUPPORTED", or "CONTRADICTED") and a concise, objective explanation in 'reason' citing the specific slide content or lack thereof.`;
+   - Return a verdict ("SUPPORTED", "UNSUPPORTED", or "CONTRADICTED") and a concise, objective explanation in 'reason' citing the specific slide content or lack thereof.
+
+4. DUPLICATION DETECTION:
+   - Check whether a claim repeats or rephrases the exact same principle, model condition, or takeaway as an EARLIER claim in <claims_to_verify>.
+   - If a claim repeats an earlier claim: set isDuplicate: true and duplicateOfClaimId: "<earlier C#>" (e.g. "C1").
+   - If a claim is distinct and introduces new information: set isDuplicate: false and duplicateOfClaimId: null.`;
 
 /**
  * Builds the verification prompt for the independent verifier LLM with strict delimiters.
@@ -323,7 +743,10 @@ For each claim in <claims_to_verify>, evaluate its factual accuracy against <sli
 Verdicts:
 - SUPPORTED: Claim is directly supported or faithfully summarized by the slide.
 - UNSUPPORTED: Claim introduces outside textbook facts, concepts, or conditions not found in <slides>.
-- CONTRADICTED: Claim asserts the opposite, reverses conditions/inequalities, or contradicts <slides>.`;
+- CONTRADICTED: Claim asserts the opposite, reverses conditions/inequalities, or contradicts <slides>.
+
+Deduplication:
+- If a claim repeats or rephrases the same concept/point as an earlier claim in <claims_to_verify>, set isDuplicate: true and duplicateOfClaimId: "<earlier C#>" (e.g. "C1"). Otherwise set isDuplicate: false and duplicateOfClaimId: null.`;
 }
 
 /**
@@ -430,6 +853,7 @@ export async function verifyNoteClaimsWithLlm(options: {
       supportedIds: [],
       unsupportedIds: [],
       contradictedIds: [],
+      duplicateIds: [],
       allSupported: true,
     };
   }
@@ -443,6 +867,7 @@ export async function verifyNoteClaimsWithLlm(options: {
     prompt,
     temperature: 0,
     abortSignal: options.signal,
+    maxOutputTokens: 8_192,
   });
 
   const returnedVerdictsMap = new Map<string, ClaimVerificationItem>();
@@ -455,18 +880,51 @@ export async function verifyNoteClaimsWithLlm(options: {
     }
   }
 
+  const deterministicDuplicates = detectDuplicateNoteClaims(claims);
+  const duplicateIds: string[] = [];
+
   // Map verdicts back to input claims in deterministic order
   const finalVerdicts: ClaimVerificationItem[] = claims.map((claim) => {
     const existing = returnedVerdictsMap.get(claim.claimId);
-    if (existing) {
-      return {
-        claimId: claim.claimId,
-        slide: claim.slide,
-        verdict: existing.verdict as ClaimVerdictValue,
-        reason: existing.reason,
-      };
+    const deterministicDupOf = deterministicDuplicates.get(claim.claimId);
+
+    const hasValidEarlierTarget =
+      typeof existing?.duplicateOfClaimId === "string" &&
+      isValidEarlierClaimId(existing.duplicateOfClaimId, claim.claimId, claims);
+
+    let isDuplicate = false;
+    let duplicateOfClaimId: string | null = null;
+
+    if (deterministicDupOf) {
+      isDuplicate = true;
+      duplicateOfClaimId = deterministicDupOf;
+    } else if (hasValidEarlierTarget) {
+      isDuplicate = true;
+      duplicateOfClaimId = existing!.duplicateOfClaimId!;
     }
-    return deterministicFallbackCheck(claim, options.sources);
+
+    if (isDuplicate) {
+      duplicateIds.push(claim.claimId);
+    }
+
+    const item: ClaimVerificationItem = existing
+      ? {
+          claimId: claim.claimId,
+          slide: claim.slide,
+          verdict: existing.verdict as ClaimVerdictValue,
+          reason: existing.reason,
+        }
+      : deterministicFallbackCheck(claim, options.sources);
+
+    if (isDuplicate) {
+      item.isDuplicate = true;
+      item.duplicateOfClaimId = duplicateOfClaimId;
+    } else {
+      item.isDuplicate = false;
+      item.duplicateOfClaimId = null;
+    }
+
+    return item;
   });
 
   const supportedIds: string[] = [];
@@ -492,6 +950,7 @@ export async function verifyNoteClaimsWithLlm(options: {
     supportedIds,
     unsupportedIds,
     contradictedIds,
+    duplicateIds,
     allSupported,
   };
 }
