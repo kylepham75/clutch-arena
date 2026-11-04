@@ -28,6 +28,7 @@ import { useAuth } from "@/lib/auth/context";
 import { useUserTier } from "@/hooks/use-user-tier";
 import { PricingModal } from "@/components/pricing/pricing-modal";
 import { formatRejectionError } from "@/lib/utils/format-upload-error";
+import { optimizeUploadFileIfNeeded } from "@/lib/ingestion/client-compress";
 
 export function UploadPanel({
   onPackGenerated,
@@ -129,6 +130,7 @@ export function UploadPanel({
     maxSize: 25 * 1024 * 1024,
     accept: {
       "application/pdf": [".pdf"],
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation": [".pptx"],
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
       "text/plain": [".txt"],
     },
@@ -223,15 +225,42 @@ export function UploadPanel({
         multiFile: files.length > 1,
       };
 
+      const processedFiles: File[] = [];
+      for (const f of files) {
+        if (f.size > 4.2 * 1024 * 1024) {
+          setProgressMsg(
+            siteLang === "vi"
+              ? `Đang tự động tối ưu hóa ${f.name} để tải lên nhanh...`
+              : `Optimizing ${f.name} for fast upload...`,
+          );
+          try {
+            const { file: optFile, wasCompressed, reason } = await optimizeUploadFileIfNeeded(
+              f,
+              controller.signal,
+              (status) => setProgressMsg(status),
+            );
+            if (wasCompressed && reason) {
+              console.log(`[UploadPanel] ${reason}`);
+            }
+            processedFiles.push(optFile);
+          } catch (compErr: any) {
+            console.warn("[UploadPanel] Auto-compression warning, falling back to original:", compErr);
+            processedFiles.push(f);
+          }
+        } else {
+          processedFiles.push(f);
+        }
+      }
+
       const formData = new FormData();
-      if (files.length === 1) {
-        formData.set("file", files[0]);
+      if (processedFiles.length === 1) {
+        formData.set("file", processedFiles[0]);
       } else {
-        files.forEach((f) => formData.append("files", f));
+        processedFiles.forEach((f) => formData.append("files", f));
       }
       formData.set("options", JSON.stringify(options));
 
-      const endpoint = files.length > 1 ? "/api/ingest/multi" : "/api/ingest";
+      const endpoint = processedFiles.length > 1 ? "/api/ingest/multi" : "/api/ingest";
 
       const headers: Record<string, string> = {};
       if (session?.access_token) {
@@ -248,9 +277,30 @@ export function UploadPanel({
         signal: controller.signal,
       });
 
-      const data = await res.json();
+      let data: any = null;
+      let rawText = "";
+      try {
+        rawText = await res.text();
+        data = JSON.parse(rawText);
+      } catch {
+        // Non-JSON response (e.g. Vercel 413 or 504 proxy page)
+      }
 
-      if (!res.ok || !data.ok) {
+      if (!res.ok || !data || !data.ok) {
+        if (res.status === 413) {
+          throw new Error(
+            siteLang === "vi"
+              ? "Tệp vượt quá giới hạn tải lên (4.5 MB). Vui lòng nén bớt hình ảnh trong slide hoặc chia nhỏ tệp."
+              : "File exceeds server upload limit (4.5 MB). Please compress images in your slides or split the file.",
+          );
+        }
+        if (res.status === 504) {
+          throw new Error(
+            siteLang === "vi"
+              ? "Máy chủ phản hồi quá lâu (Gateway Timeout). Vui lòng thử lại với ít câu hỏi hoặc slide hơn."
+              : "Server response timed out (Gateway Timeout). Please retry with fewer questions or slides.",
+          );
+        }
         const customErr: any = new Error(data?.error?.message || t.upload.genericIngestError);
         customErr.code = data?.error?.code;
         throw customErr;

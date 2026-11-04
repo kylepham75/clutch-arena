@@ -46,12 +46,18 @@ export async function parseDocument(
     } else if (format === "docx") {
       data = { ...(await parseDocx(bytes)), pageCount: null };
     } else {
-      data = { sources: parseTxt(bytes), pageCount: null, warnings: [] };
+      const txtSources = parseTxt(bytes);
+      const isSlideDeck = txtSources.some((s) => s.id.startsWith("slide-"));
+      data = {
+        sources: txtSources,
+        pageCount: isSlideDeck ? txtSources.length : null,
+        warnings: [],
+      };
     }
     signal.throwIfAborted();
 
     let dedupedSlideCount: number | undefined;
-    if (format === "pdf" || format === "pptx") {
+    if (format === "pdf" || format === "pptx" || (format === "txt" && data.pageCount !== null)) {
       const dedupeResult = deduplicateAnimationSlides(data.sources);
       data.sources = dedupeResult.sources;
       if (dedupeResult.droppedCount > 0) {
