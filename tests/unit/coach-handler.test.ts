@@ -208,4 +208,23 @@ describe("coach HTTP handler", () => {
     const cramModel: any = getCoachModel("cram_pass");
     expect(cramModel.modelId).toBe("anthropic/claude-haiku-5.5");
   });
+
+  it("structures prompt with Feynman intuition, misconception trap breakdown, and step-by-step guidance", async () => {
+    const { buildCoachSystemPrompt } = await import("@/lib/ai/coach-prompt");
+    const promptVi = buildCoachSystemPrompt(
+      { fileName: doc.fileName, sources: doc.sources },
+      "vi",
+    );
+    expect(promptVi).toContain("Intuition First");
+    expect(promptVi).toContain("Spot the Trap");
+    expect(promptVi).toContain("Step-by-Step Walkthrough");
+    expect(promptVi).toContain("Rule of Thumb");
+    expect(promptVi).toContain("Vietnamese");
+
+    const promptEn = buildCoachSystemPrompt(
+      { fileName: doc.fileName, sources: doc.sources },
+      "en",
+    );
+    expect(promptEn).toContain("English");
+  });
 });

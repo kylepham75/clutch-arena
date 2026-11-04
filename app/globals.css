@@ -3765,6 +3765,35 @@ svg {
   cursor: pointer;
   margin-left: auto;
 }
+.coach-quick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #f7f8f4;
+  border-top: 1px solid #edf0e7;
+}
+.coach-quick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #4f5844;
+  background: #ffffff;
+  border: 1px solid #dde2d4;
+  border-radius: 9999px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.coach-quick-chip:hover {
+  background: #fff8f4;
+  border-color: #e96943;
+  color: #e96943;
+  transform: translateY(-1px);
+}
 .coach-input-bar {
   padding: 14px 18px;
   border-top: 1px solid #e8eae1;

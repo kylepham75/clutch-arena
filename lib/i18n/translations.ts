@@ -324,6 +324,12 @@ export interface TranslationDict {
     jumpToCitation: string;
     jumpToCitationViewerSuffix: string;
     jumpToCitationAria: string;
+    quickChipAnalogy: string;
+    quickChipAnalogyPrompt: string;
+    quickChipSteps: string;
+    quickChipStepsPrompt: string;
+    quickChipRule: string;
+    quickChipRulePrompt: string;
   };
   library: {
     title: string;
@@ -1189,6 +1195,12 @@ export const translations: Record<Language, TranslationDict> = {
       jumpToCitation: "Jump to",
       jumpToCitationViewerSuffix: "in Document Viewer",
       jumpToCitationAria: "Jump to citation",
+      quickChipAnalogy: "💡 Everyday Analogy",
+      quickChipAnalogyPrompt: "Can you explain this again using a simple real-world analogy?",
+      quickChipSteps: "🔢 Step-by-Step Math",
+      quickChipStepsPrompt: "Can you break down the exact step-by-step calculation from the problem given?",
+      quickChipRule: "🎯 Memory Rule",
+      quickChipRulePrompt: "Give me a 1-sentence rule of thumb or memory hook to never get tricked by this again.",
     },
     library: {
       title: "Study Library",
@@ -2053,6 +2065,12 @@ export const translations: Record<Language, TranslationDict> = {
       jumpToCitation: "Chuyển đến",
       jumpToCitationViewerSuffix: "trong khung Xem tài liệu",
       jumpToCitationAria: "Chuyển đến trích dẫn",
+      quickChipAnalogy: "💡 Ví dụ đời thường",
+      quickChipAnalogyPrompt: "Bạn hãy giải thích lại bằng một ví dụ thực tế đời thường thật dễ hiểu nhé?",
+      quickChipSteps: "🔢 Từng bước tính",
+      quickChipStepsPrompt: "Chỉ cho mình từng bước tính cụ thể từ các dữ kiện đề bài nhé?",
+      quickChipRule: "🎯 Mẹo nhớ nhanh",
+      quickChipRulePrompt: "Cho mình một mẹo ngắn gọn hoặc câu thần chú để không bao giờ bị bẫy ở dạng này nhé.",
     },
     library: {
       title: "Thư viện bộ đề",

@@ -295,6 +295,33 @@ export function CoachPanel({
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Quick follow-up chips when chatting */}
+      {messages.length > 0 && !isStreaming && (
+        <div className="coach-quick-chips" role="toolbar" aria-label="Quick follow-up actions">
+          <button
+            type="button"
+            className="coach-quick-chip"
+            onClick={() => handleSend(t.coach.quickChipAnalogyPrompt)}
+          >
+            {t.coach.quickChipAnalogy}
+          </button>
+          <button
+            type="button"
+            className="coach-quick-chip"
+            onClick={() => handleSend(t.coach.quickChipStepsPrompt)}
+          >
+            {t.coach.quickChipSteps}
+          </button>
+          <button
+            type="button"
+            className="coach-quick-chip"
+            onClick={() => handleSend(t.coach.quickChipRulePrompt)}
+          >
+            {t.coach.quickChipRule}
+          </button>
+        </div>
+      )}
+
       {/* Input area */}
       <footer className="coach-input-bar">
         <textarea
@@ -560,8 +587,16 @@ function RenderCoachText({
                     </div>
                   );
                 }
+                const isCallout = /^(💡|⚠️|📌|🎯)/.test(line.trim());
                 return (
-                  <p key={lIdx} className="mb-1 text-stone-700">
+                  <p
+                    key={lIdx}
+                    className={`mb-1 leading-relaxed ${
+                      isCallout
+                        ? "mt-2.5 font-medium text-stone-900 first:mt-0"
+                        : "text-stone-700"
+                    }`}
+                  >
                     <FormattedInlineSegment
                       text={line}
                       onSelectCitation={onSelectCitation}
