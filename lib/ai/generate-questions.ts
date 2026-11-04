@@ -785,7 +785,7 @@ export function validateGeneratedStudy(
   }
   const questions = bank.data;
 
-  const warnings = [...output.warnings];
+  const warnings = output.warnings.filter(isUserFacingWarning);
   if (questions.length < options.questionCount)
     warnings.push(
       `Created ${questions.length} of ${options.questionCount} requested questions; the source or selected focus did not support more.`,
@@ -903,6 +903,71 @@ function computeGroupTopicSimilarity(
   return intersection / Math.sqrt(setA.size * setB.size);
 }
 
+export function isNonContentSlide(slide: SourceBlock): boolean {
+  const text = slide.text.trim();
+  if (!text) return true;
+
+  // If it has explicit calculations, numbers, or problem markers, it's substantive
+  if (
+    /(\d+[\d,.]*\s*[%$€£¥]|\$\s*\d+|\b(calculate|compute|solve|exercise|problem|practice|step\s+\d)\b)/i.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+
+  // 1. Attendance check / QR / Registration / Form links
+  if (
+    /(attendance\s*check|điểm\s*danh|roll\s*call|tinyurl\.com|bit\.ly|qr\s*code|scan\s*me|forms\.gle|google\.com\/forms)/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+
+  // 2. Cover / Course metadata / Session intro (e.g. "Flights of Wisdom Season 18 Session 2 Captain...")
+  if (
+    /(flights\s*of\s*wisdom|season\s*\d+|session\s*\d+|captain\b|lecturer\b|instructor\b|facilitator\b|table\s*of\s*contents|agenda\b)/i.test(
+      text,
+    ) &&
+    text.length < 180
+  ) {
+    return true;
+  }
+
+  // 3. Pure title-only divider slide (e.g. "REVISION CHAPTER 9 STOCK VALUATION")
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (
+    lines.length <= 3 &&
+    text.length < 80 &&
+    (/^(revision\s+)?(chapter|session|part|module|unit|chương|phần|bài)\s+\d+/i.test(
+      text,
+    ) ||
+      !/[.?!,;:]/.test(text))
+  ) {
+    return true;
+  }
+
+  // 4. Closing / Outro / Feedback / Social links (e.g. "Thank you! Discord Server Feedback Form")
+  if (
+    /(thank\s*you|cảm\s*ơn|any\s*questions\?|discord\s*server|feedback\s*form|see\s*you\s*(next|soon))/i.test(
+      text,
+    ) &&
+    text.length < 180
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isSubstantiveSlide(slide: SourceBlock): boolean {
+  return !isNonContentSlide(slide);
+}
+
 export function groupSlidesByConcept(
   sources: SourceBlock[],
   targetGroupCount?: number,
@@ -910,16 +975,59 @@ export function groupSlidesByConcept(
   if (sources.length === 0) return [];
   if (sources.length === 1) return [[sources[0]]];
 
-  // Pass 1: Bind multi-slide worked examples & explicit continuations into unsplittable units
-  const atomicGroups: SourceBlock[][] = [[sources[0]]];
-  for (let i = 1; i < sources.length; i++) {
-    const prevGroup = atomicGroups[atomicGroups.length - 1];
-    const prevSlide = prevGroup[prevGroup.length - 1];
-    const currSlide = sources[i];
-    if (isContinuationSlide(prevSlide, currSlide)) {
-      prevGroup.push(currSlide);
+  // Pass 1: Bind multi-slide worked examples & explicit continuations into unsplittable units,
+  // ensuring front-matter slides (cover, attendance, chapter title) attach forward to the first
+  // substantive slide, and outro slides attach backward to the last substantive slide.
+  const hasAnySubstantive = sources.some(isSubstantiveSlide);
+  const atomicGroups: SourceBlock[][] = [];
+  let currentGroup: SourceBlock[] = [];
+  let currentHasSubstantive = false;
+
+  for (let i = 0; i < sources.length; i++) {
+    const slide = sources[i];
+    const isSubstantive = hasAnySubstantive ? isSubstantiveSlide(slide) : true;
+
+    if (currentGroup.length === 0) {
+      currentGroup.push(slide);
+      currentHasSubstantive = isSubstantive;
+      continue;
+    }
+
+    const prevSlide = currentGroup[currentGroup.length - 1];
+
+    // Case A: Current group is still waiting for its first substantive slide (e.g. Cover -> Attendance -> Title -> first content slide)
+    if (!currentHasSubstantive && hasAnySubstantive) {
+      currentGroup.push(slide);
+      if (isSubstantive) {
+        currentHasSubstantive = true;
+      }
+      continue;
+    }
+
+    // Case B: Current slide is a non-substantive closing/outro slide (e.g. "Thank you / Discord / Feedback form")
+    if (!isSubstantive && i === sources.length - 1) {
+      currentGroup.push(slide);
+      continue;
+    }
+
+    // Case C: Explicit continuation or worked example spanning consecutive slides
+    if (isContinuationSlide(prevSlide, slide)) {
+      currentGroup.push(slide);
+      if (isSubstantive) currentHasSubstantive = true;
+      continue;
+    }
+
+    // Start a new atomic group
+    atomicGroups.push(currentGroup);
+    currentGroup = [slide];
+    currentHasSubstantive = isSubstantive;
+  }
+
+  if (currentGroup.length > 0) {
+    if (!currentHasSubstantive && atomicGroups.length > 0 && hasAnySubstantive) {
+      atomicGroups[atomicGroups.length - 1].push(...currentGroup);
     } else {
-      atomicGroups.push([currSlide]);
+      atomicGroups.push(currentGroup);
     }
   }
 
@@ -971,19 +1079,69 @@ export function partitionSourcesAcrossBatches(
   }
 
   const conceptGroups = groupSlidesByConcept(sources, batchCount);
+  let partitions: SourceBlock[][];
   if (conceptGroups.length === batchCount) {
-    return conceptGroups;
+    partitions = conceptGroups;
+  } else {
+    partitions = Array.from({ length: batchCount }, (_, batchIndex) => {
+      const start = Math.floor((batchIndex * conceptGroups.length) / batchCount);
+      const end = Math.max(
+        start + 1,
+        Math.floor(((batchIndex + 1) * conceptGroups.length) / batchCount),
+      );
+      const slice = conceptGroups.slice(start, end).flat();
+      return slice.length > 0 ? slice : sources;
+    });
   }
 
-  return Array.from({ length: batchCount }, (_, batchIndex) => {
-    const start = Math.floor((batchIndex * conceptGroups.length) / batchCount);
-    const end = Math.max(
-      start + 1,
-      Math.floor(((batchIndex + 1) * conceptGroups.length) / batchCount),
-    );
-    const slice = conceptGroups.slice(start, end).flat();
-    return slice.length > 0 ? slice : sources;
-  });
+  // Guard against any starved batch: if any partition has < 2 substantive slides
+  // while the document as a whole has plenty of slides, expand that partition
+  // with adjacent slides so no batch yields 0 questions.
+  if (sources.length >= batchCount * 2) {
+    partitions = partitions.map((p, idx) => {
+      const substantiveCount = p.filter(isSubstantiveSlide).length;
+      if (substantiveCount >= 2) return p;
+
+      // Expand partition window to include adjacent slides
+      const allIds = new Set(p.map((s) => s.id));
+      const expanded = [...p];
+      if (idx > 0 && partitions[idx - 1].length > 0) {
+        const prevPart = partitions[idx - 1];
+        for (let i = prevPart.length - 1; i >= Math.max(0, prevPart.length - 2); i--) {
+          if (!allIds.has(prevPart[i].id)) {
+            expanded.unshift(prevPart[i]);
+            allIds.add(prevPart[i].id);
+          }
+        }
+      }
+      if (idx < partitions.length - 1 && partitions[idx + 1].length > 0) {
+        const nextPart = partitions[idx + 1];
+        for (let i = 0; i < Math.min(2, nextPart.length); i++) {
+          if (!allIds.has(nextPart[i].id)) {
+            expanded.push(nextPart[i]);
+            allIds.add(nextPart[i].id);
+          }
+        }
+      }
+      return expanded;
+    });
+  }
+
+  return partitions;
+}
+
+export function isUserFacingWarning(warning: string): boolean {
+  const w = warning.trim();
+  if (!w) return false;
+
+  // Filter out model self-confirmations and prompt compliance reporting
+  if (/^requested \d+ questions;.*supported/i.test(w)) return false;
+  if (/financeSpec params object is constrained/i.test(w)) return false;
+  if (/option values are numeric text; the solver spec supplies/i.test(w)) return false;
+  if (/the attendance link in .* was not followed/i.test(w)) return false;
+  if (/^batch \d+ of \d+ provides no usable material/i.test(w)) return false;
+
+  return true;
 }
 
 type GeneratedStudyObject = z.infer<typeof generatedStudySchema>;
@@ -1000,7 +1158,9 @@ export function mergeAndDeduplicateBatches(
 
   for (const batch of batches) {
     for (const w of batch.warnings) {
-      if (warningSet.size < 10) warningSet.add(w);
+      if (isUserFacingWarning(w) && warningSet.size < 10) {
+        warningSet.add(w);
+      }
     }
   }
 
@@ -1070,7 +1230,7 @@ export async function generateQuestions(
   options: IngestionOptions & { verifierModel?: LanguageModel | false; tier?: string },
   signal: AbortSignal,
   model?: LanguageModel,
-  verificationConfig?: GenerateQuestionsVerificationConfig | LanguageModel,
+  verificationConfig?: GenerateQuestionsVerificationConfig | LanguageModel | false,
 ): Promise<GenerationResult> {
   const resolvedModel = model ?? getGenerationModel(options.tier);
 
@@ -1322,11 +1482,14 @@ export async function generateQuestions(
     }
 
     // Resolve optional cross-family blind verifier
-    const explicitVerifier = isLanguageModelInstance(verificationConfig)
-      ? verificationConfig
-      : verificationConfig?.verifierModel !== undefined
-        ? verificationConfig.verifierModel
-        : options.verifierModel;
+    const explicitVerifier =
+      verificationConfig === false
+        ? false
+        : isLanguageModelInstance(verificationConfig)
+          ? verificationConfig
+          : verificationConfig?.verifierModel !== undefined
+            ? verificationConfig.verifierModel
+            : options.verifierModel;
 
     const shouldRunBlindVerifier =
       explicitVerifier !== false &&
@@ -1399,6 +1562,7 @@ export async function generateQuestions(
       );
 
       const skipSolverComputed =
+        verificationConfig !== false &&
         !isLanguageModelInstance(verificationConfig) &&
         verificationConfig?.skipSolverComputed !== undefined
           ? verificationConfig.skipSolverComputed

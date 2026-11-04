@@ -7,6 +7,9 @@ import {
   splitIntoBatchCounts,
   partitionSourcesAcrossBatches,
   groupSlidesByConcept,
+  isNonContentSlide,
+  isSubstantiveSlide,
+  isUserFacingWarning,
   computeOverGeneratedCount,
   hasBannedNegationOrMetaOption,
   shuffleQuestionOptions,
@@ -445,6 +448,110 @@ describe("structured generation", () => {
     // Slide 2 and Slide 3 (worked example + continuation) are never sliced apart
     expect(groups[1].map((s) => s.id)).toEqual(["slide-2", "slide-3"]);
     expect(groups[2].map((s) => s.id)).toEqual(["slide-4"]);
+  });
+
+  it("binds non-content front-matter slides (cover, attendance, title) to the first substantive slide so batches are not starved", () => {
+    const chapter9Slides: SourceBlock[] = [
+      {
+        id: "page-1",
+        label: "Page 1",
+        text: "CORPORATE\nFINANCE\nFlights of Wisdom Season 18\nSession 2\nCaptain Tấn Lộc\nCaptain",
+      },
+      {
+        id: "page-2",
+        label: "Page 2",
+        text: "Attendance check\nhttps://tinyurl.com/yn8bf99x",
+      },
+      {
+        id: "page-3",
+        label: "Page 3",
+        text: "REVISION CHAPTER 9\nSTOCK\nVALUATION",
+      },
+      {
+        id: "page-4",
+        label: "Page 4",
+        text: "Stock value\nThe value of any asset is the present value of its expected future cash flows.",
+      },
+      {
+        id: "page-5",
+        label: "Page 5",
+        text: "The dividend discount model of stock prices:\nThe price of a share of common stock is the present value of all expected future dividends.",
+      },
+      {
+        id: "page-6",
+        label: "Page 6",
+        text: "Worked Example: Five Star Corporation will pay a dividend of $3.04 next year.\nCalculate stock price with R=11% and g=4%.",
+      },
+      {
+        id: "page-7",
+        label: "Page 7",
+        text: "thank you!\nFOW | CF | Discord Server\tFeedback Form\nhttps://forms.gle/x9vayLdrWPy",
+      },
+    ];
+
+    expect(isNonContentSlide(chapter9Slides[0])).toBe(true);
+    expect(isNonContentSlide(chapter9Slides[1])).toBe(true);
+    expect(isNonContentSlide(chapter9Slides[2])).toBe(true);
+    expect(isSubstantiveSlide(chapter9Slides[3])).toBe(true);
+    expect(isSubstantiveSlide(chapter9Slides[4])).toBe(true);
+    expect(isSubstantiveSlide(chapter9Slides[5])).toBe(true);
+    expect(isNonContentSlide(chapter9Slides[6])).toBe(true);
+
+    const groups = groupSlidesByConcept(chapter9Slides, 3);
+    expect(groups).toHaveLength(3);
+
+    // Front-matter slides 1, 2, 3 must be grouped with the first content slide (page-4), never stranded alone
+    expect(groups[0].map((s) => s.id)).toEqual(["page-1", "page-2", "page-3", "page-4"]);
+    // Outro slide (page-7) must be attached to the final content slide, not forming its own group
+    expect(groups[2].map((s) => s.id)).toContain("page-7");
+
+    const partitions = partitionSourcesAcrossBatches(chapter9Slides, 3);
+    expect(partitions).toHaveLength(3);
+    for (const partition of partitions) {
+      // Every partition must contain at least one substantive content slide
+      const substantiveInPartition = partition.filter(isSubstantiveSlide);
+      expect(substantiveInPartition.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("filters out internal model self-confirmations and prompt compliance chatter in isUserFacingWarning", () => {
+    expect(
+      isUserFacingWarning(
+        "Requested 6 questions; all six were supported by the source blocks.",
+      ),
+    ).toBe(false);
+    expect(
+      isUserFacingWarning(
+        "The financeSpec params object is constrained to empty by the schema, so solver inputs are encoded in the target string.",
+      ),
+    ).toBe(false);
+    expect(
+      isUserFacingWarning(
+        "Option values are numeric text; the solver spec supplies the verified answer key for these calculations.",
+      ),
+    ).toBe(false);
+    expect(
+      isUserFacingWarning(
+        "The attendance link in page-2 was not followed, as instructed.",
+      ),
+    ).toBe(false);
+    expect(
+      isUserFacingWarning(
+        "Batch 1 of 3 provides no usable material. Please supply blocks with the actual stock valuation content.",
+      ),
+    ).toBe(false);
+
+    // Legitimate user-facing warnings are preserved
+    expect(
+      isUserFacingWarning(
+        "Created 5 of 15 requested questions; the source or selected focus did not support more.",
+      ),
+    ).toBe(true);
+    expect(
+      isUserFacingWarning(
+        "Tài liệu không có sẵn câu hỏi trắc nghiệm nguyên văn; hệ thống đã tự động chuyển sang chế độ Biến thể khái niệm.",
+      ),
+    ).toBe(true);
   });
 
   it("over-generates by +20% (computeOverGeneratedCount) and passes generator temp (0.3-0.4), topP=0.95 to generateObject", async () => {
