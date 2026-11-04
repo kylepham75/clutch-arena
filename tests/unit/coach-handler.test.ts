@@ -197,4 +197,15 @@ describe("coach HTTP handler", () => {
     const model: any = getGeminiModel();
     expect(model.modelId).toBe("gemini-3.6-flash");
   });
+
+  it("limits coach to only using Claude Haiku 5.5 even for pro/paid tier", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "sk-or-v1-testkey123");
+    const { getCoachModel, DEFAULT_GENERATOR_SLUG } = await import("@/lib/ai/provider");
+    const proModel: any = getCoachModel("pro");
+    expect(proModel.modelId).toBe(DEFAULT_GENERATOR_SLUG);
+    expect(proModel.modelId).toBe("anthropic/claude-haiku-5.5");
+
+    const cramModel: any = getCoachModel("cram_pass");
+    expect(cramModel.modelId).toBe("anthropic/claude-haiku-5.5");
+  });
 });

@@ -360,6 +360,26 @@ export function getNoteSummarizerModel(
   return getOpenRouterGeneratorModel(tier, options);
 }
 
+export function getCoachModel(
+  _tier: string = "contender",
+  options?: {
+    degraded?: boolean;
+    modelOverride?: string;
+    reasoningEffort?: "low" | "medium" | "high" | "none";
+  },
+) {
+  // AI Coach is strictly locked to Claude Haiku 5.5 for high-speed Socratic chat and zero runaway COGS
+  const coachModel =
+    options?.modelOverride?.trim() ||
+    process.env.OPENROUTER_COACH_MODEL?.trim() ||
+    DEFAULT_GENERATOR_SLUG; // "anthropic/claude-haiku-5.5"
+
+  return getGenerationModel("contender", {
+    ...options,
+    modelOverride: coachModel,
+  });
+}
+
 export function getVerifierModel(options?: {
   generatorSlug?: string;
   modelOverride?: string;
@@ -491,6 +511,7 @@ export function getGenerationModel(
   tier: string = "contender",
   options?: {
     degraded?: boolean;
+    modelOverride?: string;
     reasoningEffort?: "low" | "medium" | "high" | "none";
   },
 ) {

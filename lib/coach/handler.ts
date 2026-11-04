@@ -1,6 +1,6 @@
 import "server-only";
 import { streamText, APICallError } from "ai";
-import { getGenerationModel } from "@/lib/ai/provider";
+import { getCoachModel } from "@/lib/ai/provider";
 import {
   coachRequestSchema,
   MAX_COACH_BODY_BYTES,
@@ -82,12 +82,12 @@ export function selectCoachContextSources(
 
 export function createCoachHandler(
   dependencies: {
-    getModel?: (tier?: string) => ReturnType<typeof getGenerationModel>;
+    getModel?: (tier?: string) => ReturnType<typeof getCoachModel>;
     rateLimiter?: typeof checkRateLimit;
     verifyAuth?: typeof verifyAuthToken;
   } = {},
 ) {
-  const getModel = dependencies.getModel ?? getGenerationModel;
+  const getModel = dependencies.getModel ?? getCoachModel;
   const rateLimiter = dependencies.rateLimiter ?? checkRateLimit;
   const verifyAuth = dependencies.verifyAuth ?? verifyAuthToken;
 
