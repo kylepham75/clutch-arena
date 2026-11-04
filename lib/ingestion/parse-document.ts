@@ -3,6 +3,7 @@ import { validateFile } from "./validate-file";
 import { parseTxt } from "./parse-txt";
 import { parseDocx } from "./parse-docx";
 import { parsePdf, type ParsePdfOptions } from "./parse-pdf";
+import { parsePptx } from "./parse-pptx";
 import { IngestionError } from "./errors";
 import { MAX_EXTRACTED_CHARACTERS } from "./limits";
 import {
@@ -35,14 +36,22 @@ export async function parseDocument(
         pdfOpts.rescanPages = options.rescanPages;
       }
       data = await parsePdf(bytes, signal, pdfOpts);
-    }
-    else if (format === "docx")
+    } else if (format === "pptx") {
+      const pptxResult = await parsePptx(bytes, signal);
+      data = {
+        sources: pptxResult.sources,
+        pageCount: pptxResult.pageCount,
+        warnings: pptxResult.warnings,
+      };
+    } else if (format === "docx") {
       data = { ...(await parseDocx(bytes)), pageCount: null };
-    else data = { sources: parseTxt(bytes), pageCount: null, warnings: [] };
+    } else {
+      data = { sources: parseTxt(bytes), pageCount: null, warnings: [] };
+    }
     signal.throwIfAborted();
 
     let dedupedSlideCount: number | undefined;
-    if (format === "pdf") {
+    if (format === "pdf" || format === "pptx") {
       const dedupeResult = deduplicateAnimationSlides(data.sources);
       data.sources = dedupeResult.sources;
       if (dedupeResult.droppedCount > 0) {

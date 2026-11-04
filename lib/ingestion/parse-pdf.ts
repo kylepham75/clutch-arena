@@ -5,6 +5,7 @@ import type {
   PageVisionReason,
   SourceBlock,
 } from "@/lib/schemas/ingestion";
+import type { OcrTranscribedEquation } from "./parse-pptx";
 import { createRequire } from "node:module";
 import { IngestionError } from "./errors";
 import { MAX_PDF_PAGES, MAX_EXTRACTED_CHARACTERS } from "./limits";
@@ -419,6 +420,7 @@ export async function parsePdf(
     let emptyPages = 0;
     const pageVisionStatus: Record<string, PageVisionInfo> = {};
     const lowConfidenceSourceIds: string[] = [];
+    const ocrEquations: OcrTranscribedEquation[] = [];
 
     let flaggedCount = 0;
     let processedFlaggedCount = 0;
@@ -447,11 +449,25 @@ export async function parsePdf(
 
       let hasSingleImageArea = false;
       let totalNonTemplateArea = 0;
+      let hasMathCropImage = false;
+      const isMathCueSlide =
+        /equation|formula|math|calculate|công thức|tính|[=∑√∫%]|\b(wacc|capm|npv|irr|ebit|gordon|pv|fv|roe|roa|dcf)\b/i.test(
+          rawNativeText,
+        );
+
       for (const img of nonTemplateImages) {
         const area = img.width * img.height;
+        const areaRatio = area / pageArea;
+        const aspect = img.width / Math.max(1, img.height);
         totalNonTemplateArea += area;
-        if (area / pageArea > 0.08) {
+        if (areaRatio > 0.08) {
           hasSingleImageArea = true;
+        }
+        if (
+          (area >= 800 && areaRatio <= 0.4 && (aspect >= 1.2 || isMathCueSlide)) ||
+          Boolean(img.name && /eq|math|formula/i.test(img.name))
+        ) {
+          hasMathCropImage = true;
         }
       }
       if (hasSingleImageArea) {
@@ -459,6 +475,9 @@ export async function parsePdf(
       }
       if (totalNonTemplateArea / pageArea > 0.25) {
         reasons.push("combined_image_area");
+      }
+      if (!hasSingleImageArea && hasMathCropImage) {
+        reasons.push("math_image_detected");
       }
 
       const isFlagged = reasons.length > 0;
@@ -522,14 +541,23 @@ export async function parsePdf(
       }
 
       // Page needs vision: determine mode
-      const qualifyingCrops = nonTemplateImages.filter(
-        (img) =>
-          (img.width * img.height) / pageArea > 0.08 ||
-          reasons.includes("combined_image_area"),
-      );
+      const qualifyingCrops = nonTemplateImages.filter((img) => {
+        const area = img.width * img.height;
+        const areaRatio = area / pageArea;
+        const aspect = img.width / Math.max(1, img.height);
+        const isMathCrop =
+          (area >= 800 && areaRatio <= 0.4 && (aspect >= 1.2 || isMathCueSlide)) ||
+          Boolean(img.name && /eq|math|formula/i.test(img.name));
+        return (
+          areaRatio > 0.08 ||
+          reasons.includes("combined_image_area") ||
+          isMathCrop
+        );
+      });
 
       const mode: PageVisionMode =
-        rawNativeText.length >= 100 && qualifyingCrops.length > 0
+        qualifyingCrops.length > 0 &&
+        (rawNativeText.length >= 100 || !mockPageMap.get(page)?.screenshot)
           ? "equation_crop"
           : "full_page";
 
@@ -551,9 +579,23 @@ export async function parsePdf(
           const cached = getPdfVisionCacheEntry(cacheKey);
           if (cached) {
             if (cached.text.trim()) {
+              const text = cached.text.trim();
+              const cleanLatex = text.replace(/^\s*\$+|\$+\s*$/g, "").trim();
+              const hasDollar = text.includes("$");
+              const mathSnippet = hasDollar ? text : `$${cleanLatex}$`;
               pageText = pageText
-                ? `${pageText}\n\n${cached.text.trim()}`
-                : cached.text.trim();
+                ? `${pageText}\n\n${mathSnippet}`
+                : mathSnippet;
+
+              if (cleanLatex.length > 0) {
+                ocrEquations.push({
+                  slide: page,
+                  raw: cleanLatex,
+                  latex: cleanLatex,
+                  origin: "ocr",
+                  confidence: cached.confidence,
+                });
+              }
             }
             pageConfidence = Math.min(pageConfidence, cached.confidence);
             anyCropHandled = true;
@@ -588,9 +630,22 @@ export async function parsePdf(
                 deckVisionCostUsd += cost;
                 pageCostUsd += cost;
                 if (text) {
+                  const cleanLatex = text.replace(/^\s*\$+|\$+\s*$/g, "").trim();
+                  const hasDollar = text.includes("$");
+                  const mathSnippet = hasDollar ? text : `$${cleanLatex}$`;
                   pageText = pageText
-                    ? `${pageText}\n\n${text}`
-                    : text;
+                    ? `${pageText}\n\n${mathSnippet}`
+                    : mathSnippet;
+
+                  if (cleanLatex.length > 0) {
+                    ocrEquations.push({
+                      slide: page,
+                      raw: cleanLatex,
+                      latex: cleanLatex,
+                      origin: "ocr",
+                      confidence: conf,
+                    });
+                  }
                 }
                 pageConfidence = Math.min(pageConfidence, conf);
                 anyCropHandled = true;
@@ -811,6 +866,7 @@ export async function parsePdf(
       visionBanner,
       lowConfidenceSourceIds,
       pageVisionStatus,
+      ocrEquations,
     };
   } catch (error) {
     if (error instanceof Error && error.name === "PasswordException") {

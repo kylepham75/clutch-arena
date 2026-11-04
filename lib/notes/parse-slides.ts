@@ -132,6 +132,7 @@ export async function parseSlideDeck(
     });
     slideCount = parsed.pageCount;
     warnings = parsed.warnings;
+    ocrEquations = parsed.ocrEquations;
   }
 
   // Deduplicate progressive animation slides for both formats

@@ -17,7 +17,11 @@ export type IngestionOptions = z.infer<typeof ingestionOptionsSchema>;
 export type SourceBlock = { id: string; label: string; text: string };
 
 export type PageVisionMode = "native" | "equation_crop" | "full_page";
-export type PageVisionReason = "low_text" | "single_image_area" | "combined_image_area";
+export type PageVisionReason =
+  | "low_text"
+  | "single_image_area"
+  | "combined_image_area"
+  | "math_image_detected";
 export type PageVisionInfo = {
   page: number;
   flagged: boolean;
@@ -31,7 +35,7 @@ export type PageVisionInfo = {
 
 export type ParsedDocument = {
   fileName: string;
-  format: "pdf" | "docx" | "txt" | "mixed";
+  format: "pdf" | "docx" | "txt" | "pptx" | "mixed";
   sources: SourceBlock[];
   characterCount: number;
   pageCount: number | null;
@@ -43,6 +47,14 @@ export type ParsedDocument = {
   visionBanner?: string | null;
   lowConfidenceSourceIds?: string[];
   pageVisionStatus?: Record<string, PageVisionInfo>;
+  ocrEquations?: Array<{
+    slide: number;
+    raw: string;
+    latex: string;
+    origin: "ocr";
+    confidence: number;
+    mediaPath?: string;
+  }>;
 };
 export type SourceReference = {
   sourceId: string;

@@ -207,6 +207,55 @@ describe("PDF Vision Triage & Multi-Signal Detection", () => {
       expect(result.pageVisionStatus?.["page-1"]?.mode).toBe("equation_crop");
       expect(result.pageVisionStatus?.["page-1"]?.processed).toBe(true);
     });
+
+    it("flags small formula images (<8% page area) on text-heavy slides as math_image_detected, transcribes equation, and populates ocrEquations", async () => {
+      // 612 x 792 = 484,704 page area.
+      // Small formula crop: 150 x 50 = 7,500 px (~1.5% of page area).
+      const formulaCropBytes = new Uint8Array([11, 22, 33, 44]);
+      const mockPages: MockPdfPage[] = [
+        {
+          page: 1,
+          text: "Corporate finance lecture slide: The Weighted Average Cost of Capital (WACC) combines after-tax debt and equity costs according to the following equation:",
+          width: 612,
+          height: 792,
+          images: [
+            {
+              data: formulaCropBytes,
+              width: 150,
+              height: 50,
+              name: "wacc_crop",
+            },
+          ],
+        },
+      ];
+
+      const transcriber = vi.fn().mockImplementation(async (input) => {
+        expect(input.mode).toBe("equation_crop");
+        expect(input.imageBytes).toEqual(formulaCropBytes);
+        return {
+          text: "WACC = \\frac{E}{V}R_E + \\frac{D}{V}R_D(1 - T_C)",
+          confidence: 0.96,
+          costUsd: ESTIMATED_EQUATION_CROP_OCR_USD,
+        };
+      });
+
+      const result = await parsePdf(dummyPdfBytes, signal(), {
+        mockPages,
+        visionTranscriber: transcriber,
+      });
+
+      expect(transcriber).toHaveBeenCalledTimes(1);
+      const pageInfo = result.pageVisionStatus?.["page-1"];
+      expect(pageInfo?.flagged).toBe(true);
+      expect(pageInfo?.reasons).toContain("math_image_detected");
+      expect(pageInfo?.mode).toBe("equation_crop");
+      // Appends LaTeX formula directly to slide text
+      expect(result.sources[0].text).toContain("$WACC = \\frac{E}{V}R_E + \\frac{D}{V}R_D(1 - T_C)$");
+      // Populates ocrEquations ledger
+      expect(result.ocrEquations).toHaveLength(1);
+      expect(result.ocrEquations?.[0].latex).toBe("WACC = \\frac{E}{V}R_E + \\frac{D}{V}R_D(1 - T_C)");
+      expect(result.ocrEquations?.[0].slide).toBe(1);
+    });
   });
 
   describe("Auto-OCR budget cap ($0.03/deck)", () => {

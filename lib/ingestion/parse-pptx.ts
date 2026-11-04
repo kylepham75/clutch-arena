@@ -1209,17 +1209,36 @@ export const transcribeEquationImageWithGemini: VisionMathTranscriber = async ({
   altText,
   signal,
 }) => {
-  const apiKey =
-    typeof process !== "undefined" && process?.env
-      ? process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
-        process.env.GEMINI_API_KEY?.trim()
-      : undefined;
+  const openRouterApiKey = (
+    process.env.OPENROUTER_API_KEY ||
+    process.env.OPEN_ROUTER_API_KEY ||
+    process.env.OPENROUTER_KEY ||
+    process.env.OPEN_ROUTER_KEY
+  )?.trim();
 
-  if (
-    !apiKey ||
-    apiKey === "your-gemini-key-here" ||
-    apiKey === "your-api-key-here"
-  ) {
+  const geminiApiKey = (
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY
+  )?.trim();
+
+  const hasOpenRouter = Boolean(
+    openRouterApiKey &&
+      openRouterApiKey !== "your-openrouter-key-here" &&
+      openRouterApiKey !== "your-api-key-here" &&
+      !openRouterApiKey.includes("placeholder") &&
+      openRouterApiKey.length > 10,
+  );
+
+  const hasGemini = Boolean(
+    geminiApiKey &&
+      geminiApiKey !== "your-gemini-key-here" &&
+      geminiApiKey !== "your-api-key-here" &&
+      !geminiApiKey.includes("placeholder") &&
+      geminiApiKey.length > 10,
+  );
+
+  if (!hasOpenRouter && !hasGemini) {
     return [];
   }
 
@@ -1236,32 +1255,23 @@ export const transcribeEquationImageWithGemini: VisionMathTranscriber = async ({
 
   signal?.throwIfAborted();
 
+  const promptText = [
+    `You are a specialized mathematical OCR engine.`,
+    `Transcribe all mathematical equations and formulas shown in this image from slide ${slide}.`,
+    altText ? `Context / image label: ${altText}` : "",
+    `Requirements:`,
+    `- Extract each distinct mathematical formula into clean, syntactically correct LaTeX.`,
+    `- Do NOT enclose LaTeX in '$' or '$$' delimiters.`,
+    `- Provide a plain-text ASCII representation for each formula in 'raw'.`,
+    `- Provide a confidence score from 0.0 (uncertain) to 1.0 (completely clear and correct).`,
+    `- If no mathematical equations or formulas appear in the image, return an empty array.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   try {
     const { generateObject } = await import("ai");
-    const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
     const { z } = await import("zod");
-
-    const modelId =
-      (typeof process !== "undefined" &&
-        (process.env.NOTES_AI_MODEL?.trim() ||
-          process.env.GEMINI_MODEL?.trim())) ||
-      "gemini-3.6-flash";
-
-    const google = createGoogleGenerativeAI({ apiKey });
-
-    const promptText = [
-      `You are a specialized mathematical OCR engine.`,
-      `Transcribe all mathematical equations and formulas shown in this image from slide ${slide}.`,
-      altText ? `Context / image label: ${altText}` : "",
-      `Requirements:`,
-      `- Extract each distinct mathematical formula into clean, syntactically correct LaTeX.`,
-      `- Do NOT enclose LaTeX in '$' or '$$' delimiters.`,
-      `- Provide a plain-text ASCII representation for each formula in 'raw'.`,
-      `- Provide a confidence score from 0.0 (uncertain) to 1.0 (completely clear and correct).`,
-      `- If no mathematical equations or formulas appear in the image, return an empty array.`,
-    ]
-      .filter(Boolean)
-      .join("\n");
 
     const schema = z.object({
       equations: z.array(
@@ -1280,40 +1290,96 @@ export const transcribeEquationImageWithGemini: VisionMathTranscriber = async ({
       ),
     });
 
-    const response = await generateObject({
-      model: google(modelId),
-      temperature: 0,
-      abortSignal: signal,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: [
+    // 1. Primary: OpenRouter (pinned vision model: google/gemini-2.5-flash-lite)
+    if (hasOpenRouter) {
+      try {
+        const { createOpenRouter } = await import("@openrouter/ai-sdk-provider");
+        const openrouter = createOpenRouter({ apiKey: openRouterApiKey! });
+        const modelSlug =
+          process.env.OPENROUTER_VISION_MODEL?.trim() || "google/gemini-2.5-flash-lite";
+
+        const response = await generateObject({
+          model: openrouter(modelSlug),
+          temperature: 0,
+          abortSignal: signal,
+          schema,
+          messages: [
             {
-              type: "text",
-              text: promptText,
-            },
-            {
-              type: "image",
-              image: imageBytes,
-              mediaType: mimeType,
+              role: "user",
+              content: [
+                { type: "text", text: promptText },
+                { type: "image", image: imageBytes, mediaType: mimeType },
+              ],
             },
           ],
-        },
-      ],
-    });
+          providerOptions: {
+            openrouter: {
+              provider: {
+                data_collection: "deny",
+              },
+            },
+          },
+        });
 
-    const items = response.object?.equations || [];
-    return items
-      .map((item) => ({
-        latex: item.latex.trim(),
-        raw: (item.raw || item.latex).trim(),
-        confidence: Math.max(0, Math.min(1, item.confidence)),
-      }))
-      .filter((eq) => eq.latex.length > 0 && eq.confidence > 0);
+        const items = response.object?.equations || [];
+        return items
+          .map((item) => ({
+            latex: item.latex.trim(),
+            raw: (item.raw || item.latex).trim(),
+            confidence: Math.max(0, Math.min(1, item.confidence)),
+          }))
+          .filter((eq) => eq.latex.length > 0 && eq.confidence > 0);
+      } catch (openRouterErr) {
+        console.warn(
+          "[parsePptx:vision] OpenRouter equation OCR failed, checking direct Gemini fallback:",
+          openRouterErr,
+        );
+        if (!hasGemini) {
+          return [];
+        }
+      }
+    }
+
+    // 2. Fallback: Direct Google Gemini SDK
+    if (hasGemini) {
+      const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
+      const modelId =
+        process.env.GEMINI_VISION_MODEL?.trim() ||
+        process.env.NOTES_AI_MODEL?.trim() ||
+        "gemini-2.5-flash";
+
+      const google = createGoogleGenerativeAI({ apiKey: geminiApiKey! });
+
+      const response = await generateObject({
+        model: google(modelId),
+        temperature: 0,
+        abortSignal: signal,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: promptText },
+              { type: "image", image: imageBytes, mediaType: mimeType },
+            ],
+          },
+        ],
+      });
+
+      const items = response.object?.equations || [];
+      return items
+        .map((item) => ({
+          latex: item.latex.trim(),
+          raw: (item.raw || item.latex).trim(),
+          confidence: Math.max(0, Math.min(1, item.confidence)),
+        }))
+        .filter((eq) => eq.latex.length > 0 && eq.confidence > 0);
+    }
   } catch {
     return [];
   }
+
+  return [];
 };
 
 export async function parsePptx(
@@ -1454,6 +1520,29 @@ export async function parsePptx(
         candidate.mimeType === "image/x-emf";
 
       if (!mediaFile || isVector) {
+        if (
+          candidate.altText &&
+          (/[=+\-*/\\^∑√∫]/.test(candidate.altText) ||
+            /\b(wacc|capm|npv|irr|ebit|gordon|formula|equation|công thức)\b/i.test(candidate.altText))
+        ) {
+          const cleanLatex = candidate.altText.replace(/^\s*\$+|\$+\s*$/g, "").trim();
+          if (cleanLatex.length > 0) {
+            ocrEquations.push({
+              slide: slide.num,
+              raw: candidate.altText.trim(),
+              latex: cleanLatex,
+              origin: "ocr",
+              confidence: 0.85,
+              mediaPath,
+            });
+            const formulaSnippet = `$${cleanLatex}$`;
+            if (!text.includes(formulaSnippet)) {
+              text = text.trim() ? `${text.trim()}\n${formulaSnippet}` : formulaSnippet;
+            }
+            continue;
+          }
+        }
+
         const warnMsg = `Slide ${slide.num} contains an embedded equation image/OLE object that could not be transcribed automatically.`;
         if (!warnings.includes(warnMsg)) {
           warnings.push(warnMsg);

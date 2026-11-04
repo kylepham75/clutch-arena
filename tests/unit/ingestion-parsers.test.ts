@@ -116,4 +116,29 @@ describe("real document parsers", () => {
       parseDocument(new File([studyText], "notes.txt"), controller.signal),
     ).rejects.toMatchObject({ name: "AbortError" });
   });
+
+  it("validates and parses PowerPoint (.pptx) presentations in parseDocument", async () => {
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    zip.file(
+      "ppt/slides/slide1.xml",
+      `<p:sp xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+        <p:txBody>
+          <a:p><a:r><a:t>${studyText}</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>`,
+    );
+    const pptxBuffer = await zip.generateAsync({ type: "nodebuffer" });
+    const file = new File([new Uint8Array(pptxBuffer)], "slides.pptx", {
+      type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    });
+
+    expect(validateFile(file)).toBe("pptx");
+
+    const result = await parseDocument(file, signal());
+    expect(result.format).toBe("pptx");
+    expect(result.pageCount).toBe(1);
+    expect(result.sources[0].label).toBe("Slide 1");
+    expect(result.sources[0].text).toContain("Price elasticity");
+  });
 });

@@ -1,7 +1,7 @@
 import { IngestionError } from "./errors";
 import { MAX_FILE_BYTES, MAX_DOCX_EXPANDED_BYTES } from "./limits";
 
-export function validateFile(file: File): "pdf" | "docx" | "txt" {
+export function validateFile(file: File): "pdf" | "docx" | "txt" | "pptx" {
   if (!file.size)
     throw new IngestionError("EMPTY_FILE", "The uploaded file is empty.");
   if (file.size > MAX_FILE_BYTES)
@@ -11,15 +11,25 @@ export function validateFile(file: File): "pdf" | "docx" | "txt" {
       413,
     );
   const extension = file.name.split(".").at(-1)?.toLowerCase();
-  if (extension !== "pdf" && extension !== "docx" && extension !== "txt")
+  if (
+    extension !== "pdf" &&
+    extension !== "docx" &&
+    extension !== "txt" &&
+    extension !== "pptx"
+  )
     throw new IngestionError(
       "UNSUPPORTED_FILE",
-      "Upload a PDF, DOCX, or UTF-8 TXT file.",
+      "Upload a PDF, PowerPoint (.pptx), DOCX, or UTF-8 TXT file.",
       415,
     );
   const mime = file.type.toLowerCase().split(";")[0];
   const allowed = {
     pdf: ["application/pdf"],
+    pptx: [
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/zip",
+      "application/octet-stream",
+    ],
     docx: [
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "application/zip",

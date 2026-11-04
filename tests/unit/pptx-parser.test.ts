@@ -1050,9 +1050,11 @@ describe("Image & OLE Equation Detection and Vision Math Transcription (Roadmap 
     it("returns empty array safely when no valid API key is present in environment", async () => {
       const originalGoogle = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
       const originalGemini = process.env.GEMINI_API_KEY;
+      const originalOpenRouter = process.env.OPENROUTER_API_KEY;
       try {
         delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
         delete process.env.GEMINI_API_KEY;
+        delete process.env.OPENROUTER_API_KEY;
 
         const results = await transcribeEquationImageWithGemini({
           imageBytes: new Uint8Array([1, 2, 3]),
@@ -1064,6 +1066,7 @@ describe("Image & OLE Equation Detection and Vision Math Transcription (Roadmap 
       } finally {
         if (originalGoogle !== undefined) process.env.GOOGLE_GENERATIVE_AI_API_KEY = originalGoogle;
         if (originalGemini !== undefined) process.env.GEMINI_API_KEY = originalGemini;
+        if (originalOpenRouter !== undefined) process.env.OPENROUTER_API_KEY = originalOpenRouter;
       }
     });
 
@@ -1120,6 +1123,44 @@ describe("Image & OLE Equation Detection and Vision Math Transcription (Roadmap 
       expect(deck.ocrEquations![0].latex).toBe("r_e = r_f + \\beta(r_m - r_f)");
       expect(deck.ommlEquations).toBeDefined();
       expect(deck.sources[0].text).toContain("$r_e = r_f + \\beta(r_m - r_f)$");
+    });
+
+    it("recovers vector WMF/EMF equations using altText math description and appends to slide text", async () => {
+      const zip = new JSZip();
+      zip.file("ppt/slides/slide1.xml", `
+        <p:sp xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <p:txBody>
+            <a:p><a:r><a:t>Cost of Capital: Capital Structure and Tax Shields in Practice</a:t></a:r></a:p>
+          </p:txBody>
+          <p:pic>
+            <p:nvPicPr>
+              <p:cNvPr id="2" name="MathType Equation 1" descr="WACC = (E/V)*R_E + (D/V)*R_D*(1 - T_C)"/>
+            </p:nvPicPr>
+            <p:blipFill>
+              <a:blip r:embed="rIdVector1"/>
+            </p:blipFill>
+          </p:pic>
+        </p:sp>
+      `);
+      zip.file("ppt/slides/_rels/slide1.xml.rels", `
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rIdVector1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.wmf"/>
+        </Relationships>
+      `);
+      zip.file("ppt/media/image1.wmf", Buffer.from([0x01, 0x00, 0x09, 0x00]));
+
+      const pptxBuffer = await zip.generateAsync({ type: "nodebuffer" });
+      const file = new File([new Uint8Array(pptxBuffer)], "lecture-vector.pptx", {
+        type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      });
+
+      const deck = await parseSlideDeck(file);
+
+      expect(deck.format).toBe("pptx");
+      expect(deck.ocrEquations).toBeDefined();
+      expect(deck.ocrEquations).toHaveLength(1);
+      expect(deck.ocrEquations![0].latex).toContain("WACC = (E/V)*R_E + (D/V)*R_D*(1 - T_C)");
+      expect(deck.sources[0].text).toContain("$WACC = (E/V)*R_E + (D/V)*R_D*(1 - T_C)$");
     });
   });
 });
