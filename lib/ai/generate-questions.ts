@@ -446,7 +446,9 @@ export function validateGeneratedStudy(
   if (!output.questions.length)
     throw new IngestionError(
       "NO_SUPPORTED_QUESTIONS",
-      "The source could not support questions with these settings. Try a broader focus, concept variants, or a different document.",
+      options.mode === "exact"
+        ? "Tài liệu này là slide bài giảng, không có sẵn câu hỏi trắc nghiệm nguyên văn (A, B, C, D). Vui lòng chọn phong cách 'Biến thể khái niệm' để AI tạo câu hỏi từ slide."
+        : "The source could not support questions with these settings. Try a broader focus, concept variants, or a different document.",
       422,
     );
 
@@ -768,7 +770,9 @@ export function validateGeneratedStudy(
       "NO_SUPPORTED_QUESTIONS",
       droppedByQualityGate > 0
         ? "All candidate questions were filtered by vision confidence or psychometric quality gates."
-        : "The source could not support questions with these settings. Try a broader focus, concept variants, or a different document.",
+        : options.mode === "exact"
+          ? "Tài liệu này là slide bài giảng, không có sẵn câu hỏi trắc nghiệm nguyên văn (A, B, C, D). Vui lòng chọn phong cách 'Biến thể khái niệm' để AI tạo câu hỏi từ slide."
+          : "The source could not support questions with these settings. Try a broader focus, concept variants, or a different document.",
       422,
     );
   }
@@ -1085,7 +1089,9 @@ export async function generateQuestions(
     batchQuestionCount: number,
     batchIndex: number,
     totalBatches: number,
+    overrideOptions?: IngestionOptions & { tier?: string },
   ) => {
+    const effectiveOptions = overrideOptions ?? options;
     const batchDoc: ParsedDocument = {
       ...document,
       sources: batchSources,
@@ -1093,22 +1099,22 @@ export async function generateQuestions(
     const batchFocus =
       totalBatches > 1
         ? [
-            options.focus,
+            effectiveOptions.focus,
             `Section batch ${batchIndex + 1} of ${totalBatches}: focus on distinct concepts from these source blocks.`,
           ]
             .filter(Boolean)
             .join(" — ")
             .slice(0, 300)
-        : options.focus;
+        : effectiveOptions.focus;
     const overGeneratedBatchCount = Math.min(
       45,
       computeOverGeneratedCount(batchQuestionCount),
     );
     const batchOptions: IngestionOptions & { tier?: string } = {
-      ...options,
+      ...effectiveOptions,
       questionCount: overGeneratedBatchCount,
       focus: batchFocus,
-      tier: options.tier,
+      tier: effectiveOptions.tier,
     };
     const batchPrompt = buildIngestionPrompt(batchDoc, batchOptions);
 
@@ -1280,6 +1286,41 @@ export async function generateQuestions(
             overGenTarget,
           );
 
+    let fellBackToVariants = false;
+    if (rawObject.questions.length === 0 && options.mode === "exact") {
+      console.warn(
+        "[generateQuestions] No verbatim MCQs found for mode=exact. Automatically falling back to mode=variants for lecture slides.",
+      );
+      const fallbackOptions = { ...options, mode: "variants" as const };
+      const fallbackSettled = await Promise.allSettled(
+        batchCounts.map((count, idx) =>
+          runBatch(
+            sourcePartitions[idx],
+            count,
+            idx,
+            batchCounts.length,
+            fallbackOptions,
+          ),
+        ),
+      );
+      const fallbackFulfilled = fallbackSettled.filter(
+        (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof runBatch>>> =>
+          r.status === "fulfilled",
+      );
+      if (fallbackFulfilled.length > 0) {
+        fellBackToVariants = true;
+        const fallbackResults = fallbackFulfilled.map((r) => r.value);
+        rawObject =
+          fallbackResults.length === 1
+            ? fallbackResults[0].object
+            : mergeAndDeduplicateBatches(
+                fallbackResults.map((r) => r.object),
+                overGenTarget,
+              );
+        batchResults.push(...fallbackResults);
+      }
+    }
+
     // Resolve optional cross-family blind verifier
     const explicitVerifier = isLanguageModelInstance(verificationConfig)
       ? verificationConfig
@@ -1397,9 +1438,17 @@ export async function generateQuestions(
       };
     }
 
-    const validated = validateGeneratedStudy(rawObject, document, options, {
+    const validationOptions = fellBackToVariants
+      ? { ...options, mode: "variants" as const }
+      : options;
+    const validated = validateGeneratedStudy(rawObject, document, validationOptions, {
       preSolved: wasPreSolved,
     });
+    if (fellBackToVariants) {
+      validated.warnings.push(
+        "Tài liệu không có sẵn câu hỏi trắc nghiệm nguyên văn; hệ thống đã tự động chuyển sang chế độ Biến thể khái niệm để tạo câu hỏi cho bạn.",
+      );
+    }
     if (budget.wasBudgeted) {
       validated.warnings.push(
         "Document was large; questions were synthesized from key conceptual sections to fit AI rate limits.",

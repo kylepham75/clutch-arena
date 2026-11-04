@@ -933,4 +933,65 @@ describe("structured generation", () => {
     expect(result.pack.questions[0].question).toContain("Candidate 1");
     expect(result.pack.questions[1].question).toContain("Candidate 4");
   });
+
+  it("automatically falls back from mode=exact to mode=variants when no verbatim MCQs are found in lecture slides", async () => {
+    let callCount = 0;
+    const model = {
+      specificationVersion: "v2" as const,
+      provider: "test",
+      modelId: "fixture",
+      supportedUrls: {},
+      doGenerate: vi.fn().mockImplementation(async (opts: any) => {
+        callCount++;
+        const promptStr = JSON.stringify(opts.prompt);
+        if (promptStr.includes('\\"mode\\":\\"exact\\"')) {
+          // Model returns empty questions array for lecture slides without pre-existing MCQs
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  title: "Lecture Slides",
+                  sourceKind: "lecture",
+                  questions: [],
+                  annotations: [],
+                  warnings: ["No multiple choice questions found in document."],
+                }),
+              },
+            ],
+            finishReason: "stop",
+            usage: { inputTokens: 50, outputTokens: 20, totalTokens: 70 },
+            warnings: [],
+          };
+        }
+
+        // Fallback call with mode=variants returns valid questions
+        return {
+          content: [{ type: "text", text: JSON.stringify(output()) }],
+          finishReason: "stop",
+          usage: { inputTokens: 100, outputTokens: 200, totalTokens: 300 },
+          warnings: [],
+        };
+      }),
+      doStream: async () => {
+        throw new Error("Streaming is not used by ingestion");
+      },
+    };
+
+    const result = await generateQuestions(
+      document,
+      ingestionOptionsSchema.parse({ mode: "exact", questionCount: 2 }),
+      new AbortController().signal,
+      model as any,
+      false, // Skip blind verifier for unit test
+    );
+
+    expect(callCount).toBe(2);
+    expect(result.pack.questions.length).toBeGreaterThan(0);
+    expect(
+      result.warnings.some(
+        (w) => w.includes("Biến thể khái niệm") || w.includes("variants"),
+      ),
+    ).toBe(true);
+  });
 });

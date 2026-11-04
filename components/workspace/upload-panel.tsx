@@ -526,6 +526,13 @@ export function UploadPanel({
                 <option value="variants">{t.upload.modeVariants}</option>
                 <option value="exact">{t.upload.modeExact}</option>
               </select>
+              {mode === "exact" && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                  {siteLang === "vi"
+                    ? "Lưu ý: Chế độ này chỉ trích xuất câu hỏi trắc nghiệm có sẵn trong đề thi. Với slide bài giảng, hãy chọn 'Biến thể khái niệm'."
+                    : "Note: This mode only extracts pre-existing questions from testbanks. For lecture slides, choose 'Concept variants'."}
+                </p>
+              )}
             </div>
 
             <div className="option-field">
@@ -574,6 +581,22 @@ export function UploadPanel({
                 }}
               >
                 {siteLang === "vi" ? "Mua Vé Cram Pass / Nâng Cấp Pro" : "Get Cram Pass or Upgrade to Pro"}
+              </Button>
+            )}
+            {error.code === "NO_SUPPORTED_QUESTIONS" && mode === "exact" && (
+              <Button
+                size="sm"
+                variant="default"
+                className="mt-2 text-xs"
+                onClick={() => {
+                  setMode("variants");
+                  setError(null);
+                  void handleSubmit("generate");
+                }}
+              >
+                {siteLang === "vi"
+                  ? "Chuyển sang 'Biến thể khái niệm' & Thử lại ngay"
+                  : "Switch to 'Concept variants' & Retry now"}
               </Button>
             )}
             {error.code === "AI_NOT_CONFIGURED" && (
