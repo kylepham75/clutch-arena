@@ -6553,9 +6553,9 @@ svg {
 
 /* Pricing & Tier Modal Dialog Styling */
 .pricing-dialog-content {
-  max-width: 1200px !important;
-  width: min(1200px, calc(100vw - 32px)) !important;
-  max-height: 92vh !important;
+  max-width: 1480px !important;
+  width: min(1480px, calc(100vw - 32px)) !important;
+  max-height: 94vh !important;
   padding: 24px 28px !important;
   background: #fafbf8;
   color: #1c1917;
@@ -6572,11 +6572,26 @@ svg {
   box-shadow: 0 25px 80px -15px rgba(0, 0, 0, 0.65);
 }
 
+@media (min-width: 1600px) {
+  .pricing-dialog-content {
+    max-width: 1540px !important;
+    width: min(1540px, calc(100vw - 40px)) !important;
+    padding: 28px 32px !important;
+  }
+}
+
+@media (max-width: 1280px) {
+  .pricing-dialog-content {
+    padding: 20px 18px !important;
+    width: calc(100vw - 24px) !important;
+  }
+}
+
 @media (max-width: 768px) {
   .pricing-dialog-content {
     padding: 16px 14px !important;
-    width: calc(100vw - 20px) !important;
-    max-height: 94vh !important;
+    width: calc(100vw - 16px) !important;
+    max-height: 95vh !important;
     border-radius: 16px;
   }
 }

@@ -624,19 +624,20 @@ export function PricingModal({
                       {isVi ? selectedPlan.nameVi : selectedPlan.nameEn} ·{" "}
                       {payosOrder
                         ? `${payosOrder.amount.toLocaleString(isVi ? "vi-VN" : "en-US")}đ`
-                        : getPlanRegionalPrice(selectedPlan.id, "VN").formatted}
-                      {!payosOrder &&
-                      !getPlanRegionalPrice(selectedPlan.id, "VN").formatted.includes("/") ? (
-                        selectedPlan.cycle === "semester"
+                        : getPlanRegionalPrice(selectedPlan.id, "VN").formatted.split("/")[0]}
+                      {selectedPlan.cycle === "semester"
+                        ? isVi
+                          ? " / 4 tháng"
+                          : " / 4 months"
+                        : selectedPlan.cycle === "monthly"
                           ? isVi
-                            ? " / 4 tháng"
-                            : " / 4 months"
-                          : selectedPlan.cycle === "monthly"
+                            ? " / tháng"
+                            : " / mo"
+                          : selectedPlan.cycle === "one_time"
                             ? isVi
-                              ? " / tháng"
-                              : " / mo"
-                            : ""
-                      ) : null}
+                              ? " / 7 ngày"
+                              : " / 7 days"
+                            : ""}
                     </div>
                   </div>
 
@@ -738,20 +739,22 @@ export function PricingModal({
                     {isVi ? selectedPlan.nameVi : selectedPlan.nameEn}
                   </div>
                   <div className="text-2xl font-bold text-stone-900 dark:text-stone-100 mt-0.5">
-                    {getPlanRegionalPrice(selectedPlan.id, "ROW").formatted}
-                    {!getPlanRegionalPrice(selectedPlan.id, "ROW").formatted.includes("/") && (
-                      <span className="text-sm font-semibold text-stone-500 ml-1">
-                        {selectedPlan.cycle === "semester"
+                    {getPlanRegionalPrice(selectedPlan.id, "ROW").formatted.split("/")[0]}
+                    <span className="text-sm font-semibold text-stone-500 ml-1">
+                      {selectedPlan.cycle === "semester"
+                        ? isVi
+                          ? " / 4 tháng"
+                          : " / 4 months"
+                        : selectedPlan.cycle === "monthly"
                           ? isVi
-                            ? " / 4 tháng"
-                            : " / 4 months"
-                          : selectedPlan.cycle === "monthly"
+                            ? " / tháng"
+                            : " / mo"
+                          : selectedPlan.cycle === "one_time"
                             ? isVi
-                              ? " / tháng"
-                              : " / mo"
+                              ? " / 7 ngày"
+                              : " / 7 days"
                             : ""}
-                      </span>
-                    )}
+                    </span>
                   </div>
                   <div className="text-xs text-stone-500 mt-1">
                     {selectedPlan.cycle === "one_time"
@@ -862,7 +865,7 @@ export function PricingModal({
           </div>
         ) : (
           /* 5-Plan Comparison Grid */
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 xl:gap-3.5 2xl:gap-4">
             {PRICING_PLANS.map((plan) => {
               const isCurrent = tier === plan.id;
               const isRecommended = plan.id === "pro";
@@ -905,11 +908,31 @@ export function PricingModal({
               }
 
               const regionalPrice = getPlanRegionalPrice(plan.id, billingRegion);
+              const priceRaw = regionalPrice.formatted;
+              const displayPrice = priceRaw.includes("/")
+                ? priceRaw.split("/")[0]
+                : priceRaw;
+              const displayUnit =
+                plan.cycle === "free"
+                  ? isVi
+                    ? "/ Vĩnh viễn"
+                    : "/ Forever"
+                  : plan.cycle === "one_time"
+                    ? isVi
+                      ? "/ 7 ngày"
+                      : "/ 7 days"
+                    : plan.cycle === "semester"
+                      ? isVi
+                        ? "/ Kỳ"
+                        : "/ Sem"
+                      : isVi
+                        ? "/ Tháng"
+                        : "/ Mo";
 
               return (
                 <div
                   key={plan.id}
-                  className={`tier-card relative flex flex-col justify-between p-4 sm:p-5 rounded-2xl border transition-all min-w-0 overflow-hidden ${
+                  className={`tier-card relative flex flex-col justify-between p-3.5 sm:p-4 2xl:p-5 rounded-2xl border transition-all min-w-0 overflow-hidden ${
                     isRecommended
                       ? "border-amber-400 dark:border-amber-500/70 bg-gradient-to-b from-amber-50/70 to-white dark:from-amber-950/20 dark:to-stone-900 shadow-md ring-1 ring-amber-300 dark:ring-amber-500/30"
                       : "border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/60 shadow-xs"
@@ -940,11 +963,11 @@ export function PricingModal({
                       </div>
                     </div>
 
-                    <h3 className="font-extrabold text-base sm:text-lg text-stone-900 dark:text-stone-100 tracking-tight">
+                    <h3 className="font-extrabold text-base sm:text-[17px] 2xl:text-lg text-stone-900 dark:text-stone-100 tracking-tight leading-snug">
                       {isVi ? plan.nameVi : plan.nameEn}
                     </h3>
 
-                    <p className="text-xs text-stone-500 dark:text-stone-400 min-h-[34px] line-clamp-2 leading-relaxed mt-1">
+                    <p className="text-xs text-stone-500 dark:text-stone-400 min-h-[36px] line-clamp-2 leading-relaxed mt-1">
                       {isVi ? plan.taglineVi : plan.taglineEn}
                     </p>
 
@@ -952,27 +975,11 @@ export function PricingModal({
                     <div className="my-3 py-2 px-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/40 border border-stone-200/70 dark:border-stone-800">
                       <div className="flex items-baseline gap-1.5 flex-wrap">
                         <span className="text-xl sm:text-2xl font-black text-stone-900 dark:text-stone-50 tracking-tight whitespace-nowrap">
-                          {regionalPrice.formatted}
+                          {displayPrice}
                         </span>
-                        {!regionalPrice.formatted.includes("/") && (
-                          <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wide">
-                            {plan.cycle === "free"
-                              ? isVi
-                                ? "/ Vĩnh viễn"
-                                : "/ Forever"
-                              : plan.cycle === "one_time"
-                                ? isVi
-                                  ? "/ 7 ngày"
-                                  : "/ 7 days"
-                                : plan.cycle === "semester"
-                                  ? isVi
-                                    ? "/ 4 tháng"
-                                    : "/ 4 months"
-                                  : isVi
-                                    ? "/ Tháng"
-                                    : "/ Month"}
-                          </span>
-                        )}
+                        <span className="text-[10px] sm:text-[11px] font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wide whitespace-nowrap">
+                          {displayUnit}
+                        </span>
                       </div>
 
                       {plan.id === "pro" && (
@@ -991,13 +998,9 @@ export function PricingModal({
 
                       <div className="text-[10px] text-stone-500 dark:text-stone-400 font-medium mt-0.5">
                         {plan.id === "pro"
-                          ? billingRegion === "VN"
-                            ? isVi
-                              ? "Trọn kỳ học (Tiết kiệm 31%)"
-                              : "Full semester pass (Save 31%)"
-                            : isVi
-                              ? "Trọn kỳ học (Tiết kiệm 27%)"
-                              : "Full semester pass (Save 27%)"
+                          ? isVi
+                            ? "Trọn kỳ học 4 tháng"
+                            : "Full 4-month semester"
                           : plan.cycle === "free"
                             ? isVi
                               ? "Không cần tài khoản thẻ"
