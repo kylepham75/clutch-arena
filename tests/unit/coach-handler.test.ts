@@ -227,4 +227,32 @@ describe("coach HTTP handler", () => {
     );
     expect(promptEn).toContain("English");
   });
+
+  it("accurately targets Page 18 without substring collision on Page 1", () => {
+    const deckSources = Array.from({ length: 25 }, (_, i) => ({
+      id: `slide-${i + 1}`,
+      label: `Page ${i + 1}`,
+      text: `Slide content for topic on page ${i + 1}.`,
+    }));
+
+    // Test selectCoachContextSources with full citation string
+    const selected = selectCoachContextSources(
+      deckSources,
+      {
+        type: "explain",
+        question: "What is preferred stock (cổ phiếu ưu đãi)?",
+        options: ["A", "B", "C", "D"],
+        correctIndex: 2,
+        selected: 0,
+        explanation: "Preferred stock has features of both equity and debt",
+        topic: "Preferred Stock",
+        rule: "Preferred stock dividend is fixed",
+        sourceId: "FOW18_CF_SS2_Slides_Chapter 9.pdf · Page 18",
+      },
+      "Tại sao đáp án C đúng?",
+    );
+
+    expect(selected.some((s) => s.id === "slide-18")).toBe(true);
+    expect(selected.some((s) => s.id === "slide-1")).toBe(false);
+  });
 });

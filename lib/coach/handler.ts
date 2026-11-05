@@ -40,12 +40,23 @@ export function selectCoachContextSources(
   if (targetIds.size > 0) {
     const selectedIndices = new Set<number>();
     sources.forEach((s, idx) => {
-      if (
+      const isMatch =
         targetIds.has(s.id) ||
-        [...targetIds].some(
-          (id) => s.id === `doc0_${id}` || s.id.endsWith(`_${id}`),
-        )
-      ) {
+        targetIds.has(s.label) ||
+        [...targetIds].some((id) => {
+          if (s.id === `doc0_${id}` || s.id.endsWith(`_${id}`) || id.endsWith(`_${s.id}`)) return true;
+          const cleanId = id.includes("·") ? id.split("·").pop()!.trim() : id.trim();
+          if (s.label.trim().toLowerCase() === cleanId.toLowerCase()) return true;
+          const idNum =
+            cleanId.match(/\b(?:page|slide|trang|paragraph|lines?|p\.?)\s*(\d+)\b/i)?.[1] ||
+            cleanId.match(/\b(\d+)\b/)?.[1];
+          const sNum =
+            s.label.match(/\b(?:page|slide|trang|paragraph|lines?|p\.?)\s*(\d+)\b/i)?.[1] ||
+            s.label.match(/\b(\d+)\b/)?.[1];
+          return Boolean(idNum && sNum && idNum === sNum);
+        });
+
+      if (isMatch) {
         selectedIndices.add(idx);
         if (idx > 0) selectedIndices.add(idx - 1);
         if (idx < sources.length - 1) selectedIndices.add(idx + 1);

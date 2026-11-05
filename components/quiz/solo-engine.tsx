@@ -85,6 +85,7 @@ import { FeedbackDialog } from "@/components/workspace/feedback-dialog";
 import type { FeedbackCategory } from "@/lib/schemas/telemetry";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
 import type { CoachFocus } from "@/lib/schemas/coach";
+import { findSourceBlockByCitation } from "@/lib/game/citation-matching";
 
 type Panel = "help" | "progress" | "leave" | null;
 
@@ -420,16 +421,11 @@ export function SoloEngine({
   const handleCitationClick = useCallback(
     (citationOrId: string, excerpt?: string) => {
       setShowDocViewer(true);
-      const directMatch = document?.sources.find((b) => b.id === citationOrId);
-      if (directMatch) {
-        setHighlightedSourceId(directMatch.id);
+      const matched = findSourceBlockByCitation(document?.sources, citationOrId);
+      if (matched) {
+        setHighlightedSourceId(matched.id);
       } else {
-        const fuzzyMatch = document?.sources.find(
-          (b) =>
-            b.label.toLowerCase().includes(citationOrId.toLowerCase()) ||
-            citationOrId.toLowerCase().includes(b.label.toLowerCase()),
-        );
-        setHighlightedSourceId(fuzzyMatch ? fuzzyMatch.id : citationOrId);
+        setHighlightedSourceId(citationOrId);
       }
       if (excerpt) setHighlightedExcerpt(excerpt);
     },
@@ -439,12 +435,11 @@ export function SoloEngine({
   const handleExplainMissWithCoach = useCallback(() => {
     if (!current || !attempt || !pack) return;
     const meta = pack.metadata[current.id];
-    const sourceBlock =
-      document?.sources.find(
-        (b) =>
-          meta?.citation &&
-          (b.label.includes(meta.citation) || meta.citation.includes(b.label)),
-      ) || document?.sources[0];
+    const sourceBlock = findSourceBlockByCitation(
+      document?.sources,
+      meta?.citation,
+      meta?.rule || current.question,
+    );
 
     handleAskCoach({
       type: "explain",
@@ -473,10 +468,10 @@ export function SoloEngine({
           : "needs-review"
         : "correct";
 
-      const sourceBlock = document?.sources.find(
-        (b) =>
-          meta?.citation &&
-          (b.label.includes(meta.citation) || meta.citation.includes(b.label)),
+      const sourceBlock = findSourceBlockByCitation(
+        document?.sources,
+        meta?.citation,
+        meta?.rule || q.explanation,
       );
 
       return {
