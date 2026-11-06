@@ -10,6 +10,7 @@ import {
   parseBillingRegion,
   detectBillingRegionFromCountry,
   detectBillingRegionFromHeaders,
+  getAuthoritativeBillingRegion,
   getBillingRegion,
   getBillingRegionClient,
   setBillingRegionClient,
@@ -67,9 +68,45 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
       expect(detectBillingRegionFromHeaders({ [REGION_HEADER_VERCEL]: "vn" })).toBe("VN");
     });
 
-    it("resolves 'VN' when cf-ipcountry is 'VN'", () => {
-      expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "VN" })).toBe("VN");
-      expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "vn" })).toBe("VN");
+    it("resolves 'VN' when cf-ipcountry is 'VN' and verified with cf-ray", () => {
+      expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "VN", "cf-ray": "mock-ray-1" })).toBe("VN");
+      expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "vn", "cf-ray": "mock-ray-2" })).toBe("VN");
+    });
+
+    it("trusts cf-ipcountry when verified via TRUST_CLOUDFLARE_HEADERS === 'true'", () => {
+      const origTrust = process.env.TRUST_CLOUDFLARE_HEADERS;
+      try {
+        process.env.TRUST_CLOUDFLARE_HEADERS = "true";
+        expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "VN" })).toBe("VN");
+        expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "vn" })).toBe("VN");
+      } finally {
+        process.env.TRUST_CLOUDFLARE_HEADERS = origTrust;
+      }
+    });
+
+    it("rejects unverified cf-ipcountry when cf-ray is missing (defaults to ROW)", () => {
+      expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "VN" })).toBe("ROW");
+      expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "vn" })).toBe("ROW");
+    });
+
+    it("prioritizes x-vercel-ip-country over cf-ipcountry even if cf-ipcountry is accompanied by cf-ray", () => {
+      // Vercel is US, Cloudflare claims VN
+      expect(
+        detectBillingRegionFromHeaders({
+          [REGION_HEADER_VERCEL]: "US",
+          [REGION_HEADER_CLOUDFLARE]: "VN",
+          "cf-ray": "mock-ray-test",
+        }),
+      ).toBe("ROW");
+
+      // Vercel is VN, Cloudflare claims US
+      expect(
+        detectBillingRegionFromHeaders({
+          [REGION_HEADER_VERCEL]: "VN",
+          [REGION_HEADER_CLOUDFLARE]: "US",
+          "cf-ray": "mock-ray-test",
+        }),
+      ).toBe("VN");
     });
 
     it("resolves 'VN' when x-clutch-region is 'VN'", () => {
@@ -82,6 +119,7 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
         [CLUTCH_REGION_HEADER]: "ROW",
         [REGION_HEADER_VERCEL]: "VN",
         [REGION_HEADER_CLOUDFLARE]: "VN",
+        "cf-ray": "mock-ray-3",
       };
       expect(detectBillingRegionFromHeaders(headers)).toBe("ROW");
     });
@@ -106,7 +144,7 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
 
     it("returns 'ROW' for non-VN countries in Geo-IP headers", () => {
       expect(detectBillingRegionFromHeaders({ [REGION_HEADER_VERCEL]: "US" })).toBe("ROW");
-      expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "SG" })).toBe("ROW");
+      expect(detectBillingRegionFromHeaders({ [REGION_HEADER_CLOUDFLARE]: "SG", "cf-ray": "mock-ray-4" })).toBe("ROW");
     });
 
     it("supports Headers web standard instance", () => {
@@ -126,7 +164,7 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
 
     it("supports plain object records with case-insensitive header keys", () => {
       expect(detectBillingRegionFromHeaders({ "X-Vercel-IP-Country": "VN" })).toBe("VN");
-      expect(detectBillingRegionFromHeaders({ "CF-IPCountry": "VN" })).toBe("VN");
+      expect(detectBillingRegionFromHeaders({ "CF-IPCountry": "VN", "CF-Ray": "mock-ray-5" })).toBe("VN");
       expect(detectBillingRegionFromHeaders({ "X-Clutch-Region": "VN" })).toBe("VN");
     });
 
@@ -272,12 +310,19 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
         }),
       ).toBe("VN");
 
-      // Cloudflare Geo-IP
+      // Cloudflare Geo-IP (verified with cf-ray)
+      expect(
+        getBillingRegion({
+          headers: { [REGION_HEADER_CLOUDFLARE]: "VN", "cf-ray": "mock-ray-6" },
+        }),
+      ).toBe("VN");
+
+      // Cloudflare Geo-IP (unverified without cf-ray falls back to ROW)
       expect(
         getBillingRegion({
           headers: { [REGION_HEADER_CLOUDFLARE]: "VN" },
         }),
-      ).toBe("VN");
+      ).toBe("ROW");
 
       // Foreign country
       expect(
@@ -303,6 +348,86 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
       expect(() => getBillingRegion(undefined)).not.toThrow();
       expect(() => getBillingRegion(false)).not.toThrow();
       expect(() => getBillingRegion([])).not.toThrow();
+    });
+
+    it("getAuthoritativeBillingRegion and getBillingRegion under NODE_ENV === 'production' prioritize Edge Geo-IP over spoofed cookie or x-clutch-region header", () => {
+      const originalNodeEnv = process.env.NODE_ENV;
+      try {
+        // US user spoofing VN cookie and x-clutch-region header
+        const spoofedVnReq = new NextRequest("http://localhost:3000/api/generate", {
+          headers: {
+            [REGION_HEADER_VERCEL]: "US",
+            [CLUTCH_REGION_HEADER]: "VN",
+            cookie: `${CLUTCH_REGION_COOKIE}=VN`,
+          },
+        });
+
+        // VN user spoofing ROW cookie and x-clutch-region header via Cloudflare Geo-IP (verified with cf-ray)
+        const spoofedRowReq = new NextRequest("http://localhost:3000/api/generate", {
+          headers: {
+            [REGION_HEADER_CLOUDFLARE]: "VN",
+            "cf-ray": "mock-ray-7",
+            [CLUTCH_REGION_HEADER]: "ROW",
+            cookie: `${CLUTCH_REGION_COOKIE}=ROW`,
+          },
+        });
+
+        // getAuthoritativeBillingRegion always prioritizes Edge Geo-IP
+        expect(getAuthoritativeBillingRegion(spoofedVnReq)).toBe("ROW");
+        expect(getAuthoritativeBillingRegion(spoofedRowReq)).toBe("VN");
+
+        // Under NODE_ENV === "production", getBillingRegion, detectBillingRegionFromHeaders, and middleware prioritize Edge Geo-IP
+        (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+
+        expect(getBillingRegion(spoofedVnReq)).toBe("ROW");
+        expect(getBillingRegion(spoofedRowReq)).toBe("VN");
+        expect(detectBillingRegionFromHeaders(spoofedVnReq.headers)).toBe("ROW");
+        expect(detectBillingRegionFromHeaders(spoofedRowReq.headers)).toBe("VN");
+
+        const mwRes = middleware(spoofedVnReq);
+        expect(mwRes.headers.get("x-middleware-request-x-clutch-region")).toBe("ROW");
+        expect(mwRes.cookies.get(CLUTCH_REGION_COOKIE)?.value).toBe("ROW");
+      } finally {
+        (process.env as Record<string, string | undefined>).NODE_ENV = originalNodeEnv;
+      }
+    });
+
+    it("SA2-06: getAuthoritativeBillingRegion prioritizes x-vercel-ip-country over cf-ipcountry and rejects unverified cf-ipcountry", () => {
+      // 1. x-vercel-ip-country takes priority over verified cf-ipcountry
+      const vercelPriorityReq = {
+        headers: {
+          [REGION_HEADER_VERCEL]: "US",
+          [REGION_HEADER_CLOUDFLARE]: "VN",
+          "cf-ray": "mock-ray-test",
+        },
+      };
+      expect(getAuthoritativeBillingRegion(vercelPriorityReq)).toBe("ROW");
+
+      // 2. Unverified cf-ipcountry without cf-ray is rejected
+      const unverifiedCfReq = {
+        headers: {
+          [REGION_HEADER_CLOUDFLARE]: "VN",
+        },
+      };
+      expect(getAuthoritativeBillingRegion(unverifiedCfReq)).toBe("ROW");
+
+      // 3. Verified cf-ipcountry with cf-ray is trusted when vercel header absent
+      const verifiedCfReq = {
+        headers: {
+          [REGION_HEADER_CLOUDFLARE]: "VN",
+          "cf-ray": "mock-ray-test",
+        },
+      };
+      expect(getAuthoritativeBillingRegion(verifiedCfReq)).toBe("VN");
+
+      // 4. Verified cf-ipcountry via TRUST_CLOUDFLARE_HEADERS === 'true'
+      const origTrust = process.env.TRUST_CLOUDFLARE_HEADERS;
+      try {
+        process.env.TRUST_CLOUDFLARE_HEADERS = "true";
+        expect(getAuthoritativeBillingRegion(unverifiedCfReq)).toBe("VN");
+      } finally {
+        process.env.TRUST_CLOUDFLARE_HEADERS = origTrust;
+      }
     });
   });
 
@@ -587,7 +712,21 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
       expect(setCookie?.value).toBe("VN");
     });
 
-    it("respects Cloudflare cf-ipcountry header in middleware", () => {
+    it("respects verified Cloudflare cf-ipcountry header in middleware", () => {
+      const req = new NextRequest("http://localhost:3000/pricing", {
+        headers: {
+          [REGION_HEADER_CLOUDFLARE]: "VN",
+          "cf-ray": "mock-ray-mw",
+        },
+      });
+
+      const res = middleware(req);
+
+      expect(res.headers.get("x-middleware-request-x-clutch-region")).toBe("VN");
+      expect(res.cookies.get(CLUTCH_REGION_COOKIE)?.value).toBe("VN");
+    });
+
+    it("ignores unverified cf-ipcountry in middleware when cf-ray is absent (defaults to ROW)", () => {
       const req = new NextRequest("http://localhost:3000/pricing", {
         headers: {
           [REGION_HEADER_CLOUDFLARE]: "VN",
@@ -596,8 +735,8 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
 
       const res = middleware(req);
 
-      expect(res.headers.get("x-middleware-request-x-clutch-region")).toBe("VN");
-      expect(res.cookies.get(CLUTCH_REGION_COOKIE)?.value).toBe("VN");
+      expect(res.headers.get("x-middleware-request-x-clutch-region")).toBe("ROW");
+      expect(res.cookies.get(CLUTCH_REGION_COOKIE)?.value).toBe("ROW");
     });
 
     it("respects explicit x-clutch-region override header in middleware", () => {

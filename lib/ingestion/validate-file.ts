@@ -115,6 +115,28 @@ export function validateDocxArchive(bytes: Buffer) {
         "The expanded DOCX is too large. Split it into smaller documents.",
         413,
       );
+    const localHeaderOffset = bytes.readUInt32LE(offset + 42);
+    if (
+      localHeaderOffset + 30 > bytes.length ||
+      bytes.readUInt32LE(localHeaderOffset) !== 0x04034b50
+    ) {
+      throw invalid();
+    }
+    const localFlags = bytes.readUInt16LE(localHeaderOffset + 6);
+    const localSize = bytes.readUInt32LE(localHeaderOffset + 22);
+    const hasDataDescriptor = Boolean((flags & 8) || (localFlags & 8));
+    if (!hasDataDescriptor && localSize !== 0) {
+      if (localSize > MAX_DOCX_EXPANDED_BYTES || localSize > size) {
+        throw new IngestionError(
+          "DOCUMENT_TOO_LARGE",
+          "The expanded DOCX is too large. Split it into smaller documents.",
+          413,
+        );
+      }
+      if (localSize !== size) {
+        throw invalid();
+      }
+    }
     offset = next;
   }
   if (
@@ -124,3 +146,106 @@ export function validateDocxArchive(bytes: Buffer) {
   )
     throw invalid();
 }
+
+export function validatePptxArchive(bytes: Buffer): void {
+  const invalid = () =>
+    new IngestionError(
+      "INVALID_PPTX",
+      "This file does not contain a valid PowerPoint presentation.",
+      422,
+    );
+  if (bytes.length < 22 || bytes.readUInt32LE(0) !== 0x04034b50)
+    throw invalid();
+  let end = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+    if (
+      bytes.readUInt32LE(i) === 0x06054b50 &&
+      i + 22 + bytes.readUInt16LE(i + 20) === bytes.length
+    ) {
+      end = i;
+      break;
+    }
+  }
+  if (
+    end < 0 ||
+    bytes.readUInt16LE(end + 4) !== 0 ||
+    bytes.readUInt16LE(end + 6) !== 0
+  )
+    throw invalid();
+  const entries = bytes.readUInt16LE(end + 10);
+  let offset = bytes.readUInt32LE(end + 16);
+  const directoryEnd = offset + bytes.readUInt32LE(end + 12);
+  if (
+    entries > 2000 ||
+    entries !== bytes.readUInt16LE(end + 8) ||
+    directoryEnd !== end
+  )
+    throw invalid();
+  const names = new Set<string>();
+  let expanded = 0;
+  const maxExpandedBytes = MAX_DOCX_EXPANDED_BYTES * 2.5;
+  for (let i = 0; i < entries; i++) {
+    if (offset + 46 > end || bytes.readUInt32LE(offset) !== 0x02014b50)
+      throw invalid();
+    const flags = bytes.readUInt16LE(offset + 8);
+    const size = bytes.readUInt32LE(offset + 24);
+    const nameLength = bytes.readUInt16LE(offset + 28);
+    const next =
+      offset +
+      46 +
+      nameLength +
+      bytes.readUInt16LE(offset + 30) +
+      bytes.readUInt16LE(offset + 32);
+    if (next > end || flags & 1 || size === 0xffffffff) throw invalid();
+    const name = bytes.toString("utf8", offset + 46, offset + 46 + nameLength);
+    if (
+      names.has(name) ||
+      name.includes("..") ||
+      name.startsWith("/") ||
+      name.includes("\\")
+    )
+      throw invalid();
+    names.add(name);
+    expanded += size;
+    if (
+      expanded > maxExpandedBytes ||
+      ((name.endsWith(".xml") || name.endsWith(".rels")) &&
+        size > MAX_DOCX_EXPANDED_BYTES)
+    )
+      throw new IngestionError(
+        "DOCUMENT_TOO_LARGE",
+        "The expanded PowerPoint archive is too large. Split the presentation into smaller decks.",
+        413,
+      );
+    const localHeaderOffset = bytes.readUInt32LE(offset + 42);
+    if (
+      localHeaderOffset + 30 > bytes.length ||
+      bytes.readUInt32LE(localHeaderOffset) !== 0x04034b50
+    ) {
+      throw invalid();
+    }
+    const localFlags = bytes.readUInt16LE(localHeaderOffset + 6);
+    const localSize = bytes.readUInt32LE(localHeaderOffset + 22);
+    const hasDataDescriptor = Boolean((flags & 8) || (localFlags & 8));
+    if (!hasDataDescriptor && localSize !== 0) {
+      if (
+        localSize > maxExpandedBytes ||
+        ((name.endsWith(".xml") || name.endsWith(".rels")) &&
+          localSize > MAX_DOCX_EXPANDED_BYTES) ||
+        localSize > size
+      ) {
+        throw new IngestionError(
+          "DOCUMENT_TOO_LARGE",
+          "The expanded PowerPoint archive is too large. Split the presentation into smaller decks.",
+          413,
+        );
+      }
+      if (localSize !== size) {
+        throw invalid();
+      }
+    }
+    offset = next;
+  }
+  if (offset !== end) throw invalid();
+}
+

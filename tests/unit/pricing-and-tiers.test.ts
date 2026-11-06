@@ -21,6 +21,9 @@ import {
   getStoredUserTier,
   setStoredUserTier,
   getStoredTierExpires,
+  clearStoredUserTier,
+  USER_TIER_STORAGE_KEY,
+  USER_TIER_EXPIRES_KEY,
   calculateTierExpiration,
   syncUserTierToCloud,
   fetchCloudUserTier,
@@ -29,7 +32,11 @@ import {
   consumeUnlockedRemixRun,
   evaluateCogsDegradation,
   formatDeckCreditsCounter,
+  normalizeTier,
+  resolveTierFromProfileRecord,
+  getRegionalCogsCeiling,
 } from "@/lib/pricing/tiers";
+import { verifyAndClampClientTier } from "@/hooks/use-user-tier";
 import {
   checkAndReserveDeckQuota,
   recordDeckGenerationCogs,
@@ -313,6 +320,66 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(cloudTier).toHaveProperty("tier");
     expect(cloudTier).toHaveProperty("expiresAt");
   });
+
+  it("normalizes pro_monthly variants to 'pro_monthly' and preserves pro_monthly in profile resolution", () => {
+    expect(normalizeTier("pro_monthly")).toBe("pro_monthly");
+    expect(normalizeTier("pro-monthly")).toBe("pro_monthly");
+    expect(normalizeTier("monthly")).toBe("pro_monthly");
+    expect(normalizeTier("pro_monthly")).not.toBe("pro");
+
+    const futureDate = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString();
+    expect(
+      resolveTierFromProfileRecord({
+        tier: "pro_monthly",
+        tier_expires_at: futureDate,
+      }),
+    ).toEqual({
+      tier: "pro_monthly",
+      expiresAt: futureDate,
+    });
+  });
+
+  it("resolveTierFromProfileRecord returns null for an expired record even if updated_at is newer", () => {
+    const expiredExp = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    const recentUpdate = new Date(Date.now() - 1 * 60 * 1000).toISOString();
+
+    expect(
+      resolveTierFromProfileRecord({
+        tier: "pro",
+        tier_expires_at: expiredExp,
+        updated_at: recentUpdate,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveTierFromProfileRecord({
+        tier: "cram_pass",
+        tier_expires_at: expiredExp,
+        updated_at: recentUpdate,
+      }),
+    ).toBeNull();
+  });
+
+  it("prevents setStoredUserTier('contender') from overwriting an active unexpired paid tier in localStorage", () => {
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    setStoredUserTier("pro_monthly", futureDate);
+    expect(getStoredUserTier()).toBe("pro_monthly");
+    expect(getStoredTierExpires()).toBe(futureDate);
+
+    // Attempt to downgrade to contender while paid tier is still active and unexpired
+    setStoredUserTier("contender");
+    expect(getStoredUserTier()).toBe("pro_monthly");
+    expect(getStoredTierExpires()).toBe(futureDate);
+  });
+
+  it("resolves regional COGS ceilings accurately via getRegionalCogsCeiling", () => {
+    expect(getRegionalCogsCeiling("pro_monthly", "VN")).toBe(0.75);
+    expect(getRegionalCogsCeiling("pro_monthly", "ROW")).toBe(2.25);
+    expect(getRegionalCogsCeiling(TIER_LIMITS.pro_monthly.cogsCeilingUsd, "VN")).toBe(0.75);
+    expect(getRegionalCogsCeiling(TIER_LIMITS.pro_monthly.cogsCeilingUsd, "ROW")).toBe(2.25);
+    expect(getRegionalCogsCeiling(1.5, "VN")).toBe(1.5);
+    expect(getRegionalCogsCeiling(1.5, "ROW")).toBe(1.5);
+  });
 });
 
 describe("Cloud Tier Sync & Admin Profile Overrides", () => {
@@ -382,7 +449,7 @@ describe("Cloud Tier Sync & Admin Profile Overrides", () => {
     expect(getStoredUserTier()).toBe("cram_pass");
   });
 
-  it("profiles updated after expiration returns the paid tier", async () => {
+  it("profiles updated after expiration does not revive paid tier and resolves to contender", async () => {
     const expiredExp = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
     const recentAdminUpdate = new Date(Date.now() - 1 * 60 * 1000).toISOString();
 
@@ -396,12 +463,9 @@ describe("Cloud Tier Sync & Admin Profile Overrides", () => {
     });
 
     const result = await fetchCloudUserTier();
-    expect(result.tier).toBe("pro");
-    expect(result.isExpired).toBe(false);
-    expect(result.expiresAt).not.toBeNull();
-    const expMs = new Date(result.expiresAt!).getTime();
-    expect(expMs).toBeGreaterThan(Date.now());
-    expect(getStoredUserTier()).toBe("pro");
+    expect(result.tier).toBe("contender");
+    expect(result.expiresAt).toBeNull();
+    expect(getStoredUserTier()).toBe("contender");
   });
 
   it("verifyAuthToken falls through expired user_subscriptions to active profiles", async () => {
@@ -459,7 +523,7 @@ describe("Cloud Tier Sync & Admin Profile Overrides", () => {
     }
   });
 
-  it("verifyAuthToken treats profiles updated after expiration as active manual grant", async () => {
+  it("verifyAuthToken falls back to contender when profiles has expired tier even if updated_at is newer", async () => {
     const expiredExp = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
     const recentAdminUpdate = new Date(Date.now() - 1 * 60 * 1000).toISOString();
 
@@ -481,10 +545,7 @@ describe("Cloud Tier Sync & Admin Profile Overrides", () => {
     const authResult = await verifyAuthToken(req);
     expect(authResult.authenticated).toBe(true);
     if (authResult.authenticated) {
-      expect(authResult.tier).toBe("pro");
-      expect(authResult.tierExpiresAt).not.toBeNull();
-      const expMs = new Date(authResult.tierExpiresAt!).getTime();
-      expect(expMs).toBeGreaterThan(Date.now());
+      expect(authResult.tier).toBe("contender");
     }
   });
 });
@@ -1030,6 +1091,145 @@ describe("Pre-Flight COGS Ceiling & Progressive 4-Tier Degradation Ladder", () =
     expect(ledger.cogsReservedUsd).toBe(0);
     expect(cogsStatus.spentUsd).toBe(0.025);
     expect(cogsStatus.mode).toBe("full");
+  });
+});
+
+describe("Client Tier Spoofing Prevention & Sign-Out Cleanup (SA2-22)", () => {
+  let mockStorage: Record<string, string> = {};
+
+  beforeEach(() => {
+    mockStorage = {};
+    const storageMock = {
+      getItem: (k: string) => mockStorage[k] ?? null,
+      setItem: (k: string, v: string) => {
+        mockStorage[k] = v;
+      },
+      removeItem: (k: string) => {
+        delete mockStorage[k];
+      },
+      clear: () => {
+        mockStorage = {};
+      },
+    };
+
+    (globalThis as any).window = {
+      dispatchEvent: vi.fn(),
+    };
+    (globalThis as any).localStorage = storageMock;
+    mockBrowserSupabase = null;
+    mockServerSupabase = null;
+  });
+
+  it("clearStoredUserTier resets stored tier back to 'contender' and null expiry", () => {
+    const futureDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    mockStorage[USER_TIER_STORAGE_KEY] = "pro";
+    mockStorage[USER_TIER_EXPIRES_KEY] = futureDate;
+    expect(getStoredUserTier()).toBe("pro");
+    expect(getStoredTierExpires()).toBe(futureDate);
+
+    clearStoredUserTier();
+
+    expect(getStoredUserTier()).toBe("contender");
+    expect(getStoredTierExpires()).toBeNull();
+    expect(window.dispatchEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: { tier: "contender", expiresAt: null },
+      }),
+    );
+  });
+
+  it("clearStoredUserTier forcibly overrides unexpired paid tiers whereas setStoredUserTier protects them", () => {
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    setStoredUserTier("pro_monthly", futureDate);
+    expect(getStoredUserTier()).toBe("pro_monthly");
+
+    // setStoredUserTier protects unexpired paid tier against inadvertent contender overwrite
+    setStoredUserTier("contender");
+    expect(getStoredUserTier()).toBe("pro_monthly");
+
+    // clearStoredUserTier unconditionally purges stored tier on logout/session clearing
+    clearStoredUserTier();
+    expect(getStoredUserTier()).toBe("contender");
+    expect(getStoredTierExpires()).toBeNull();
+  });
+
+  it("unauthenticated sessions clamp client tier mutations to 'contender' when Supabase is not configured", async () => {
+    mockBrowserSupabase = null;
+    const futureDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+    // Attacker modifies localStorage to a paid tier
+    mockStorage[USER_TIER_STORAGE_KEY] = "pro";
+    mockStorage[USER_TIER_EXPIRES_KEY] = futureDate;
+
+    const result = await verifyAndClampClientTier("pro", futureDate);
+    expect(result.tier).toBe("contender");
+    expect(result.expiresAt).toBeNull();
+    // localStorage is sanitized back to contender
+    expect(getStoredUserTier()).toBe("contender");
+    expect(getStoredTierExpires()).toBeNull();
+
+    // Testing all paid tiers
+    const cramResult = await verifyAndClampClientTier("cram_pass", futureDate);
+    expect(cramResult.tier).toBe("contender");
+
+    const tutorResult = await verifyAndClampClientTier("tutor", futureDate);
+    expect(tutorResult.tier).toBe("contender");
+
+    const proMonthlyResult = await verifyAndClampClientTier("pro_monthly", futureDate);
+    expect(proMonthlyResult.tier).toBe("contender");
+  });
+
+  it("unauthenticated sessions clamp client tier mutations to 'contender' when Supabase auth returns user: null", async () => {
+    mockBrowserSupabase = {
+      auth: {
+        getUser: vi.fn().mockResolvedValue({
+          data: { user: null },
+          error: null,
+        }),
+      },
+    };
+    const futureDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    mockStorage[USER_TIER_STORAGE_KEY] = "pro";
+    mockStorage[USER_TIER_EXPIRES_KEY] = futureDate;
+
+    const result = await verifyAndClampClientTier("pro", futureDate);
+    expect(result.tier).toBe("contender");
+    expect(result.expiresAt).toBeNull();
+    expect(getStoredUserTier()).toBe("contender");
+    expect(getStoredTierExpires()).toBeNull();
+  });
+
+  it("authenticated sessions allow legitimate paid tier verification and preservation", async () => {
+    const futureDate = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString();
+    mockBrowserSupabase = createMockSupabase({
+      user: { id: "legit-student-123" },
+    });
+
+    const result = await verifyAndClampClientTier("pro", futureDate);
+    expect(result.tier).toBe("pro");
+    expect(result.expiresAt).toBe(futureDate);
+  });
+
+  it("fetchCloudUserTier purges spoofed local tier and returns contender when user is not authenticated", async () => {
+    mockBrowserSupabase = {
+      auth: {
+        getUser: vi.fn().mockResolvedValue({
+          data: { user: null },
+          error: null,
+        }),
+      },
+    };
+    const futureDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    mockStorage[USER_TIER_STORAGE_KEY] = "pro";
+    mockStorage[USER_TIER_EXPIRES_KEY] = futureDate;
+
+    const cloud = await fetchCloudUserTier();
+    expect(cloud.tier).toBe("contender");
+    expect(cloud.expiresAt).toBeNull();
+    expect(cloud.isExpired).toBe(false);
+    expect(getStoredUserTier()).toBe("contender");
+    expect(getStoredTierExpires()).toBeNull();
   });
 });
 

@@ -105,7 +105,7 @@ export type ArenaRoomState = {
   maxPlayers?: number;
   mode: "exact" | "variants";
   packId: string;
-  hostTier?: "contender" | "cram_pass" | "pro" | "tutor";
+  hostTier?: "contender" | "cram_pass" | "pro_monthly" | "pro" | "tutor";
   classAnalytics?: ArenaClassAnalytics | null;
   podium: {
     first: ArenaPlayer | null;
@@ -125,7 +125,7 @@ export const createRoomSchema = z
     mode: z.enum(["exact", "variants"]).default("exact"),
     pack: studyPackSchema.optional(),
     maxPlayers: z.number().int().min(2).max(100).optional(),
-    hostTier: z.enum(["contender", "cram_pass", "pro", "tutor"]).optional(),
+    hostTier: z.enum(["contender", "cram_pass", "pro_monthly", "pro", "tutor"]).optional(),
   })
   .refine((data) => !!(data.hostNickname || data.nickname), {
     message: "Nickname is required.",

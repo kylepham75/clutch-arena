@@ -3,9 +3,14 @@ vi.mock("server-only", () => ({}));
 import {
   createCoachHandler,
   selectCoachContextSources,
+  sanitizeCoachStreamError,
 } from "@/lib/coach/handler";
 import { buildCoachMessages } from "@/lib/ai/coach-prompt";
-import { MAX_COACH_CONTEXT_CHARS, MAX_COACH_HISTORY } from "@/lib/schemas/coach";
+import {
+  MAX_COACH_BODY_BYTES,
+  MAX_COACH_CONTEXT_CHARS,
+  MAX_COACH_HISTORY,
+} from "@/lib/schemas/coach";
 import { cleanCoachMathArtifacts } from "@/lib/math/latex";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
 import { studyText } from "../helpers/documents";
@@ -254,5 +259,216 @@ describe("coach HTTP handler", () => {
 
     expect(selected.some((s) => s.id === "slide-18")).toBe(true);
     expect(selected.some((s) => s.id === "slide-1")).toBe(false);
+  });
+
+  it("rejects chunked bodies exceeding MAX_COACH_BODY_BYTES with 413", async () => {
+    const handler = createCoachHandler();
+    const chunk1 = new Uint8Array(3 * 1024 * 1024); // 3 MB
+    const chunk2 = new Uint8Array(3 * 1024 * 1024); // 3 MB (total 6 MB > 5 MB)
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(chunk1);
+        controller.enqueue(chunk2);
+        controller.close();
+      },
+    });
+    const req = new Request("http://localhost:3000/api/coach", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: stream,
+      // @ts-expect-error duplex is required in node environments for stream bodies
+      duplex: "half",
+    });
+    const res = await handler(req);
+    expect(res.status).toBe(413);
+    const json = await res.json();
+    expect(json.error.code).toBe("REQUEST_TOO_LARGE");
+  });
+
+  it("rejects requests exceeding MAX_COACH_BODY_BYTES via content-length header with 413", async () => {
+    const handler = createCoachHandler();
+    const req = new Request("http://localhost:3000/api/coach", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(MAX_COACH_BODY_BYTES + 1024),
+      },
+      body: JSON.stringify({}),
+    });
+    const res = await handler(req);
+    expect(res.status).toBe(413);
+    const json = await res.json();
+    expect(json.error.code).toBe("REQUEST_TOO_LARGE");
+  });
+
+  it("returns 429 COGS_CEILING_EXCEEDED when user's COGS ceiling is exceeded", async () => {
+    const getUserLedgerMock = vi.fn(async () => ({
+      userId: "user:test",
+      tier: "contender" as const,
+      cogsSpentUsd: 0.95,
+      cogsReservedUsd: 0.06,
+      cogsCeilingUsd: 1.0,
+      deckCreditsUsed: 5,
+      deckCreditsLimit: 5,
+      dailyBurstUsed: 0,
+      dailyBurstDate: "2026-11-05",
+      unlockedDecks: {},
+    }));
+
+    const handler = createCoachHandler({
+      getUserLedger: getUserLedgerMock,
+    });
+
+    const res = await handler(
+      coachRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Explain price elasticity" }] }],
+        document: { fileName: doc.fileName, sources: doc.sources },
+      }),
+    );
+
+    expect(res.status).toBe(429);
+    const json = await res.json();
+    expect(json.error.code).toBe("COGS_CEILING_EXCEEDED");
+    expect(json.error.message).toBe(
+      "Monthly AI budget reached for your plan. Please upgrade or wait for the next billing cycle.",
+    );
+    expect(getUserLedgerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("records COGS via recordCogs when streaming finishes", async () => {
+    const mockModel: any = {
+      specificationVersion: "v2",
+      provider: "mock",
+      modelId: "mock-model",
+      supportedUrls: {},
+      doStream: vi.fn(async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({
+              type: "text-start",
+              id: "delta-1",
+            });
+            controller.enqueue({
+              type: "text-delta",
+              id: "delta-1",
+              delta: "Elasticity response.",
+            });
+            controller.enqueue({
+              type: "text-end",
+              id: "delta-1",
+            });
+            controller.enqueue({
+              type: "finish",
+              finishReason: "stop",
+              usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+            });
+            controller.close();
+          },
+        }),
+      })),
+    };
+
+    const recordCogsMock = vi.fn(async (..._args: any[]) => ({
+      ledger: {} as any,
+      cogsStatus: { mode: "normal", remainingBudgetUsd: 1 } as any,
+    }));
+
+    const verifyAuthMock = vi.fn(async () => ({
+      authenticated: true as const,
+      user: { id: "user-42", email: "user42@example.com" } as any,
+      tier: "pro" as const,
+      tierExpiresAt: null,
+    }));
+
+    const handler = createCoachHandler({
+      getModel: () => mockModel,
+      recordCogs: recordCogsMock,
+      verifyAuth: verifyAuthMock,
+    });
+
+    const res = await handler(
+      coachRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Explain price elasticity" }] }],
+        document: { fileName: doc.fileName, sources: doc.sources },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    // Consuming response stream drives streamText to completion and triggers onFinish
+    await res.text();
+
+    expect(recordCogsMock).toHaveBeenCalledTimes(1);
+    const [actorKey, tier, costUsd, reservedUsd] = recordCogsMock.mock.calls[0];
+    expect(actorKey).toBe("user:user-42");
+    expect(tier).toBe("pro");
+    // Math.max(0.000001, Number(((150 / 1_000_000) * 0.5).toFixed(6))) = 0.000075
+    expect(costUsd).toBe(0.000075);
+    expect(reservedUsd).toBe(0);
+  });
+
+  it("sanitizes stream errors without leaking sensitive details", async () => {
+    // 1. Stack traces / file paths
+    const stackErr = new Error("Database query timed out\n    at queryPostgres (/var/task/node_modules/pg/client.js:42:15)");
+    expect(sanitizeCoachStreamError(stackErr)).toBe("AI Coach encountered an error. Please try again.");
+
+    // 2. Windows paths
+    const winPathErr = new Error("File missing: C:\\Users\\ADMIN\\Clutch Arena\\secrets.env line 4");
+    expect(sanitizeCoachStreamError(winPathErr)).toBe("AI Coach encountered an error. Please try again.");
+
+    // 3. Provider details and credentials
+    const openRouterErr = new Error("OpenRouter endpoint 502 at https://openrouter.ai/api/v1/chat/completions with Bearer sk-or-v1-secret123");
+    expect(sanitizeCoachStreamError(openRouterErr)).toBe("AI Coach encountered an error. Please try again.");
+
+    // 4. Gemini internal error objects
+    const geminiErr = {
+      data: {
+        error: {
+          message: "GoogleGenerativeAI: Resource has been exhausted (e.g. check quota).",
+        },
+      },
+    };
+    expect(sanitizeCoachStreamError(geminiErr)).toBe("AI Coach encountered an error. Please try again.");
+
+    // 5. Safe messages pass through
+    expect(sanitizeCoachStreamError(new Error("The request was cancelled."))).toBe("The request was cancelled.");
+    expect(sanitizeCoachStreamError(null)).toBe("AI Coach encountered an error. Please try again.");
+    expect(sanitizeCoachStreamError(undefined)).toBe("AI Coach encountered an error. Please try again.");
+  });
+
+  it("sanitizes SSE stream error responses when model stream errors out", async () => {
+    const mockModel: any = {
+      specificationVersion: "v2",
+      provider: "mock",
+      modelId: "mock-model",
+      supportedUrls: {},
+      doStream: vi.fn(async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({
+              type: "error",
+              error: new Error("Crash at /var/task/node_modules/@google/genai/dist/client.js:10"),
+            });
+            controller.close();
+          },
+        }),
+      })),
+    };
+
+    const handler = createCoachHandler({
+      getModel: () => mockModel,
+    });
+
+    const res = await handler(
+      coachRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Explain price elasticity" }] }],
+        document: { fileName: doc.fileName, sources: doc.sources },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain("/var/task");
+    expect(text).not.toContain("@google/genai");
+    expect(text).toContain("AI Coach encountered an error. Please try again.");
   });
 });

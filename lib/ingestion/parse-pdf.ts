@@ -603,7 +603,6 @@ export async function parsePdf(
             allCropsCached = false;
             // Check budget cap:
             if (
-              !rescanSet.has(page) &&
               deckVisionCostUsd + ESTIMATED_EQUATION_CROP_OCR_USD >
                 maxBudget + 1e-9
             ) {
@@ -724,7 +723,6 @@ export async function parsePdf(
             }
           } else {
             if (
-              !rescanSet.has(page) &&
               deckVisionCostUsd + ESTIMATED_FULL_PAGE_OCR_USD >
                 maxBudget + 1e-9
             ) {

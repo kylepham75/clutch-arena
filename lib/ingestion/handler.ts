@@ -22,8 +22,68 @@ import {
   sampleQuestionsFromCachedPool,
   checkAndReserveDeckQuota,
   recordDeckGenerationCogs,
+  rollbackDeckQuotaReservation,
 } from "@/lib/rate-limit";
 import type { GenerationResult } from "@/lib/schemas/ingestion";
+
+export const SHARED_CACHE_PIPELINE_VERSION = "v1";
+
+function stripDistractorRationale<T extends Record<string, any>>(q: T): T {
+  if (!q || typeof q !== "object") return q;
+  const { distractorRationale: _d, ...restQ } = q as any;
+  if (restQ.conceptVariant && typeof restQ.conceptVariant === "object") {
+    const { distractorRationale: _cvD, ...restVariant } = restQ.conceptVariant;
+    restQ.conceptVariant = restVariant;
+  }
+  return restQ as T;
+}
+
+function questionHasDistractorRationale(q: any, metadata?: Record<string, any>): boolean {
+  if (!q) return false;
+  if (typeof q.distractorRationale === "string" && q.distractorRationale.trim().length > 0) {
+    return true;
+  }
+  if (
+    typeof q.conceptVariant?.distractorRationale === "string" &&
+    q.conceptVariant.distractorRationale.trim().length > 0
+  ) {
+    return true;
+  }
+  if (metadata && q.id && metadata[q.id]) {
+    const meta = metadata[q.id];
+    if (typeof meta?.distractorRationale === "string" && meta.distractorRationale.trim().length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isDegradedCachedDeck(cachedDeck: any, requestedCount: number): boolean {
+  if (!cachedDeck) return true;
+  const pool = Array.isArray(cachedDeck.questionPool) ? cachedDeck.questionPool : [];
+  if (pool.length === 0) return true;
+  if (pool.length < requestedCount) return true;
+
+  const metadata = cachedDeck.studyMetadata?.pack?.metadata;
+  const hasRationaleInPool = pool.some((q: any) => questionHasDistractorRationale(q, metadata));
+  if (hasRationaleInPool) return false;
+
+  if (Array.isArray(cachedDeck.studyMetadata?.pack?.questions)) {
+    const hasRationaleInPack = cachedDeck.studyMetadata.pack.questions.some(
+      (q: any) => questionHasDistractorRationale(q, metadata),
+    );
+    if (hasRationaleInPack) return false;
+  }
+
+  if (metadata && typeof metadata === "object") {
+    const anyMetaHasRationale = Object.values(metadata).some(
+      (m: any) => typeof m?.distractorRationale === "string" && m.distractorRationale.trim().length > 0,
+    );
+    if (anyMetaHasRationale) return false;
+  }
+
+  return true;
+}
 
 function getQuotaExceededMessage(reason?: string): string {
   switch (reason) {
@@ -50,6 +110,8 @@ export function createIngestionHandler(
     recordCogs?: typeof recordDeckGenerationCogs;
     getDeckCache?: typeof getSharedDeckCache;
     setDeckCache?: typeof setSharedDeckCache;
+    rollbackQuota?: typeof rollbackDeckQuotaReservation;
+    parseDoc?: typeof parseDocument;
   } = {},
 ) {
   const generate = dependencies.generate ?? generateQuestions;
@@ -64,9 +126,17 @@ export function createIngestionHandler(
   const recordCogs = dependencies.recordCogs ?? recordDeckGenerationCogs;
   const getDeckCache = dependencies.getDeckCache ?? getSharedDeckCache;
   const setDeckCache = dependencies.setDeckCache ?? setSharedDeckCache;
+  const rollbackQuota = dependencies.rollbackQuota ?? rollbackDeckQuotaReservation;
+  const parseDoc = dependencies.parseDoc ?? parseDocument;
   let active = 0;
   return async function POST(request: Request) {
     const requestId = randomUUID();
+    let quotaReserved = false;
+    let reservedActor: string | null = null;
+    let reservedTier: any = null;
+    let reservedContentHash: string | null = null;
+    let reservedCost = 0.02;
+    let reservedIsRegeneration = false;
     const json = (body: unknown, status = 200) =>
       Response.json(body, {
         status,
@@ -111,9 +181,32 @@ export function createIngestionHandler(
       const clientIp = getClientIp(request);
       const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
       const isPaid =
-        auth.tier === "cram_pass" || auth.tier === "pro" || auth.tier === "tutor";
+        auth.tier === "cram_pass" ||
+        auth.tier === "pro_monthly" ||
+        auth.tier === "pro" ||
+        auth.tier === "tutor";
 
-      // Fail fast without parsing when generation cannot be configured or rate limit is reached.
+      // Fail fast without parsing when rate limit is reached or generation cannot be configured.
+      const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
+      if (!isTestBypass) {
+        const rateResult = await rateLimiter(rateLimitKey, "ingest", auth.tier);
+        if (!rateResult.allowed) {
+          return json(
+            {
+              ok: false,
+              requestId,
+              error: {
+                code: "RATE_LIMIT_EXCEEDED",
+                message: isPaid
+                  ? `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow.`
+                  : `Upload limit reached (max ${rateResult.limit} uploads per week on ${auth.tier === "guest" ? "Guest" : "Contender"} tier). Upgrade to Cram Pass or Pro for more uploads.`,
+              },
+            },
+            429,
+          );
+        }
+      }
+
       if (options.operation === "generate") {
         if (!isPaid && options.questionCount > 15) {
           return json(
@@ -129,31 +222,23 @@ export function createIngestionHandler(
             403,
           );
         }
-
-        const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
-        if (!isTestBypass) {
-          const rateResult = await rateLimiter(rateLimitKey, "ingest", auth.tier);
-          if (!rateResult.allowed) {
-            return json(
-              {
-                ok: false,
-                requestId,
-                error: {
-                  code: "RATE_LIMIT_EXCEEDED",
-                  message: isPaid
-                    ? `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow.`
-                    : `Upload limit reached (max ${rateResult.limit} uploads per week on ${auth.tier === "guest" ? "Guest" : "Contender"} tier). Upgrade to Cram Pass or Pro for more uploads.`,
-                },
-              },
-              429,
-            );
-          }
-        }
         checkConfiguration();
       }
-      const document = await parseDocument(file, signal, {
-        rescanPages: options.rescanPages,
-      });
+
+      const document = await parseDoc(
+        file,
+        signal,
+        options.operation === "preview"
+          ? {
+              parsePdfOptions: {
+                maxAutoOcrBudgetUsd: 0,
+                visionTranscriber: async () => null,
+              },
+            }
+          : {
+              rescanPages: options.rescanPages,
+            },
+      );
       if (options.operation === "preview")
         return json({ ok: true, requestId, operation: "preview", document });
 
@@ -191,7 +276,8 @@ export function createIngestionHandler(
         dependencies.quotaReservation === undefined &&
         dependencies.getDeckCache === undefined &&
         dependencies.setDeckCache === undefined &&
-        dependencies.recordCogs === undefined;
+        dependencies.recordCogs === undefined &&
+        dependencies.rollbackQuota === undefined;
 
       const reservedCostUsd =
         auth.tier === "guest" || auth.tier === "contender" ? 0.02 : 0.035;
@@ -202,11 +288,14 @@ export function createIngestionHandler(
           language: options.language,
           mode: options.mode,
           focusHash,
-          pipelineVersion: "v1",
+          pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
           fileSha256: document.fileSha256 ?? null,
         };
 
         let cachedDeck = await getDeckCache(cacheLookupKey);
+        if (isPaid && cachedDeck && isDegradedCachedDeck(cachedDeck, options.questionCount)) {
+          cachedDeck = null;
+        }
 
         if (!cachedDeck || dependencies.quotaReservation !== undefined) {
           const quotaResult = await quotaReservation(
@@ -233,9 +322,24 @@ export function createIngestionHandler(
             );
           }
 
-          if (!cachedDeck && quotaResult.cachedDeck) {
-            cachedDeck = quotaResult.cachedDeck;
+          if (quotaResult.reserved || quotaResult.creditConsumed || quotaResult.isRegeneration) {
+            quotaReserved = true;
+            reservedActor = rateLimitKey;
+            reservedTier = auth.tier;
+            reservedContentHash = contentHash;
+            reservedCost = reservedCostUsd;
+            reservedIsRegeneration = Boolean(quotaResult.isRegeneration);
           }
+
+          if (!cachedDeck && quotaResult.cachedDeck) {
+            if (!isPaid || !isDegradedCachedDeck(quotaResult.cachedDeck, options.questionCount)) {
+              cachedDeck = quotaResult.cachedDeck;
+            }
+          }
+        }
+
+        if (isPaid && cachedDeck && isDegradedCachedDeck(cachedDeck, options.questionCount)) {
+          cachedDeck = null;
         }
 
         if (
@@ -243,11 +347,66 @@ export function createIngestionHandler(
           Array.isArray(cachedDeck.questionPool) &&
           cachedDeck.questionPool.length > 0
         ) {
-          const sampledQuestions = sampleQuestionsFromCachedPool(
+          let sampledQuestions = sampleQuestionsFromCachedPool(
             cachedDeck.questionPool,
             options.questionCount,
           );
-          const basePack = cachedDeck.studyMetadata?.pack ?? {
+
+          let sanitizedStudyMetadata: Record<string, any> | undefined = cachedDeck.studyMetadata
+            ? { ...cachedDeck.studyMetadata }
+            : undefined;
+
+          if (!isPaid) {
+            sampledQuestions = sampledQuestions.map((q) => stripDistractorRationale(q));
+
+            if (sanitizedStudyMetadata?.pack) {
+              const packQuestions = Array.isArray(sanitizedStudyMetadata.pack.questions)
+                ? sanitizedStudyMetadata.pack.questions
+                    .slice(0, sampledQuestions.length)
+                    .map((q: any) => stripDistractorRationale(q))
+                : sampledQuestions;
+
+              let cleanMetadata = sanitizedStudyMetadata.pack.metadata;
+              if (cleanMetadata && typeof cleanMetadata === "object") {
+                cleanMetadata = Object.fromEntries(
+                  Object.entries(cleanMetadata).map(([k, v]) => {
+                    const { distractorRationale: _d, ...cleanMeta } = (v as any) || {};
+                    return [k, cleanMeta];
+                  }),
+                );
+              }
+
+              sanitizedStudyMetadata.pack = {
+                ...sanitizedStudyMetadata.pack,
+                questions: packQuestions,
+                ...(cleanMetadata ? { metadata: cleanMetadata } : {}),
+              };
+            }
+
+            if (cachedDeck.studyMetadata?.pack) {
+              cachedDeck.studyMetadata.pack.questions = sampledQuestions;
+              if (cachedDeck.studyMetadata.pack.metadata) {
+                cachedDeck.studyMetadata.pack.metadata = Object.fromEntries(
+                  Object.entries(cachedDeck.studyMetadata.pack.metadata).map(([k, v]) => {
+                    const { distractorRationale: _d, ...cleanMeta } = (v as any) || {};
+                    return [k, cleanMeta];
+                  }),
+                );
+              }
+            }
+          } else {
+            if (sanitizedStudyMetadata?.pack) {
+              sanitizedStudyMetadata.pack = {
+                ...sanitizedStudyMetadata.pack,
+                questions: sampledQuestions,
+              };
+            }
+            if (cachedDeck.studyMetadata?.pack) {
+              cachedDeck.studyMetadata.pack.questions = sampledQuestions;
+            }
+          }
+
+          const basePack = sanitizedStudyMetadata?.pack ?? {
             id: cachedDeck.id ?? `pack-${contentHash.slice(0, 8)}`,
             title: document.fileName,
             subject: "General Study",
@@ -279,6 +438,7 @@ export function createIngestionHandler(
             tier: auth.tier,
             document,
             cached: true,
+            ...(sanitizedStudyMetadata ? { studyMetadata: sanitizedStudyMetadata } : {}),
             ...cachedResult,
           });
         }
@@ -310,21 +470,37 @@ export function createIngestionHandler(
         const actualCostUsd = Number((tokenCostUsd + visionCostUsd).toFixed(6));
 
         await recordCogs(rateLimitKey, auth.tier, actualCostUsd, reservedCostUsd);
+        quotaReserved = false;
+
+        const questionsToStore = result.pack.questions.map((q) => {
+          const metaRationale = result.pack.metadata?.[q.id]?.distractorRationale;
+          if (metaRationale && !(q as any).distractorRationale) {
+            return {
+              ...q,
+              distractorRationale: metaRationale,
+            };
+          }
+          return q;
+        });
+
         await setDeckCache({
           contentHash,
           fileSha256: document.fileSha256 ?? null,
           language: options.language,
           mode: options.mode,
           focusHash,
-          pipelineVersion: result.pipelineVersion ?? "v1",
-          questionPool: result.pack.questions,
+          pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
+          questionPool: questionsToStore,
           studyMetadata: {
-            pack: result.pack,
+            pack: {
+              ...result.pack,
+              questions: questionsToStore,
+            },
             sourceKind: result.sourceKind,
             references: result.references,
             warnings: result.warnings,
             usage: result.usage,
-            pipelineVersion: result.pipelineVersion,
+            pipelineVersion: result.pipelineVersion ?? SHARED_CACHE_PIPELINE_VERSION,
             costUsd: actualCostUsd,
           },
         });
@@ -340,6 +516,32 @@ export function createIngestionHandler(
         ...result,
       });
     } catch (error) {
+      if (quotaReserved && reservedActor && reservedContentHash) {
+        try {
+          if (reservedIsRegeneration) {
+            await rollbackQuota(
+              reservedActor,
+              reservedTier,
+              reservedContentHash,
+              reservedCost,
+              reservedIsRegeneration,
+            );
+          } else {
+            await rollbackQuota(
+              reservedActor,
+              reservedTier,
+              reservedContentHash,
+              reservedCost,
+            );
+          }
+        } catch (rollbackError) {
+          console.error(
+            "[IngestionHandler] Failed to rollback deck quota reservation:",
+            rollbackError,
+          );
+        }
+      }
+
       if (timeout.signal.aborted)
         return json(
           {

@@ -34,6 +34,42 @@ export interface UserTierHook {
   refreshTier: () => Promise<UserTier>;
 }
 
+/**
+ * Validates whether an incoming tier elevation is authorized.
+ * When unauthenticated (no active user session returned from Supabase auth),
+ * paid tiers (cram_pass, pro_monthly, pro, tutor) are strictly forbidden
+ * and clamped back to "contender" with stored tier cleared.
+ */
+export async function verifyAndClampClientTier(
+  candidateTier: UserTier,
+  candidateExpiresAt?: string | null,
+): Promise<{ tier: UserTier; expiresAt: string | null }> {
+  if (candidateTier === "contender") {
+    return { tier: "contender", expiresAt: null };
+  }
+
+  const supabase = getSupabaseBrowserClient();
+  let hasUser = false;
+  if (supabase) {
+    try {
+      const { data, error } = await supabase.auth.getUser();
+      hasUser = !error && Boolean(data?.user);
+    } catch {
+      hasUser = false;
+    }
+  }
+
+  if (!hasUser) {
+    clearStoredUserTier();
+    return { tier: "contender", expiresAt: null };
+  }
+
+  return {
+    tier: candidateTier,
+    expiresAt: candidateExpiresAt ?? getStoredTierExpires(),
+  };
+}
+
 export function useUserTier(): UserTierHook {
   // Default to contender initially to ensure SSR and initial client hydration match identically
   const [tier, setTierState] = useState<UserTier>("contender");
@@ -54,20 +90,36 @@ export function useUserTier(): UserTierHook {
   }, []);
 
   useEffect(() => {
-    // Synchronize client storage after hydration
-    setTierState(getStoredUserTier());
-    setTierExpiresAt(getStoredTierExpires());
+    let isMounted = true;
     setReferralsState(getStoredReferralState());
 
-    // Fetch authoritative tier from Supabase (defaults to contender when unauthenticated)
-    void syncFromCloud();
+    // Hydration check: prevent client tier spoofing when unauthenticated
+    const initTier = async () => {
+      const storedTier = getStoredUserTier();
+      const storedExpires = getStoredTierExpires();
 
-    const handleTierUpdated = (e: Event) => {
+      const verified = await verifyAndClampClientTier(storedTier, storedExpires);
+      if (!isMounted) return;
+
+      setTierState(verified.tier);
+      setTierExpiresAt(verified.expiresAt);
+
+      // Fetch authoritative tier from Supabase (defaults to contender when unauthenticated)
+      void syncFromCloud();
+    };
+
+    void initTier();
+
+    const handleTierUpdated = async (e: Event) => {
       const custom = e as CustomEvent<{ tier: UserTier; expiresAt?: string | null }>;
-      if (custom.detail?.tier) {
-        setTierState(custom.detail.tier);
-        setTierExpiresAt(custom.detail.expiresAt ?? getStoredTierExpires());
-      }
+      const incomingTier = custom.detail?.tier;
+      if (!incomingTier) return;
+
+      const verified = await verifyAndClampClientTier(incomingTier, custom.detail.expiresAt);
+      if (!isMounted) return;
+
+      setTierState(verified.tier);
+      setTierExpiresAt(verified.expiresAt);
     };
 
     const handleReferralsUpdated = (e: Event) => {
@@ -77,8 +129,11 @@ export function useUserTier(): UserTierHook {
       }
     };
 
-    window.addEventListener("clutch:tier_updated", handleTierUpdated);
-    window.addEventListener("clutch:referrals_updated", handleReferralsUpdated);
+    const hasWindow = typeof window !== "undefined";
+    if (hasWindow && typeof window.addEventListener === "function") {
+      window.addEventListener("clutch:tier_updated", handleTierUpdated);
+      window.addEventListener("clutch:referrals_updated", handleReferralsUpdated);
+    }
 
     // Listen to Supabase auth events (e.g. mobile login after laptop purchase)
     const supabase = getSupabaseBrowserClient();
@@ -90,26 +145,32 @@ export function useUserTier(): UserTierHook {
       } = supabase.auth.onAuthStateChange(async (event, session) => {
         if (event === "SIGNED_IN" && session?.user) {
           await syncFromCloud();
-        } else if (event === "SIGNED_OUT") {
+        } else if (event === "SIGNED_OUT" || !session?.user) {
           clearStoredUserTier();
-          setTierState("contender");
-          setTierExpiresAt(null);
+          if (isMounted) {
+            setTierState("contender");
+            setTierExpiresAt(null);
+          }
         }
       });
       authUnsubscribe = () => subscription.unsubscribe();
     }
 
     return () => {
-      window.removeEventListener("clutch:tier_updated", handleTierUpdated);
-      window.removeEventListener("clutch:referrals_updated", handleReferralsUpdated);
+      isMounted = false;
+      if (hasWindow && typeof window.removeEventListener === "function") {
+        window.removeEventListener("clutch:tier_updated", handleTierUpdated);
+        window.removeEventListener("clutch:referrals_updated", handleReferralsUpdated);
+      }
       if (authUnsubscribe) authUnsubscribe();
     };
   }, [syncFromCloud]);
 
-  const setTier = useCallback((newTier: UserTier, expiresAt?: string | null) => {
-    setStoredUserTier(newTier, expiresAt);
-    setTierState(newTier);
-    setTierExpiresAt(expiresAt !== undefined ? expiresAt : getStoredTierExpires());
+  const setTier = useCallback(async (newTier: UserTier, expiresAt?: string | null) => {
+    const verified = await verifyAndClampClientTier(newTier, expiresAt);
+    setStoredUserTier(verified.tier, verified.expiresAt);
+    setTierState(verified.tier);
+    setTierExpiresAt(verified.expiresAt);
   }, []);
 
   const awardReferral = useCallback((reason: "arena_4_player" | "pack_imports_3") => {
@@ -132,7 +193,7 @@ export function useUserTier(): UserTierHook {
   const limits = TIER_LIMITS[tier] || TIER_LIMITS.contender;
   const isPaidTier = tier !== "contender";
   const isCramPassOrAbove = isPaidTier;
-  const isProOrAbove = tier === "pro" || tier === "tutor";
+  const isProOrAbove = tier === "pro" || tier === "pro_monthly" || tier === "tutor";
   const isTutor = tier === "tutor";
 
   return {

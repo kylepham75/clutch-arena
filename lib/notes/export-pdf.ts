@@ -1480,6 +1480,8 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
   return fullHtml;
 }
 
+export const buildPrintableNotesHtml = generateClutchNotePdfHtml;
+
 export function exportClutchNotePdf(note: ClutchNote): void {
   if (typeof window === "undefined") return;
 
@@ -1489,8 +1491,27 @@ export function exportClutchNotePdf(note: ClutchNote): void {
     return;
   }
 
+  // Isolate popup window from opener context to prevent tab-nabbing / window reference leaks
+  printWindow.opener = null;
+
   const html = generateClutchNotePdfHtml(note);
   printWindow.document.open();
   printWindow.document.write(html);
   printWindow.document.close();
+
+  try {
+    printWindow.focus?.();
+  } catch {
+    // ignore
+  }
+
+  setTimeout(() => {
+    try {
+      printWindow.print?.();
+    } catch {
+      // ignore
+    }
+  }, 250);
 }
+
+export const exportNotesToPdf = exportClutchNotePdf;

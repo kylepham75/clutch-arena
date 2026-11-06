@@ -61,7 +61,14 @@ import { ArenaManager } from "@/components/arena/arena-manager";
 import { useLanguage } from "@/lib/i18n/context";
 import { LanguageSwitcher } from "@/components/ui/language-switcher";
 import { UserProfileButton } from "@/components/auth/user-profile-button";
-import { readLibrary, saveStudyItem, LIBRARY_UPDATED_EVENT, type SavedStudyItem } from "@/lib/game/library";
+import {
+  readLibrary,
+  saveStudyItem,
+  getStudyItem,
+  syncStudyItemToCloud,
+  LIBRARY_UPDATED_EVENT,
+  type SavedStudyItem,
+} from "@/lib/game/library";
 import {
   readShareToken,
   decodeSharedPack,
@@ -80,6 +87,7 @@ import {
 import { mockMicroeconomicsDoc, mockMicroeconomics } from "@/data/mock-microeconomics";
 import { TutorialDialog, isTutorialCompleted } from "@/components/tutorial/tutorial-dialog";
 import { useUserTier } from "@/hooks/use-user-tier";
+import { useAuth } from "@/lib/auth/context";
 import { PricingModal } from "@/components/pricing/pricing-modal";
 import { FeedbackDialog } from "@/components/workspace/feedback-dialog";
 import type { FeedbackCategory } from "@/lib/schemas/telemetry";
@@ -97,6 +105,7 @@ export function SoloEngine({
   initialDoc?: ParsedDocument;
 } = {}) {
   const { language, t } = useLanguage();
+  const { user } = useAuth();
   const { tier, limits, unlockedRemixRuns, consumeRemixRun } = useUserTier();
   const [pricingOpen, setPricingOpen] = useState(false);
   const [pricingReason, setPricingReason] = useState<string | null>(null);
@@ -121,6 +130,37 @@ export function SoloEngine({
   } | null>(null);
   const [activePdfFile, setActivePdfFile] = useState<File | null>(null);
   const [rescanningPages, setRescanningPages] = useState<number[]>([]);
+  const [sharedImportBanner, setSharedImportBanner] = useState<{
+    id: string;
+    title: string;
+    synced: boolean;
+    syncing?: boolean;
+    error?: string;
+  } | null>(null);
+
+  const handleSaveSharedDeckToCloud = useCallback(async () => {
+    if (!sharedImportBanner) return;
+    const item = getStudyItem(sharedImportBanner.id);
+    if (!item) return;
+
+    setSharedImportBanner((prev) => (prev ? { ...prev, syncing: true, error: undefined } : null));
+    try {
+      const success = await syncStudyItemToCloud(item);
+      if (success) {
+        setSharedImportBanner((prev) => (prev ? { ...prev, syncing: false, synced: true } : null));
+      } else {
+        setSharedImportBanner((prev) =>
+          prev
+            ? { ...prev, syncing: false, error: "Cloud sync failed. Ensure you are signed in." }
+            : null,
+        );
+      }
+    } catch {
+      setSharedImportBanner((prev) =>
+        prev ? { ...prev, syncing: false, error: "Cloud sync failed. Please try again." } : null,
+      );
+    }
+  }, [sharedImportBanner]);
 
   // Prompt tutorial for first-time visitors / new accounts
   useEffect(() => {
@@ -129,12 +169,6 @@ export function SoloEngine({
     }
   }, []);
 
-  useEffect(() => {
-    const update = () => setLibraryItems(readLibrary());
-    update();
-    window.addEventListener(LIBRARY_UPDATED_EVENT, update);
-    return () => window.removeEventListener(LIBRARY_UPDATED_EVENT, update);
-  }, [libraryOpen]);
 
   // If no pack is active and library items exist, automatically select the first
   useEffect(() => {
@@ -185,13 +219,17 @@ export function SoloEngine({
     if (typeof window === "undefined") return;
     const token = readShareToken(window.location.hash, window.location.search);
     if (!token) return;
-    void decodeSharedPack(token)
+
+    const existingIds = new Set(readLibrary().map((i) => i.id));
+    void decodeSharedPack(token, { existingIds })
       .then((sharedPack) => {
+        const uniqueImportId = `shared-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`}`;
+        sharedPack.id = uniqueImportId;
         setPack(sharedPack);
         const doc = documentFromPack(sharedPack);
         setDocument(doc);
-        saveStudyItem({
-          id: sharedPack.id,
+        const savedItem: SavedStudyItem = {
+          id: uniqueImportId,
           title: sharedPack.title,
           createdAt: new Date().toISOString(),
           questionCount: sharedPack.questions.length,
@@ -199,7 +237,14 @@ export function SoloEngine({
           fileName: `${sharedPack.title}.clutch.json`,
           pack: sharedPack,
           document: doc,
+        };
+        saveStudyItem(savedItem, { skipCloudSync: true });
+        setSharedImportBanner({
+          id: uniqueImportId,
+          title: sharedPack.title,
+          synced: false,
         });
+
         const searchParams = new URLSearchParams(window.location.search);
         searchParams.delete("pack");
         const cleanSearch = searchParams.toString() ? `?${searchParams.toString()}` : "";
@@ -253,6 +298,8 @@ export function SoloEngine({
         dispatch({ type: "START", mode: "exact", now: Date.now() });
         window.scrollTo(0, 0);
       }
+    } else {
+      dispatch({ type: "LOAD_PACK", questions: [] });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pack, dispatch]);
@@ -264,6 +311,48 @@ export function SoloEngine({
   const soundAttempt = useRef(0);
   const saved = useRef(false);
   const runId = useRef("");
+
+  const reset = useCallback(() => {
+    dispatch({ type: "RESET" });
+    setPanel(null);
+    soundAttempt.current = 0;
+    saved.current = false;
+    runId.current = "";
+    window.scrollTo(0, 0);
+  }, [dispatch]);
+
+  const handleClearSession = useCallback(() => {
+    setPack(null);
+    setDocument(null);
+    setHistory([]);
+    setMasteryStore({});
+    reset();
+  }, [reset]);
+
+  const prevUserRef = useRef(user);
+  useEffect(() => {
+    if (prevUserRef.current && !user) {
+      handleClearSession();
+    }
+    prevUserRef.current = user;
+  }, [user, handleClearSession]);
+
+  const hadLibraryRef = useRef(false);
+  useEffect(() => {
+    const update = () => {
+      const items = readLibrary();
+      setLibraryItems(items);
+      if (hadLibraryRef.current && items.length === 0) {
+        hadLibraryRef.current = false;
+        handleClearSession();
+      } else if (items.length > 0) {
+        hadLibraryRef.current = true;
+      }
+    };
+    update();
+    window.addEventListener(LIBRARY_UPDATED_EVENT, update);
+    return () => window.removeEventListener(LIBRARY_UPDATED_EVENT, update);
+  }, [libraryOpen, handleClearSession]);
   const current = activeQuestion(state);
   const attempt =
     state.phase === "feedback" ? state.attempts.at(-1) : undefined;
@@ -345,13 +434,6 @@ export function SoloEngine({
         dispatch({ type: "RESUME", now: Date.now() });
     }
   };
-  const reset = useCallback(() => {
-    dispatch({ type: "RESET" });
-    setPanel(null);
-    soundAttempt.current = 0;
-    saved.current = false;
-    window.scrollTo(0, 0);
-  }, [dispatch]);
   const start = () => {
     if (!pack || !pack.questions.length) return;
 
@@ -856,6 +938,66 @@ export function SoloEngine({
                             ? t.run.statusCoach
                             : t.run.statusSolo}
                   </span>
+                </div>
+              </div>
+            )}
+
+            {sharedImportBanner && (
+              <div
+                role="region"
+                aria-label="Shared study pack notification"
+                className="mb-4 rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 p-4 text-stone-800 dark:text-stone-200 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in duration-200"
+              >
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300 flex items-center justify-center shrink-0 mt-0.5">
+                    <FolderSync size={18} />
+                  </div>
+                  <div className="min-w-0 text-sm">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-stone-900 dark:text-stone-100 truncate">
+                        {sharedImportBanner.title}
+                      </span>
+                      <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900 text-sky-800 dark:text-sky-200">
+                        {sharedImportBanner.synced ? "Synced to Cloud" : "Saved Locally (Unconfirmed in Cloud)"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-stone-600 dark:text-stone-400 mt-0.5">
+                      {sharedImportBanner.synced
+                        ? "This shared deck has been backed up to your Cloud study packs library."
+                        : "Opened via share link. Saved to this device only to prevent unprompted cloud overwrite."}
+                    </p>
+                    {sharedImportBanner.error && (
+                      <p className="text-xs text-rose-600 dark:text-rose-400 font-medium mt-1">
+                        {sharedImportBanner.error}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  {!sharedImportBanner.synced ? (
+                    <Button
+                      size="sm"
+                      onClick={() => void handleSaveSharedDeckToCloud()}
+                      disabled={sharedImportBanner.syncing}
+                      className="bg-sky-600 hover:bg-sky-700 text-white text-xs h-8 px-3 rounded-lg flex items-center gap-1.5"
+                    >
+                      <FolderSync size={14} className={sharedImportBanner.syncing ? "animate-spin" : ""} />
+                      {sharedImportBanner.syncing ? "Saving..." : "Save to Cloud"}
+                    </Button>
+                  ) : (
+                    <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 px-2 py-1">
+                      <Check size={14} /> Saved to Cloud
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSharedImportBanner(null)}
+                    className="p-1.5 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
+                    aria-label="Dismiss notification"
+                  >
+                    <X size={16} />
+                  </button>
                 </div>
               </div>
             )}

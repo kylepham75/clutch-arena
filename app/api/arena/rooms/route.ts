@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { createRoom, getAllRooms, generateRoomCode } from "@/lib/multiplayer/room-manager";
+import {
+  createRoom,
+  getAllRooms,
+  generateRoomCode,
+  getClientState,
+  getPlayerToken,
+} from "@/lib/multiplayer/room-manager";
 import { createRoomSchema } from "@/lib/schemas/multiplayer";
 import { getPartyHost } from "@/lib/multiplayer/party-config";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
@@ -70,7 +76,10 @@ export async function POST(req: Request) {
           },
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              "x-party-internal": process.env.PARTYKIT_INTERNAL_SECRET || "1",
+            },
             body: JSON.stringify({
               ...parsed.data,
               hostTier: effectiveHostTier,
@@ -98,9 +107,10 @@ export async function POST(req: Request) {
       {
         ok: true,
         code: room.code,
-        room,
+        room: getClientState(room, hostPlayer.id),
         hostPlayer,
         player: hostPlayer,
+        playerToken: getPlayerToken(room.code, hostPlayer.id),
       },
       { status: 201 },
     );

@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { getRoom, joinRoom } from "@/lib/multiplayer/room-manager";
+import {
+  getRoom,
+  joinRoom,
+  getClientState,
+  getPlayerToken,
+} from "@/lib/multiplayer/room-manager";
 import { joinRoomSchema } from "@/lib/schemas/multiplayer";
 import { getPartyHost } from "@/lib/multiplayer/party-config";
 import PartySocket from "partysocket";
@@ -10,6 +15,19 @@ export async function POST(
 ) {
   try {
     const { code } = await props.params;
+    if (!/^[A-Z0-9]{6}$/i.test(code)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: {
+            code: "INVALID_ROOM_CODE",
+            message: "Invalid arena room code.",
+          },
+        },
+        { status: 400 },
+      );
+    }
+
     const json = await req.json();
     const parsed = joinRoomSchema.safeParse(json);
     if (!parsed.success) {
@@ -85,7 +103,15 @@ export async function POST(
       );
     }
 
-    return NextResponse.json({ ok: true, player }, { status: 200 });
+    return NextResponse.json(
+      {
+        ok: true,
+        player,
+        playerToken: getPlayerToken(code, player.id),
+        room: getClientState(room, player.id),
+      },
+      { status: 200 },
+    );
   } catch (err: any) {
     return NextResponse.json(
       { ok: false, error: { message: err.message || "Failed to join room." } },

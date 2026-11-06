@@ -1,4 +1,5 @@
 import "server-only";
+import { Buffer } from "node:buffer";
 import { streamText, APICallError } from "ai";
 import { getCoachModel } from "@/lib/ai/provider";
 import {
@@ -18,7 +19,12 @@ import { IngestionError } from "@/lib/ingestion/errors";
 import { isAllowedOrigin } from "@/lib/utils";
 import { budgetSourceBlocks } from "@/lib/ai/budget-sources";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
-import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import {
+  checkRateLimit,
+  getClientIp,
+  getUserQuotaLedger,
+  recordDeckGenerationCogs,
+} from "@/lib/rate-limit";
 
 export function selectCoachContextSources(
   sources: CoachRequest["document"]["sources"],
@@ -91,16 +97,248 @@ export function selectCoachContextSources(
   return budgetSourceBlocks(sources, maxChars, focusKeywords).sources;
 }
 
+export function sanitizeCoachStreamError(err: unknown): string {
+  let message = "";
+  if (typeof err === "string") {
+    message = err;
+  } else if (err && typeof err === "object") {
+    const e = err as Record<string, any>;
+    if (typeof e.data?.error?.message === "string") {
+      message = e.data.error.message;
+    } else if (typeof e.message === "string") {
+      message = e.message;
+    }
+  }
+
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return "AI Coach encountered an error. Please try again.";
+  }
+
+  const SENSITIVE_PATTERNS = [
+    /\bat\s+(?:async\s+)?[\w$.<>]+(?:\s+\(?[^)]+\)?)?/i,
+    /^\s*at\s+/m,
+    /\.[tj]sx?:\d+/i,
+    /[a-zA-Z]:\\[\w\s.\-\\]+/i,
+    /(?:\/(?:var|home|usr|app|etc|tmp|node_modules|Users))[\/\w.\-]+/i,
+    /https?:\/\/[^\s"']+/i,
+    /\b(?:openrouter|anthropic|claude|openai|gemini|google(?:generativeai)?|vertex|groq|cohere|mistral|upstash|supabase)\b/i,
+    /\b(?:bearer\s+[a-zA-Z0-9_.\-]+|sk-[a-zA-Z0-9_.\-]+|[a-zA-Z0-9_-]*api[_-]?key[a-zA-Z0-9_-]*)/i,
+    /\b(?:TypeError|ReferenceError|SyntaxError|RangeError|ECONNREFUSED|ETIMEDOUT|ENOTFOUND)\b/i,
+    /\b(?:SQL|SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|TABLE|COLUMN)\b/i,
+  ];
+
+  const containsSensitive = SENSITIVE_PATTERNS.some((pattern) => pattern.test(trimmed));
+  if (containsSensitive || trimmed.length > 200) {
+    return "AI Coach encountered an error. Please try again.";
+  }
+
+  return trimmed;
+}
+
+export async function readBoundedJson(
+  request: Request,
+  maxBytes: number,
+): Promise<
+  | { ok: true; data: unknown }
+  | { ok: false; response: Response }
+> {
+  const contentLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          ok: false,
+          error: {
+            code: "REQUEST_TOO_LARGE",
+            message: "The coach request exceeds the payload limit.",
+          },
+        },
+        { status: 413, headers: { "Cache-Control": "no-store" } },
+      ),
+    };
+  }
+
+  if (!request.body) {
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          ok: false,
+          error: {
+            code: "INVALID_JSON",
+            message: "Provide a valid JSON request body.",
+          },
+        },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      ),
+    };
+  }
+
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = request.body.getReader();
+  } catch {
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          ok: false,
+          error: {
+            code: "INVALID_JSON",
+            message: "Provide a valid JSON request body.",
+          },
+        },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      ),
+    };
+  }
+
+  const abort = () => {
+    void reader.cancel().catch(() => {});
+  };
+  request.signal.addEventListener("abort", abort, { once: true });
+
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  let tooLarge = false;
+
+  try {
+    while (true) {
+      if (request.signal.aborted) {
+        return {
+          ok: false,
+          response: Response.json(
+            {
+              ok: false,
+              error: {
+                code: "REQUEST_CANCELLED",
+                message: "The coach request was cancelled.",
+              },
+            },
+            { status: 499, headers: { "Cache-Control": "no-store" } },
+          ),
+        };
+      }
+
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      length += value.byteLength;
+      if (length > maxBytes) {
+        tooLarge = true;
+        await reader.cancel();
+        break;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    if (request.signal.aborted) {
+      return {
+        ok: false,
+        response: Response.json(
+          {
+            ok: false,
+            error: {
+              code: "REQUEST_CANCELLED",
+              message: "The coach request was cancelled.",
+            },
+          },
+          { status: 499, headers: { "Cache-Control": "no-store" } },
+        ),
+      };
+    }
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          ok: false,
+          error: {
+            code: "INVALID_JSON",
+            message: "Provide a valid JSON request body.",
+          },
+        },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      ),
+    };
+  } finally {
+    request.signal.removeEventListener("abort", abort);
+    try {
+      reader.releaseLock();
+    } catch {
+      // Reader may already be locked/closed
+    }
+  }
+
+  if (tooLarge) {
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          ok: false,
+          error: {
+            code: "REQUEST_TOO_LARGE",
+            message: "The coach request exceeds the payload limit.",
+          },
+        },
+        { status: 413, headers: { "Cache-Control": "no-store" } },
+      ),
+    };
+  }
+
+  const bodyBuffer = Buffer.concat(chunks);
+  if (bodyBuffer.length === 0) {
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          ok: false,
+          error: {
+            code: "INVALID_JSON",
+            message: "Provide a valid JSON request body.",
+          },
+        },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      ),
+    };
+  }
+
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bodyBuffer);
+    const data = JSON.parse(text);
+    return { ok: true, data };
+  } catch {
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          ok: false,
+          error: {
+            code: "INVALID_JSON",
+            message: "Provide a valid JSON request body.",
+          },
+        },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      ),
+    };
+  }
+}
+
 export function createCoachHandler(
   dependencies: {
     getModel?: (tier?: string) => ReturnType<typeof getCoachModel>;
     rateLimiter?: typeof checkRateLimit;
     verifyAuth?: typeof verifyAuthToken;
+    getUserLedger?: typeof getUserQuotaLedger;
+    recordCogs?: typeof recordDeckGenerationCogs;
   } = {},
 ) {
   const getModel = dependencies.getModel ?? getCoachModel;
   const rateLimiter = dependencies.rateLimiter ?? checkRateLimit;
   const verifyAuth = dependencies.verifyAuth ?? verifyAuthToken;
+  const getUserLedger = dependencies.getUserLedger ?? getUserQuotaLedger;
+  const recordCogs = dependencies.recordCogs ?? recordDeckGenerationCogs;
 
   return async function POST(request: Request) {
     const origin = request.headers.get("origin");
@@ -117,25 +355,11 @@ export function createCoachHandler(
       );
     }
 
-    const contentLength = Number(request.headers.get("content-length"));
-    if (contentLength > MAX_COACH_BODY_BYTES) {
-      return Response.json(
-        {
-          ok: false,
-          error: {
-            code: "REQUEST_TOO_LARGE",
-            message: "The coach request exceeds the 1 MB payload limit.",
-          },
-        },
-        { status: 413, headers: { "Cache-Control": "no-store" } },
-      );
-    }
-
     const auth = await verifyAuth(request);
     const clientIp = getClientIp(request);
     const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
-    const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
-    if (!isTestBypass) {
+    const isRateLimitBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
+    if (!isRateLimitBypass) {
       const rateResult = await rateLimiter(rateLimitKey, "coach", auth.tier);
       if (!rateResult.allowed) {
         return Response.json(
@@ -157,21 +381,11 @@ export function createCoachHandler(
       }
     }
 
-    let raw: unknown;
-    try {
-      raw = await request.json();
-    } catch {
-      return Response.json(
-        {
-          ok: false,
-          error: {
-            code: "INVALID_JSON",
-            message: "Provide a valid JSON request body.",
-          },
-        },
-        { status: 400, headers: { "Cache-Control": "no-store" } },
-      );
+    const bodyResult = await readBoundedJson(request, MAX_COACH_BODY_BYTES);
+    if (!bodyResult.ok) {
+      return bodyResult.response;
     }
+    const raw = bodyResult.data;
 
     const parsed = coachRequestSchema.safeParse(raw);
     if (!parsed.success) {
@@ -186,6 +400,24 @@ export function createCoachHandler(
         },
         { status: 400, headers: { "Cache-Control": "no-store" } },
       );
+    }
+
+    const isLedgerBypass = process.env.NODE_ENV === "test" && dependencies.getUserLedger === undefined;
+    if (!isLedgerBypass) {
+      const ledger = await getUserLedger(rateLimitKey, auth.tier);
+      if (ledger.cogsSpentUsd + ledger.cogsReservedUsd >= ledger.cogsCeilingUsd) {
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "COGS_CEILING_EXCEEDED",
+              message:
+                "Monthly AI budget reached for your plan. Please upgrade or wait for the next billing cycle.",
+            },
+          },
+          { status: 429, headers: { "Cache-Control": "no-store" } },
+        );
+      }
     }
 
     const { messages, document, language } = parsed.data;
@@ -255,16 +487,33 @@ export function createCoachHandler(
         messages: modelMessages,
         abortSignal: request.signal,
         maxRetries: 0,
+        onError: (event) => {
+          console.error(
+            "[Coach Stream Error]",
+            event.error instanceof Error ? event.error.message : event.error,
+          );
+        },
+        onFinish: async (event) => {
+          const totalTokens =
+            event.usage?.totalTokens ??
+            ((event.usage?.inputTokens ?? 0) + (event.usage?.outputTokens ?? 0));
+          const costUsd = Math.max(
+            0.000001,
+            Number(((totalTokens / 1_000_000) * 0.5).toFixed(6)),
+          );
+          try {
+            await recordCogs(rateLimitKey, auth.tier, costUsd, 0);
+          } catch (cogsErr) {
+            console.error("[Coach] Failed to record COGS:", cogsErr);
+          }
+        },
       });
 
       return result.toUIMessageStreamResponse({
         headers: {
           "Cache-Control": "no-store",
         },
-        onError: (err: any) =>
-          err?.data?.error?.message ||
-          err?.message ||
-          "AI Coach encountered an error. Please try again.",
+        onError: (err: unknown) => sanitizeCoachStreamError(err),
       });
     } catch (error) {
       if (request.signal.aborted) {

@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { parseDocument } from "@/lib/ingestion/parse-document";
+import { parseTxt } from "@/lib/ingestion/parse-txt";
 import {
   validateDocxArchive,
+  validatePptxArchive,
   validateFile,
 } from "@/lib/ingestion/validate-file";
 import { makePdf, makeDocx, studyText } from "../helpers/documents";
@@ -140,5 +142,27 @@ describe("real document parsers", () => {
     expect(result.pageCount).toBe(1);
     expect(result.sources[0].label).toBe("Slide 1");
     expect(result.sources[0].text).toContain("Price elasticity");
+  });
+
+  it("rejects PPTX archives advertising excessive expanded size", async () => {
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    zip.file("ppt/media/image1.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const bytes = Buffer.from(await zip.generateAsync({ type: "nodebuffer" }));
+    const offset = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    bytes.writeUInt32LE(51 * 1024 * 1024, offset + 24);
+    expect(() => validatePptxArchive(bytes)).toThrow(
+      expect.objectContaining({ code: "DOCUMENT_TOO_LARGE", status: 413 }),
+    );
+  });
+
+  it("rejects slide-delimited TXT files exceeding MAX_PDF_PAGES (150) slides with TOO_MANY_PAGES", () => {
+    const slides = Array.from(
+      { length: 151 },
+      (_, idx) => `=== Slide ${idx + 1} ===\nSlide ${idx + 1} content about economics.`,
+    ).join("\n");
+    expect(() => parseTxt(Buffer.from(slides, "utf8"))).toThrow(
+      expect.objectContaining({ code: "TOO_MANY_PAGES", status: 413 }),
+    );
   });
 });

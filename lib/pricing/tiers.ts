@@ -1,6 +1,6 @@
-export type UserTier = "contender" | "cram_pass" | "pro" | "tutor";
+export type UserTier = "contender" | "cram_pass" | "pro_monthly" | "pro" | "tutor";
 
-export type TierKey = UserTier | "pro_monthly";
+export type TierKey = UserTier;
 
 export type PlanId = TierKey | "pro_semester" | "tutor_guild";
 
@@ -43,6 +43,36 @@ function createRegionalCeiling(vn: number, row: number): number & RegionalCogsCe
   const boxed = new Number(vn);
   Object.assign(boxed, { VN: vn, ROW: row });
   return boxed as unknown as number & RegionalCogsCeiling;
+}
+
+export function resolveRegionalCeiling(
+  ceilingUsd: number | RegionalCogsCeiling | (number & RegionalCogsCeiling),
+  region: BillingRegion = "VN",
+): number {
+  if (
+    ceilingUsd !== null &&
+    typeof ceilingUsd === "object" &&
+    ("VN" in ceilingUsd || "ROW" in ceilingUsd)
+  ) {
+    const regional = ceilingUsd as RegionalCogsCeiling;
+    return Number(region === "ROW" ? (regional.ROW ?? regional.VN) : (regional.VN ?? regional.ROW));
+  }
+  return Number(ceilingUsd);
+}
+
+export function getRegionalCogsCeiling(
+  tierOrCeiling: TierKey | number | RegionalCogsCeiling | (number & RegionalCogsCeiling),
+  region: BillingRegion = "VN",
+): number {
+  if (typeof tierOrCeiling === "string" && tierOrCeiling in TIER_LIMITS) {
+    return region === "ROW"
+      ? TIER_LIMITS[tierOrCeiling as TierKey].cogsCeilingUsd.ROW
+      : TIER_LIMITS[tierOrCeiling as TierKey].cogsCeilingUsd.VN;
+  }
+  return resolveRegionalCeiling(
+    tierOrCeiling as number | RegionalCogsCeiling | (number & RegionalCogsCeiling),
+    region,
+  );
 }
 
 export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number & RegionalCogsCeiling }> = {
@@ -187,10 +217,7 @@ export function evaluateCogsDegradation(
   reservedUsd = 0,
   billingRegion: BillingRegion = "VN",
 ): CogsBudgetStatus {
-  const effectiveCeiling =
-    typeof ceilingUsd === "number"
-      ? ceilingUsd
-      : (ceilingUsd[billingRegion] ?? ceilingUsd.VN);
+  const effectiveCeiling = resolveRegionalCeiling(ceilingUsd, billingRegion);
   const res = reservedUsd ?? 0;
   const est = estimatedCallCostUsd ?? 0;
   const projectedUsd = Number((spentUsd + res + est).toFixed(6));
@@ -537,7 +564,7 @@ export function normalizeTier(raw: unknown): UserTier {
   if (typeof raw !== "string") return "contender";
   const t = raw.toLowerCase().trim();
   if (t === "cram_pass" || t === "crampass" || t === "cram-pass") return "cram_pass";
-  if (t === "pro_monthly" || t === "pro-monthly" || t === "monthly") return "pro";
+  if (t === "pro_monthly" || t === "pro-monthly" || t === "monthly") return "pro_monthly";
   if (t === "pro" || t === "pro_semester" || t === "pro-semester" || t === "semester") return "pro";
   if (t === "tutor" || t === "tutor_guild" || t === "tutor-guild") return "tutor";
   return "contender";
@@ -561,7 +588,8 @@ export interface ProfileRecordLike {
 
 /**
  * Resolves active tier and expiration from a profiles or user_profiles database record.
- * Handles manual admin non-expiring grants and grants updated after previous expiration.
+ * Handles manual admin non-expiring grants (tier_expires_at === null).
+ * Elapsed tier_expires_at returns null.
  */
 export function resolveTierFromProfileRecord(
   record: ProfileRecordLike | null | undefined,
@@ -578,13 +606,6 @@ export function resolveTierFromProfileRecord(
   const expMs = new Date(record.tier_expires_at).getTime();
   if (!isNaN(expMs) && expMs > Date.now()) {
     return { tier: normTier, expiresAt: record.tier_expires_at };
-  }
-
-  if (record.updated_at) {
-    const updatedMs = new Date(record.updated_at).getTime();
-    if (!isNaN(updatedMs) && !isNaN(expMs) && updatedMs > expMs) {
-      return { tier: normTier, expiresAt: calculateTierExpiration(normTier) };
-    }
   }
 
   return null;
@@ -622,6 +643,20 @@ export function getStoredUserTier(): UserTier {
 export function setStoredUserTier(tier: UserTier, expiresAt?: string | null): void {
   if (typeof window === "undefined") return;
   try {
+    const previousTier = localStorage.getItem(USER_TIER_STORAGE_KEY);
+    const previousExpires = localStorage.getItem(USER_TIER_EXPIRES_KEY);
+
+    // Never allow client-side code to overwrite an active unexpired paid tier with contender
+    if (
+      tier === "contender" &&
+      previousTier &&
+      normalizeTier(previousTier) !== "contender" &&
+      previousExpires &&
+      !isTierExpired(previousExpires)
+    ) {
+      return;
+    }
+
     const calculatedExpires =
       expiresAt !== undefined ? expiresAt : calculateTierExpiration(tier);
 
@@ -638,16 +673,7 @@ export function setStoredUserTier(tier: UserTier, expiresAt?: string | null): vo
       }),
     );
 
-    // Never allow client-side code to overwrite an active paid tier with contender
     if (tier === "contender") {
-      const currentTier = localStorage.getItem(USER_TIER_STORAGE_KEY);
-      const currentExpires = localStorage.getItem(USER_TIER_EXPIRES_KEY);
-      if (currentTier && normalizeTier(currentTier) !== "contender") {
-        if (!isTierExpired(currentExpires)) {
-          // Active unexpired paid tier; do not downgrade client-side
-          return;
-        }
-      }
       void syncUserTierToCloud("contender", null);
     }
   } catch {

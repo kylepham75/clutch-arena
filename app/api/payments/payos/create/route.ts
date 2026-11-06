@@ -2,11 +2,23 @@ import { NextResponse } from "next/server";
 import {
   createPayosPaymentLink,
   isPayosConfigured,
+  resolveTrustedPayosOrigin,
+  SANDBOX_TEST_AMOUNT_VND,
   type PayosPlanId,
 } from "@/lib/payments/payos";
-import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { extractAuthToken, verifyAuthToken } from "@/lib/auth/server-guard";
 
 export const runtime = "nodejs";
+
+const VALID_PAYOS_PLANS = new Set<PayosPlanId>([
+  "trial_24h",
+  "cram_pass",
+  "pro",
+  "pro_monthly",
+  "tutor",
+  "pro_semester",
+  "tutor_guild",
+]);
 
 export async function POST(request: Request) {
   try {
@@ -28,26 +40,7 @@ export async function POST(request: Request) {
     }
 
     const auth = await verifyAuthToken(request);
-    let userId: string | undefined = auth.authenticated ? auth.user.id : undefined;
-
-    if (!userId && typeof body.userId === "string" && body.userId.trim()) {
-      const candidateId = body.userId.trim();
-      const { getSupabaseServerClient } = await import("@/lib/supabase/server");
-      const supabase = getSupabaseServerClient();
-      if (supabase) {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("id")
-          .eq("id", candidateId)
-          .maybeSingle();
-        if (profile?.id) {
-          userId = profile.id;
-        }
-      }
-    }
-
-    const isDev = !auth.authenticated && auth.devMode;
-    if (!userId && !isDev) {
+    if (!auth.authenticated || !auth.user?.id) {
       return NextResponse.json(
         {
           ok: false,
@@ -59,8 +52,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const { planId } = body;
-    if (planId !== "cram_pass" && planId !== "pro") {
+    const userId = auth.user.id;
+    const userEmail = auth.user.email;
+
+    const { planId, amount } = body;
+    if (
+      typeof planId !== "string" ||
+      !VALID_PAYOS_PLANS.has(planId as PayosPlanId)
+    ) {
       return NextResponse.json(
         {
           ok: false,
@@ -70,19 +69,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const origin =
-      request.headers.get("origin") || new URL(request.url).origin;
-
-    const authHeader = request.headers.get("authorization");
-    const userToken = authHeader?.startsWith("Bearer ")
-      ? authHeader.slice(7).trim()
-      : undefined;
+    const origin = resolveTrustedPayosOrigin(request.headers.get("origin"));
+    const userToken = auth.token ?? (extractAuthToken(request) ?? undefined);
 
     const payment = await createPayosPaymentLink({
       planId: planId as PayosPlanId,
       origin,
       userId,
       userToken,
+      userEmail,
+      ...(amount === SANDBOX_TEST_AMOUNT_VND
+        ? { amount: SANDBOX_TEST_AMOUNT_VND }
+        : {}),
     });
 
     return NextResponse.json({ ok: true, payment });

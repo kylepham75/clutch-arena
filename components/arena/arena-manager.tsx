@@ -28,6 +28,7 @@ export function ArenaManager({
     initialRoomCode ? initialRoomCode.toUpperCase() : null,
   );
   const [player, setPlayer] = useState<ArenaPlayer | null>(null);
+  const [playerToken, setPlayerToken] = useState<string | null>(null);
   const [openRooms, setOpenRooms] = useState<ArenaRoomState[]>([]);
 
   // Fetch open rooms for lobby browser
@@ -52,7 +53,7 @@ export function ArenaManager({
     addBot,
     removeBot,
     rematch,
-  } = useArenaRoom(roomCode, player);
+  } = useArenaRoom(roomCode, player, playerToken);
 
   const handleCreateRoom = useCallback(
     async (params: {
@@ -78,6 +79,7 @@ export function ArenaManager({
         const data = await res.json();
         if (data.ok && data.code && data.hostPlayer) {
           setPlayer(data.hostPlayer);
+          setPlayerToken(data.playerToken ?? null);
           setRoomCode(data.code);
           return data.code;
         }
@@ -101,6 +103,7 @@ export function ArenaManager({
         const data = await res.json();
         if (data.ok && data.player) {
           setPlayer(data.player);
+          setPlayerToken(data.playerToken ?? null);
           setRoomCode(code);
           return true;
         }
@@ -115,6 +118,7 @@ export function ArenaManager({
   const handleLeave = () => {
     setRoomCode(null);
     setPlayer(null);
+    setPlayerToken(null);
   };
 
   const handleDebrief = () => {

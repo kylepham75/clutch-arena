@@ -1,4 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+vi.mock("server-only", () => ({}));
+vi.mock("@/lib/ai/generate-notes", () => ({
+  generateClutchNote: vi.fn(),
+}));
+import { NextRequest } from "next/server";
+import { POST } from "@/app/api/notes/generate/route";
+import { generateClutchNote } from "@/lib/ai/generate-notes";
+import { cleanCoachMathArtifacts, normalizeMathFormulas } from "@/lib/math/latex";
+import { extractTextFormulas } from "@/lib/notes/formula-inventory";
+import { MAX_FILE_BYTES } from "@/lib/ingestion/limits";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 import type {
   FormulaLedgerEntry,
@@ -1301,6 +1311,119 @@ describe("Deterministic Verifiers", () => {
 
       // SubSection bullet re-cited to slide 4
       expect(secA.subSections?.[0].groundedBullets?.[0].slide).toBe(4);
+    });
+  });
+
+  describe("ReDoS Defense on Formula and Math Regexes (SA2-20)", () => {
+    it("cleanCoachMathArtifacts and normalizeMathFormulas terminate instantaneously (< 150ms) on 100KB input without '='", () => {
+      // 100KB string of repeated characters without '='
+      const hugeInput = "A".repeat(100_000);
+      const start1 = performance.now();
+      const res1 = cleanCoachMathArtifacts(hugeInput);
+      const duration1 = performance.now() - start1;
+
+      expect(duration1).toBeLessThan(150);
+      expect(res1).toBe(hugeInput);
+
+      const start2 = performance.now();
+      const res2 = normalizeMathFormulas(hugeInput);
+      const duration2 = performance.now() - start2;
+
+      expect(duration2).toBeLessThan(150);
+      expect(res2).toBe(hugeInput);
+    });
+
+    it("normalizeMathFormulas preserves valid short equations within length threshold (<= 500 chars)", () => {
+      const validPattern2_5 = "\\sigma_p^2 = w_1^2 \\sigma_1^2 + w_2^2 \\sigma_2^2";
+      expect(normalizeMathFormulas(validPattern2_5)).toBe(`$${validPattern2_5}$`);
+
+      const validPattern3 = "FV = PV * (1 + r)^n";
+      expect(normalizeMathFormulas(validPattern3)).toBe("$$FV = PV * (1 + r)^n$$");
+    });
+
+    it("extractTextFormulas terminates instantaneously (< 50ms) on 100KB input without catastrophic backtracking", () => {
+      // 100KB single-line text without '='
+      const hugeInput = "word ".repeat(20_000);
+      const start1 = performance.now();
+      const results1 = extractTextFormulas(hugeInput);
+      const duration1 = performance.now() - start1;
+
+      expect(duration1).toBeLessThan(50);
+      expect(results1).toEqual([]);
+
+      // 100KB single-line text with '=' but length > 1000
+      const hugeWithEquals = "P_0 = " + "x + ".repeat(20_000) + "y";
+      const start2 = performance.now();
+      const results2 = extractTextFormulas(hugeWithEquals);
+      const duration2 = performance.now() - start2;
+
+      expect(duration2).toBeLessThan(50);
+      expect(results2).toEqual([]);
+    });
+
+    it("extractTextFormulas successfully extracts valid formulas within length limit (<= 1000 chars)", () => {
+      const text = "Gordon Constant Growth Formula: P_0 = D_1 / (r - g)";
+      const extracted = extractTextFormulas(text);
+      expect(extracted.length).toBeGreaterThan(0);
+      expect(extracted[0].latex).toContain("P_0");
+    });
+  });
+
+  describe("Unbounded Request Buffering & Safe Error Sanitization (/api/notes/generate)", () => {
+    it("rejects oversized request before buffering when content-length > MAX_FILE_BYTES with 413 FILE_TOO_LARGE", async () => {
+      const oversizedLength = (MAX_FILE_BYTES + 1024 * 1024).toString();
+      const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "pro",
+          origin: "http://localhost:3000",
+          "content-type": "application/json",
+          "content-length": oversizedLength,
+        },
+        body: JSON.stringify({ dummy: "payload" }),
+      });
+
+      const response = await POST(request);
+      expect(response.status).toBe(413);
+
+      const data = await response.json();
+      expect(data.ok).toBe(false);
+      expect(data.error.code).toBe("FILE_TOO_LARGE");
+      expect(data.error.message).toContain("exceeds the maximum allowed size of 25MB");
+    });
+
+    it("sanitizes unhandled 500 error messages to prevent leaking stack traces or internal details", async () => {
+      vi.mocked(generateClutchNote).mockRejectedValueOnce(
+        new Error("FATAL_INTERNAL_DB_SECRET_KEY_EXPOSED_AT_PGSQL_CLIENT_STACK_TRACE"),
+      );
+
+      const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "pro",
+          origin: "http://localhost:3000",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          fileName: "Corporate_Finance.pptx",
+          sources: [
+            {
+              id: "slide-1",
+              label: "Slide 1",
+              text: "Lecture 1: Introduction to Corporate Finance.",
+            },
+          ],
+        }),
+      });
+
+      const response = await POST(request);
+      expect(response.status).toBe(500);
+
+      const data = await response.json();
+      expect(data.ok).toBe(false);
+      expect(data.error.code).toBe("SYNTHESIS_FAILED");
+      expect(data.error.message).toBe("Failed to synthesize lecture slides into notes. Please try again.");
+      expect(data.error.message).not.toContain("FATAL_INTERNAL_DB_SECRET_KEY");
     });
   });
 });

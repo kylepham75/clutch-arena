@@ -2,7 +2,10 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 vi.mock("server-only", () => ({}));
 import { parseMultiDocuments } from "@/lib/ingestion/parse-multi-documents";
 import { readMultiUpload } from "@/lib/ingestion/read-multi-upload";
-import { createMultiIngestionHandler } from "@/lib/ingestion/multi-handler";
+import {
+  createMultiIngestionHandler,
+  MULTI_SHARED_CACHE_PIPELINE_VERSION,
+} from "@/lib/ingestion/multi-handler";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
 import type { GenerationResult } from "@/lib/schemas/ingestion";
 import { studyText } from "../helpers/documents";
@@ -299,5 +302,253 @@ describe("multi ingestion HTTP handler", () => {
         questionPool: mockResult.pack.questions,
       }),
     );
+  });
+
+  it("calls rollbackDeckQuotaReservation once with reserved actor, hash, and cost when multi-doc generation throws an error", async () => {
+    const generate = vi.fn().mockRejectedValue(new Error("Multi-document AI provider timeout"));
+    const getDeckCache = vi.fn().mockResolvedValue(null);
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      reserved: true,
+      cacheHit: false,
+      creditConsumed: true,
+      isRegeneration: false,
+      creditsUsed: 1,
+      creditsLimit: 60,
+      dailyBurstUsed: 1,
+      dailyBurstLimit: 6,
+      cogsStatus: {} as any,
+      ledger: {} as any,
+    });
+    const rollbackQuota = vi.fn().mockResolvedValue({ success: true, decksGeneratedCount: 0 });
+
+    const form = new FormData();
+    form.append("files", new File([studyText], "notesA.txt", { type: "text/plain" }));
+    form.append("files", new File([studyText], "notesB.txt", { type: "text/plain" }));
+    form.set("options", JSON.stringify({ operation: "generate", questionCount: 10 }));
+
+    const request = new Request("http://localhost:3000/api/ingest/multi", {
+      method: "POST",
+      body: form,
+    });
+
+    const handler = createMultiIngestionHandler({
+      generate,
+      checkConfiguration: () => {},
+      getDeckCache,
+      quotaReservation,
+      rollbackQuota,
+    });
+    const response = await handler(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(json.ok).toBe(false);
+    expect(json.error.code).toBe("INGESTION_FAILED");
+    expect(quotaReservation).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(rollbackQuota).toHaveBeenCalledTimes(1);
+    expect(rollbackQuota).toHaveBeenCalledWith(
+      expect.stringContaining("ip:"),
+      "guest",
+      expect.any(String),
+      0.02,
+    );
+  });
+
+  it("uses matching MULTI_SHARED_CACHE_PIPELINE_VERSION in getDeckCache and setDeckCache so repeat multi-uploads hit shared cache", async () => {
+    let memoryCache: any = null;
+    const generate = vi.fn().mockResolvedValue({
+      ...mockResult,
+      pipelineVersion: "3.0.0-final+gemini+claude",
+    });
+    const getDeckCache = vi.fn().mockImplementation(async (key: any) => {
+      if (memoryCache && memoryCache.pipelineVersion === key.pipelineVersion) {
+        return memoryCache;
+      }
+      return null;
+    });
+    const setDeckCache = vi.fn().mockImplementation(async (entry: any) => {
+      memoryCache = {
+        ...entry,
+        hitCount: 1,
+      };
+      return memoryCache;
+    });
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      reserved: true,
+      cacheHit: false,
+      creditConsumed: true,
+      isRegeneration: false,
+      creditsUsed: 1,
+      creditsLimit: 60,
+      dailyBurstUsed: 1,
+      dailyBurstLimit: 6,
+      cogsStatus: {} as any,
+      ledger: {} as any,
+    });
+    const recordCogs = vi.fn().mockResolvedValue({ ledger: {} as any, cogsStatus: {} as any });
+
+    const makeRequest = () => {
+      const form = new FormData();
+      form.append("files", new File([studyText], "notesA.txt", { type: "text/plain" }));
+      form.append("files", new File([studyText], "notesB.txt", { type: "text/plain" }));
+      form.set("options", JSON.stringify({ operation: "generate", questionCount: 10 }));
+      return new Request("http://localhost:3000/api/ingest/multi", {
+        method: "POST",
+        body: form,
+      });
+    };
+
+    const handler = createMultiIngestionHandler({
+      generate,
+      checkConfiguration: () => {},
+      getDeckCache,
+      setDeckCache,
+      quotaReservation,
+      recordCogs,
+    });
+
+    // 1st request: cache miss, triggers generation, saves to cache with MULTI_SHARED_CACHE_PIPELINE_VERSION
+    const res1 = await handler(makeRequest());
+    expect(res1.status).toBe(200);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(setDeckCache).toHaveBeenCalledTimes(1);
+    expect(setDeckCache).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipelineVersion: MULTI_SHARED_CACHE_PIPELINE_VERSION,
+      }),
+    );
+
+    // 2nd request with identical multi-files: invokes getDeckCache with matching version and hits cache
+    const res2 = await handler(makeRequest());
+    expect(res2.status).toBe(200);
+    const json2 = await res2.json();
+    expect(json2.cached).toBe(true);
+    expect(generate).toHaveBeenCalledTimes(1); // Not called again!
+    expect(getDeckCache).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        pipelineVersion: MULTI_SHARED_CACHE_PIPELINE_VERSION,
+      }),
+    );
+  });
+
+  it("rejects guest users on multi-ingest operation: preview with 403 TIER_UPGRADE_REQUIRED", async () => {
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: false,
+      user: null,
+      tier: "guest" as const,
+    });
+    const form = new FormData();
+    form.append("files", new File([studyText], "notesA.txt", { type: "text/plain" }));
+    form.append("files", new File([studyText], "notesB.txt", { type: "text/plain" }));
+    form.set("options", JSON.stringify({ operation: "preview" }));
+
+    const request = new Request("http://localhost:3000/api/ingest/multi", {
+      method: "POST",
+      body: form,
+    });
+
+    const handler = createMultiIngestionHandler({ verifyAuth });
+    const response = await handler(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json.ok).toBe(false);
+    expect(json.error.code).toBe("TIER_UPGRADE_REQUIRED");
+    expect(json.error.message).toContain("Multi-document synthesis requires Cram Pass or Season Pro");
+  });
+
+  it("rejects contender (free) users on multi-ingest operation: preview with 403 TIER_UPGRADE_REQUIRED", async () => {
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "user-free-1", email: "free@example.com" },
+      tier: "contender" as const,
+    });
+    const form = new FormData();
+    form.append("files", new File([studyText], "notesA.txt", { type: "text/plain" }));
+    form.append("files", new File([studyText], "notesB.txt", { type: "text/plain" }));
+    form.set("options", JSON.stringify({ operation: "preview" }));
+
+    const request = new Request("http://localhost:3000/api/ingest/multi", {
+      method: "POST",
+      body: form,
+    });
+
+    const handler = createMultiIngestionHandler({ verifyAuth });
+    const response = await handler(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json.ok).toBe(false);
+    expect(json.error.code).toBe("TIER_UPGRADE_REQUIRED");
+    expect(json.error.message).toContain("Multi-document synthesis requires Cram Pass or Season Pro");
+  });
+
+  it("returns 429 when rateLimiter denies multi-ingest operation: preview", async () => {
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "user-paid-1", email: "paid@example.com" },
+      tier: "pro" as const,
+    });
+    const rateLimiter = vi.fn().mockResolvedValue({
+      allowed: false,
+      limit: 50,
+      remaining: 0,
+      reset: Date.now() + 60000,
+    });
+    const form = new FormData();
+    form.append("files", new File([studyText], "notesA.txt", { type: "text/plain" }));
+    form.append("files", new File([studyText], "notesB.txt", { type: "text/plain" }));
+    form.set("options", JSON.stringify({ operation: "preview" }));
+
+    const request = new Request("http://localhost:3000/api/ingest/multi", {
+      method: "POST",
+      body: form,
+    });
+
+    const handler = createMultiIngestionHandler({ verifyAuth, rateLimiter });
+    const response = await handler(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(json.ok).toBe(false);
+    expect(json.error.code).toBe("RATE_LIMIT_EXCEEDED");
+    expect(rateLimiter).toHaveBeenCalledTimes(1);
+    expect(rateLimiter).toHaveBeenCalledWith("user:user-paid-1", "ingest", "pro");
+  });
+
+  it("allows paid users on multi-ingest operation: preview when within rate limits", async () => {
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "user-paid-2", email: "paid2@example.com" },
+      tier: "cram_pass" as const,
+    });
+    const rateLimiter = vi.fn().mockResolvedValue({
+      allowed: true,
+      limit: 50,
+      remaining: 49,
+      reset: Date.now() + 60000,
+    });
+    const form = new FormData();
+    form.append("files", new File([studyText], "notesA.txt", { type: "text/plain" }));
+    form.append("files", new File([studyText], "notesB.txt", { type: "text/plain" }));
+    form.set("options", JSON.stringify({ operation: "preview" }));
+
+    const request = new Request("http://localhost:3000/api/ingest/multi", {
+      method: "POST",
+      body: form,
+    });
+
+    const handler = createMultiIngestionHandler({ verifyAuth, rateLimiter });
+    const response = await handler(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.operation).toBe("preview");
+    expect(json.document).toBeDefined();
+    expect(rateLimiter).toHaveBeenCalledTimes(1);
   });
 });

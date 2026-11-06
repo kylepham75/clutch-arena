@@ -12,7 +12,7 @@ export interface ProVerificationResult {
 
 /**
  * Checks if a given tier identifier is eligible for Clutch Notes AI.
- * Authorized tiers: Cram Pass ("cram_pass"), Pro ("pro"), Tutor ("tutor").
+ * Authorized tiers: Cram Pass ("cram_pass"), Pro ("pro", "pro_monthly"), Tutor ("tutor").
  */
 export function isAuthorizedForNotes(tierString?: string | null): boolean {
   if (!tierString) return false;
@@ -22,6 +22,8 @@ export function isAuthorizedForNotes(tierString?: string | null): boolean {
     t === "crampass" ||
     t === "cram-pass" ||
     t === "pro" ||
+    t === "pro_monthly" ||
+    t === "pro-monthly" ||
     t === "tutor"
   );
 }
@@ -94,15 +96,8 @@ export async function verifyProAccess(request: Request): Promise<ProVerification
   }
 
   const tier = auth.tier;
-  const appMetaTier = (auth.user?.app_metadata?.tier as string | undefined) ?? "";
-  const userMetaTier = (auth.user?.user_metadata?.tier as string | undefined) ?? "";
 
-  const isAuthTier =
-    isAuthorizedForNotes(tier) ||
-    isAuthorizedForNotes(appMetaTier) ||
-    isAuthorizedForNotes(userMetaTier);
-
-  if (!isAuthTier) {
+  if (!isAuthorizedForNotes(tier)) {
     return {
       authorized: false,
       user: auth.user,
@@ -113,15 +108,9 @@ export async function verifyProAccess(request: Request): Promise<ProVerification
     };
   }
 
-  const normalizedTier = isAuthorizedForNotes(tier)
-    ? tier
-    : isAuthorizedForNotes(appMetaTier)
-      ? appMetaTier.toLowerCase()
-      : userMetaTier.toLowerCase();
-
   return {
     authorized: true,
     user: auth.user,
-    tier: normalizedTier,
+    tier,
   };
 }

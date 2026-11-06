@@ -154,6 +154,8 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       // by an admin is not shadowed by an old expired subscription!
     }
 
+    let hasDbProfile = false;
+
     if (resolvedTier === "contender") {
       // 2. Fallback to profiles table
       const { data: profileData } = await supabase
@@ -162,14 +164,17 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
         .eq("id", user.id)
         .maybeSingle();
 
-      const profileResolved = resolveTierFromProfileRecord(profileData);
-      if (profileResolved) {
-        resolvedTier = profileResolved.tier;
-        resolvedExpiresAt = profileResolved.expiresAt;
+      if (profileData) {
+        hasDbProfile = true;
+        const profileResolved = resolveTierFromProfileRecord(profileData);
+        if (profileResolved) {
+          resolvedTier = profileResolved.tier;
+          resolvedExpiresAt = profileResolved.expiresAt;
+        }
       }
     }
 
-    if (resolvedTier === "contender") {
+    if (resolvedTier === "contender" && !hasDbProfile) {
       // 3. Fallback to user_profiles table
       const { data: userProfileData } = await supabase
         .from("user_profiles")
@@ -177,22 +182,30 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
         .eq("id", user.id)
         .maybeSingle();
 
-      const userProfileResolved = resolveTierFromProfileRecord(userProfileData);
-      if (userProfileResolved) {
-        resolvedTier = userProfileResolved.tier;
-        resolvedExpiresAt = userProfileResolved.expiresAt;
+      if (userProfileData) {
+        hasDbProfile = true;
+        const userProfileResolved = resolveTierFromProfileRecord(userProfileData);
+        if (userProfileResolved) {
+          resolvedTier = userProfileResolved.tier;
+          resolvedExpiresAt = userProfileResolved.expiresAt;
+        }
       }
     }
 
-    // 4. Fallback to user metadata
-    if (resolvedTier === "contender") {
-      const metaTier =
-        (user.app_metadata?.tier as string | undefined) ||
-        (user.user_metadata?.tier as string | undefined);
-      if (metaTier) {
-        const normMeta = normalizeTier(metaTier);
-        if (normMeta !== "contender") {
-          resolvedTier = normMeta;
+    // 4. Fallback to app_metadata (never user_metadata, which is client-writable)
+    if (resolvedTier === "contender" && !hasDbProfile) {
+      const appMetaTier = (user.app_metadata as Record<string, unknown>)?.tier;
+      const appMetaExpiresAt = (user.app_metadata as Record<string, unknown>)?.tier_expires_at;
+
+      if (typeof appMetaTier === "string") {
+        const metaResolved = resolveTierFromProfileRecord({
+          tier: appMetaTier,
+          tier_expires_at: typeof appMetaExpiresAt === "string" ? appMetaExpiresAt : null,
+        });
+
+        if (metaResolved) {
+          resolvedTier = metaResolved.tier;
+          resolvedExpiresAt = metaResolved.expiresAt;
         }
       }
     }

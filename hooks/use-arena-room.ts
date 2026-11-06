@@ -10,6 +10,7 @@ import { useGameAudio } from "./use-game-audio";
 export function useArenaRoom(
   roomCode: string | null,
   player: ArenaPlayer | null,
+  playerToken?: string | null,
 ) {
   const [room, setRoom] = useState<ArenaRoomState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -209,6 +210,15 @@ export function useArenaRoom(
     async (action: RoomAction) => {
       if (!roomCode || !player) return false;
 
+      const resolvedToken =
+        playerToken ||
+        (player as { token?: string } | null)?.token ||
+        (typeof window !== "undefined" && roomCode && player
+          ? window.sessionStorage.getItem(
+              `clutch:arena:token:${roomCode.toUpperCase()}:${player.id}`,
+            )
+          : null);
+
       // 1. Send over PartyKit WebSocket for instant dispatch
       const partySocket = partySocketRef.current;
       if (partySocket && partySocket.readyState === WebSocket.OPEN) {
@@ -216,6 +226,7 @@ export function useArenaRoom(
           JSON.stringify({
             type: "ACTION",
             playerId: player.id,
+            ...(resolvedToken ? { token: resolvedToken } : {}),
             action,
           }),
         );
@@ -239,6 +250,7 @@ export function useArenaRoom(
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 playerId: player.id,
+                ...(resolvedToken ? { token: resolvedToken } : {}),
                 action,
               }),
             },
@@ -249,6 +261,7 @@ export function useArenaRoom(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               playerId: player.id,
+              ...(resolvedToken ? { token: resolvedToken } : {}),
               action,
             }),
           });
@@ -264,7 +277,7 @@ export function useArenaRoom(
         return false;
       }
     },
-    [roomCode, player],
+    [roomCode, player, playerToken],
   );
 
   const startMatch = useCallback(() => {

@@ -52,7 +52,7 @@ export function ClutchNotesPanel() {
 
   // Normalize paid tier check (available to 7-Day Cram Pass, Pro Semester, and Tutor tiers)
   const userAppTier = (user?.app_metadata?.tier as string)?.toUpperCase();
-  const userMetaTier = (user?.user_metadata?.tier as string)?.toUpperCase();
+
   const hasNotesAccess =
     isPaidTier ||
     isCramPassOrAbove ||
@@ -62,10 +62,10 @@ export function ClutchNotesPanel() {
     tier === "tutor" ||
     userAppTier === "PRO" ||
     userAppTier === "CRAM_PASS" ||
-    userAppTier === "TUTOR" ||
-    userMetaTier === "PRO" ||
-    userMetaTier === "CRAM_PASS" ||
-    userMetaTier === "TUTOR";
+    userAppTier === "TUTOR";
+
+
+
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -175,9 +175,11 @@ export function ClutchNotesPanel() {
       }
 
       const effectiveTier = tier && tier !== "contender" ? tier : "contender";
-      const headers: Record<string, string> = {
-        "x-test-tier": effectiveTier,
-      };
+      const headers: Record<string, string> = {};
+      if (process.env.NODE_ENV !== "production") {
+        headers["x-test-tier"] = effectiveTier;
+      }
+
 
       let token = session?.access_token;
       if (!token) {

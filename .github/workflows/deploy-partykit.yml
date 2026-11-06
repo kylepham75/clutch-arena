@@ -10,6 +10,9 @@ on:
       - ".github/workflows/deploy-partykit.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     name: Deploy to PartyKit Edge

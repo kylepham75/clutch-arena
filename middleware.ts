@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   getBillingRegion,
+  getAuthoritativeBillingRegion,
   CLUTCH_REGION_COOKIE,
   CLUTCH_REGION_HEADER,
   type BillingRegion,
@@ -14,10 +15,17 @@ import {
  * display language / i18n locale ('vi' vs 'en'). This middleware guarantees that
  * language preferences (such as 'clutch_language' or route locale) are NEVER
  * modified, evaluated, or coupled to the user's billing region or currency.
+ *
+ * In production (NODE_ENV === "production"), trusted Edge Geo-IP country headers
+ * ('x-vercel-ip-country' / 'cf-ipcountry') take strict precedence when present
+ * over client-supplied 'clutch_region' cookies or 'x-clutch-region' headers.
  */
 export function middleware(request: NextRequest): NextResponse {
   // Resolve user's billing region ('VN' vs 'ROW')
-  const region: BillingRegion = getBillingRegion(request);
+  const region: BillingRegion =
+    process.env.NODE_ENV === "production"
+      ? getAuthoritativeBillingRegion(request)
+      : getBillingRegion(request);
 
   // Clone incoming request headers and inject the resolved region header for downstream server components and routes
   const requestHeaders = new Headers(request.headers);

@@ -1,8 +1,60 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
 vi.mock("server-only", () => ({}));
-import { verifyProAccess } from "@/lib/auth/notes-guard";
+
+type MockUser = {
+  id: string;
+  email?: string;
+  app_metadata?: Record<string, unknown>;
+  user_metadata?: Record<string, unknown>;
+};
+
+let mockUser: MockUser | null = null;
+let mockSubscription: Record<string, unknown> | null = null;
+let mockProfile: Record<string, unknown> | null = null;
+
+vi.mock("@/lib/supabase/server", () => ({
+  isSupabaseServerConfigured: vi.fn(() => true),
+  getSupabaseServerClient: vi.fn(() => ({
+    auth: {
+      getUser: vi.fn(async () => {
+        if (!mockUser) {
+          return { data: { user: null }, error: new Error("User not found") };
+        }
+        return { data: { user: mockUser }, error: null };
+      }),
+    },
+    from: vi.fn((table: string) => {
+      const createQueryBuilder = (resultData: unknown) => ({
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn(async () => ({ data: resultData, error: null })),
+      });
+
+      if (table === "user_subscriptions") {
+        return createQueryBuilder(mockSubscription);
+      }
+      if (table === "profiles" || table === "user_profiles") {
+        return createQueryBuilder(mockProfile);
+      }
+      return createQueryBuilder(null);
+    }),
+  })),
+}));
+
+import { verifyProAccess, isAuthorizedForNotes } from "@/lib/auth/notes-guard";
+import { verifyAuthToken } from "@/lib/auth/server-guard";
 
 describe("Clutch Notes AI Pro-Tier Access Guard", () => {
+  beforeEach(() => {
+    mockUser = null;
+    mockSubscription = null;
+    mockProfile = null;
+    vi.unstubAllEnvs();
+  });
+
   it("rejects unauthenticated requests with UNAUTHENTICATED reason", async () => {
     const request = new Request("https://clutcharena.com/api/notes/generate", {
       method: "POST",
@@ -97,8 +149,6 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
       expect(result.authorized).toBe(false);
       expect(result.reason).toBe("UNAUTHENTICATED");
       expect(result.message).toContain("Authentication required");
-
-      vi.unstubAllEnvs();
     });
 
     it("allows x-test-tier override in production ONLY when ALLOW_TEST_TIER_OVERRIDE is explicitly true", async () => {
@@ -115,8 +165,242 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
       const result = await verifyProAccess(req);
       expect(result.authorized).toBe(true);
       expect(result.tier).toBe("pro");
+    });
+  });
 
-      vi.unstubAllEnvs();
+  describe("isAuthorizedForNotes tier validation", () => {
+    it("recognizes pro_monthly and pro-monthly as valid paid notes tiers alongside cram_pass, pro, tutor", () => {
+      expect(isAuthorizedForNotes("pro_monthly")).toBe(true);
+      expect(isAuthorizedForNotes("pro-monthly")).toBe(true);
+      expect(isAuthorizedForNotes("cram_pass")).toBe(true);
+      expect(isAuthorizedForNotes("crampass")).toBe(true);
+      expect(isAuthorizedForNotes("cram-pass")).toBe(true);
+      expect(isAuthorizedForNotes("pro")).toBe(true);
+      expect(isAuthorizedForNotes("tutor")).toBe(true);
+      expect(isAuthorizedForNotes("contender")).toBe(false);
+      expect(isAuthorizedForNotes("guest")).toBe(false);
+      expect(isAuthorizedForNotes("")).toBe(false);
+      expect(isAuthorizedForNotes(null)).toBe(false);
+      expect(isAuthorizedForNotes(undefined)).toBe(false);
+    });
+  });
+
+  describe("SA-02: Client-Writable user_metadata.tier Privilege Escalation Prevention", () => {
+    it("rejects a user with user_metadata.tier = 'pro' (profile = contender) in verifyAuthToken and verifyProAccess", async () => {
+      mockUser = {
+        id: "attacker-user-id",
+        email: "attacker@clutcharena.com",
+        app_metadata: {},
+        user_metadata: { tier: "pro" },
+      };
+      mockSubscription = null;
+      mockProfile = { tier: "contender", tier_expires_at: null };
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer mock-attacker-jwt",
+        },
+      });
+
+      // verifyAuthToken must not read user_metadata.tier
+      const authResult = await verifyAuthToken(req);
+      expect(authResult.authenticated).toBe(true);
+      if (!authResult.authenticated) throw new Error("Expected authenticated");
+      expect(authResult.tier).toBe("contender");
+
+      // verifyProAccess must reject with 403 / PRO_REQUIRED
+      const proResult = await verifyProAccess(req);
+      expect(proResult.authorized).toBe(false);
+      expect(proResult.tier).toBe("contender");
+      expect(proResult.reason).toBe("PRO_REQUIRED");
+    });
+
+    it("rejects a user with user_metadata.tier = 'tutor' (profile = contender) in verifyAuthToken and verifyProAccess", async () => {
+      mockUser = {
+        id: "attacker-user-id-2",
+        email: "attacker2@clutcharena.com",
+        app_metadata: {},
+        user_metadata: { tier: "tutor" },
+      };
+      mockSubscription = null;
+      mockProfile = null;
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer mock-attacker-jwt-2",
+        },
+      });
+
+      const authResult = await verifyAuthToken(req);
+      expect(authResult.authenticated).toBe(true);
+      if (!authResult.authenticated) throw new Error("Expected authenticated");
+      expect(authResult.tier).toBe("contender");
+
+      const proResult = await verifyProAccess(req);
+      expect(proResult.authorized).toBe(false);
+      expect(proResult.tier).toBe("contender");
+      expect(proResult.reason).toBe("PRO_REQUIRED");
+    });
+  });
+
+  describe("SA-02: Expired app_metadata Tier Downgrade Enforcement", () => {
+    it("rejects and downgrades a user with expired app_metadata (cram_pass expired in 2020) to contender", async () => {
+      mockUser = {
+        id: "expired-user-id",
+        email: "expired@clutcharena.com",
+        app_metadata: {
+          tier: "cram_pass",
+          tier_expires_at: "2020-01-01T00:00:00Z",
+        },
+        user_metadata: {},
+      };
+      mockSubscription = null;
+      mockProfile = null;
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer mock-expired-jwt",
+        },
+      });
+
+      const authResult = await verifyAuthToken(req);
+      expect(authResult.authenticated).toBe(true);
+      if (!authResult.authenticated) throw new Error("Expected authenticated");
+      expect(authResult.tier).toBe("contender");
+      expect(authResult.tierExpiresAt).toBeNull();
+
+      const proResult = await verifyProAccess(req);
+      expect(proResult.authorized).toBe(false);
+      expect(proResult.tier).toBe("contender");
+      expect(proResult.reason).toBe("PRO_REQUIRED");
+    });
+
+    it("authorizes a user with active unexpired app_metadata tier", async () => {
+      mockUser = {
+        id: "valid-admin-granted-user",
+        email: "admin-grant@clutcharena.com",
+        app_metadata: {
+          tier: "pro",
+        },
+        user_metadata: {},
+      };
+      mockSubscription = null;
+      mockProfile = null;
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer mock-valid-jwt",
+        },
+      });
+
+      const authResult = await verifyAuthToken(req);
+      expect(authResult.authenticated).toBe(true);
+      if (!authResult.authenticated) throw new Error("Expected authenticated");
+      expect(authResult.tier).toBe("pro");
+
+      const proResult = await verifyProAccess(req);
+      expect(proResult.authorized).toBe(true);
+      expect(proResult.tier).toBe("pro");
+    });
+
+    it("authorizes a user with future unexpired cram_pass in app_metadata", async () => {
+      const futureExpiry = new Date(Date.now() + 86400000 * 5).toISOString();
+      mockUser = {
+        id: "valid-cram-user",
+        email: "cram@clutcharena.com",
+        app_metadata: {
+          tier: "cram_pass",
+          tier_expires_at: futureExpiry,
+        },
+        user_metadata: {},
+      };
+      mockSubscription = null;
+      mockProfile = null;
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer mock-cram-jwt",
+        },
+      });
+
+      const authResult = await verifyAuthToken(req);
+      expect(authResult.authenticated).toBe(true);
+      if (!authResult.authenticated) throw new Error("Expected authenticated");
+      expect(authResult.tier).toBe("cram_pass");
+      expect(authResult.tierExpiresAt).toBe(futureExpiry);
+
+      const proResult = await verifyProAccess(req);
+      expect(proResult.authorized).toBe(true);
+      expect(proResult.tier).toBe("cram_pass");
+    });
+  });
+
+  describe("SA2-07: Admin Downgrade & Stale app_metadata Fallback Prevention", () => {
+    it("rejects a user with a contender DB profile even if user has stale paid app_metadata (pro)", async () => {
+      mockUser = {
+        id: "downgraded-pro-user-id",
+        email: "downgraded@clutcharena.com",
+        app_metadata: {
+          tier: "pro",
+        },
+        user_metadata: {},
+      };
+      mockSubscription = null;
+      mockProfile = { tier: "contender", tier_expires_at: null };
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer mock-downgraded-jwt",
+        },
+      });
+
+      const authResult = await verifyAuthToken(req);
+      expect(authResult.authenticated).toBe(true);
+      if (!authResult.authenticated) throw new Error("Expected authenticated");
+      expect(authResult.tier).toBe("contender");
+
+      const proResult = await verifyProAccess(req);
+      expect(proResult.authorized).toBe(false);
+      expect(proResult.tier).toBe("contender");
+      expect(proResult.reason).toBe("PRO_REQUIRED");
+    });
+
+    it("rejects a user with a contender DB profile even if user has future cram_pass in stale app_metadata", async () => {
+      const futureExpiry = new Date(Date.now() + 86400000 * 5).toISOString();
+      mockUser = {
+        id: "downgraded-cram-user-id",
+        email: "downgraded-cram@clutcharena.com",
+        app_metadata: {
+          tier: "cram_pass",
+          tier_expires_at: futureExpiry,
+        },
+        user_metadata: {},
+      };
+      mockSubscription = null;
+      mockProfile = { tier: "contender", tier_expires_at: null };
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer mock-downgraded-cram-jwt",
+        },
+      });
+
+      const authResult = await verifyAuthToken(req);
+      expect(authResult.authenticated).toBe(true);
+      if (!authResult.authenticated) throw new Error("Expected authenticated");
+      expect(authResult.tier).toBe("contender");
+
+      const proResult = await verifyProAccess(req);
+      expect(proResult.authorized).toBe(false);
+      expect(proResult.tier).toBe("contender");
+      expect(proResult.reason).toBe("PRO_REQUIRED");
     });
   });
 });

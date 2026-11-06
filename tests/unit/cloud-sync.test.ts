@@ -13,6 +13,7 @@ import {
   syncMasteryStoreToCloud,
   clearSessionMastery,
 } from "@/lib/game/concept-mastery";
+import * as library from "@/lib/game/library";
 
 describe("Cloud Sync & LocalStorage Migration", () => {
   let memoryStore: Record<string, string> = {};
@@ -110,5 +111,48 @@ describe("Cloud Sync & LocalStorage Migration", () => {
       },
     });
     expect(typeof masterySyncResult).toBe("boolean");
+  });
+
+  it("saveStudyItem with skipCloudSync: true does not call syncStudyItemToCloud", () => {
+    const syncSpy = vi.spyOn(library, "syncStudyItemToCloud").mockResolvedValue(true);
+
+    const testItem: library.SavedStudyItem = {
+      id: "shared-unconfirmed-deck-1",
+      title: "Shared Economics Review",
+      createdAt: new Date().toISOString(),
+      questionCount: 0,
+      format: "txt",
+      fileName: "review.json",
+      pack: {
+        id: "shared-unconfirmed-deck-1",
+        title: "Shared Economics Review",
+        subtitle: "Unit test deck",
+        questions: [],
+        metadata: {},
+      },
+      document: {
+        format: "txt",
+        fileName: "review.json",
+        characterCount: 100,
+        pageCount: null,
+        sources: [],
+        warnings: [],
+      },
+    };
+
+    // Save with skipCloudSync: true
+    library.saveStudyItem(testItem, { skipCloudSync: true });
+
+    // Verify item saved locally in localStorage
+    expect(library.readLibrary().some((i) => i.id === "shared-unconfirmed-deck-1")).toBe(true);
+
+    // Verify syncStudyItemToCloud was NOT called
+    expect(syncSpy).not.toHaveBeenCalled();
+
+    // Now save without skipCloudSync and verify syncStudyItemToCloud IS called
+    library.saveStudyItem(testItem);
+    expect(syncSpy).toHaveBeenCalledWith(testItem);
+
+    syncSpy.mockRestore();
   });
 });

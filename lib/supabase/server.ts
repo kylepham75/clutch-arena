@@ -9,6 +9,12 @@ export function isSupabaseServerConfigured(): boolean {
 }
 
 export function getSupabaseServerClient(token?: string): SupabaseClient | null {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.NODE_ENV === "production") {
+    console.warn(
+      "[Supabase] Production Warning: SUPABASE_SERVICE_ROLE_KEY is missing. RLS-protected service role operations will fail or fall back to anonymous permissions."
+    );
+  }
+
   if (!isSupabaseServerConfigured()) {
     return null;
   }

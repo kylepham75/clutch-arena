@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import ArenaServer, {
+  CORS_HEADERS,
   STALE_LOBBY_TIMEOUT_MS,
   type PartyRoomData,
 } from "../../party/arena";
@@ -125,59 +126,50 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
       expect(res1.room.maxPlayers).toBe(8);
       expect(res1.room.mode).toBe("exact");
 
-      // Cram pass: maxPlayers capped at 15
+      // Cram pass: maxPlayers capped at 15 via authorized HTTP init
       const mock2 = createMockPartyRoom("ROOM-CRAM");
       const server2 = new ArenaServer(mock2.room);
-      const conn2 = createMockConnection("host_conn_2");
-      await server2.onMessage(
-        JSON.stringify({
-          type: "INIT_ROOM",
-          payload: {
-            hostNickname: "CramHost",
-            hostTier: "cram_pass",
-          },
+      const req2 = new Request("http://localhost:1999/party/ROOM-CRAM/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-party-internal": "1" },
+        body: JSON.stringify({
+          hostNickname: "CramHost",
+          hostTier: "cram_pass",
         }),
-        conn2 as unknown as Party.Connection,
-      );
-      const res2 = JSON.parse(conn2.sentMessages[0]);
+      });
+      const res2 = await (await server2.onRequest(req2 as unknown as Party.Request)).json();
       expect(res2.room.maxPlayers).toBe(15);
 
       // Pro: maxPlayers capped at 15
       const mock3 = createMockPartyRoom("ROOM-PRO");
       const server3 = new ArenaServer(mock3.room);
-      const conn3 = createMockConnection("host_conn_3");
-      await server3.onMessage(
-        JSON.stringify({
-          type: "INIT_ROOM",
-          payload: {
-            hostNickname: "ProHost",
-            hostTier: "pro",
-            mode: "variants",
-            maxPlayers: 25, // Request 25, clamped to 15
-          },
+      const req3 = new Request("http://localhost:1999/party/ROOM-PRO/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-party-internal": "1" },
+        body: JSON.stringify({
+          hostNickname: "ProHost",
+          hostTier: "pro",
+          mode: "variants",
+          maxPlayers: 25, // Request 25, clamped to 15
         }),
-        conn3 as unknown as Party.Connection,
-      );
-      const res3 = JSON.parse(conn3.sentMessages[0]);
+      });
+      const res3 = await (await server3.onRequest(req3 as unknown as Party.Request)).json();
       expect(res3.room.maxPlayers).toBe(15);
       expect(res3.room.mode).toBe("variants");
 
       // Tutor: maxPlayers up to 50, or smaller if requested
       const mock4 = createMockPartyRoom("ROOM-TUTOR");
       const server4 = new ArenaServer(mock4.room);
-      const conn4 = createMockConnection("host_conn_4");
-      await server4.onMessage(
-        JSON.stringify({
-          type: "INIT_ROOM",
-          payload: {
-            hostNickname: "TutorHost",
-            hostTier: "tutor",
-            maxPlayers: 10,
-          },
+      const req4 = new Request("http://localhost:1999/party/ROOM-TUTOR/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-party-internal": "1" },
+        body: JSON.stringify({
+          hostNickname: "TutorHost",
+          hostTier: "tutor",
+          maxPlayers: 10,
         }),
-        conn4 as unknown as Party.Connection,
-      );
-      const res4 = JSON.parse(conn4.sentMessages[0]);
+      });
+      const res4 = await (await server4.onRequest(req4 as unknown as Party.Request)).json();
       expect(res4.room.maxPlayers).toBe(10);
     });
 
@@ -240,7 +232,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
       // Init room via HTTP with cap of 2
       const initReq = new Request("http://localhost:1999/party/CAP-HTTP-2/init", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-party-internal": "1" },
         body: JSON.stringify({
           hostNickname: "Host",
           hostTier: "contender",
@@ -774,6 +766,682 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
       expect(rematchedState.classAnalytics!.averageAccuracyPercent).toBe(0);
       expect(rematchedState.classAnalytics!.earlyEliminatedCount).toBe(0);
       expect(Object.keys((server as any).state.roundHistory).length).toBe(0);
+    });
+  });
+
+  describe("4. Security Hardening (SA-12 & SA-14)", () => {
+    it("rejects INIT_ROOM (WS) and POST /init (HTTP) on an already-initialized room without wiping state", async () => {
+      const mock = createMockPartyRoom("NO-WIPE-ROOM");
+      const server = new ArenaServer(mock.room);
+      const hostConn = createMockConnection("host_conn");
+
+      await server.onMessage(
+        JSON.stringify({
+          type: "INIT_ROOM",
+          payload: { hostNickname: "OriginalHost", hostTier: "pro", title: "Original Title" },
+        }),
+        hostConn as unknown as Party.Connection,
+      );
+
+      const initRes = JSON.parse(hostConn.sentMessages[0]);
+      expect(initRes.type).toBe("INIT_SUCCESS");
+      expect(initRes.playerToken).toMatch(/^tok_/);
+      const originalHostId = initRes.hostPlayer.id;
+
+      // Attacker tries to overwrite room via WS INIT_ROOM
+      const attackerConn = createMockConnection("attacker_conn");
+      await server.onMessage(
+        JSON.stringify({
+          type: "INIT_ROOM",
+          payload: { hostNickname: "AttackerHost", title: "Hacked Title" },
+        }),
+        attackerConn as unknown as Party.Connection,
+      );
+
+      const wsErr = JSON.parse(attackerConn.sentMessages[0]);
+      expect(wsErr.type).toBe("ERROR");
+      expect(wsErr.code).toBe("ALREADY_INITIALIZED");
+      expect((server as any).state.hostId).toBe(originalHostId);
+      expect((server as any).state.title).toBe("Original Title");
+
+      // Attacker tries to overwrite room via HTTP POST /init
+      const httpInitReq = new Request("http://localhost:1999/party/NO-WIPE-ROOM/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-party-internal": "1" },
+        body: JSON.stringify({ hostNickname: "HttpAttacker", title: "Http Hacked" }),
+      });
+      const httpRes = await server.onRequest(httpInitReq as unknown as Party.Request);
+      expect(httpRes.status).toBe(409);
+      const httpBody = await httpRes.json();
+      expect(httpBody.ok).toBe(false);
+      expect(httpBody.error.code).toBe("ALREADY_INITIALIZED");
+      expect((server as any).state.hostId).toBe(originalHostId);
+      expect((server as any).state.title).toBe("Original Title");
+    });
+
+    it("prevents guest WebSocket connection from spoofing host or other player actions (UNAUTHORIZED_PLAYER)", async () => {
+      const mock = createMockPartyRoom("AUTH-GUARD-ROOM");
+      const server = new ArenaServer(mock.room);
+      const hostConn = createMockConnection("host_conn");
+      const guestConn = createMockConnection("guest_conn");
+
+      await server.onMessage(
+        JSON.stringify({
+          type: "INIT_ROOM",
+          payload: { hostNickname: "RealHost", hostTier: "pro" },
+        }),
+        hostConn as unknown as Party.Connection,
+      );
+      const hostId = JSON.parse(hostConn.sentMessages[0]).hostPlayer.id;
+
+      await server.onMessage(
+        JSON.stringify({
+          type: "JOIN_ROOM",
+          payload: { nickname: "GuestSpoofer" },
+        }),
+        guestConn as unknown as Party.Connection,
+      );
+      const joinMsg = JSON.parse(guestConn.sentMessages[0]);
+      expect(joinMsg.type).toBe("JOIN_SUCCESS");
+      expect(joinMsg.playerToken).toMatch(/^tok_/);
+
+      // Guest attempts to dispatch START_MATCH using hostId
+      await server.onMessage(
+        JSON.stringify({
+          type: "ACTION",
+          playerId: hostId,
+          action: { type: "START_MATCH" },
+        }),
+        guestConn as unknown as Party.Connection,
+      );
+
+      const lastGuestMsg = JSON.parse(guestConn.sentMessages[guestConn.sentMessages.length - 1]);
+      expect(lastGuestMsg.type).toBe("ERROR");
+      expect(lastGuestMsg.code).toBe("UNAUTHORIZED_PLAYER");
+      expect((server as any).state.status).toBe("lobby");
+
+      // Start round legitimately and verify guest cannot submit answer on behalf of hostId
+      (server as any).startRound(0);
+      await server.onMessage(
+        JSON.stringify({
+          type: "ACTION",
+          playerId: hostId,
+          action: { type: "SUBMIT_ANSWER", selected: 0 },
+        }),
+        guestConn as unknown as Party.Connection,
+      );
+
+      const errAfterSubmit = JSON.parse(guestConn.sentMessages[guestConn.sentMessages.length - 1]);
+      expect(errAfterSubmit.type).toBe("ERROR");
+      expect(errAfterSubmit.code).toBe("UNAUTHORIZED_PLAYER");
+      expect((server as any).state.players[hostId].lastAnswer).toBeNull();
+    });
+
+    it("prevents unbound connection from locking out host or spoofing actions without valid token (SA2-04)", async () => {
+      const mock = createMockPartyRoom("LOCKOUT-GUARD-ROOM");
+      const server = new ArenaServer(mock.room);
+
+      // Room initialized via HTTP (host not yet connected via WebSocket)
+      const httpInitReq = new Request("http://localhost:1999/party/LOCKOUT-GUARD-ROOM/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-party-internal": "1" },
+        body: JSON.stringify({ hostNickname: "RealHost", hostTier: "pro" }),
+      });
+      const initRes = await server.onRequest(httpInitReq as unknown as Party.Request);
+      const initData = await initRes.json();
+      const hostId = initData.hostPlayer.id;
+      const hostToken = initData.playerToken;
+
+      expect(hostToken).toMatch(/^tok_/);
+      expect((server as any).connectionPlayers.size).toBe(0);
+
+      // 1. Attacker connects via WebSocket before host connects
+      const attackerConn = createMockConnection("attacker_conn");
+
+      // Attacker attempts ACTION without token claiming hostId
+      await server.onMessage(
+        JSON.stringify({
+          type: "ACTION",
+          playerId: hostId,
+          action: { type: "START_MATCH" },
+        }),
+        attackerConn as unknown as Party.Connection,
+      );
+
+      const errWithoutToken = JSON.parse(attackerConn.sentMessages[0]);
+      expect(errWithoutToken.type).toBe("ERROR");
+      expect(errWithoutToken.code).toBe("UNAUTHORIZED_PLAYER");
+      // Connection MUST NOT be bound!
+      expect((server as any).connectionPlayers.has("attacker_conn")).toBe(false);
+
+      // Attacker attempts ACTION with invalid token claiming hostId
+      await server.onMessage(
+        JSON.stringify({
+          type: "ACTION",
+          playerId: hostId,
+          token: "tok_invalid_attacker_guess",
+          action: { type: "START_MATCH" },
+        }),
+        attackerConn as unknown as Party.Connection,
+      );
+
+      const errWithWrongToken = JSON.parse(attackerConn.sentMessages[1]);
+      expect(errWithWrongToken.type).toBe("ERROR");
+      expect(errWithWrongToken.code).toBe("UNAUTHORIZED_PLAYER");
+      expect((server as any).connectionPlayers.has("attacker_conn")).toBe(false);
+
+      // 2. Real host connects via WebSocket and provides valid token
+      const realHostConn = createMockConnection("real_host_conn");
+      await server.onMessage(
+        JSON.stringify({
+          type: "ACTION",
+          playerId: hostId,
+          token: hostToken,
+          action: { type: "TOGGLE_READY" },
+        }),
+        realHostConn as unknown as Party.Connection,
+      );
+
+      // Real host connection binds successfully
+      expect((server as any).connectionPlayers.get("real_host_conn")).toBe(hostId);
+
+      // 3. HTTP POST /parties/arena/[id]/action requires valid token
+      const httpBadAction = new Request("http://localhost:1999/party/LOCKOUT-GUARD-ROOM/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerId: hostId,
+          action: { type: "START_MATCH" },
+        }),
+      });
+      const httpBadRes = await server.onRequest(httpBadAction as unknown as Party.Request);
+      expect(httpBadRes.status).toBe(403);
+      const httpBadData = await httpBadRes.json();
+      expect(httpBadData.ok).toBe(false);
+      expect(httpBadData.error.code).toBe("UNAUTHORIZED_PLAYER");
+
+      const httpGoodAction = new Request("http://localhost:1999/party/LOCKOUT-GUARD-ROOM/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerId: hostId,
+          token: hostToken,
+          action: { type: "START_MATCH" },
+        }),
+      });
+      const httpGoodRes = await server.onRequest(httpGoodAction as unknown as Party.Request);
+      expect(httpGoodRes.status).toBe(200);
+      const httpGoodData = await httpGoodRes.json();
+      expect(httpGoodData.ok).toBe(true);
+      expect((server as any).state.status).toBe("countdown");
+    });
+
+    it("rejects direct external HTTP POST and DELETE to __lobby__ without x-party-internal header", async () => {
+      const mock = createMockPartyRoom("__lobby__");
+      const server = new ArenaServer(mock.room);
+
+      const postReq = new Request("http://localhost:1999/party/__lobby__", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: "FAKE01",
+          title: "Fake Lobby",
+          status: "lobby",
+          playerCount: 99,
+          mode: "exact",
+          totalQuestions: 10,
+          createdAt: new Date().toISOString(),
+        }),
+      });
+      const postRes = await server.onRequest(postReq as unknown as Party.Request);
+      expect(postRes.status).toBe(403);
+      const postData = await postRes.json();
+      expect(postData.ok).toBe(false);
+      expect(postData.error.code).toBe("FORBIDDEN");
+
+      const delReq = new Request("http://localhost:1999/party/__lobby__", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "FAKE01" }),
+      });
+      const delRes = await server.onRequest(delReq as unknown as Party.Request);
+      expect(delRes.status).toBe(403);
+
+      // Internal call with x-party-internal: 1 succeeds
+      const internalPostReq = new Request("http://localhost:1999/party/__lobby__", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-party-internal": "1",
+        },
+        body: JSON.stringify({
+          code: "VALID1",
+          title: "Valid Lobby",
+          status: "lobby",
+          playerCount: 1,
+          mode: "exact",
+          totalQuestions: 5,
+          createdAt: new Date().toISOString(),
+        }),
+      });
+      const internalRes = await server.onRequest(internalPostReq as unknown as Party.Request);
+      expect(internalRes.status).toBe(200);
+    });
+
+    it("masks lastAnswer.correct and lastAnswer.points in ArenaServer.getClientState() during answering (SA-12)", async () => {
+      const mock = createMockPartyRoom("MASK-ORACLE");
+      const server = new ArenaServer(mock.room);
+      const hostConn = createMockConnection("host");
+      const guestConn = createMockConnection("guest");
+
+      await server.onMessage(
+        JSON.stringify({
+          type: "INIT_ROOM",
+          payload: { hostNickname: "Host", hostTier: "contender" },
+        }),
+        hostConn as unknown as Party.Connection,
+      );
+      await server.onMessage(
+        JSON.stringify({
+          type: "JOIN_ROOM",
+          payload: { nickname: "Guest" },
+        }),
+        guestConn as unknown as Party.Connection,
+      );
+
+      const hostId = JSON.parse(hostConn.sentMessages[0]).hostPlayer.id;
+      (server as any).startRound(0);
+
+      const correctIdx = mockMicroeconomics.questions[0].correctIndex;
+      (server as any).submitAnswer(hostId, correctIdx);
+
+      // Room is still in "answering" because guest has not submitted
+      expect((server as any).state.status).toBe("answering");
+
+      const clientState = (server as any).getClientState() as ArenaRoomState;
+      expect(clientState.players[hostId].lastAnswer).toEqual({
+        selected: null,
+        correct: null,
+        points: 0,
+        answeredAtMs: expect.any(Number),
+      });
+    });
+
+    it("masks score, lives, streak, and status in ArenaServer.getClientState() during answering (SA2-21)", async () => {
+      const mock = createMockPartyRoom("MASK-SCORE-LIVES");
+      const server = new ArenaServer(mock.room);
+      const hostConn = createMockConnection("host");
+      const guestConn = createMockConnection("guest");
+
+      await server.onMessage(
+        JSON.stringify({
+          type: "INIT_ROOM",
+          payload: { hostNickname: "Host", hostTier: "contender" },
+        }),
+        hostConn as unknown as Party.Connection,
+      );
+      await server.onMessage(
+        JSON.stringify({
+          type: "JOIN_ROOM",
+          payload: { nickname: "Guest" },
+        }),
+        guestConn as unknown as Party.Connection,
+      );
+
+      const hostId = JSON.parse(hostConn.sentMessages[0]).hostPlayer.id;
+      const guestId = JSON.parse(guestConn.sentMessages[0]).player.id;
+
+      // Complete round 0 to establish streak 1 and score 100
+      (server as any).startRound(0);
+      const q0CorrectIdx = mockMicroeconomics.questions[0].correctIndex;
+      (server as any).submitAnswer(hostId, q0CorrectIdx);
+      (server as any).submitAnswer(guestId, q0CorrectIdx);
+      (server as any).endRound();
+
+      expect((server as any).state.players[hostId].score).toBe(100);
+      expect((server as any).state.players[hostId].streak).toBe(1);
+
+      // Start round 1
+      (server as any).startRound(1);
+      expect((server as any).state.status).toBe("answering");
+
+      // Host submits correct answer for question 1 (streak -> 2, score -> 200)
+      const q1CorrectIdx = mockMicroeconomics.questions[1].correctIndex;
+      (server as any).submitAnswer(hostId, q1CorrectIdx);
+      expect((server as any).state.status).toBe("answering");
+
+      // Public broadcast getClientState() masks host's score and streak
+      const publicState = (server as any).getClientState() as ArenaRoomState;
+      expect(publicState.players[hostId].score).toBe(100);
+      expect(publicState.players[hostId].streak).toBe(1);
+      expect(publicState.players[hostId].lives).toBe(3);
+      expect(publicState.players[hostId].status).toBe("submitted");
+      expect(publicState.players[hostId].lastAnswer?.correct).toBeNull();
+      expect(publicState.players[hostId].lastAnswer?.points).toBe(0);
+      expect(publicState.players[hostId].lastAnswer?.selected).toBeNull();
+
+      // Guest perspective masks host's score and streak
+      const guestPerspective = (server as any).getClientState(guestId) as ArenaRoomState;
+      expect(guestPerspective.players[hostId].score).toBe(100);
+      expect(guestPerspective.players[hostId].streak).toBe(1);
+      expect(guestPerspective.players[hostId].lives).toBe(3);
+      expect(guestPerspective.players[hostId].status).toBe("submitted");
+
+      // Host sees their own true score and streak
+      const hostPerspective = (server as any).getClientState(hostId) as ArenaRoomState;
+      expect(hostPerspective.players[hostId].score).toBe(200);
+      expect(hostPerspective.players[hostId].streak).toBe(2);
+      expect(hostPerspective.players[hostId].lives).toBe(3);
+      expect(hostPerspective.players[hostId].status).toBe("submitted");
+      expect(hostPerspective.players[hostId].lastAnswer?.selected).toBe(q1CorrectIdx);
+
+      // End round 1
+      (server as any).endRound();
+
+      // Start round 2 to test elimination masking
+      (server as any).startRound(2);
+      (server as any).state.players[guestId].lives = 1;
+      const q2CorrectIdx = mockMicroeconomics.questions[2].correctIndex;
+      const wrongIdx = (q2CorrectIdx + 1) % 4;
+
+      (server as any).submitAnswer(guestId, wrongIdx);
+      expect((server as any).state.status).toBe("answering");
+      expect((server as any).state.players[guestId].lives).toBe(0);
+      expect((server as any).state.players[guestId].status).toBe("eliminated");
+
+      // Competitors and public see guest lives masked to 1 and status masked to "submitted"
+      const maskedPublic = (server as any).getClientState() as ArenaRoomState;
+      expect(maskedPublic.players[guestId].lives).toBe(1);
+      expect(maskedPublic.players[guestId].status).toBe("submitted");
+
+      const hostPerspectiveOnGuest = (server as any).getClientState(hostId) as ArenaRoomState;
+      expect(hostPerspectiveOnGuest.players[guestId].lives).toBe(1);
+      expect(hostPerspectiveOnGuest.players[guestId].status).toBe("submitted");
+
+      // Guest themselves sees their true eliminated status and 0 lives
+      const guestPerspectiveOnSelf = (server as any).getClientState(guestId) as ArenaRoomState;
+      expect(guestPerspectiveOnSelf.players[guestId].lives).toBe(0);
+      expect(guestPerspectiveOnSelf.players[guestId].status).toBe("eliminated");
+
+      // Once round transitions to feedback, revealed feedback and true status are exposed
+      (server as any).endRound();
+      expect((server as any).state.status).toBe("feedback");
+      const feedbackState = (server as any).getClientState() as ArenaRoomState;
+      expect(feedbackState.players[guestId].lives).toBe(0);
+      expect(feedbackState.players[guestId].status).toBe("eliminated");
+      expect(feedbackState.revealedFeedback).not.toBeNull();
+      expect(feedbackState.revealedFeedback?.correctIndex).toBe(q2CorrectIdx);
+    });
+
+    it("rejects invalid join and action payloads with Zod schema validation errors (SA2-21)", async () => {
+      const mock = createMockPartyRoom("ZOD-VALIDATE-ROOM");
+      const server = new ArenaServer(mock.room);
+      const hostConn = createMockConnection("host");
+      const guestConn = createMockConnection("guest");
+
+      // Initialize room
+      await server.onMessage(
+        JSON.stringify({
+          type: "INIT_ROOM",
+          payload: { hostNickname: "Host", hostTier: "contender" },
+        }),
+        hostConn as unknown as Party.Connection,
+      );
+      const hostId = JSON.parse(hostConn.sentMessages[0]).hostPlayer.id;
+      const hostToken = JSON.parse(hostConn.sentMessages[0]).playerToken;
+
+      // 1. WebSocket JOIN_ROOM with invalid payload (empty nickname)
+      await server.onMessage(
+        JSON.stringify({
+          type: "JOIN_ROOM",
+          payload: { nickname: "" },
+        }),
+        guestConn as unknown as Party.Connection,
+      );
+
+      const joinErr = JSON.parse(guestConn.sentMessages[0]);
+      expect(joinErr.type).toBe("ERROR");
+      expect(joinErr.code).toBe("INVALID_PAYLOAD");
+      expect(joinErr.message).toBe("Invalid join payload.");
+      expect(joinErr.errors).toBeDefined();
+
+      // 2. WebSocket ACTION with invalid action type
+      await server.onMessage(
+        JSON.stringify({
+          type: "ACTION",
+          playerId: hostId,
+          token: hostToken,
+          action: { type: "NOT_A_REAL_ACTION" },
+        }),
+        hostConn as unknown as Party.Connection,
+      );
+
+      const actionErr = JSON.parse(hostConn.sentMessages[hostConn.sentMessages.length - 1]);
+      expect(actionErr.type).toBe("ERROR");
+      expect(actionErr.code).toBe("INVALID_ACTION");
+      expect(actionErr.message).toBe("Invalid room action.");
+      expect(actionErr.errors).toBeDefined();
+
+      // 3. WebSocket ACTION with out-of-bounds selected answer (e.g. 5)
+      await server.onMessage(
+        JSON.stringify({
+          type: "ACTION",
+          playerId: hostId,
+          token: hostToken,
+          action: { type: "SUBMIT_ANSWER", selected: 5 },
+        }),
+        hostConn as unknown as Party.Connection,
+      );
+
+      const submitErr = JSON.parse(hostConn.sentMessages[hostConn.sentMessages.length - 1]);
+      expect(submitErr.type).toBe("ERROR");
+      expect(submitErr.code).toBe("INVALID_ACTION");
+      expect(submitErr.message).toBe("Invalid room action.");
+      expect(submitErr.errors).toBeDefined();
+
+      // 4. HTTP POST /join with invalid payload
+      const httpJoinBad = new Request("http://localhost:1999/party/ZOD-VALIDATE-ROOM/join", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nickname: "   " }),
+      });
+      const httpJoinRes = await server.onRequest(httpJoinBad as unknown as Party.Request);
+      expect(httpJoinRes.status).toBe(400);
+      const httpJoinData = await httpJoinRes.json();
+      expect(httpJoinData.ok).toBe(false);
+      expect(httpJoinData.error).toBeDefined();
+
+      // 5. HTTP POST /action with invalid action type
+      const httpActionBad = new Request("http://localhost:1999/party/ZOD-VALIDATE-ROOM/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerId: hostId,
+          token: hostToken,
+          action: { type: "INVALID_ACTION" },
+        }),
+      });
+      const httpActionRes = await server.onRequest(httpActionBad as unknown as Party.Request);
+      expect(httpActionRes.status).toBe(400);
+      const httpActionData = await httpActionRes.json();
+      expect(httpActionData.ok).toBe(false);
+      expect(httpActionData.error).toBeDefined();
+
+      // 6. HTTP POST /action with negative selected answer
+      const httpActionNegative = new Request("http://localhost:1999/party/ZOD-VALIDATE-ROOM/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerId: hostId,
+          token: hostToken,
+          action: { type: "SUBMIT_ANSWER", selected: -1 },
+        }),
+      });
+      const httpActionNegRes = await server.onRequest(httpActionNegative as unknown as Party.Request);
+      expect(httpActionNegRes.status).toBe(400);
+      const httpActionNegData = await httpActionNegRes.json();
+      expect(httpActionNegData.ok).toBe(false);
+      expect(httpActionNegData.error).toBeDefined();
+    });
+  });
+
+  describe("5. Room Initialization Authorization & Directory Hardening (SA2-12, SA2-13)", () => {
+    it("CORS_HEADERS does not contain x-party-internal", () => {
+      expect(CORS_HEADERS["Access-Control-Allow-Headers"]).not.toContain("x-party-internal");
+      expect(CORS_HEADERS["Access-Control-Allow-Headers"]).toBe("Content-Type, x-player-token");
+    });
+
+    it("HTTP POST /init returns 401 UNAUTHORIZED when x-party-internal header is missing", async () => {
+      const mock = createMockPartyRoom("AUTH-INIT-401");
+      const server = new ArenaServer(mock.room);
+
+      const initReq = new Request("http://localhost:1999/party/AUTH-INIT-401/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hostNickname: "UntrustedCaller",
+          hostTier: "tutor",
+        }),
+      });
+
+      const res = await server.onRequest(initReq as unknown as Party.Request);
+      expect(res.status).toBe(401);
+      const data = await res.json();
+      expect(data.ok).toBe(false);
+      expect(data.error.code).toBe("UNAUTHORIZED");
+      expect(data.error.message).toBe("Direct room initialization requires server authorization.");
+    });
+
+    it("clamps direct WebSocket INIT_ROOM with hostTier: 'tutor' and maxPlayers: 50 to contender tier defaults (SA2-12)", async () => {
+      const mock = createMockPartyRoom("SPOOF-WS-ROOM");
+      const server = new ArenaServer(mock.room);
+      const conn = createMockConnection("attacker_conn");
+
+      await server.onMessage(
+        JSON.stringify({
+          type: "INIT_ROOM",
+          payload: {
+            hostNickname: "Spoofer",
+            hostTier: "tutor",
+            maxPlayers: 50,
+            mode: "variants",
+          },
+        }),
+        conn as unknown as Party.Connection,
+      );
+
+      const msg = JSON.parse(conn.sentMessages[0]);
+      expect(msg.type).toBe("INIT_SUCCESS");
+      expect(msg.room.hostTier).toBe("contender");
+      expect(msg.room.maxPlayers).toBe(8);
+      expect(msg.room.mode).toBe("exact");
+    });
+
+    it("rejects direct WebSocket INIT_ROOM with INVALID_PAYLOAD if payload is invalid", async () => {
+      const mock = createMockPartyRoom("INVALID-WS-ROOM");
+      const server = new ArenaServer(mock.room);
+      const conn = createMockConnection("bad_conn");
+
+      await server.onMessage(
+        JSON.stringify({
+          type: "INIT_ROOM",
+          payload: {
+            title: "No Nickname Provided",
+          },
+        }),
+        conn as unknown as Party.Connection,
+      );
+
+      const msg = JSON.parse(conn.sentMessages[0]);
+      expect(msg.type).toBe("ERROR");
+      expect(msg.code).toBe("INVALID_PAYLOAD");
+      expect(msg.message).toBe("Invalid room creation payload.");
+    });
+
+    it("rejects direct __lobby__ mutation with 403 FORBIDDEN when secret header is missing", async () => {
+      const mock = createMockPartyRoom("__lobby__");
+      const server = new ArenaServer(mock.room);
+
+      const postReq = new Request("http://localhost:1999/party/__lobby__", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "FORBIDDEN_ROOM", status: "lobby" }),
+      });
+      const postRes = await server.onRequest(postReq as unknown as Party.Request);
+      expect(postRes.status).toBe(403);
+      const postData = await postRes.json();
+      expect(postData.ok).toBe(false);
+      expect(postData.error.code).toBe("FORBIDDEN");
+      expect(postData.error.message).toBe("Direct lobby mutation is forbidden.");
+
+      const delReq = new Request("http://localhost:1999/party/__lobby__", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "FORBIDDEN_ROOM" }),
+      });
+      const delRes = await server.onRequest(delReq as unknown as Party.Request);
+      expect(delRes.status).toBe(403);
+      const delData = await delRes.json();
+      expect(delData.ok).toBe(false);
+      expect(delData.error.code).toBe("FORBIDDEN");
+    });
+
+    it("enforces configured PARTYKIT_INTERNAL_SECRET when room.env has secret configured", async () => {
+      const mock = createMockPartyRoom("__lobby__");
+      (mock.room as any).env = { PARTYKIT_INTERNAL_SECRET: "custom-configured-secret" };
+      const server = new ArenaServer(mock.room);
+
+      // Attempt with fallback "1" should be rejected when secret is configured
+      const fallbackReq = new Request("http://localhost:1999/party/__lobby__", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-party-internal": "1",
+        },
+        body: JSON.stringify({ code: "CUSTOM_ROOM", status: "lobby" }),
+      });
+      const fallbackRes = await server.onRequest(fallbackReq as unknown as Party.Request);
+      expect(fallbackRes.status).toBe(403);
+
+      // Attempt with matching x-party-internal should succeed
+      const validReq = new Request("http://localhost:1999/party/__lobby__", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-party-internal": "custom-configured-secret",
+        },
+        body: JSON.stringify({
+          code: "CUSTOM_ROOM",
+          title: "Custom Room",
+          status: "lobby",
+          playerCount: 1,
+          mode: "exact",
+          totalQuestions: 5,
+          createdAt: new Date().toISOString(),
+        }),
+      });
+      const validRes = await server.onRequest(validReq as unknown as Party.Request);
+      expect(validRes.status).toBe(200);
+
+      // Attempt with Authorization Bearer header should succeed
+      const bearerReq = new Request("http://localhost:1999/party/__lobby__", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer custom-configured-secret",
+        },
+        body: JSON.stringify({
+          code: "CUSTOM_ROOM_2",
+          title: "Custom Room 2",
+          status: "lobby",
+          playerCount: 2,
+          mode: "exact",
+          totalQuestions: 5,
+          createdAt: new Date().toISOString(),
+        }),
+      });
+      const bearerRes = await server.onRequest(bearerReq as unknown as Party.Request);
+      expect(bearerRes.status).toBe(200);
     });
   });
 });

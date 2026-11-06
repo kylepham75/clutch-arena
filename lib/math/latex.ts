@@ -914,6 +914,7 @@ export function normalizeMathFormulas(raw: string): string {
   // Pattern 2.5: Un-delimited LaTeX formula equation starting with LaTeX command or symbol
   // e.g. \sigma_p^2 = ..., \text{Cov}(R_A, R_B) = ..., \beta_i = ...
   if (
+    text.length <= 500 &&
     !text.includes("$") &&
     /\\(?:sigma|beta|rho|alpha|mu|text|frac|sqrt|sum|prod|Delta|bar)\b/.test(text) &&
     /^[A-Za-z0-9_().\s\\\[\]{}]+=\s*[A-Za-z0-9_().\s+\-*\/^$≈\\\[\]{}]+$/.test(text.trim())
@@ -923,7 +924,12 @@ export function normalizeMathFormulas(raw: string): string {
 
   // Pattern 3: Standalone formula equation without math markers (e.g. in metadata.rule or explanation)
   // Example: "PB = PV(coupons) + PV(face)" or "FV = PV * (1 + r)^n" or "r = r_f + \beta \times (E[R_{Mkt}] - r_f)"
-  if (!text.includes("$") && /^[A-Za-z0-9_().\s\\\[\]{}]+=\s*[A-Za-z0-9_().\s+\-*\/^$≈\\\[\]{}]+$/.test(text.trim()) && /[+\-*\/^()\\\[\]]/.test(text)) {
+  if (
+    text.length <= 500 &&
+    !text.includes("$") &&
+    /^[A-Za-z0-9_().\s\\\[\]{}]+=\s*[A-Za-z0-9_().\s+\-*\/^$≈\\\[\]{}]+$/.test(text.trim()) &&
+    /[+\-*\/^()\\\[\]]/.test(text)
+  ) {
     let formula = text.trim();
     formula = formula.replace(/\b([A-Z]{1,4})\(([a-zA-Z]+)\)/g, "$1(\\text{$2})");
     formula = formula.replace(/(\d+|\))\s*\*\s*([\[\(\d])/g, "$1 \\times $2");

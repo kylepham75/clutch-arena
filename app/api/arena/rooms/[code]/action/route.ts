@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   getRoom,
   getClientState,
+  verifyPlayerToken,
   startMatch,
   submitAnswer,
   togglePlayerReady,
@@ -34,6 +35,7 @@ const requestPayloadSchema = z.preprocess(
   },
   z.object({
     playerId: z.string().min(1),
+    token: z.string().min(1).optional(),
     action: roomActionSchema,
   }),
 );
@@ -44,12 +46,41 @@ export async function POST(
 ) {
   try {
     const { code } = await props.params;
+    if (!/^[A-Z0-9]{6}$/i.test(code)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: {
+            code: "INVALID_ROOM_CODE",
+            message: "Invalid arena room code.",
+          },
+        },
+        { status: 400 },
+      );
+    }
+
     const json = await req.json();
     const parsed = requestPayloadSchema.safeParse(json);
     if (!parsed.success) {
       return NextResponse.json(
         { ok: false, error: parsed.error.flatten() },
         { status: 400 },
+      );
+    }
+
+    const providedToken =
+      parsed.data.token || req.headers.get("x-player-token");
+
+    if (!providedToken) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: {
+            code: "UNAUTHORIZED_PLAYER",
+            message: "Missing or invalid player token.",
+          },
+        },
+        { status: 403 },
       );
     }
 
@@ -66,7 +97,11 @@ export async function POST(
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(parsed.data),
+            body: JSON.stringify({
+              playerId: parsed.data.playerId,
+              action: parsed.data.action,
+              token: providedToken,
+            }),
           },
         );
 
@@ -86,6 +121,29 @@ export async function POST(
     }
 
     const { playerId, action } = parsed.data;
+
+    if (!room.players[playerId] || room.players[playerId].isBot) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: { code: "UNAUTHORIZED_PLAYER", message: "Invalid player." },
+        },
+        { status: 403 },
+      );
+    }
+
+    if (!verifyPlayerToken(code, playerId, providedToken)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: {
+            code: "UNAUTHORIZED_PLAYER",
+            message: "Invalid player token.",
+          },
+        },
+        { status: 403 },
+      );
+    }
 
     switch (action.type) {
       case "START_MATCH": {
@@ -144,7 +202,7 @@ export async function POST(
       }
     }
 
-    return NextResponse.json({ ok: true, room: getClientState(room) });
+    return NextResponse.json({ ok: true, room: getClientState(room, playerId) });
   } catch (err: any) {
     return NextResponse.json(
       { ok: false, error: { message: err.message || "Action dispatch failed." } },

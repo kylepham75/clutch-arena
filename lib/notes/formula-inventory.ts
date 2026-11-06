@@ -449,7 +449,7 @@ export function extractTextFormulas(
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
     const trimmedLine = line.trim();
-    if (!trimmedLine) continue;
+    if (!trimmedLine || trimmedLine.length > 1000) continue;
 
     // If the line already had inline/display math, strip $...$ and $$...$$ before checking if plain-text equations remain
     const textWithoutMathDelimiters = trimmedLine
@@ -464,7 +464,7 @@ export function extractTextFormulas(
     const clauses = trimmedLine.split(";");
     for (let clause of clauses) {
       clause = clause.trim();
-      if (!clause) continue;
+      if (!clause || clause.length > 1000) continue;
 
       // Strip leading bullet markers
       clause = clause.replace(/^[•\-\*\u2022\u25E6\u25AA\u25CF]\s*/, "");

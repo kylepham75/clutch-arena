@@ -1,4 +1,4 @@
-import { studyPackSchema, type StudyPack } from "@/lib/schemas/question";
+import { studyPackSchema, isPrototypePollutionKey, type StudyPack } from "@/lib/schemas/question";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
 
 /** Hard ceiling for pack JSON (raw file or decompressed share payload). */
@@ -67,22 +67,56 @@ export function filterQuestions(pack: StudyPack, questionIds?: string[]) {
 /* -------------------------------------------------------------------------- */
 
 export function packToJson(pack: StudyPack, questionIds?: string[]): string {
-  const questions = filterQuestions(pack, questionIds);
-  const metadata: Record<string, any> = {};
+  const questions = filterQuestions(pack, questionIds).filter(
+    (q) => !isPrototypePollutionKey(q.id),
+  );
+  const metadata: Record<string, any> = Object.create(null);
   for (const q of questions) {
-    if (pack.metadata[q.id]) {
+    if (isPrototypePollutionKey(q.id)) continue;
+    if (
+      pack.metadata &&
+      Object.prototype.hasOwnProperty.call(pack.metadata, q.id) &&
+      pack.metadata[q.id]
+    ) {
       metadata[q.id] = pack.metadata[q.id];
     }
   }
   const exportPack: StudyPack = {
-    ...pack,
+    id: isPrototypePollutionKey(pack.id) ? "pack-imported" : pack.id,
+    title: pack.title,
+    subtitle: pack.subtitle ?? "",
     questions,
-    metadata,
+    metadata: { ...metadata },
   };
   return JSON.stringify({ format: "clutch-pack", version: 1, pack: exportPack }, null, 2);
 }
 
-export function parsePackJson(text: string): StudyPack {
+export interface ImportPackOptions {
+  existingIds?: string[] | Set<string>;
+  overwrite?: boolean;
+}
+
+/**
+ * Resolves ID collision for imported study packs against existing library deck IDs.
+ * If colliding and overwrite is not true, returns a copy of the pack with a unique collision-safe ID.
+ */
+export function resolveImportPackId(
+  pack: StudyPack,
+  existingIds: string[] | Set<string>,
+  options?: { overwrite?: boolean },
+): StudyPack {
+  const ids = existingIds instanceof Set ? existingIds : new Set(existingIds);
+  if (!ids.has(pack.id) || options?.overwrite) {
+    return pack;
+  }
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  return {
+    ...pack,
+    id: `${pack.id}-imported-${suffix}`,
+  };
+}
+
+export function parsePackJson(text: string, options?: ImportPackOptions): StudyPack {
   if (new TextEncoder().encode(text).length > MAX_PACK_BYTES) {
     throw new PackTransferError("This pack file is too large to import.");
   }
@@ -96,7 +130,11 @@ export function parsePackJson(text: string): StudyPack {
     data && typeof data === "object" && "pack" in data
       ? (data as { pack: unknown }).pack
       : data;
-  return validatePack(candidate);
+  const pack = validatePack(candidate);
+  if (options?.existingIds) {
+    return resolveImportPackId(pack, options.existingIds, { overwrite: options.overwrite });
+  }
+  return pack;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -283,17 +321,10 @@ export function packToQuizlet(pack: StudyPack, questionIds?: string[]): string {
 /*  Printable / PDF Study Sheet                                                */
 /* -------------------------------------------------------------------------- */
 
-export function printStudyGuide(pack: StudyPack, questionIds?: string[]): void {
-  if (typeof window === "undefined") return;
+export function buildPrintableWorksheetHtml(pack: StudyPack, questionIds?: string[]): string {
   const questions = filterQuestions(pack, questionIds);
 
-  const printWindow = window.open("", "_blank");
-  if (!printWindow) {
-    alert("Please allow pop-ups to open the printable study guide.");
-    return;
-  }
-
-  const html = `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -420,19 +451,43 @@ export function printStudyGuide(pack: StudyPack, questionIds?: string[]): void {
       </div>`;
     })
     .join("")}
-
-  <script>
-    window.onload = function() {
-      setTimeout(function() { window.print(); }, 400);
-    };
-  </script>
 </body>
 </html>`;
+}
 
+export function exportPackToPrintablePdf(pack: StudyPack, questionIds?: string[]): void {
+  if (typeof window === "undefined") return;
+
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    alert("Please allow pop-ups to open the printable study guide.");
+    return;
+  }
+
+  // Isolate popup window from opener context to prevent window reference leaks
+  printWindow.opener = null;
+
+  const html = buildPrintableWorksheetHtml(pack, questionIds);
   printWindow.document.open();
   printWindow.document.write(html);
   printWindow.document.close();
+
+  try {
+    printWindow.focus?.();
+  } catch {
+    // In headless test environments or when focus is blocked
+  }
+
+  setTimeout(() => {
+    try {
+      printWindow.print?.();
+    } catch {
+      // In headless test environments or when print is blocked
+    }
+  }, 250);
 }
+
+export const printStudyGuide = exportPackToPrintablePdf;
 
 /* -------------------------------------------------------------------------- */
 /*  Share links (compressed pack in the URL hash — never sent to the server)   */
@@ -507,7 +562,10 @@ export async function encodePackForShare(pack: StudyPack): Promise<string> {
   return `1.${toBase64Url(compressed)}`;
 }
 
-export async function decodeSharedPack(token: string): Promise<StudyPack> {
+export async function decodeSharedPack(
+  token: string,
+  options?: ImportPackOptions,
+): Promise<StudyPack> {
   const sanitized = sanitizeShareToken(token);
   const dot = sanitized.indexOf(".");
   const version = sanitized.slice(0, dot);
@@ -539,7 +597,11 @@ export async function decodeSharedPack(token: string): Promise<StudyPack> {
   } catch {
     throw new PackTransferError("This share link is corrupted or incomplete.");
   }
-  return validatePack(data);
+  const pack = validatePack(data);
+  if (options?.existingIds) {
+    return resolveImportPackId(pack, options.existingIds, { overwrite: options.overwrite });
+  }
+  return pack;
 }
 
 export function buildShareUrl(origin: string, token: string): string {

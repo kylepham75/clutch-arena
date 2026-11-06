@@ -16,8 +16,18 @@ import {
   clearRecentTelemetryEvents,
   checkTelemetryRateLimit,
   resetTelemetryRateLimits,
+  getTelemetryRateLimitStoreSize,
+  MAX_RATE_LIMIT_IPS,
+  sanitizeWebhookMentions,
+  sanitizeSingleLine,
+  escapeMarkdownLinks,
+  sanitizeHeaderField,
+  redactContact,
+  redactTelemetryPayload,
+  formatTelemetryWebhookSummary,
   type TimestampedTelemetryEvent,
 } from "@/lib/telemetry/recorder";
+import nextConfig from "../../next.config";
 import { createTelemetryHandler } from "@/lib/telemetry/handler";
 import {
   generateQuestions,
@@ -412,6 +422,123 @@ describe("recordTelemetryEvent & Ring Buffer", () => {
     const afterReset = checkTelemetryRateLimit(ip, 20, 600_000);
     expect(afterReset.allowed).toBe(true);
   });
+
+  it("sanitizes mass-mention tokens in webhook payloads and includes allowed_mentions: { parse: [] }", async () => {
+    let capturedBody: any;
+    const mockFetch = vi.fn().mockImplementation(async (_url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response("ok", { status: 200 });
+    });
+
+    const res = await recordTelemetryEvent(
+      {
+        kind: "feedback",
+        category: "general",
+        message:
+          "Attention @everyone and @here! Please ping <@&123> and notify <!channel> <!here> <!everyone>.",
+        contact: "attacker@everyone.com",
+      },
+      {
+        webhookUrl: "https://discord.com/api/webhooks/security-test",
+        fetchImpl: mockFetch,
+        userId: "user-<@&123>",
+      },
+    );
+
+    expect(res.relayedToWebhook).toBe(true);
+    expect(capturedBody).toBeDefined();
+
+    // allowed_mentions check
+    expect(capturedBody.allowed_mentions).toEqual({ parse: [] });
+
+    // content and text parity
+    expect(capturedBody.content).toBeDefined();
+    expect(capturedBody.text).toBe(capturedBody.content);
+
+    // Ensure raw mention tokens are not present
+    expect(capturedBody.content).not.toContain("@everyone");
+    expect(capturedBody.content).not.toContain("@here");
+    expect(capturedBody.content).not.toContain("<@&123>");
+    expect(capturedBody.content).not.toContain("<!channel>");
+    expect(capturedBody.content).not.toContain("<!here>");
+    expect(capturedBody.content).not.toContain("<!everyone>");
+
+    // Ensure sanitized versions with zero-width space are present
+    expect(capturedBody.content).toContain("@\u200beveryone");
+    expect(capturedBody.content).toContain("@\u200bhere");
+    expect(capturedBody.content).toContain("<@\u200b&123>");
+    expect(capturedBody.content).toContain("<!\u200bchannel>");
+    expect(capturedBody.content).toContain("<!\u200bhere>");
+    expect(capturedBody.content).toContain("<!\u200beveryone>");
+  });
+
+  it("sanitizes mention tokens in standalone helper and ensures idempotency", () => {
+    const raw = "Alert @everyone and @here! ping <@&123> <@!456> <@789> <!channel>";
+    const sanitized = sanitizeWebhookMentions(raw);
+
+    expect(sanitized).toBe(
+      "Alert @\u200beveryone and @\u200bhere! ping <@\u200b&123> <@\u200b!456> <@\u200b789> <!\u200bchannel>",
+    );
+
+    // Calling it again should not inject double zero-width spaces
+    expect(sanitizeWebhookMentions(sanitized)).toBe(sanitized);
+    expect(sanitizeWebhookMentions("")).toBe("");
+  });
+
+  it("bounds rateLimitStore to MAX_RATE_LIMIT_IPS and evicts oldest entry when at capacity", () => {
+    resetTelemetryRateLimits();
+
+    // Verify bounded behavior with a small capacity
+    const testCap = 3;
+    checkTelemetryRateLimit("ip-1", 20, 600_000, testCap);
+    checkTelemetryRateLimit("ip-2", 20, 600_000, testCap);
+    checkTelemetryRateLimit("ip-3", 20, 600_000, testCap);
+    expect(getTelemetryRateLimitStoreSize()).toBe(3);
+
+    // Adding 4th IP should evict the oldest (ip-1)
+    checkTelemetryRateLimit("ip-4", 20, 600_000, testCap);
+    expect(getTelemetryRateLimitStoreSize()).toBe(3);
+
+    // Adding 5th IP should evict ip-2
+    checkTelemetryRateLimit("ip-5", 20, 600_000, testCap);
+    expect(getTelemetryRateLimitStoreSize()).toBe(3);
+  });
+
+  it("sweeps expired entries first when rateLimitStore reaches capacity", () => {
+    resetTelemetryRateLimits();
+    const testCap = 3;
+    const now = Date.now();
+    const windowMs = 500;
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(now - 1000);
+      checkTelemetryRateLimit("expired-ip-1", 20, windowMs, testCap);
+      checkTelemetryRateLimit("expired-ip-2", 20, windowMs, testCap);
+
+      vi.setSystemTime(now);
+      checkTelemetryRateLimit("active-ip-1", 20, windowMs, testCap);
+      expect(getTelemetryRateLimitStoreSize()).toBe(3);
+
+      // When inserting a 4th IP at capacity, the sweep should remove expired entries
+      checkTelemetryRateLimit("active-ip-2", 20, windowMs, testCap);
+
+      // Now only active-ip-1 and active-ip-2 should remain in store
+      expect(getTelemetryRateLimitStoreSize()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("enforces default MAX_RATE_LIMIT_IPS capacity of 5000", () => {
+    resetTelemetryRateLimits();
+    expect(MAX_RATE_LIMIT_IPS).toBe(5000);
+
+    for (let i = 0; i < 5005; i++) {
+      checkTelemetryRateLimit(`client-${i}`);
+    }
+    expect(getTelemetryRateLimitStoreSize()).toBe(MAX_RATE_LIMIT_IPS);
+  });
 });
 
 describe("createTelemetryHandler (Route Handler)", () => {
@@ -728,5 +855,204 @@ describe("AI Citation Rejection Telemetry", () => {
     );
     expect(event).toBeDefined();
     expect(event?.reason).toBe("unknown_source_id");
+  });
+});
+
+describe("Webhook Sanitization & Deceptive Link Neutralization (Task 5.3)", () => {
+  it("strips newlines from contact and single-line header fields", () => {
+    const summary = formatTelemetryWebhookSummary({
+      kind: "feedback",
+      category: "general",
+      message: "Legitimate user message",
+      contact: "hacker@example.com\r\nInjected-Header: evil\nAnother-Header: exploit",
+      context: {
+        packTitle: "Microeconomics 101\r\nSecond line injection",
+        questionId: "q100\nSub-line",
+      },
+    });
+
+    const lines = summary.split("\n");
+    const contactLine = lines.find((l) => l.startsWith("Contact:"));
+    expect(contactLine).toBeDefined();
+    expect(contactLine).toBe(
+      "Contact: hacker@example.com Injected-Header: evil Another-Header: exploit",
+    );
+    expect(contactLine).not.toContain("\r");
+    expect(contactLine).not.toContain("\n");
+
+    const contextLine = lines.find((l) => l.startsWith("Context:"));
+    expect(contextLine).toBeDefined();
+    expect(contextLine).toContain("Pack: Microeconomics 101 Second line injection");
+    expect(contextLine).toContain("Q: q100 Sub-line");
+    expect(contextLine).not.toContain("\r");
+    expect(contextLine).not.toContain("\n");
+  });
+
+  it("escapes markdown link syntax in contact, message, and context items to prevent deceptive hyperlinks", () => {
+    const summary = formatTelemetryWebhookSummary({
+      kind: "feedback",
+      category: "gameplay_bug",
+      message: "Please click [Claim Free Cram Pass](https://phishing-scam.com/steal-creds) to fix this bug!",
+      contact: "[Customer Support](https://deceptive-portal.site/login)",
+      context: {
+        packTitle: "[Fake Biology](https://malware.org/download)",
+        questionId: "[Q-Attack](https://evil.org)",
+      },
+    });
+
+    // Verify contact markdown brackets are escaped
+    expect(summary).toContain("Contact: \\[Customer Support\\](https://deceptive-portal.site/login)");
+    expect(summary).not.toContain("Contact: [Customer Support](https://deceptive-portal.site/login)");
+
+    // Verify message markdown brackets are escaped inside the blockquote
+    expect(summary).toContain("\\[Claim Free Cram Pass\\](https://phishing-scam.com/steal-creds)");
+    expect(summary).not.toContain("> Please click [Claim Free Cram Pass]");
+
+    // Verify context markdown brackets are escaped
+    expect(summary).toContain("Pack: \\[Fake Biology\\](https://malware.org/download)");
+    expect(summary).toContain("Q: \\[Q-Attack\\](https://evil.org)");
+  });
+
+  it("sanitizes smoke_test_intent contact with newlines and markdown hyperlinks", () => {
+    const summary = formatTelemetryWebhookSummary({
+      kind: "smoke_test_intent",
+      planId: "pro",
+      currency: "usd",
+      action: "plan_selected",
+      contact: "victim@example.com\n[Urgent Action](https://phishing.site/link)",
+      language: "en",
+    });
+
+    const lines = summary.split("\n");
+    const contactLine = lines.find((l) => l.startsWith("Contact:"));
+    expect(contactLine).toBeDefined();
+    expect(contactLine).toBe("Contact: victim@example.com \\[Urgent Action\\](https://phishing.site/link)");
+    expect(contactLine).not.toContain("\n");
+    expect(contactLine).not.toContain("\r");
+  });
+
+  it("standalone helper functions handle idempotency and edge cases", () => {
+    expect(sanitizeSingleLine("hello\r\nworld\nfoo")).toBe("hello world foo");
+    expect(sanitizeSingleLine("")).toBe("");
+
+    expect(escapeMarkdownLinks("[test](http://example.com)")).toBe("\\[test\\](http://example.com)");
+    // Idempotent escaping
+    expect(escapeMarkdownLinks("\\[test\\](http://example.com)")).toBe("\\[test\\](http://example.com)");
+    expect(escapeMarkdownLinks("")).toBe("");
+
+    expect(sanitizeHeaderField("hello\n[world](url)")).toBe("hello \\[world\\](url)");
+  });
+});
+
+describe("PII Redaction in Telemetry Logging (Task 5.3)", () => {
+  it("redactContact correctly masks emails and redacts phones/identifiers", () => {
+    expect(redactContact("alice@example.com")).toBe("a***@example.com");
+    expect(redactContact("support.team@clutcharena.vn")).toBe("s***@clutcharena.vn");
+    expect(redactContact("x@domain.com")).toBe("x***@domain.com");
+    expect(redactContact("+1 (555) 019-2834")).toBe("[REDACTED]");
+    expect(redactContact("random_telegram_handle")).toBe("[REDACTED]");
+    expect(redactContact("")).toBe("");
+  });
+
+  it("redactTelemetryPayload redacts contact in feedback and smoke_test_intent events", () => {
+    const feedbackEvent = {
+      kind: "feedback" as const,
+      category: "general" as const,
+      message: "Testing PII",
+      contact: "user.secret@example.org",
+      recordedAt: new Date().toISOString(),
+    };
+    const redactedFeedback = redactTelemetryPayload(feedbackEvent);
+    expect(redactedFeedback.contact).toBe("u***@example.org");
+
+    const smokeEvent = {
+      kind: "smoke_test_intent" as const,
+      planId: "cram_pass" as const,
+      currency: "vnd" as const,
+      action: "plan_selected" as const,
+      contact: "+84912345678",
+      recordedAt: new Date().toISOString(),
+    };
+    const redactedSmoke = redactTelemetryPayload(smokeEvent);
+    expect(redactedSmoke.contact).toBe("[REDACTED]");
+
+    const citationEvent = {
+      kind: "citation_rejection" as const,
+      reason: "missing_or_short_excerpt" as const,
+      recordedAt: new Date().toISOString(),
+    };
+    const untouchedCitation = redactTelemetryPayload(citationEvent);
+    expect(untouchedCitation).toEqual(citationEvent);
+  });
+
+  it("recordTelemetryEvent redacts contact PII when logging to console.info in non-test environment", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const consoleSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+
+    try {
+      await recordTelemetryEvent({
+        kind: "feedback",
+        category: "gameplay_bug",
+        message: "Found a scoring discrepancy",
+        contact: "security-auditor@example.com",
+      });
+
+      expect(consoleSpy).toHaveBeenCalled();
+      const calls = consoleSpy.mock.calls.filter((c) => c[0] === "[pilot-telemetry]");
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+
+      const loggedString = calls[0][1];
+      const parsed = JSON.parse(loggedString);
+
+      // Verify contact is masked and raw email is NOT present in stdout log
+      expect(parsed.contact).toBe("s***@example.com");
+      expect(loggedString).not.toContain("security-auditor@example.com");
+
+      // Test with non-email phone number contact
+      await recordTelemetryEvent({
+        kind: "smoke_test_intent",
+        planId: "pro",
+        currency: "usd",
+        action: "plan_selected",
+        contact: "+15555550199",
+      });
+
+      const secondCalls = consoleSpy.mock.calls.filter((c) => c[0] === "[pilot-telemetry]");
+      const secondLogged = JSON.parse(secondCalls[1][1]);
+      expect(secondLogged.contact).toBe("[REDACTED]");
+      expect(secondCalls[1][1]).not.toContain("+15555550199");
+    } finally {
+      consoleSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("Security Configuration & Next.js CSP (Task 5.3)", () => {
+  it("ensures next.config.ts CSP script-src does NOT contain wildcard https:", async () => {
+    const headersList = await nextConfig.headers?.();
+    expect(headersList).toBeDefined();
+
+    const rootRule = headersList?.find((rule) => rule.source === "/(.*)");
+    expect(rootRule).toBeDefined();
+
+    const cspHeader = rootRule?.headers.find(
+      (h) => h.key === "Content-Security-Policy",
+    );
+    expect(cspHeader).toBeDefined();
+    const cspValue = cspHeader?.value ?? "";
+
+    // Split CSP directives
+    const directives = cspValue.split(";").map((d) => d.trim());
+    const scriptSrc = directives.find((d) => d.startsWith("script-src"));
+
+    expect(scriptSrc).toBeDefined();
+    expect(scriptSrc).toContain("'self'");
+    expect(scriptSrc).toContain("'unsafe-inline'");
+    expect(scriptSrc).toContain("'unsafe-eval'");
+
+    // Crucial security assertion: No wildcard https: in script-src
+    expect(scriptSrc).not.toContain("https:");
+    expect(scriptSrc).toBe("script-src 'self' 'unsafe-inline' 'unsafe-eval'");
   });
 });

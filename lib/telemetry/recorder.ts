@@ -19,15 +19,22 @@ export function clearRecentTelemetryEvents(): void {
 }
 
 // In-memory sliding-window rate limit store for telemetry
+export const MAX_RATE_LIMIT_IPS = 5000;
+
 interface TelemetryRateRecord {
   timestamps: number[];
 }
 const rateLimitStore = new Map<string, TelemetryRateRecord>();
 
+export function getTelemetryRateLimitStoreSize(): number {
+  return rateLimitStore.size;
+}
+
 export function checkTelemetryRateLimit(
   ip: string,
   limit = 20,
   windowMs = 10 * 60 * 1000,
+  maxIps = MAX_RATE_LIMIT_IPS,
 ): { allowed: boolean; retryAfter: number } {
   const normalizedIp = ip || "unknown";
   const now = Date.now();
@@ -35,6 +42,26 @@ export function checkTelemetryRateLimit(
 
   let record = rateLimitStore.get(normalizedIp);
   if (!record) {
+    if (rateLimitStore.size >= maxIps) {
+      // First sweep/evict expired entries across the store
+      for (const [key, existing] of rateLimitStore.entries()) {
+        existing.timestamps = existing.timestamps.filter((ts) => ts > windowStart);
+        if (existing.timestamps.length === 0) {
+          rateLimitStore.delete(key);
+        }
+      }
+
+      // If still at capacity, evict the oldest entry via Map insertion order (FIFO)
+      while (rateLimitStore.size >= maxIps) {
+        const oldestKey = rateLimitStore.keys().next().value;
+        if (oldestKey !== undefined) {
+          rateLimitStore.delete(oldestKey);
+        } else {
+          break;
+        }
+      }
+    }
+
     record = { timestamps: [] };
     rateLimitStore.set(normalizedIp, record);
   }
@@ -62,7 +89,76 @@ export function resetTelemetryRateLimits(): void {
   rateLimitStore.clear();
 }
 
-function formatTelemetryWebhookSummary(
+/**
+ * Sanitizes @everyone, @here, and Discord/Slack role/user mention tokens
+ * so untrusted client telemetry fields cannot trigger mass pings.
+ */
+export function sanitizeWebhookMentions(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/@(?!\u200b)(everyone|here)/gi, (_, mention) => `@\u200b${mention}`)
+    .replace(/<@(?![\u200b])([^>]+)>/g, (_, target) => `<@\u200b${target}>`)
+    .replace(/<!(?!\u200b)(channel|here|everyone)>/gi, (_, target) => `<!\u200b${target}>`);
+}
+
+/**
+ * Strips/sanitizes newlines ([\r\n]+) in single-line header fields to prevent webhook header injection
+ * and multi-line markdown abuse.
+ */
+export function sanitizeSingleLine(text: string): string {
+  if (!text) return "";
+  return text.replace(/[\r\n]+/g, " ").trim();
+}
+
+/**
+ * Escapes markdown link syntax (escape [ and ] to \[ and \]) so untrusted client telemetry
+ * cannot inject deceptive markdown hyperlinks ([click here](phishing-url)) into webhook alerts.
+ */
+export function escapeMarkdownLinks(text: string): string {
+  if (!text) return "";
+  return text.replace(/\\?\[/g, "\\[").replace(/\\?\]/g, "\\]");
+}
+
+/**
+ * Combined sanitizer for single-line header fields that flattens newlines and escapes markdown links.
+ */
+export function sanitizeHeaderField(text: string): string {
+  if (!text) return "";
+  return escapeMarkdownLinks(sanitizeSingleLine(text));
+}
+
+/**
+ * Redacts contact PII (masks email as t***@example.com, and phone/identifiers as [REDACTED])
+ * so personal user data is not dumped to server stdout logs.
+ */
+export function redactContact(contact: string): string {
+  if (!contact) return "";
+  const trimmed = contact.trim();
+  if (!trimmed) return "";
+
+  const emailMatch = trimmed.match(/^([^@]+)@(.+)$/);
+  if (emailMatch) {
+    const [_, user, domain] = emailMatch;
+    return `${user.slice(0, 1)}***@${domain}`;
+  }
+
+  return "[REDACTED]";
+}
+
+/**
+ * Produces a copy of a telemetry event with contact PII redacted for stdout logging.
+ */
+export function redactTelemetryPayload<T extends TelemetryEvent>(event: T): T {
+  if ("contact" in event && typeof event.contact === "string" && event.contact.trim().length > 0) {
+    return {
+      ...event,
+      contact: redactContact(event.contact),
+    };
+  }
+  return event;
+}
+
+export function formatTelemetryWebhookSummary(
   event: TelemetryEvent,
   meta?: { userId?: string | null; ip?: string },
 ): string {
@@ -71,51 +167,52 @@ function formatTelemetryWebhookSummary(
   const ipTag = meta?.ip ? ` | IP: \`${meta.ip}\`` : "";
 
   if (event.kind === "feedback") {
-    parts.push(`📢 **[Clutch Telemetry - Feedback]** (${event.category})`);
+    const safeCategory = sanitizeSingleLine(event.category);
+    parts.push(`📢 **[Clutch Telemetry - Feedback]** (${safeCategory})`);
     parts.push(`${userTag}${ipTag}`);
     if (event.rating) {
       parts.push(`Rating: ${"⭐".repeat(event.rating)} (${event.rating}/5)`);
     }
     if (event.contact) {
-      parts.push(`Contact: ${event.contact}`);
+      parts.push(`Contact: ${sanitizeHeaderField(event.contact)}`);
     }
-    parts.push(`Message:\n> ${event.message.replace(/\n/g, "\n> ")}`);
+    parts.push(`Message:\n> ${escapeMarkdownLinks(event.message).replace(/\n/g, "\n> ")}`);
     if (event.context) {
       const ctx = event.context;
       const ctxItems: string[] = [];
-      if (ctx.packTitle) ctxItems.push(`Pack: ${ctx.packTitle}`);
-      if (ctx.questionId) ctxItems.push(`Q: ${ctx.questionId}`);
-      if (ctx.planId) ctxItems.push(`Plan: ${ctx.planId}`);
-      if (ctx.tier) ctxItems.push(`Tier: ${ctx.tier}`);
-      if (ctx.language) ctxItems.push(`Lang: ${ctx.language}`);
+      if (ctx.packTitle) ctxItems.push(`Pack: ${sanitizeHeaderField(ctx.packTitle)}`);
+      if (ctx.questionId) ctxItems.push(`Q: ${sanitizeHeaderField(ctx.questionId)}`);
+      if (ctx.planId) ctxItems.push(`Plan: ${sanitizeHeaderField(ctx.planId)}`);
+      if (ctx.tier) ctxItems.push(`Tier: ${sanitizeHeaderField(ctx.tier)}`);
+      if (ctx.language) ctxItems.push(`Lang: ${sanitizeHeaderField(ctx.language)}`);
       if (ctxItems.length) parts.push(`Context: ${ctxItems.join(" | ")}`);
     }
   } else if (event.kind === "smoke_test_intent") {
     parts.push(`🎯 **[Clutch Telemetry - Smoke Test Intent]**`);
     parts.push(`${userTag}${ipTag}`);
     parts.push(
-      `Plan: **${event.planId}** (${event.currency.toUpperCase()}) | Action: \`${event.action}\``,
+      `Plan: **${sanitizeHeaderField(event.planId)}** (${sanitizeHeaderField(event.currency).toUpperCase()}) | Action: \`${sanitizeHeaderField(event.action)}\``,
     );
     if (event.contact) {
-      parts.push(`Contact: ${event.contact}`);
+      parts.push(`Contact: ${sanitizeHeaderField(event.contact)}`);
     }
     if (event.language) {
-      parts.push(`Language: ${event.language}`);
+      parts.push(`Language: ${sanitizeHeaderField(event.language)}`);
     }
   } else if (event.kind === "citation_rejection") {
     parts.push(`⚠️ **[Clutch Telemetry - Citation Rejection]**`);
-    parts.push(`Reason: \`${event.reason}\``);
-    if (event.documentTitle) parts.push(`Document: ${event.documentTitle}`);
-    if (event.sourceKind) parts.push(`Source Kind: ${event.sourceKind}`);
-    if (event.sourceId) parts.push(`Source ID: ${event.sourceId}`);
-    if (event.questionId) parts.push(`Question ID: ${event.questionId}`);
-    if (event.excerptPreview) parts.push(`Excerpt: "${event.excerptPreview}"`);
+    parts.push(`Reason: \`${sanitizeSingleLine(event.reason)}\``);
+    if (event.documentTitle) parts.push(`Document: ${sanitizeHeaderField(event.documentTitle)}`);
+    if (event.sourceKind) parts.push(`Source Kind: ${sanitizeHeaderField(event.sourceKind)}`);
+    if (event.sourceId) parts.push(`Source ID: ${sanitizeHeaderField(event.sourceId)}`);
+    if (event.questionId) parts.push(`Question ID: ${sanitizeHeaderField(event.questionId)}`);
+    if (event.excerptPreview) parts.push(`Excerpt: "${sanitizeHeaderField(event.excerptPreview)}"`);
     if (typeof event.totalSources === "number") {
       parts.push(`Total Sources: ${event.totalSources}`);
     }
   }
 
-  return parts.join("\n");
+  return sanitizeWebhookMentions(parts.join("\n"));
 }
 
 export async function recordTelemetryEvent(
@@ -146,7 +243,8 @@ export async function recordTelemetryEvent(
     recorded = true;
 
     if (process.env.NODE_ENV !== "test") {
-      console.info("[pilot-telemetry]", JSON.stringify(timestamped));
+      const loggedPayload = redactTelemetryPayload(timestamped);
+      console.info("[pilot-telemetry]", JSON.stringify(loggedPayload));
     }
   } catch {
     // Ring buffer push failed unexpectedly
@@ -201,7 +299,11 @@ export async function recordTelemetryEvent(
       const res = await fetchImpl(webhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({
+          content,
+          text: content,
+          allowed_mentions: { parse: [] },
+        }),
         signal: timeoutSignal,
       });
 

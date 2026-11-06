@@ -1,20 +1,43 @@
 import { z } from "zod";
 
+export const PROTOTYPE_POLLUTION_KEYS = [
+  "__proto__",
+  "constructor",
+  "prototype",
+] as const;
+
+export function isPrototypePollutionKey(key: unknown): boolean {
+  if (typeof key !== "string") return false;
+  const normalized = key.trim().toLowerCase();
+  return (
+    normalized === "__proto__" ||
+    normalized === "constructor" ||
+    normalized === "prototype"
+  );
+}
+
 const answerFields = {
-  question: z.string().trim().min(1),
+  question: z.string().trim().min(1).max(2000),
   options: z.tuple([
-    z.string().trim().min(1),
-    z.string().trim().min(1),
-    z.string().trim().min(1),
-    z.string().trim().min(1),
+    z.string().trim().min(1).max(2000),
+    z.string().trim().min(1).max(2000),
+    z.string().trim().min(1).max(2000),
+    z.string().trim().min(1).max(2000),
   ]),
   correctIndex: z.number().int().min(0).max(3),
-  explanation: z.string().trim().min(1),
+  explanation: z.string().trim().min(1).max(2000),
 };
 
 export const questionSchema = z
   .object({
-    id: z.string().min(1),
+    id: z
+      .string()
+      .min(1)
+      .max(200)
+      .refine(
+        (val) => !isPrototypePollutionKey(val),
+        "Question ID cannot be a prototype pollution key ('__proto__', 'constructor', 'prototype').",
+      ),
     ...answerFields,
     conceptVariant: z.object(answerFields).strict(),
   })
@@ -54,12 +77,49 @@ export const questionMetadataSchema = z.object({
   distractorRationale: z.string().max(5000).optional(),
 });
 
+export const studyPackMetadataSchema = z
+  .any()
+  .superRefine((val, ctx) => {
+    if (val && typeof val === "object") {
+      for (const k of Object.getOwnPropertyNames(val)) {
+        if (isPrototypePollutionKey(k)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Metadata key cannot be a prototype pollution key ('${k}').`,
+          });
+        }
+      }
+    }
+  })
+  .pipe(
+    z
+      .record(
+        z
+          .string()
+          .refine(
+            (val) => !isPrototypePollutionKey(val),
+            "Metadata key cannot be a prototype pollution key ('__proto__', 'constructor', 'prototype').",
+          ),
+        questionMetadataSchema,
+      )
+      .default({}),
+  );
+
 /**
  * Runtime schema for a full study pack. Used to validate packs that arrive
  * from untrusted sources (imported JSON files, share links, API payloads).
  */
 export const studyPackSchema = z.object({
-  id: z.string().trim().min(1).max(120).default(() => "pack-imported"),
+  id: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .refine(
+      (val) => !isPrototypePollutionKey(val),
+      "Pack ID cannot be a prototype pollution key ('__proto__', 'constructor', 'prototype').",
+    )
+    .default(() => "pack-imported"),
   title: z.string().trim().min(1).max(200),
   subtitle: z.string().max(300).default(""),
   questions: z
@@ -70,5 +130,5 @@ export const studyPackSchema = z.object({
       (items) => new Set(items.map((item) => item.id)).size === items.length,
       "Question IDs must be unique.",
     ),
-  metadata: z.record(z.string(), questionMetadataSchema).default({}),
+  metadata: studyPackMetadataSchema,
 });

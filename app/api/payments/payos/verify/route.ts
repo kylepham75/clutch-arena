@@ -20,8 +20,6 @@ export async function POST(request: Request) {
       );
     }
 
-    const auth = await verifyAuthToken(request);
-
     let body: Record<string, unknown> = {};
     try {
       body = (await request.json()) as Record<string, unknown>;
@@ -40,19 +38,22 @@ export async function POST(request: Request) {
       );
     }
 
-    const info = await getPayosPaymentInfo(orderCodeNum);
+    const auth = await verifyAuthToken(request);
+    if (!auth.authenticated || !auth.user?.id) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "AUTH_REQUIRED",
+          requiresAuth: true,
+          verified: false,
+        },
+        { status: 401 },
+      );
+    }
 
-    const userToken = auth.authenticated
-      ? auth.token
-      : (extractAuthToken(request) ?? undefined);
-
-    const paidAmount = Number(
-      typeof info.amountPaid === "number" && info.amountPaid > 0
-        ? info.amountPaid
-        : info.amount,
-    );
-
+    const userToken = auth.token ?? (extractAuthToken(request) ?? undefined);
     const supabase = getSupabaseServerClient(userToken);
+
     let pendingOrder: {
       id?: string;
       user_id?: string | null;
@@ -92,6 +93,26 @@ export async function POST(request: Request) {
       }
     }
 
+    // Verify caller owns the order if it is already bound in the database
+    if (pendingOrder?.user_id && pendingOrder.user_id !== auth.user.id) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Order ownership mismatch",
+          fulfilled: false,
+        },
+        { status: 403 },
+      );
+    }
+
+    const info = await getPayosPaymentInfo(orderCodeNum);
+
+    const paidAmount = Number(
+      typeof info.amountPaid === "number" && info.amountPaid > 0
+        ? info.amountPaid
+        : info.amount,
+    );
+
     if (info.status === "PAID") {
       // 1. Amount Verification
       const expectedAmount =
@@ -113,11 +134,15 @@ export async function POST(request: Request) {
       }
 
       // 2. Sandbox Verification
-      if (paidAmount === SANDBOX_TEST_AMOUNT_VND) {
-        let callerEmail: string | null =
-          (auth.authenticated && (auth.user as { email?: string })?.email) || null;
+      const isSandboxOrder =
+        paidAmount === SANDBOX_TEST_AMOUNT_VND ||
+        pendingOrder?.tier === "trial_24h";
 
-        if (!callerEmail && auth.authenticated && supabase && userToken) {
+      if (isSandboxOrder) {
+        let callerEmail: string | null =
+          (auth.user as { email?: string })?.email || null;
+
+        if (!callerEmail && supabase && userToken) {
           try {
             const { data: authData } = await supabase.auth.getUser(userToken);
             callerEmail = authData?.user?.email ?? null;
@@ -126,92 +151,52 @@ export async function POST(request: Request) {
           }
         }
 
-        if (!callerEmail && auth.authenticated && auth.user?.id && supabase) {
+        if (!callerEmail && auth.user?.id && supabase) {
           try {
-            const { data: adminUser } = await supabase.auth.admin.getUserById(auth.user.id);
+            const { data: adminUser } = await supabase.auth.admin.getUserById(
+              auth.user.id,
+            );
             callerEmail = adminUser?.user?.email ?? null;
           } catch {
             // Safe ignore admin auth lookup error
           }
         }
 
-        if (!callerEmail && pendingOrder?.user_id && supabase) {
+        if (!callerEmail && supabase) {
           try {
-            const { data: adminUser } = await supabase.auth.admin.getUserById(pendingOrder.user_id);
-            callerEmail = adminUser?.user?.email ?? null;
+            const { data: profile } = await supabase
+              .from("profiles")
+              .select("email")
+              .eq("id", auth.user.id)
+              .maybeSingle();
+            callerEmail = profile?.email ?? null;
           } catch {
-            // Safe ignore admin auth lookup error
-          }
-
-          if (!callerEmail) {
-            try {
-              const { data: profile } = await supabase
-                .from("profiles")
-                .select("email")
-                .eq("id", pendingOrder.user_id)
-                .maybeSingle();
-              callerEmail = profile?.email ?? null;
-            } catch {
-              // Safe ignore profile lookup error
-            }
-          }
-
-          if (!callerEmail) {
-            try {
-              const { data: userProfile } = await supabase
-                .from("user_profiles")
-                .select("email")
-                .eq("id", pendingOrder.user_id)
-                .maybeSingle();
-              callerEmail = userProfile?.email ?? null;
-            } catch {
-              // Safe ignore user profile lookup error
-            }
+            // Safe ignore profile lookup error
           }
         }
 
-        if (!callerEmail && typeof body?.email === "string") {
-          callerEmail = body.email;
+        if (!callerEmail && supabase) {
+          try {
+            const { data: userProfile } = await supabase
+              .from("user_profiles")
+              .select("email")
+              .eq("id", auth.user.id)
+              .maybeSingle();
+            callerEmail = userProfile?.email ?? null;
+          } catch {
+            // Safe ignore user profile lookup error
+          }
         }
 
         if (!isAdminTestEmail(callerEmail)) {
           return NextResponse.json(
-            { ok: false, error: "Sandbox test payment unauthorized for this account" },
+            {
+              ok: false,
+              error: "Sandbox test payment unauthorized for this account",
+            },
             { status: 403 },
           );
         }
-      }
-
-      const isSandboxOrder = paidAmount === SANDBOX_TEST_AMOUNT_VND;
-
-      if (!auth.authenticated) {
-        // Disallow arbitrary body.userId from unauthenticated callers.
-        // Only fulfill if this order is already bound to a recorded user in DB.
-        const result = await fulfillPayosOrder({
-          orderCode: orderCodeNum,
-          amount: paidAmount,
-          expectedAmount,
-        });
-
-        if (!result.fulfilled) {
-          return NextResponse.json({
-            ok: true,
-            paid: true,
-            status: info.status,
-            verified: false,
-            requiresAuth: true,
-          });
-        }
-
-        return NextResponse.json({
-          ok: true,
-          paid: true,
-          status: info.status,
-          tier: result.tier,
-          expiresAt: result.expiresAt,
-          fulfilled: result.fulfilled,
-          ...(isSandboxOrder ? { cogsCeilingUsd: 0.05 } : {}),
-        });
       }
 
       // Authenticated caller: pass auth.user.id and extracted userToken
@@ -223,16 +208,28 @@ export async function POST(request: Request) {
         userToken,
       });
 
-      const isOwner = !result.userId || result.userId === auth.user.id;
+      if (result.userId && result.userId !== auth.user.id) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "Order ownership mismatch",
+            fulfilled: false,
+          },
+          { status: 403 },
+        );
+      }
 
       return NextResponse.json({
         ok: true,
         paid: true,
         status: info.status,
-        tier: isOwner ? result.tier : null,
-        expiresAt: isOwner ? result.expiresAt : null,
-        fulfilled: result.fulfilled && isOwner,
-        ...(isSandboxOrder ? { cogsCeilingUsd: 0.05 } : {}),
+        tier: result.tier,
+        expiresAt: result.expiresAt,
+        fulfilled: result.fulfilled,
+        alreadyFulfilled: Boolean(result.alreadyFulfilled),
+        ...(isSandboxOrder || result.cogsCeilingUsd !== undefined
+          ? { cogsCeilingUsd: result.cogsCeilingUsd ?? 0.05 }
+          : {}),
       });
     }
 

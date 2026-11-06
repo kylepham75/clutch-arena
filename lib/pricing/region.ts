@@ -32,6 +32,7 @@ export type { BillingRegion, RegionalPrice, PlanId };
 export const CLUTCH_REGION_COOKIE = "clutch_region";
 export const REGION_HEADER_VERCEL = "x-vercel-ip-country";
 export const REGION_HEADER_CLOUDFLARE = "cf-ipcountry";
+export const CLOUDFLARE_RAY_HEADER = "cf-ray";
 export const CLUTCH_REGION_HEADER = "x-clutch-region";
 
 /* -------------------------------------------------------------------------- */
@@ -211,42 +212,111 @@ function resolveHeaderContainer(source: unknown): unknown {
   return source;
 }
 
+/**
+ * Verifies whether Cloudflare edge headers can be trusted (SA2-06).
+ * Only trusted when 'cf-ray' header is present or TRUST_CLOUDFLARE_HEADERS === "true".
+ */
+export function isCloudflareGeoIpVerified(headers: unknown): boolean {
+  if (process.env.TRUST_CLOUDFLARE_HEADERS === "true") {
+    return true;
+  }
+  const cfRay = getHeaderValue(headers, CLOUDFLARE_RAY_HEADER);
+  return Boolean(cfRay && cfRay.trim().length > 0);
+}
+
+/**
+ * Resolves BillingRegion strictly from trusted Edge Geo-IP country headers
+ * ('x-vercel-ip-country' or verified 'cf-ipcountry') if present and non-empty.
+ * Prioritizes 'x-vercel-ip-country' over 'cf-ipcountry'.
+ * Only trusts 'cf-ipcountry' when verified with 'cf-ray' or TRUST_CLOUDFLARE_HEADERS (SA2-06).
+ * Returns null when no trusted Edge Geo-IP header is present.
+ */
+function resolveEdgeGeoIpRegion(headers: unknown): BillingRegion | null {
+  if (!headers || typeof headers !== "object") return null;
+
+  // 1. Vercel platform Edge Geo-IP takes strict precedence
+  const vercelCountry = getHeaderValue(headers, REGION_HEADER_VERCEL);
+  if (vercelCountry && vercelCountry.trim().length > 0) {
+    return detectBillingRegionFromCountry(vercelCountry);
+  }
+
+  // 2. Cloudflare Geo-IP country header (only trusted when verified)
+  const cfCountry = getHeaderValue(headers, REGION_HEADER_CLOUDFLARE);
+  if (cfCountry && cfCountry.trim().length > 0 && isCloudflareGeoIpVerified(headers)) {
+    return detectBillingRegionFromCountry(cfCountry);
+  }
+
+  return null;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Header Detection & Server Region Resolver                                */
 /* -------------------------------------------------------------------------- */
 
 /**
  * Detects the BillingRegion strictly from request headers.
- * Checks in priority order:
- * 1. 'x-clutch-region' (explicit override header)
- * 2. 'x-vercel-ip-country' (Vercel Edge Geo-IP)
- * 3. 'cf-ipcountry' (Cloudflare Geo-IP)
+ * In production (NODE_ENV === "production"), trusted Edge Geo-IP country headers
+ * ('x-vercel-ip-country', verified 'cf-ipcountry') take strict precedence when present so
+ * client-supplied 'x-clutch-region' headers cannot spoof the billing/COGS region.
+ * Otherwise checks in priority order:
+ * 1. 'x-clutch-region' (explicit override header in dev/test)
+ * 2. 'x-vercel-ip-country' (Vercel Edge Geo-IP, prioritized over cf-ipcountry)
+ * 3. 'cf-ipcountry' (Cloudflare Geo-IP, only if verified)
  *
- * Returns 'VN' if any header resolves to 'VN', else 'ROW'.
+ * Returns 'VN' if resolved region is 'VN', else 'ROW'.
  */
 export function detectBillingRegionFromHeaders(headers: HeaderSource): BillingRegion {
+  if (process.env.NODE_ENV === "production") {
+    const geoIpRegion = resolveEdgeGeoIpRegion(headers);
+    if (geoIpRegion !== null) {
+      return geoIpRegion;
+    }
+  }
+
+  // 1. Explicit override header in dev/test
   const clutchRegion = parseBillingRegion(getHeaderValue(headers, CLUTCH_REGION_HEADER));
   if (clutchRegion) {
     return clutchRegion;
   }
 
+  // 2. Vercel Edge Geo-IP header takes strict precedence over cf-ipcountry
   const vercelCountry = getHeaderValue(headers, REGION_HEADER_VERCEL);
-  if (vercelCountry && detectBillingRegionFromCountry(vercelCountry) === "VN") {
-    return "VN";
+  if (vercelCountry && vercelCountry.trim().length > 0) {
+    return detectBillingRegionFromCountry(vercelCountry);
   }
 
+  // 3. Cloudflare Geo-IP header (only trusted when verified with cf-ray or TRUST_CLOUDFLARE_HEADERS)
   const cfCountry = getHeaderValue(headers, REGION_HEADER_CLOUDFLARE);
-  if (cfCountry && detectBillingRegionFromCountry(cfCountry) === "VN") {
-    return "VN";
+  if (cfCountry && cfCountry.trim().length > 0 && isCloudflareGeoIpVerified(headers)) {
+    return detectBillingRegionFromCountry(cfCountry);
   }
 
   return "ROW";
 }
 
 /**
+ * Authoritative billing region resolver that strictly prioritizes trusted Edge Geo-IP
+ * country headers ('x-vercel-ip-country' and 'cf-ipcountry') FIRST when present on the
+ * request/headers before falling back to getBillingRegion(requestOrHeaders).
+ */
+export function getAuthoritativeBillingRegion(requestOrHeaders?: unknown): BillingRegion {
+  const headerContainer = resolveHeaderContainer(requestOrHeaders);
+  const geoIpRegion = resolveEdgeGeoIpRegion(headerContainer);
+  if (geoIpRegion !== null) {
+    return geoIpRegion;
+  }
+  return getBillingRegion(requestOrHeaders);
+}
+
+/**
  * Server region resolver. Resolves the user's BillingRegion from any request or headers context.
  *
- * Strict Priority Order:
+ * In production (NODE_ENV === "production"), when a trusted Edge Geo-IP country header
+ * ('x-vercel-ip-country' or 'cf-ipcountry') is present and non-empty on the request headers,
+ * it takes strict priority so client-supplied 'clutch_region' cookies or 'x-clutch-region'
+ * headers cannot spoof the billing/COGS region.
+ *
+ * In development/test (or when no Edge Geo-IP header is present), resolves in strict order:
  * 1. Explicit cookie 'clutch_region' (if passed, readable, and valid 'VN' or 'ROW').
  * 2. Explicit header 'x-clutch-region' (if passed and valid 'VN' or 'ROW').
  * 3. Geo-IP country headers ('x-vercel-ip-country', 'cf-ipcountry').
@@ -256,6 +326,15 @@ export function detectBillingRegionFromHeaders(headers: HeaderSource): BillingRe
  * Supports standard Fetch Request, Next.js NextRequest, Headers, plain object headers, or string cookie headers.
  */
 export function getBillingRegion(requestOrHeaders?: unknown): BillingRegion {
+  const headerContainer = resolveHeaderContainer(requestOrHeaders);
+
+  if (process.env.NODE_ENV === "production") {
+    const geoIpRegion = resolveEdgeGeoIpRegion(headerContainer);
+    if (geoIpRegion !== null) {
+      return geoIpRegion;
+    }
+  }
+
   // 1. Priority a: Explicit cookie clutch_region
   const cookieRegion = parseBillingRegion(extractCookieValue(requestOrHeaders, CLUTCH_REGION_COOKIE));
   if (cookieRegion) {
@@ -263,7 +342,6 @@ export function getBillingRegion(requestOrHeaders?: unknown): BillingRegion {
   }
 
   // 2. Priority b & c: Headers (x-clutch-region override, then Geo-IP headers)
-  const headerContainer = resolveHeaderContainer(requestOrHeaders);
   if (headerContainer && typeof headerContainer === "object") {
     return detectBillingRegionFromHeaders(headerContainer as HeaderSource);
   }

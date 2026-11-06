@@ -1,6 +1,11 @@
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 import { IngestionError } from "./errors";
-import { MAX_EXTRACTED_CHARACTERS } from "./limits";
+import {
+  MAX_EXTRACTED_CHARACTERS,
+  MAX_PDF_PAGES,
+  MAX_DOCX_EXPANDED_BYTES,
+} from "./limits";
+import { validatePptxArchive } from "./validate-file";
 
 export interface OcrTranscribedEquation {
   slide: number;
@@ -41,12 +46,33 @@ export interface OmmlTranscribedEquation {
   origin: "omml";
 }
 
+export const MAX_PPTX_OCR_IMAGES = 25;
+export const ESTIMATED_PPTX_OCR_USD = 0.00012;
+export const MAX_PPTX_EXPANDED_BYTES = MAX_DOCX_EXPANDED_BYTES * 2.5;
+export const MAX_PPTX_ENTRY_BYTES = MAX_DOCX_EXPANDED_BYTES;
+
+export function assertPptxExpandedSize(
+  entryBytes: number,
+  currentTotal: number,
+  maxEntry: number = MAX_PPTX_ENTRY_BYTES,
+  maxTotal: number = MAX_PPTX_EXPANDED_BYTES,
+): void {
+  if (entryBytes > maxEntry || currentTotal + entryBytes > maxTotal) {
+    throw new IngestionError(
+      "DOCUMENT_TOO_LARGE",
+      "The expanded PowerPoint archive is too large. Split the presentation into smaller decks.",
+      413,
+    );
+  }
+}
+
 export interface ParsePptxResult {
   sources: SourceBlock[];
   pageCount: number;
   warnings: string[];
   ocrEquations: OcrTranscribedEquation[];
   ommlEquations: OmmlTranscribedEquation[];
+  visionOcrCostUsd: number;
 }
 
 export interface XmlElement {
@@ -1403,14 +1429,7 @@ export async function parsePptx(
   const transcriber: VisionMathTranscriber =
     customTranscriber ?? transcribeEquationImageWithGemini;
 
-  // Validate ZIP header (PK\x03\x04)
-  if (bytes.length < 4 || bytes.readUInt32LE(0) !== 0x04034b50) {
-    throw new IngestionError(
-      "INVALID_PPTX",
-      "This file does not contain a valid PowerPoint presentation.",
-      422,
-    );
-  }
+  validatePptxArchive(bytes);
 
   const JSZip = (await import("jszip")).default;
   let zip: InstanceType<typeof JSZip>;
@@ -1446,6 +1465,14 @@ export async function parsePptx(
     );
   }
 
+  if (slideEntries.length > MAX_PDF_PAGES) {
+    throw new IngestionError(
+      "TOO_MANY_PAGES",
+      `Upload at most ${MAX_PDF_PAGES} slides at a time.`,
+      413,
+    );
+  }
+
   // Sort slides numerically
   slideEntries.sort((a, b) => a.num - b.num);
 
@@ -1455,6 +1482,9 @@ export async function parsePptx(
   const warnings: string[] = [];
   let characterCount = 0;
   let emptySlides = 0;
+  let transcribedImageCount = 0;
+  let visionOcrCostUsd = 0;
+  let totalExpandedBytes = 0;
 
   for (let i = 0; i < slideEntries.length; i++) {
     signal?.throwIfAborted();
@@ -1462,7 +1492,15 @@ export async function parsePptx(
     const file = zip.file(slide.path);
     if (!file) continue;
 
+    const uncompressedSize = (file as any)._data?.uncompressedSize;
+    if (typeof uncompressedSize === "number") {
+      assertPptxExpandedSize(uncompressedSize, totalExpandedBytes);
+    }
+
     const xml = await file.async("text");
+    const xmlBytes = Buffer.byteLength(xml, "utf8");
+    assertPptxExpandedSize(xmlBytes, totalExpandedBytes);
+    totalExpandedBytes += xmlBytes;
 
     // 1. Extract OMML equations from slide XML
     const slideOmmls = extractOmmlEquationsFromXml(xml);
@@ -1485,14 +1523,22 @@ export async function parsePptx(
     const noteFile = zip.file(notePath);
     if (noteFile) {
       try {
+        const noteUncompressed = (noteFile as any)._data?.uncompressedSize;
+        if (typeof noteUncompressed === "number") {
+          assertPptxExpandedSize(noteUncompressed, totalExpandedBytes);
+        }
         const noteXml = await noteFile.async("text");
+        const noteBytes = Buffer.byteLength(noteXml, "utf8");
+        assertPptxExpandedSize(noteBytes, totalExpandedBytes);
+        totalExpandedBytes += noteBytes;
         const noteText = extractSlideXmlText(noteXml);
         // Exclude default placeholder slide number text from notes
         const cleanNotes = noteText.replace(/^Slide\s+\d+$/m, "").trim();
         if (cleanNotes && cleanNotes.length > 5) {
           text += `\n[Notes: ${cleanNotes}]`;
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof IngestionError) throw err;
         // Speaker notes optional
       }
     }
@@ -1503,7 +1549,17 @@ export async function parsePptx(
       "ppt/slides/_rels/slide$1.xml.rels",
     );
     const relsFile = zip.file(relsPath);
-    const relsXml = relsFile ? await relsFile.async("text") : undefined;
+    let relsXml: string | undefined;
+    if (relsFile) {
+      const relsUncompressed = (relsFile as any)._data?.uncompressedSize;
+      if (typeof relsUncompressed === "number") {
+        assertPptxExpandedSize(relsUncompressed, totalExpandedBytes);
+      }
+      relsXml = await relsFile.async("text");
+      const relsBytes = Buffer.byteLength(relsXml, "utf8");
+      assertPptxExpandedSize(relsBytes, totalExpandedBytes);
+      totalExpandedBytes += relsBytes;
+    }
 
     const candidates = detectSlideEquationCandidates(xml, relsXml, slide.num);
 
@@ -1550,7 +1606,25 @@ export async function parsePptx(
         continue;
       }
 
+      if (transcribedImageCount >= MAX_PPTX_OCR_IMAGES) {
+        const limitWarnMsg = `Vision OCR transcription limit reached (${MAX_PPTX_OCR_IMAGES} images max). Skipping remaining equation images.`;
+        if (!warnings.includes(limitWarnMsg)) {
+          warnings.push(limitWarnMsg);
+        }
+        const warnMsg = `Slide ${slide.num} contains an embedded equation image/OLE object that could not be transcribed automatically.`;
+        if (!warnings.includes(warnMsg)) {
+          warnings.push(warnMsg);
+        }
+        continue;
+      }
+
+      const mediaUncompressed = (mediaFile as any)._data?.uncompressedSize;
+      if (typeof mediaUncompressed === "number") {
+        assertPptxExpandedSize(mediaUncompressed, totalExpandedBytes);
+      }
       const imageBuffer = await mediaFile.async("nodebuffer");
+      assertPptxExpandedSize(imageBuffer.byteLength, totalExpandedBytes);
+      totalExpandedBytes += imageBuffer.byteLength;
       const imageBytes = new Uint8Array(
         imageBuffer.buffer,
         imageBuffer.byteOffset,
@@ -1558,6 +1632,10 @@ export async function parsePptx(
       );
       const mimeType =
         candidate.mimeType || (mediaPath ? getMimeType(mediaPath) : undefined) || "image/png";
+
+      transcribedImageCount++;
+      visionOcrCostUsd =
+        Math.round((visionOcrCostUsd + ESTIMATED_PPTX_OCR_USD) * 1e6) / 1e6;
 
       let transcribed: Array<{ raw: string; latex: string; confidence: number }> = [];
       try {
@@ -1650,5 +1728,6 @@ export async function parsePptx(
     warnings,
     ocrEquations,
     ommlEquations,
+    visionOcrCostUsd,
   };
 }

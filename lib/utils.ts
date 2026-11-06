@@ -11,6 +11,11 @@ export function cn(...values: ClassValue[]) {
  * and forwarded host headers.
  */
 export function isAllowedOrigin(origin: string | null, request: Request): boolean {
+  const secFetchSite = request.headers.get("sec-fetch-site");
+  if (secFetchSite && secFetchSite.toLowerCase() === "cross-site") {
+    return false;
+  }
+
   if (!origin) return true;
 
   try {

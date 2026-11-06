@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
-import { createIngestionHandler } from "@/lib/ingestion/handler";
+import { createIngestionHandler, SHARED_CACHE_PIPELINE_VERSION } from "@/lib/ingestion/handler";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { REQUEST_TIMEOUT_MS } from "@/lib/ingestion/limits";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
@@ -345,6 +345,575 @@ describe("ingestion HTTP handler", () => {
         pipelineVersion: "v1",
         questionPool: result.pack.questions,
       }),
+    );
+  });
+
+  it("calls rollbackDeckQuotaReservation once with reserved actor, hash, and cost when upstream AI generation throws an error", async () => {
+    const generate = vi.fn().mockRejectedValue(new Error("Upstream Anthropic / Gemini generation timeout"));
+    const getDeckCache = vi.fn().mockResolvedValue(null);
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      reserved: true,
+      cacheHit: false,
+      creditConsumed: true,
+      isRegeneration: false,
+      creditsUsed: 1,
+      creditsLimit: 2,
+      dailyBurstUsed: 1,
+      dailyBurstLimit: 2,
+      cogsStatus: {} as any,
+      ledger: {} as any,
+    });
+    const rollbackQuota = vi.fn().mockResolvedValue({ success: true, decksGeneratedCount: 0 });
+
+    const handler = createIngestionHandler({
+      generate,
+      checkConfiguration: () => {},
+      getDeckCache,
+      quotaReservation,
+      rollbackQuota,
+    });
+
+    const response = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 5,
+        focus: "Macroeconomics",
+        language: "en",
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("INGESTION_FAILED");
+    expect(quotaReservation).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(rollbackQuota).toHaveBeenCalledTimes(1);
+    expect(rollbackQuota).toHaveBeenCalledWith(
+      expect.stringContaining("ip:"),
+      "guest",
+      expect.any(String),
+      0.02,
+    );
+  });
+
+  it("uses matching SHARED_CACHE_PIPELINE_VERSION in getDeckCache and setDeckCache so repeat uploads hit shared cache", async () => {
+    let memoryCache: any = null;
+    const generate = vi.fn().mockResolvedValue({
+      ...result,
+      pipelineVersion: "3.0.0-final+gemini+claude",
+    });
+    const getDeckCache = vi.fn().mockImplementation(async (key: any) => {
+      if (memoryCache && memoryCache.pipelineVersion === key.pipelineVersion) {
+        return memoryCache;
+      }
+      return null;
+    });
+    const setDeckCache = vi.fn().mockImplementation(async (entry: any) => {
+      memoryCache = {
+        ...entry,
+        hitCount: 1,
+      };
+      return memoryCache;
+    });
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      reserved: true,
+      cacheHit: false,
+      creditConsumed: true,
+      isRegeneration: false,
+      creditsUsed: 1,
+      creditsLimit: 2,
+      dailyBurstUsed: 1,
+      dailyBurstLimit: 2,
+      cogsStatus: {} as any,
+      ledger: {} as any,
+    });
+    const recordCogs = vi.fn().mockResolvedValue({ ledger: {} as any, cogsStatus: {} as any });
+
+    const handler = createIngestionHandler({
+      generate,
+      checkConfiguration: () => {},
+      getDeckCache,
+      setDeckCache,
+      quotaReservation,
+      recordCogs,
+    });
+
+    // 1st upload: cache miss, triggers generation, saves to cache with SHARED_CACHE_PIPELINE_VERSION
+    const res1 = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 5,
+        focus: "Microeconomics",
+        language: "en",
+      }),
+    );
+    expect(res1.status).toBe(200);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(setDeckCache).toHaveBeenCalledTimes(1);
+    expect(setDeckCache).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
+      }),
+    );
+
+    // 2nd upload with identical document: invokes getDeckCache with SHARED_CACHE_PIPELINE_VERSION and hits cache
+    const res2 = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 5,
+        focus: "Microeconomics",
+        language: "en",
+      }),
+    );
+    expect(res2.status).toBe(200);
+    const body2 = await res2.json();
+    expect(body2.cached).toBe(true);
+    expect(generate).toHaveBeenCalledTimes(1); // Not called again!
+    expect(getDeckCache).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
+      }),
+    );
+  });
+
+  it("enforces rate limiting on operation: preview and returns 429 when exceeded", async () => {
+    const rateLimiter = vi.fn().mockResolvedValue({
+      allowed: false,
+      limit: 2,
+      remaining: 0,
+      reset: Date.now() + 60000,
+    });
+    const handler = createIngestionHandler({ rateLimiter });
+    const response = await handler(upload({ operation: "preview" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(json.ok).toBe(false);
+    expect(json.error.code).toBe("RATE_LIMIT_EXCEEDED");
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(rateLimiter).toHaveBeenCalledTimes(1);
+    expect(rateLimiter).toHaveBeenCalledWith(
+      expect.stringContaining("ip:"),
+      "ingest",
+      "guest",
+    );
+  });
+
+  it("disables paid vision OCR during preview operations by passing parsePdfOptions with zero budget", async () => {
+    const parseDoc = vi.fn().mockResolvedValue({
+      fileName: "test.pdf",
+      format: "pdf",
+      sources: [{ id: "page-1", label: "Page 1", text: studyText }],
+      warnings: [],
+      pageCount: 1,
+      characterCount: studyText.length,
+      fileSha256: "sha256-abc",
+      contentHash: "hash-xyz",
+    });
+
+    const handler = createIngestionHandler({ parseDoc });
+    const response = await handler(
+      upload({
+        operation: "preview",
+        rescanPages: [1, 2],
+      }),
+    );
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.operation).toBe("preview");
+    expect(parseDoc).toHaveBeenCalledTimes(1);
+
+    const callArgs = parseDoc.mock.calls[0];
+    const passedOptions = callArgs[2];
+    expect(passedOptions).toBeDefined();
+    expect(passedOptions.rescanPages).toBeUndefined();
+    expect(passedOptions.parsePdfOptions).toBeDefined();
+    expect(passedOptions.parsePdfOptions.maxAutoOcrBudgetUsd).toBe(0);
+    expect(typeof passedOptions.parsePdfOptions.visionTranscriber).toBe("function");
+
+    const transcriberResult = await passedOptions.parsePdfOptions.visionTranscriber();
+    expect(transcriberResult).toBeNull();
+  });
+
+  it("preserves rescanPages and does not restrict parsePdfOptions during operation: generate", async () => {
+    const parseDoc = vi.fn().mockResolvedValue({
+      fileName: "test.pdf",
+      format: "pdf",
+      sources: [{ id: "page-1", label: "Page 1", text: studyText }],
+      warnings: [],
+      pageCount: 1,
+      characterCount: studyText.length,
+      fileSha256: "sha256-abc",
+      contentHash: "hash-xyz",
+    });
+    const generate = vi.fn().mockResolvedValue(result);
+
+    const handler = createIngestionHandler({
+      parseDoc,
+      generate,
+      checkConfiguration: () => {},
+    });
+    const response = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 5,
+        rescanPages: [1, 2],
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(parseDoc).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { rescanPages: [1, 2] },
+    );
+  });
+
+  it("free user cache hit strips distractorRationale from pack.questions and studyMetadata.pack.questions", async () => {
+    const cachedQuestions = [
+      {
+        id: "q-1",
+        question: "What is opportunity cost?",
+        options: ["A", "B", "C", "D"],
+        correctIndex: 0,
+        explanation: "Opportunity cost is the value of next-best alternative.",
+        distractorRationale: "Distractor rationale: Option B is wrong because it ignores sunk costs.",
+        conceptVariant: {
+          question: "What is the concept of opportunity cost?",
+          options: ["A", "B", "C", "D"],
+          correctIndex: 0,
+          explanation: "Variant explanation.",
+          distractorRationale: "Distractor rationale for variant: Option C is wrong.",
+        },
+      },
+    ];
+
+    const cachedDeck = {
+      id: "cached-deck-1",
+      contentHash: "hash-test-strip",
+      language: "en",
+      mode: "variants",
+      focusHash: "",
+      pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
+      questionPool: cachedQuestions,
+      studyMetadata: {
+        pack: {
+          id: "pack-1",
+          title: "Microeconomics",
+          subtitle: "Lecture 1",
+          questions: [
+            {
+              id: "q-1",
+              question: "What is opportunity cost?",
+              options: ["A", "B", "C", "D"],
+              correctIndex: 0,
+              explanation: "Opportunity cost is the value of next-best alternative.",
+              distractorRationale: "Distractor rationale: Option B is wrong because it ignores sunk costs.",
+            },
+          ],
+          metadata: {
+            "q-1": {
+              topic: "Opportunity Cost",
+              chapter: "1",
+              citation: "notes.txt · Page 1",
+              rule: "Scarcity rule",
+              distractorRationale: "Metadata distractor rationale",
+            },
+          },
+        },
+        sourceKind: "lecture",
+        references: {},
+        warnings: [],
+        usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+      },
+      hitCount: 1,
+    };
+
+    const getDeckCache = vi.fn().mockResolvedValue(cachedDeck);
+    const generate = vi.fn();
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "free-user-1" },
+      tier: "contender", // Free tier
+    });
+
+    const handler = createIngestionHandler({
+      getDeckCache,
+      generate,
+      verifyAuth,
+      checkConfiguration: () => {},
+    });
+
+    const response = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 1,
+        language: "en",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.cached).toBe(true);
+    expect(generate).not.toHaveBeenCalled();
+
+    // Verify distractorRationale stripped from pack.questions
+    expect(body.pack.questions).toHaveLength(1);
+    expect(body.pack.questions[0].distractorRationale).toBeUndefined();
+    expect(body.pack.questions[0].conceptVariant.distractorRationale).toBeUndefined();
+
+    // Verify distractorRationale stripped from studyMetadata.pack.questions if present
+    if (body.studyMetadata?.pack?.questions) {
+      expect(body.studyMetadata.pack.questions[0].distractorRationale).toBeUndefined();
+    }
+    // Also verify underlying cachedDeck studyMetadata was sanitized
+    expect(cachedDeck.studyMetadata.pack.questions[0].distractorRationale).toBeUndefined();
+
+    // Verify distractorRationale stripped from metadata
+    if (body.pack.metadata?.["q-1"]) {
+      expect(body.pack.metadata["q-1"].distractorRationale).toBeUndefined();
+    }
+  });
+
+  it("paid user does not get degraded free cached deck missing distractorRationale", async () => {
+    // Cached deck generated by a free user (no distractor rationale)
+    const degradedFreeQuestions = [
+      {
+        id: "q-free-1",
+        question: "What is GDP?",
+        options: ["A", "B", "C", "D"],
+        correctIndex: 0,
+        explanation: "Gross Domestic Product",
+        conceptVariant: {
+          question: "What does GDP measure?",
+          options: ["A", "B", "C", "D"],
+          correctIndex: 0,
+          explanation: "Total market value",
+        },
+      },
+    ];
+
+    const degradedCachedDeck = {
+      id: "cached-deck-free",
+      contentHash: "hash-test-degraded",
+      language: "en",
+      mode: "variants",
+      focusHash: "",
+      pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
+      questionPool: degradedFreeQuestions,
+      studyMetadata: {
+        pack: {
+          id: "pack-free",
+          title: "Macroeconomics",
+          subtitle: "Lecture 1",
+          questions: degradedFreeQuestions,
+          metadata: {
+            "q-free-1": {
+              topic: "GDP",
+              chapter: "1",
+              citation: "notes.txt · Page 1",
+              rule: "National accounts",
+            },
+          },
+        },
+        sourceKind: "lecture",
+        references: {},
+        warnings: [],
+        usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+      },
+      hitCount: 1,
+    };
+
+    const getDeckCache = vi.fn().mockResolvedValue(degradedCachedDeck);
+    const setDeckCache = vi.fn().mockResolvedValue(degradedCachedDeck);
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      reserved: true,
+      cachedDeck: degradedCachedDeck,
+      creditsUsed: 0,
+      creditsLimit: 100,
+      dailyBurstUsed: 0,
+      dailyBurstLimit: 50,
+      cogsStatus: {} as any,
+      ledger: {} as any,
+    });
+    const recordCogs = vi.fn().mockResolvedValue({ ledger: {} as any, cogsStatus: {} as any });
+
+    const freshProResult: GenerationResult = {
+      pack: {
+        id: "pack-fresh-pro",
+        title: "Macroeconomics Pro",
+        subtitle: "Deep Dive",
+        questions: [
+          {
+            id: "q-pro-1",
+            question: "How does inflation affect GDP?",
+            options: ["A", "B", "C", "D"],
+            correctIndex: 0,
+            explanation: "Real GDP adjusts for inflation.",
+            conceptVariant: {
+              question: "Nominal vs Real GDP?",
+              options: ["A", "B", "C", "D"],
+              correctIndex: 0,
+              explanation: "Nominal uses current prices.",
+            },
+          },
+        ],
+        metadata: {
+          "q-pro-1": {
+            topic: "Inflation",
+            chapter: "2",
+            citation: "notes.txt · Page 2",
+            rule: "Deflator equation",
+            distractorRationale: "Pro Distractor: Option B confuses CPI with GDP deflator.",
+          },
+        },
+      },
+      sourceKind: "lecture",
+      references: {},
+      warnings: [],
+      usage: { inputTokens: 50, outputTokens: 100, totalTokens: 150 },
+    };
+
+    const generate = vi.fn().mockResolvedValue(freshProResult);
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "pro-user-1" },
+      tier: "pro", // Paid Pro tier
+    });
+
+    const handler = createIngestionHandler({
+      getDeckCache,
+      setDeckCache,
+      quotaReservation,
+      recordCogs,
+      generate,
+      verifyAuth,
+      checkConfiguration: () => {},
+    });
+
+    const response = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 1,
+        language: "en",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    // Verify cache was bypassed for the paid user!
+    expect(body.cached).toBeUndefined();
+    // Verify fresh high-fidelity AI generation was called
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(body.pack.id).toBe("pack-fresh-pro");
+
+    // Verify setDeckCache was called to update cache with high-fidelity questions
+    expect(setDeckCache).toHaveBeenCalledTimes(1);
+    expect(setDeckCache).toHaveBeenCalledWith(
+      expect.objectContaining({
+        studyMetadata: expect.objectContaining({
+          pack: expect.objectContaining({
+            metadata: expect.objectContaining({
+              "q-pro-1": expect.objectContaining({
+                distractorRationale: "Pro Distractor: Option B confuses CPI with GDP deflator.",
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("paid user receives cached deck when it has distractorRationale and meets requested count", async () => {
+    const proCachedQuestions = [
+      {
+        id: "q-pro-cached-1",
+        question: "Explain the liquidity trap.",
+        options: ["A", "B", "C", "D"],
+        correctIndex: 0,
+        explanation: "Nominal interest rates near zero.",
+        distractorRationale: "Option B is incorrect because monetary policy becomes ineffective.",
+        conceptVariant: {
+          question: "What characterizes a liquidity trap?",
+          options: ["A", "B", "C", "D"],
+          correctIndex: 0,
+          explanation: "Zero lower bound on interest rates.",
+        },
+      },
+    ];
+
+    const proCachedDeck = {
+      id: "cached-deck-pro",
+      contentHash: "hash-test-pro-cached",
+      language: "en",
+      mode: "variants",
+      focusHash: "",
+      pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
+      questionPool: proCachedQuestions,
+      studyMetadata: {
+        pack: {
+          id: "pack-pro-cached",
+          title: "Monetary Policy",
+          subtitle: "Lecture 5",
+          questions: proCachedQuestions,
+          metadata: {
+            "q-pro-cached-1": {
+              topic: "Liquidity Trap",
+              chapter: "5",
+              citation: "notes.txt · Page 5",
+              rule: "ZLB",
+              distractorRationale: "Option B is incorrect because monetary policy becomes ineffective.",
+            },
+          },
+        },
+        sourceKind: "lecture",
+        references: {},
+        warnings: [],
+        usage: { inputTokens: 50, outputTokens: 100, totalTokens: 150 },
+      },
+      hitCount: 2,
+    };
+
+    const getDeckCache = vi.fn().mockResolvedValue(proCachedDeck);
+    const generate = vi.fn();
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "pro-user-2" },
+      tier: "pro",
+    });
+
+    const handler = createIngestionHandler({
+      getDeckCache,
+      generate,
+      verifyAuth,
+      checkConfiguration: () => {},
+    });
+
+    const response = await handler(
+      upload({
+        operation: "generate",
+        questionCount: 1,
+        language: "en",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.cached).toBe(true);
+    expect(generate).not.toHaveBeenCalled();
+
+    // Verify distractorRationale is preserved for the paid user
+    expect(body.pack.questions[0].distractorRationale).toBe(
+      "Option B is incorrect because monetary policy becomes ineffective.",
+    );
+    expect(body.pack.metadata?.["q-pro-cached-1"]?.distractorRationale).toBe(
+      "Option B is incorrect because monetary policy becomes ineffective.",
     );
   });
 });

@@ -5,13 +5,20 @@ import { NextRequest } from "next/server";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { MAX_EXTRACTED_CHARACTERS, MAX_PDF_PAGES } from "@/lib/ingestion/limits";
+import * as rateLimitModule from "@/lib/rate-limit";
+import * as parseSlidesModule from "@/lib/notes/parse-slides";
 import {
   resetQuotaLedgersForTests,
   getUserQuotaLedger,
   saveUserQuotaLedger,
   getSharedDeckCache,
+  setSharedDeckCache,
+  computeFileSha256,
   computeContentHash,
+  rollbackDeckQuotaReservation,
 } from "@/lib/rate-limit";
+
+const NOTES_SHARED_CACHE_PIPELINE_VERSION = "notes-v1";
 import type { ClutchNote } from "@/lib/schemas/notes";
 
 vi.mock("@/lib/ai/generate-notes", () => ({
@@ -445,21 +452,42 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
       },
     ];
 
-    const makeRequest = () =>
-      new NextRequest("http://localhost:3000/api/notes/generate", {
+    const fileBytes = Buffer.from("dummy-deck-content-for-capm-test");
+    const fileSha256 = computeFileSha256(fileBytes);
+    const contentHash = computeContentHash({
+      normalizedText: slideSources[0].text,
+      pageCount: 1,
+    });
+
+    vi.spyOn(parseSlidesModule, "parseSlideDeck").mockResolvedValue({
+      fileName: "CAPM_Lecture.pptx",
+      slideCount: 1,
+      sources: slideSources,
+      warnings: [],
+      characterCount: slideSources[0].text.length,
+      formulaInventory: [],
+      contentHash,
+      fileSha256,
+      format: "pptx",
+    });
+
+    const makeRequest = () => {
+      const formData = new FormData();
+      const fakeFile = new File([fileBytes], "CAPM_Lecture.pptx", {
+        type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      });
+      formData.append("file", fakeFile);
+      return new NextRequest("http://localhost:3000/api/notes/generate", {
         method: "POST",
         headers: {
           "x-test-tier": "pro",
           "x-test-user-id": "user-notes-quota-1",
           "x-enforce-quota": "true",
           origin: "http://localhost:3000",
-          "content-type": "application/json",
         },
-        body: JSON.stringify({
-          fileName: "CAPM_Lecture.pptx",
-          sources: slideSources,
-        }),
+        body: formData,
       });
+    };
 
     // 1. First request: cache miss -> calls generateClutchNote, records COGS, populates cache
     const firstRes = await POST(makeRequest());
@@ -474,12 +502,9 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     expect(ledger.deckCreditsUsed).toBe(1);
     expect(ledger.cogsSpentUsd).toBeGreaterThan(0);
 
-    const contentHash = computeContentHash({
-      normalizedText: slideSources[0].text,
-      pageCount: 1,
-    });
     const cachedEntry = await getSharedDeckCache({
       contentHash,
+      fileSha256,
       language: "en",
       mode: "notes",
       focusHash: "",
@@ -529,6 +554,261 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     const data = await response.json();
     expect(data.ok).toBe(false);
     expect(data.error.code).toBe("DECK_CREDITS_EXCEEDED");
+    expect(vi.mocked(generateClutchNote)).not.toHaveBeenCalled();
+  });
+
+  it("rolls back reserved deck quota and COGS when generateClutchNote throws an error", async () => {
+    const rollbackSpy = vi.spyOn(rateLimitModule, "rollbackDeckQuotaReservation");
+    vi.mocked(generateClutchNote).mockRejectedValueOnce(
+      new Error("Academic synthesis engine timed out or threw unhandled exception"),
+    );
+
+    const slideSources = [
+      {
+        id: "slide-1",
+        label: "Slide 1",
+        text: "Capital Structure and the Modigliani-Miller Theorem without taxes.",
+      },
+    ];
+
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "pro",
+        "x-test-user-id": "user-notes-rollback",
+        "x-enforce-quota": "true",
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: "Corporate_Finance_MM.pptx",
+        sources: slideSources,
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(500);
+
+    const data = await response.json();
+    expect(data.ok).toBe(false);
+    expect(data.error.code).toBe("SYNTHESIS_FAILED");
+    expect(rollbackSpy).toHaveBeenCalledTimes(1);
+    expect(rollbackSpy).toHaveBeenCalledWith(
+      "user-notes-rollback",
+      "pro",
+      expect.any(String),
+      0.02,
+    );
+
+    // Verify user quota ledger was rolled back (0 credits consumed, 0 COGS reserved)
+    const ledger = await getUserQuotaLedger("user-notes-rollback", "pro");
+    expect(ledger.deckCreditsUsed).toBe(0);
+    expect(ledger.cogsReservedUsd).toBe(0);
+  });
+
+  it("uses matching NOTES_SHARED_CACHE_PIPELINE_VERSION so subsequent requests hit cache without invoking LLM", async () => {
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(mockNote);
+
+    const slideSources = [
+      {
+        id: "slide-1",
+        label: "Slide 1",
+        text: "Arbitrage Pricing Theory (APT) and multi-factor asset pricing models.",
+      },
+    ];
+
+    const fileBytes = Buffer.from("dummy-deck-content-for-apt-models-test");
+    const fileSha256 = computeFileSha256(fileBytes);
+    const contentHash = computeContentHash({
+      normalizedText: slideSources[0].text,
+      pageCount: 1,
+    });
+
+    vi.spyOn(parseSlidesModule, "parseSlideDeck").mockResolvedValue({
+      fileName: "APT_Models.pptx",
+      slideCount: 1,
+      sources: slideSources,
+      warnings: [],
+      characterCount: slideSources[0].text.length,
+      formulaInventory: [],
+      contentHash,
+      fileSha256,
+      format: "pptx",
+    });
+
+    const makeRequest = () => {
+      const formData = new FormData();
+      const fakeFile = new File([fileBytes], "APT_Models.pptx", {
+        type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      });
+      formData.append("file", fakeFile);
+      return new NextRequest("http://localhost:3000/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "pro",
+          "x-test-user-id": "user-notes-cache-test",
+          "x-enforce-quota": "true",
+          origin: "http://localhost:3000",
+        },
+        body: formData,
+      });
+    };
+
+    // 1st request: misses cache, invokes generateClutchNote, stores with NOTES_SHARED_CACHE_PIPELINE_VERSION
+    const res1 = await POST(makeRequest());
+    expect(res1.status).toBe(200);
+    const data1 = await res1.json();
+    expect(data1.ok).toBe(true);
+    expect(data1.note).toEqual(mockNote);
+    expect(data1.cached).toBeUndefined();
+    expect(vi.mocked(generateClutchNote)).toHaveBeenCalledTimes(1);
+
+    const cachedEntry = await getSharedDeckCache({
+      contentHash,
+      fileSha256,
+      language: "en",
+      mode: "notes",
+      focusHash: "",
+      pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
+    });
+    expect(cachedEntry?.clutchNote).toEqual(mockNote);
+    expect(cachedEntry?.pipelineVersion).toBe(NOTES_SHARED_CACHE_PIPELINE_VERSION);
+
+    // 2nd request: hits cache using matching NOTES_SHARED_CACHE_PIPELINE_VERSION, returns cached without calling generateClutchNote
+    const res2 = await POST(makeRequest());
+    expect(res2.status).toBe(200);
+    const data2 = await res2.json();
+    expect(data2.ok).toBe(true);
+    expect(data2.cached).toBe(true);
+    expect(data2.note).toEqual(mockNote);
+    expect(vi.mocked(generateClutchNote)).toHaveBeenCalledTimes(1); // not called again
+  });
+
+  it("skips setSharedDeckCache when fileSha256 is null (e.g. raw JSON input without binary upload)", async () => {
+    const setCacheSpy = vi.spyOn(rateLimitModule, "setSharedDeckCache");
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(mockNote);
+
+    const slideSources = [
+      {
+        id: "slide-1",
+        label: "Slide 1",
+        text: "Unverified JSON slides payload without binary file upload.",
+      },
+    ];
+
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "pro",
+        "x-test-user-id": "user-notes-json-no-cache",
+        "x-enforce-quota": "true",
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: "Unverified.pptx",
+        sources: slideSources,
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.ok).toBe(true);
+    expect(data.note).toEqual(mockNote);
+    expect(vi.mocked(generateClutchNote)).toHaveBeenCalledTimes(1);
+
+    // Verify setSharedDeckCache was NOT called because fileSha256 is null
+    expect(setCacheSpy).not.toHaveBeenCalled();
+
+    // Verify nothing was cached
+    const contentHash = computeContentHash({
+      normalizedText: slideSources[0].text,
+      pageCount: 1,
+    });
+    const cachedEntry = await getSharedDeckCache({
+      contentHash,
+      language: "en",
+      mode: "notes",
+      focusHash: "",
+      pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
+    });
+    expect(cachedEntry).toBeNull();
+  });
+
+  it("rejects with 429 and aborts early without calling parseSlideDeck when rate limit is exceeded on multipart upload", async () => {
+    const parseDeckSpy = vi.spyOn(parseSlidesModule, "parseSlideDeck");
+    vi.spyOn(rateLimitModule, "checkRateLimit").mockResolvedValueOnce({
+      allowed: false,
+      limit: 30,
+      remaining: 0,
+      reset: 60,
+      retryAfter: 60,
+    });
+
+    const formData = new FormData();
+    const fakeFile = new File([Buffer.from("dummy-deck-content-for-rate-limit-test")], "lecture.pptx", {
+      type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    });
+    formData.append("file", fakeFile);
+
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "pro",
+        origin: "http://localhost:3000",
+      },
+      body: formData,
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(429);
+    const data = await response.json();
+    expect(data.ok).toBe(false);
+    expect(data.error.code).toBe("RATE_LIMIT_EXCEEDED");
+    expect(parseDeckSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(generateClutchNote)).not.toHaveBeenCalled();
+  });
+
+  it("serves from shared deck cache and returns early without calling parseSlideDeck on multipart upload cache hit", async () => {
+    const parseDeckSpy = vi.spyOn(parseSlidesModule, "parseSlideDeck");
+    const fileBytes = Buffer.from("pre-cached-deck-bytes-for-notes-api-test");
+    const fileSha256 = computeFileSha256(fileBytes);
+
+    // Pre-populate shared cache entry with fileSha256
+    await setSharedDeckCache({
+      contentHash: "synthetic-cached-deck-hash-456",
+      fileSha256,
+      language: "en",
+      mode: "notes",
+      focusHash: "",
+      pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
+      questionPool: [],
+      clutchNote: mockNote,
+    });
+
+    const formData = new FormData();
+    const fakeFile = new File([fileBytes], "cached-lecture.pptx", {
+      type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    });
+    formData.append("file", fakeFile);
+
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "pro",
+        origin: "http://localhost:3000",
+      },
+      body: formData,
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.ok).toBe(true);
+    expect(data.cached).toBe(true);
+    expect(data.note).toEqual(mockNote);
+    expect(parseDeckSpy).not.toHaveBeenCalled();
     expect(vi.mocked(generateClutchNote)).not.toHaveBeenCalled();
   });
 });

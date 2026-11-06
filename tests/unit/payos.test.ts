@@ -11,12 +11,16 @@ import {
   verifyPayosWebhookSignature,
   buildVietQrImageUrl,
   fulfillPayosOrder,
+  clearFulfilledOrderCache,
   isAdminTestEmail,
   createPayosPaymentLink,
+  resolveTrustedPayosOrigin,
+  isAllowedPayosOrigin,
   SANDBOX_TEST_AMOUNT_VND,
   EXPECTED_PLAN_AMOUNTS_VND,
   type PayosPlanId,
 } from "@/lib/payments/payos";
+import { POST as createPostRoute } from "@/app/api/payments/payos/create/route";
 import { POST as verifyPostRoute } from "@/app/api/payments/payos/verify/route";
 import { POST as webhookPostRoute } from "@/app/api/webhooks/payos/route";
 
@@ -26,12 +30,16 @@ let mockSubRecord: {
   tier: string;
   amount?: number;
   status?: string;
+  expires_at?: string;
+  cogs_ceiling_usd?: number;
 } | null = null;
 let mockAuthUser: { id: string; email?: string } | null = null;
 let mockProfileEmail: string | null = null;
+let mockUpsertSubError: { message: string } | null = null;
 const mockUpsertSubSpy = vi.fn();
 const mockUpsertProfileSpy = vi.fn();
 const mockUpsertUserProfileSpy = vi.fn();
+const mockUpsertQuotaLedgerSpy = vi.fn();
 const mockAdminUpdateSpy = vi.fn();
 
 vi.mock("@/lib/supabase/server", () => {
@@ -53,6 +61,18 @@ vi.mock("@/lib/supabase/server", () => {
             select: vi.fn(() => createChain(() => mockSubRecord)),
             upsert: vi.fn(async (data: unknown) => {
               mockUpsertSubSpy(data);
+              if (mockUpsertSubError) {
+                return { error: mockUpsertSubError };
+              }
+              return { error: null };
+            }),
+          };
+        }
+        if (table === "user_quota_ledgers") {
+          return {
+            select: vi.fn(() => createChain(() => null)),
+            upsert: vi.fn(async (data: unknown) => {
+              mockUpsertQuotaLedgerSpy(data);
               return { error: null };
             }),
           };
@@ -132,6 +152,9 @@ describe("PayOS Gateway Utilities", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    clearFulfilledOrderCache();
+    mockUpsertSubError = null;
+    mockUpsertQuotaLedgerSpy.mockClear();
   });
 
   afterEach(() => {
@@ -806,6 +829,25 @@ describe("PayOS Gateway Utilities", () => {
         }),
       );
     });
+
+    it("refuses fulfillment for underpaid non-sandbox order even if recorded DB amount matches underpayment", async () => {
+      mockSubRecord = {
+        user_id: "recorded_owner_123",
+        tier: "pro",
+        amount: 2000,
+      };
+
+      const result = await fulfillPayosOrder({
+        orderCode: 17300000056782,
+        amount: 2000,
+        expectedAmount: 2000,
+      });
+
+      expect(result.fulfilled).toBe(false);
+      expect(result.expiresAt).toBeNull();
+      expect(mockUpsertSubSpy).not.toHaveBeenCalled();
+      expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe("POST /api/payments/payos/verify Route Verification & Anti-Hijack Guard", () => {
@@ -818,6 +860,7 @@ describe("PayOS Gateway Utilities", () => {
       mockUpsertSubSpy.mockClear();
       mockUpsertProfileSpy.mockClear();
       mockUpsertUserProfileSpy.mockClear();
+      mockUpsertQuotaLedgerSpy.mockClear();
       mockAdminUpdateSpy.mockClear();
 
       process.env.PAYOS_CLIENT_ID = "client_123";
@@ -852,7 +895,7 @@ describe("PayOS Gateway Utilities", () => {
       global.fetch = originalFetch;
     });
 
-    it("disallows unauthenticated arbitrary body.userId from fulfilling an unrecorded order", async () => {
+    it("rejects unauthenticated requests to /verify with 401 AUTH_REQUIRED", async () => {
       mockSubRecord = null;
 
       const req = new Request(
@@ -870,11 +913,10 @@ describe("PayOS Gateway Utilities", () => {
       const res = await verifyPostRoute(req);
       const json = await res.json();
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(401);
       expect(json).toEqual({
-        ok: true,
-        paid: true,
-        status: "PAID",
+        ok: false,
+        error: "AUTH_REQUIRED",
         verified: false,
         requiresAuth: true,
       });
@@ -882,17 +924,21 @@ describe("PayOS Gateway Utilities", () => {
       expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
     });
 
-    it("fulfills an existing recorded order for the recorded user even if unauthenticated caller supplies a different userId", async () => {
+    it("fulfills an existing recorded order for the authenticated recorded owner even if body supplies a different userId", async () => {
       mockSubRecord = {
         user_id: "recorded_owner_123",
         tier: "cram_pass",
       };
+      mockAuthUser = { id: "recorded_owner_123" };
 
       const req = new Request(
         "http://localhost:3000/api/payments/payos/verify",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+          },
           body: JSON.stringify({
             orderCode: 17300000012341,
             userId: "arbitrary_attacker_id",
@@ -949,7 +995,7 @@ describe("PayOS Gateway Utilities", () => {
       );
     });
 
-    it("blocks an authenticated attacker from hijacking an order already recorded to another user", async () => {
+    it("blocks an authenticated attacker from verifying or hijacking an order already recorded to another user", async () => {
       mockSubRecord = {
         user_id: "recorded_owner_123",
         tier: "cram_pass",
@@ -972,20 +1018,14 @@ describe("PayOS Gateway Utilities", () => {
       const res = await verifyPostRoute(req);
       const json = await res.json();
 
-      expect(res.status).toBe(200);
-      expect(json.ok).toBe(true);
-      expect(json.paid).toBe(true);
+      expect(res.status).toBe(403);
+      expect(json.ok).toBe(false);
       expect(json.fulfilled).toBe(false);
-
-      expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "recorded_owner_123" }),
-      );
-      expect(mockUpsertProfileSpy).not.toHaveBeenCalledWith(
-        expect.objectContaining({ id: "attacker_user_id" }),
-      );
+      expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
     });
 
     it("returns paid: false when PayOS reports status is not PAID", async () => {
+      mockAuthUser = { id: "legit_logged_in_user" };
       global.fetch = vi.fn(async () => {
         return {
           ok: true,
@@ -1009,7 +1049,10 @@ describe("PayOS Gateway Utilities", () => {
         "http://localhost:3000/api/payments/payos/verify",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+          },
           body: JSON.stringify({
             orderCode: 17300000012341,
           }),
@@ -1054,13 +1097,17 @@ describe("PayOS Gateway Utilities", () => {
         tier: "pro",
         amount: 299000, // DB expects 299k
       };
+      mockAuthUser = { id: "recorded_owner_123" };
 
       // global.fetch returns amountPaid: 69000 (attacker underpaid)
       const req = new Request(
         "http://localhost:3000/api/payments/payos/verify",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+          },
           body: JSON.stringify({
             orderCode: 17300000012341,
           }),
@@ -1082,12 +1129,16 @@ describe("PayOS Gateway Utilities", () => {
         tier: "cram_pass",
         amount: 69000,
       };
+      mockAuthUser = { id: "recorded_owner_123" };
 
       const req = new Request(
         "http://localhost:3000/api/payments/payos/verify",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+          },
           body: JSON.stringify({
             orderCode: 17300000012341,
           }),
@@ -1118,6 +1169,7 @@ describe("PayOS Gateway Utilities", () => {
       mockUpsertSubSpy.mockClear();
       mockUpsertProfileSpy.mockClear();
       mockUpsertUserProfileSpy.mockClear();
+      mockUpsertQuotaLedgerSpy.mockClear();
       mockAdminUpdateSpy.mockClear();
 
       process.env.PAYOS_CLIENT_ID = "client_123";
@@ -1208,12 +1260,19 @@ describe("PayOS Gateway Utilities", () => {
         tier: "cram_pass",
         amount: 5000,
       };
+      mockAuthUser = {
+        id: "non_admin_user_1",
+        email: "stranger@gmail.com",
+      };
 
       const req = new Request(
         "http://localhost:3000/api/payments/payos/verify",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+          },
           body: JSON.stringify({
             orderCode: 17300000012341,
             email: "stranger@gmail.com",
@@ -1232,7 +1291,7 @@ describe("PayOS Gateway Utilities", () => {
       expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
     });
 
-    it("POST /api/payments/payos/verify fulfills 5000 VND payment with 0.05 COGS ceiling for allowlisted admin user", async () => {
+    it("POST /api/payments/payos/verify fulfills 5000 VND payment with 0.05 COGS ceiling in app_metadata and user_quota_ledgers for allowlisted admin user", async () => {
       mockSubRecord = {
         user_id: "admin_user_1",
         tier: "cram_pass",
@@ -1276,6 +1335,14 @@ describe("PayOS Gateway Utilities", () => {
           status: "active",
         }),
       );
+      expect(mockUpsertQuotaLedgerSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_id: "user:admin_user_1",
+          tier: "cram_pass",
+          cogs_ceiling_usd: 0.05,
+          updated_at: expect.any(String),
+        }),
+      );
       expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           id: "admin_user_1",
@@ -1285,22 +1352,25 @@ describe("PayOS Gateway Utilities", () => {
       expect(mockAdminUpdateSpy).toHaveBeenCalledWith(
         "admin_user_1",
         expect.objectContaining({
-          user_metadata: expect.objectContaining({
+          app_metadata: expect.objectContaining({
+            tier: "cram_pass",
+            plan_id: "cram_pass",
             cogs_ceiling_usd: 0.05,
+            cogs_limit_usd: 0.05,
             is_sandbox: true,
           }),
         }),
       );
     });
 
-    it("fulfillPayosOrder directly applies 0.05 COGS ceiling and is_sandbox metadata on 5000 VND payment", async () => {
+    it("fulfillPayosOrder directly applies 0.05 COGS ceiling to user_quota_ledgers and app_metadata on 5000 VND / trial_24h payment", async () => {
       mockAuthUser = {
         id: "admin_user_1",
         email: "admin@clutcharena.vn",
       };
 
       const result = await fulfillPayosOrder({
-        orderCode: 17300000012341,
+        orderCode: 17300000012345, // ends in 5 -> trial_24h
         amount: 5000,
         fallbackUserId: "admin_user_1",
         userToken: "valid_token",
@@ -1308,16 +1378,24 @@ describe("PayOS Gateway Utilities", () => {
 
       expect(result.fulfilled).toBe(true);
       expect(result.userId).toBe("admin_user_1");
-      expect(result.tier).toBe("cram_pass");
+      expect(result.tier).toBe("trial_24h");
       expect(result.cogsCeilingUsd).toBe(0.05);
 
       expect(mockUpsertSubSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          id: "payos_17300000012341",
+          id: "payos_17300000012345",
           user_id: "admin_user_1",
           amount: 5000,
           cogs_ceiling_usd: 0.05,
           status: "active",
+        }),
+      );
+      expect(mockUpsertQuotaLedgerSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_id: "user:admin_user_1",
+          tier: "cram_pass",
+          cogs_ceiling_usd: 0.05,
+          updated_at: expect.any(String),
         }),
       );
       expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
@@ -1329,12 +1407,341 @@ describe("PayOS Gateway Utilities", () => {
       expect(mockAdminUpdateSpy).toHaveBeenCalledWith(
         "admin_user_1",
         expect.objectContaining({
-          user_metadata: expect.objectContaining({
+          app_metadata: expect.objectContaining({
+            tier: "cram_pass",
+            plan_id: "trial_24h",
             cogs_ceiling_usd: 0.05,
+            cogs_limit_usd: 0.05,
             is_sandbox: true,
           }),
         }),
       );
+    });
+  });
+
+  describe("Idempotent Order Fulfillment & Replay Defense (SA-06)", () => {
+    beforeEach(() => {
+      mockSubRecord = null;
+      mockAuthUser = null;
+      mockProfileEmail = null;
+      mockUpsertSubSpy.mockClear();
+      mockUpsertProfileSpy.mockClear();
+      mockUpsertUserProfileSpy.mockClear();
+      mockUpsertQuotaLedgerSpy.mockClear();
+      mockAdminUpdateSpy.mockClear();
+    });
+
+    it("returns immediately without extending expiresAt or mutating DB when subscription is already active in DB", async () => {
+      const fixedExpiresAt = "2026-11-12T00:00:00.000Z";
+      mockSubRecord = {
+        id: "payos_17300000012341",
+        user_id: "user_already_active",
+        tier: "cram_pass",
+        amount: 69000,
+        status: "active",
+        expires_at: fixedExpiresAt,
+      };
+
+      const result = await fulfillPayosOrder({
+        orderCode: 17300000012341,
+        amount: 69000,
+      });
+
+      expect(result.fulfilled).toBe(true);
+      expect(result.alreadyFulfilled).toBe(true);
+      expect(result.status).toBe("active");
+      expect(result.userId).toBe("user_already_active");
+      expect(result.tier).toBe("cram_pass");
+      expect(result.planId).toBe("cram_pass");
+      expect(result.expiresAt).toBe(fixedExpiresAt);
+      expect(result.expires_at).toBe(fixedExpiresAt);
+
+      expect(mockUpsertSubSpy).not.toHaveBeenCalled();
+      expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
+      expect(mockUpsertUserProfileSpy).not.toHaveBeenCalled();
+      expect(mockAdminUpdateSpy).not.toHaveBeenCalled();
+    });
+
+    it("prevents replay extension via in-memory idempotency guard when fulfillPayosOrder is called twice for the same orderCode", async () => {
+      mockAuthUser = { id: "replay_test_user" };
+
+      const firstResult = await fulfillPayosOrder({
+        orderCode: 17300000099991,
+        amount: 69000,
+        fallbackUserId: "replay_test_user",
+        userToken: "valid_token",
+      });
+
+      expect(firstResult.fulfilled).toBe(true);
+      expect(firstResult.alreadyFulfilled).toBe(false);
+      expect(mockUpsertSubSpy).toHaveBeenCalledTimes(1);
+      expect(mockUpsertProfileSpy).toHaveBeenCalledTimes(1);
+      expect(mockAdminUpdateSpy).toHaveBeenCalledTimes(1);
+
+      const secondResult = await fulfillPayosOrder({
+        orderCode: 17300000099991,
+        amount: 69000,
+        fallbackUserId: "replay_test_user",
+        userToken: "valid_token",
+      });
+
+      expect(secondResult.fulfilled).toBe(true);
+      expect(secondResult.alreadyFulfilled).toBe(true);
+      expect(secondResult.expiresAt).toBe(firstResult.expiresAt);
+      // Spy call counts must remain 1 (no duplicate writes on second invocation)
+      expect(mockUpsertSubSpy).toHaveBeenCalledTimes(1);
+      expect(mockUpsertProfileSpy).toHaveBeenCalledTimes(1);
+      expect(mockAdminUpdateSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("prevents extending expiresAt when POST /api/payments/payos/verify is replayed for the same orderCode", async () => {
+      const originalFetch = global.fetch;
+      process.env.PAYOS_CLIENT_ID = "client_123";
+      process.env.PAYOS_API_KEY = "api_key_456";
+      process.env.PAYOS_CHECKSUM_KEY = "checksum_key_789";
+
+      mockSubRecord = {
+        id: "payos_17300000088881",
+        user_id: "verify_replay_user",
+        tier: "cram_pass",
+        amount: 69000,
+      };
+      mockAuthUser = { id: "verify_replay_user" };
+
+      global.fetch = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          code: "00",
+          desc: "success",
+          data: {
+            orderCode: 17300000088881,
+            status: "PAID",
+            amount: 69000,
+            amountPaid: 69000,
+            transactions: [],
+          },
+        }),
+      })) as unknown as typeof fetch;
+
+      try {
+        const makeReq = () =>
+          new Request("http://localhost:3000/api/payments/payos/verify", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: "Bearer valid_token",
+            },
+            body: JSON.stringify({ orderCode: 17300000088881 }),
+          });
+
+        const res1 = await verifyPostRoute(makeReq());
+        const json1 = await res1.json();
+
+        expect(res1.status).toBe(200);
+        expect(json1.fulfilled).toBe(true);
+        expect(json1.alreadyFulfilled).toBe(false);
+        expect(mockUpsertSubSpy).toHaveBeenCalledTimes(1);
+
+        const res2 = await verifyPostRoute(makeReq());
+        const json2 = await res2.json();
+
+        expect(res2.status).toBe(200);
+        expect(json2.fulfilled).toBe(true);
+        expect(json2.alreadyFulfilled).toBe(true);
+        expect(json2.expiresAt).toBe(json1.expiresAt);
+        expect(mockUpsertSubSpy).toHaveBeenCalledTimes(1);
+        expect(mockUpsertProfileSpy).toHaveBeenCalledTimes(1);
+        expect(mockAdminUpdateSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+  });
+
+  describe("Origin Allowlist Validation & /api/payments/payos/create Hardening (SA-06 / SA-17)", () => {
+    const originalFetch = global.fetch;
+
+    beforeEach(() => {
+      mockSubRecord = null;
+      mockAuthUser = { id: "auth_buyer_1", email: "buyer@clutcharena.vn" };
+      mockProfileEmail = null;
+      mockUpsertSubError = null;
+      mockUpsertSubSpy.mockClear();
+      mockUpsertProfileSpy.mockClear();
+
+      process.env.PAYOS_CLIENT_ID = "client_123";
+      process.env.PAYOS_API_KEY = "api_key_456";
+      process.env.PAYOS_CHECKSUM_KEY = "checksum_key_789";
+      process.env.NEXT_PUBLIC_APP_URL = "https://clutcharena.vn";
+
+      global.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : {};
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: async () => ({
+            code: "00",
+            desc: "success",
+            data: {
+              orderCode: parsedBody.orderCode ?? 17300000012341,
+              amount: parsedBody.amount ?? 69000,
+              description: parsedBody.description ?? "CLUTCH CRAM",
+              bin: "970415",
+              accountNumber: "11336699",
+              accountName: "CLUTCH ARENA",
+              checkoutUrl: "https://pay.payos.vn/web/checkout",
+              qrCode: "000201...",
+              status: "PENDING",
+            },
+          }),
+        } as Response;
+      });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it("rejects spoofed Origin header and falls back to canonical NEXT_PUBLIC_APP_URL", async () => {
+      expect(isAllowedPayosOrigin("https://evil.example.com")).toBe(false);
+      expect(isAllowedPayosOrigin("https://clutcharena.vn")).toBe(true);
+      expect(resolveTrustedPayosOrigin("https://evil.example.com")).toBe(
+        "https://clutcharena.vn",
+      );
+
+      const req = new Request(
+        "http://localhost:3000/api/payments/payos/create",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+            Origin: "https://evil.example.com",
+          },
+          body: JSON.stringify({
+            planId: "cram_pass",
+          }),
+        },
+      );
+
+      const res = await createPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+
+      const fetchCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const sentPayload = JSON.parse(String(fetchCall[1]?.body));
+      expect(sentPayload.returnUrl).toContain("https://clutcharena.vn/?payment=success");
+      expect(sentPayload.returnUrl).not.toContain("evil.example.com");
+      expect(sentPayload.cancelUrl).toContain("https://clutcharena.vn/?payment=cancelled");
+      expect(sentPayload.cancelUrl).not.toContain("evil.example.com");
+    });
+
+    it("rejects unauthenticated POST /api/payments/payos/create requests even when body.userId is supplied", async () => {
+      mockAuthUser = null;
+      mockProfileEmail = "victim@clutcharena.vn";
+
+      const req = new Request(
+        "http://localhost:3000/api/payments/payos/create",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            planId: "cram_pass",
+            userId: "victim_profile_id",
+            email: "victim@clutcharena.vn",
+          }),
+        },
+      );
+
+      const res = await createPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(401);
+      expect(json.ok).toBe(false);
+      expect(json.error).toBe("AUTH_REQUIRED");
+      expect(mockUpsertSubSpy).not.toHaveBeenCalled();
+    });
+
+    it("returns 500 and aborts PayOS link creation if pending user_subscriptions DB insert fails", async () => {
+      mockUpsertSubError = { message: "Database connection refused" };
+
+      const req = new Request(
+        "http://localhost:3000/api/payments/payos/create",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+          },
+          body: JSON.stringify({
+            planId: "cram_pass",
+          }),
+        },
+      );
+
+      const res = await createPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(500);
+      expect(json.ok).toBe(false);
+      expect(json.error).toContain("Failed to persist pending subscription");
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("ignores non-5000 client amount in createPayosPaymentLink and POST /create, enforcing canonical plan price", async () => {
+      // 1. Direct call to createPayosPaymentLink with non-5000 client amount
+      const directResult = await createPayosPaymentLink({
+        planId: "pro",
+        origin: "https://clutcharena.vn",
+        amount: 2000,
+        userEmail: "buyer@clutcharena.vn",
+      });
+
+      expect(directResult.amount).toBe(299000);
+      expect(directResult.vietQrImageUrl).toContain("amount=299000");
+
+      // 2. HTTP POST route call with non-5000 client amount
+      const req = new Request(
+        "http://localhost:3000/api/payments/payos/create",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+          },
+          body: JSON.stringify({
+            planId: "pro",
+            amount: 2000,
+          }),
+        },
+      );
+
+      const res = await createPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+
+      expect(mockUpsertSubSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tier: "pro",
+          amount: 299000,
+        }),
+      );
+
+      const fetchCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls;
+      const fetchCall = fetchCalls[fetchCalls.length - 1];
+      expect(fetchCall).toBeDefined();
+      const sentPayload = JSON.parse(String(fetchCall[1]?.body));
+      expect(sentPayload.amount).toBe(299000);
+      expect(sentPayload.items[0].price).toBe(299000);
     });
   });
 

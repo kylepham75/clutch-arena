@@ -1,6 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   generateClutchNotePdfHtml,
+  buildPrintableNotesHtml,
+  exportClutchNotePdf,
+  exportNotesToPdf,
   formatSlideList,
   renderSlideChip,
   renderItemStatusBadge,
@@ -654,6 +657,52 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
       expect(html).toContain("Current Liabilities");
       expect(html).toContain("Other (non-cash) Current Assets");
       expect(html).toContain("Fixed Assets");
+    });
+  });
+
+  describe("Print Window Isolation & Zero Script Injection (SA-19)", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    });
+
+    it("ensures buildPrintableNotesHtml output contains zero inline <script> tags", () => {
+      const html = buildPrintableNotesHtml(SAMPLE_CLUTCH_NOTE);
+      expect(html).not.toMatch(/<script[\s>]/i);
+      expect(html).not.toContain("window.onload");
+    });
+
+    it("isolates printWindow.opener to null and triggers safe parent print in exportNotesToPdf", () => {
+      const mockDocument = {
+        open: vi.fn(),
+        write: vi.fn(),
+        close: vi.fn(),
+      };
+      const mockPrintWindow = {
+        opener: "initial-parent-opener" as any,
+        document: mockDocument,
+        focus: vi.fn(),
+        print: vi.fn(),
+      };
+      const openMock = vi.fn().mockReturnValue(mockPrintWindow);
+      vi.stubGlobal("window", {
+        open: openMock,
+        location: { origin: "http://localhost:3000" },
+      });
+
+      vi.useFakeTimers();
+      exportNotesToPdf(SAMPLE_CLUTCH_NOTE);
+
+      expect(openMock).toHaveBeenCalledWith("", "_blank");
+      expect(mockPrintWindow.opener).toBeNull();
+      expect(mockDocument.open).toHaveBeenCalled();
+      expect(mockDocument.write).toHaveBeenCalled();
+      expect(mockDocument.close).toHaveBeenCalled();
+      expect(mockPrintWindow.focus).toHaveBeenCalled();
+
+      vi.advanceTimersByTime(300);
+      expect(mockPrintWindow.print).toHaveBeenCalled();
     });
   });
 });

@@ -79,15 +79,25 @@ export async function readUpload(request: Request, signal: AbortSignal) {
       "INVALID_OPTIONS",
       "Provide one options field containing a JSON object.",
     );
+  let options;
   try {
-    const options = ingestionOptionsSchema.parse(
+    options = ingestionOptionsSchema.parse(
       optionFields.length ? JSON.parse(optionFields[0] as string) : {},
     );
-    return { file: files[0], options };
   } catch {
     throw new IngestionError(
       "INVALID_OPTIONS",
       "Options must be valid JSON: operation preview/generate, mode exact/variants, questionCount 1–30, language en/vi, and focus up to 1,000 characters.",
     );
   }
+
+  if (options.rescanPages && options.rescanPages.length > 5) {
+    throw new IngestionError(
+      "INVALID_OPTIONS",
+      "At most 5 pages can be rescanned at once.",
+      400,
+    );
+  }
+
+  return { file: files[0], options };
 }

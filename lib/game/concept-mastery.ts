@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type { Attempt } from "./reducer";
-import type { StudyPack, QuestionItem } from "@/lib/schemas/question";
+import {
+  type StudyPack,
+  type QuestionItem,
+  isPrototypePollutionKey,
+} from "@/lib/schemas/question";
 
 export type MasteryLevel = "mastered" | "learning" | "weak" | "untested";
 
@@ -18,21 +22,24 @@ export type ConceptStats = z.infer<typeof conceptStatsSchema>;
 const STORAGE_KEY = "clutch:mastery:v1";
 
 export function readMasteryStore(): Record<string, ConceptStats> {
-  if (typeof window === "undefined") return {};
+  if (typeof window === "undefined") return Object.create(null);
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
+    if (!raw) return Object.create(null);
     const parsed = JSON.parse(raw);
-    const store: Record<string, ConceptStats> = {};
-    for (const [key, val] of Object.entries(parsed)) {
-      const res = conceptStatsSchema.safeParse(val);
-      if (res.success) {
-        store[key] = res.data;
+    const store: Record<string, ConceptStats> = Object.create(null);
+    if (parsed && typeof parsed === "object") {
+      for (const [key, val] of Object.entries(parsed)) {
+        if (isPrototypePollutionKey(key)) continue;
+        const res = conceptStatsSchema.safeParse(val);
+        if (res.success) {
+          store[key] = res.data;
+        }
       }
     }
     return store;
   } catch {
-    return {};
+    return Object.create(null);
   }
 }
 
@@ -47,15 +54,26 @@ export function saveMasteryStore(store: Record<string, ConceptStats>): void {
 }
 
 export function normalizeTopicKey(topic: string): string {
-  return topic.trim().toLowerCase();
+  if (isPrototypePollutionKey(topic)) {
+    throw new Error(
+      `Invalid topic key: prototype pollution key "${topic}" is forbidden.`,
+    );
+  }
+  const normalized = topic.trim().toLowerCase();
+  if (isPrototypePollutionKey(normalized)) {
+    throw new Error(
+      `Invalid topic key: prototype pollution key "${topic}" is forbidden.`,
+    );
+  }
+  return normalized;
 }
 
 export function recordConceptAttempt(
   topic: string,
   correct: boolean,
 ): ConceptStats {
-  const store = readMasteryStore();
   const key = normalizeTopicKey(topic);
+  const store = readMasteryStore();
   const existing = store[key] || {
     topic: topic.trim(),
     totalAttempts: 0,
@@ -86,8 +104,10 @@ export function recordRunMastery(
   const store = readMasteryStore();
 
   for (const attempt of attempts) {
+    if (isPrototypePollutionKey(attempt.id)) continue;
     const meta = pack.metadata[attempt.id];
     const topic = meta?.topic || attempt.id;
+    if (isPrototypePollutionKey(topic)) continue;
     const key = normalizeTopicKey(topic);
 
     const existing = store[key] || {
@@ -153,20 +173,30 @@ export function getWeakSpotsForPack(
   score: number;
   level: MasteryLevel;
 }[] {
-  const list = pack.questions.map((q) => {
-    const meta = pack.metadata[q.id];
-    const topic = meta?.topic || q.id;
-    const key = normalizeTopicKey(topic);
-    const stats = store[key] || null;
-    const { score, level } = getMasteryLevel(stats);
-    return {
-      questionId: q.id,
-      topic,
-      stats,
-      score,
-      level,
-    };
-  });
+  const list = pack.questions
+    .filter((q) => !isPrototypePollutionKey(q.id))
+    .map((q) => {
+      const meta = pack.metadata[q.id];
+      const topic = meta?.topic || q.id;
+      if (isPrototypePollutionKey(topic)) return null;
+      const key = normalizeTopicKey(topic);
+      const stats = store[key] || null;
+      const { score, level } = getMasteryLevel(stats);
+      return {
+        questionId: q.id,
+        topic,
+        stats,
+        score,
+        level,
+      };
+    })
+    .filter(Boolean) as {
+      questionId: string;
+      topic: string;
+      stats: ConceptStats | null;
+      score: number;
+      level: MasteryLevel;
+    }[];
 
   // Filter to items that are either explicitly "weak" or have low accuracy (< 70%)
   return list.filter((item) => item.level === "weak");
@@ -177,20 +207,24 @@ export function createWeakSpotSprintPack(
   targetCount = 5,
   store: Record<string, ConceptStats> = readMasteryStore(),
 ): StudyPack {
-  const scoredQuestions = basePack.questions.map((q) => {
-    const meta = basePack.metadata[q.id];
-    const topic = meta?.topic || q.id;
-    const key = normalizeTopicKey(topic);
-    const stats = store[key] || null;
-    const { score, level } = getMasteryLevel(stats);
+  const scoredQuestions = basePack.questions
+    .filter((q) => !isPrototypePollutionKey(q.id))
+    .map((q) => {
+      const meta = basePack.metadata[q.id];
+      const topic = meta?.topic || q.id;
+      if (isPrototypePollutionKey(topic)) return null;
+      const key = normalizeTopicKey(topic);
+      const stats = store[key] || null;
+      const { score, level } = getMasteryLevel(stats);
 
-    // Sorting weight: weak spots first, then lowest accuracy, then untested
-    let weight = score;
-    if (level === "weak") weight -= 100;
-    else if (level === "untested") weight = 40; // prioritize untested before mastered
+      // Sorting weight: weak spots first, then lowest accuracy, then untested
+      let weight = score;
+      if (level === "weak") weight -= 100;
+      else if (level === "untested") weight = 40; // prioritize untested before mastered
 
-    return { question: q, weight, level };
-  });
+      return { question: q, weight, level };
+    })
+    .filter(Boolean) as { question: QuestionItem; weight: number; level: MasteryLevel }[];
 
   // Sort lowest weight first (highest need for practice)
   scoredQuestions.sort((a, b) => a.weight - b.weight);
@@ -199,8 +233,9 @@ export function createWeakSpotSprintPack(
     .slice(0, Math.min(targetCount, basePack.questions.length))
     .map((item) => item.question);
 
-  const newMetadata: StudyPack["metadata"] = {};
+  const newMetadata: StudyPack["metadata"] = Object.create(null);
   for (const q of selectedQuestions) {
+    if (isPrototypePollutionKey(q.id)) continue;
     if (basePack.metadata[q.id]) {
       newMetadata[q.id] = basePack.metadata[q.id];
     }
@@ -211,7 +246,7 @@ export function createWeakSpotSprintPack(
     title: `${basePack.title} · Comeback Sprint`,
     subtitle: `Targeted practice focusing on ${selectedQuestions.length} concepts needing review`,
     questions: selectedQuestions,
-    metadata: newMetadata,
+    metadata: { ...newMetadata },
   };
 }
 
@@ -232,7 +267,9 @@ export async function syncMasteryStoreToCloud(
     } = await supabase.auth.getUser();
     if (!user) return false;
 
-    const entries = Object.values(store);
+    const entries = Object.entries(store)
+      .filter(([k]) => !isPrototypePollutionKey(k))
+      .map(([, entry]) => entry);
     if (entries.length === 0) return true;
 
     const rows = entries.map((entry) => ({
@@ -274,8 +311,9 @@ export async function fetchCloudMastery(): Promise<Record<string, ConceptStats>>
 
     if (error || !data) return readMasteryStore();
 
-    const store: Record<string, ConceptStats> = {};
+    const store: Record<string, ConceptStats> = Object.create(null);
     for (const row of data) {
+      if (isPrototypePollutionKey(row.topic)) continue;
       const key = normalizeTopicKey(row.topic);
       store[key] = {
         topic: row.topic,
@@ -307,7 +345,9 @@ export async function migrateGuestMasteryToUser(
     if (!supabase) return {};
 
     const localStore = readMasteryStore();
-    const entries = Object.values(localStore);
+    const entries = Object.entries(localStore)
+      .filter(([k]) => !isPrototypePollutionKey(k))
+      .map(([, entry]) => entry);
     if (entries.length > 0) {
       const rows = entries.map((entry) => ({
         user_id: userId,

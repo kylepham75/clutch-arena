@@ -1,3 +1,4 @@
+import { NextResponse } from "next/server";
 import {
   getRoom,
   getClientState,
@@ -8,17 +9,45 @@ import {
 
 export const dynamic = "force-dynamic";
 
+const MAX_ROOM_SUBSCRIBERS = 100;
+
 export async function GET(
   req: Request,
   props: { params: Promise<{ code: string }> },
 ) {
   const { code } = await props.params;
+  if (!/^[A-Z0-9]{6}$/i.test(code)) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: {
+          code: "INVALID_ROOM_CODE",
+          message: "Invalid arena room code.",
+        },
+      },
+      { status: 400 },
+    );
+  }
+
   const room = getRoom(code);
   if (!room) {
     return new Response(JSON.stringify({ error: "Room not found" }), {
       status: 404,
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  if (room.subscribers.size >= MAX_ROOM_SUBSCRIBERS) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: {
+          code: "TOO_MANY_SUBSCRIBERS",
+          message: "Room subscriber limit exceeded.",
+        },
+      }),
+      { status: 429, headers: { "Content-Type": "application/json" } },
+    );
   }
 
   const encoder = new TextEncoder();

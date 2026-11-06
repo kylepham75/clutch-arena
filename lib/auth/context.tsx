@@ -286,6 +286,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearSessionLibrary();
     clearSessionHistory();
     clearSessionMastery();
+    clearStoredUserTier();
     setUser(null);
     setSession(null);
   }, []);

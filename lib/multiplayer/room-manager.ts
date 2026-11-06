@@ -19,6 +19,7 @@ import type { QuestionItem, StudyPack } from "@/lib/schemas/question";
 import { getMaxArenaPlayersForTier, type UserTier } from "@/lib/pricing/tiers";
 
 export const IDLE_ROOM_TIMEOUT_MS = 90_000; // Auto-close idle rooms after 90 seconds
+export const MAX_ACTIVE_ROOMS = 200;
 
 export type ServerRoom = {
   code: string;
@@ -34,6 +35,7 @@ export type ServerRoom = {
   feedbackDeadline: number;
   countdownEndsAt: number;
   players: Record<string, ArenaPlayer>;
+  playerTokens: Record<string, string>;
   botTimeouts: NodeJS.Timeout[];
   roundTimeout: NodeJS.Timeout | null;
   feedbackTimeout: NodeJS.Timeout | null;
@@ -87,8 +89,22 @@ export function resetRoomIdleTimeout(room: ServerRoom) {
 
 export function generateRoomCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const len = 6;
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.getRandomValues === "function"
+  ) {
+    const bytes = new Uint8Array(len);
+    crypto.getRandomValues(bytes);
+    let code = "";
+    for (let i = 0; i < len; i++) {
+      code += chars.charAt(bytes[i] % chars.length);
+    }
+    return code;
+  }
+
   let code = "";
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < len; i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return code;
@@ -96,6 +112,24 @@ export function generateRoomCode(): string {
 
 export function getRoom(code: string): ServerRoom | null {
   return rooms.get(code.toUpperCase()) ?? null;
+}
+
+export function getPlayerToken(code: string, playerId: string): string | null {
+  const room = getRoom(code);
+  if (!room) return null;
+  return room.playerTokens?.[playerId] ?? null;
+}
+
+export function verifyPlayerToken(
+  code: string,
+  playerId: string,
+  token?: string | null,
+): boolean {
+  const room = getRoom(code);
+  if (!room || !room.players[playerId]) return false;
+  const expected = room.playerTokens?.[playerId];
+  if (!expected || !token) return false;
+  return expected === token;
 }
 
 export function getAllRooms(): ArenaRoomState[] {
@@ -173,6 +207,55 @@ export function getClientState(
     }
   }
 
+  const clientPlayers: Record<string, ArenaPlayer> =
+    room.status === "answering"
+      ? Object.fromEntries(
+          Object.entries(room.players).map(([id, p]) => {
+            const isSelf = Boolean(_forPlayerId && _forPlayerId === p.id);
+            if (!p.lastAnswer) {
+              return [
+                id,
+                {
+                  ...p,
+                  lastAnswer: null,
+                },
+              ];
+            }
+
+            const maskedScore = p.score - (p.lastAnswer.points || 0);
+            const maskedLives = !p.lastAnswer.correct ? p.lives + 1 : p.lives;
+
+            let preStreak = 0;
+            for (let q = room.currentQuestionIndex - 1; q >= 0; q--) {
+              if (room.roundHistory?.[q]?.[p.id]?.correct) {
+                preStreak++;
+              } else {
+                break;
+              }
+            }
+            const maskedStreak = preStreak;
+            const maskedStatus = p.status === "eliminated" ? "submitted" : p.status;
+
+            return [
+              id,
+              {
+                ...p,
+                score: isSelf ? p.score : maskedScore,
+                lives: isSelf ? p.lives : maskedLives,
+                streak: isSelf ? p.streak : maskedStreak,
+                status: isSelf ? p.status : maskedStatus,
+                lastAnswer: {
+                  selected: isSelf ? p.lastAnswer.selected : null,
+                  correct: null,
+                  points: 0,
+                  answeredAtMs: p.lastAnswer.answeredAtMs,
+                },
+              },
+            ];
+          }),
+        )
+      : room.players;
+
   return {
     code: room.code,
     title: room.title,
@@ -183,7 +266,7 @@ export function getClientState(
     roundDeadline: room.roundDeadline,
     feedbackDeadline: room.feedbackDeadline,
     countdownEndsAt: room.countdownEndsAt,
-    players: room.players,
+    players: clientPlayers,
     currentQuestion,
     revealedFeedback,
     createdAt: room.createdAt,
@@ -205,6 +288,47 @@ export function createRoom(params: {
   maxPlayers?: number;
   hostTier?: UserTier;
 }): { room: ServerRoom; hostPlayer: ArenaPlayer } {
+  if (rooms.size >= MAX_ACTIVE_ROOMS) {
+    const now = Date.now();
+    for (const [existingCode, existingRoom] of rooms.entries()) {
+      if (
+        existingRoom.status === "podium" ||
+        now - existingRoom.lastActiveAt >= IDLE_ROOM_TIMEOUT_MS
+      ) {
+        deleteRoom(existingCode);
+      }
+    }
+    while (rooms.size >= MAX_ACTIVE_ROOMS) {
+      let oldestNonActiveCode: string | null = null;
+      let oldestNonActiveTime = Infinity;
+
+      for (const [existingCode, existingRoom] of rooms.entries()) {
+        const isNonActive =
+          existingRoom.status === "podium" || existingRoom.status === "lobby";
+        if (isNonActive && existingRoom.lastActiveAt < oldestNonActiveTime) {
+          oldestNonActiveTime = existingRoom.lastActiveAt;
+          oldestNonActiveCode = existingCode;
+        }
+      }
+
+      if (oldestNonActiveCode) {
+        deleteRoom(oldestNonActiveCode);
+        continue;
+      }
+
+      let oldestCode: string | null = null;
+      let oldestTime = Infinity;
+      for (const [existingCode, existingRoom] of rooms.entries()) {
+        if (existingRoom.lastActiveAt < oldestTime) {
+          oldestTime = existingRoom.lastActiveAt;
+          oldestCode = existingCode;
+        }
+      }
+      if (!oldestCode) break;
+      deleteRoom(oldestCode);
+    }
+  }
+
   let code = generateRoomCode();
   while (rooms.has(code)) {
     code = generateRoomCode();
@@ -224,6 +348,7 @@ export function createRoom(params: {
     status: "waiting",
     lastAnswer: null,
   };
+  const hostToken = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
 
   const pack = params.pack || mockMicroeconomics;
   const hostTier: UserTier = params.hostTier || "contender";
@@ -259,6 +384,9 @@ export function createRoom(params: {
     countdownEndsAt: 0,
     players: {
       [hostPlayer.id]: hostPlayer,
+    },
+    playerTokens: {
+      [hostPlayer.id]: hostToken,
     },
     botTimeouts: [],
     roundTimeout: null,
@@ -309,6 +437,7 @@ export function joinRoom(
   };
 
   room.players[player.id] = player;
+  room.playerTokens[player.id] = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
   resetRoomIdleTimeout(room);
   broadcastRoom(room);
   return player;
@@ -373,6 +502,7 @@ export function togglePlayerReady(code: string, playerId: string): boolean {
   if (!player) return false;
 
   player.isReady = !player.isReady;
+  resetRoomIdleTimeout(room);
   broadcastRoom(room);
   return true;
 }
@@ -384,6 +514,7 @@ export function startMatch(code: string, hostId: string): boolean {
 
   room.status = "countdown";
   room.countdownEndsAt = Date.now() + 3_000;
+  resetRoomIdleTimeout(room);
   broadcastRoom(room);
 
   if (room.countdownTimeout) clearTimeout(room.countdownTimeout);
@@ -396,6 +527,7 @@ export function startMatch(code: string, hostId: string): boolean {
 
 export function startRound(room: ServerRoom, questionIndex: number) {
   clearTimers(room);
+  resetRoomIdleTimeout(room);
 
   room.status = "answering";
   room.currentQuestionIndex = questionIndex;
@@ -454,6 +586,7 @@ export function submitAnswer(
   code: string,
   playerId: string,
   selectedIndex: number,
+  answeredAtMs?: number,
 ): boolean {
   const room = getRoom(code);
   if (!room || room.status !== "answering") return false;
@@ -472,7 +605,7 @@ export function submitAnswer(
     : qItem.correctIndex;
 
   const isCorrect = selectedIndex === correctIdx;
-  const answeredAtMs = Date.now();
+  const answerTime = answeredAtMs ?? Date.now();
 
   let earnedPoints = 0;
   if (isCorrect) {
@@ -491,10 +624,11 @@ export function submitAnswer(
     selected: selectedIndex,
     correct: isCorrect,
     points: earnedPoints,
-    answeredAtMs,
+    answeredAtMs: answerTime,
   };
 
   player.status = player.lives === 0 ? "eliminated" : "submitted";
+  resetRoomIdleTimeout(room);
 
   // Check if all active players have submitted
   const activePlayers = Object.values(room.players).filter((p) => p.lives > 0);

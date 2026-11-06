@@ -6,10 +6,12 @@ import {
   checkRateLimit,
   getClientIp,
   computeContentHash,
+  computeFileSha256,
   getSharedDeckCache,
   setSharedDeckCache,
   checkAndReserveDeckQuota,
   recordDeckGenerationCogs,
+  rollbackDeckQuotaReservation,
 } from "@/lib/rate-limit";
 import { parseSlideDeck } from "@/lib/notes/parse-slides";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
@@ -24,6 +26,7 @@ import type { SourceBlock } from "@/lib/schemas/ingestion";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
+const NOTES_SHARED_CACHE_PIPELINE_VERSION = "notes-v1";
 
 function getQuotaExceededMessage(reason?: string): string {
   switch (reason) {
@@ -42,6 +45,12 @@ function getQuotaExceededMessage(reason?: string): string {
 
 export async function POST(request: NextRequest) {
   const requestId = randomUUID();
+  let quotaReserved = false;
+  let reservedActor: string | null = null;
+  let reservedTier: any = null;
+  let reservedContentHash: string | null = null;
+  let reservedCost = 0.02;
+  let reservedIsRegeneration = false;
   const jsonResponse = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
     Response.json(body, {
       status,
@@ -93,12 +102,34 @@ export async function POST(request: NextRequest) {
       proAuth.user?.id ||
       `ip:${getClientIp(request)}`;
     const isTest = process.env.NODE_ENV === "test" && !request.headers.get("x-enforce-rate-limit");
+    const effectiveTier = (proAuth.tier as any) || "pro";
 
-    if (!isTest) {
+    // 4. Content-length pre-check & parse incoming payload (multipart file or JSON)
+    const rawContentLength = request.headers.get("content-length");
+    if (rawContentLength) {
+      const parsedLength = parseInt(rawContentLength, 10);
+      if (!isNaN(parsedLength) && parsedLength > MAX_FILE_BYTES) {
+        return jsonResponse(
+          {
+            ok: false,
+            error: {
+              code: "FILE_TOO_LARGE",
+              message: `Slide deck exceeds the maximum allowed size of 25MB (file size: ${(parsedLength / (1024 * 1024)).toFixed(1)}MB).`,
+            },
+          },
+          413,
+        );
+      }
+    }
+
+    const contentType = request.headers.get("content-type") || "";
+    const isMultipart = contentType.includes("multipart/form-data");
+
+    if (!isMultipart && !isTest) {
       const rateResult = await checkRateLimit(
         userIdentifier,
         "notes",
-        (proAuth.tier as any) || "pro",
+        effectiveTier,
       );
       if (!rateResult.allowed) {
         return jsonResponse(
@@ -118,8 +149,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 4. Parse incoming payload (multipart file or JSON)
-    const contentType = request.headers.get("content-type") || "";
     let fileName = "lecture-slides.pptx";
     let slideCount = 1;
     let sources: SourceBlock[] = [];
@@ -159,6 +188,55 @@ export async function POST(request: NextRequest) {
           },
           413,
         );
+      }
+
+      // a. Pre-check rate limit / quota eligibility before expensive slide parsing
+      const rateResult = await checkRateLimit(
+        userIdentifier,
+        "notes",
+        effectiveTier,
+      );
+      if (!rateResult.allowed) {
+        return jsonResponse(
+          {
+            ok: false,
+            error: {
+              code: "RATE_LIMIT_EXCEEDED",
+              message:
+                "Daily limit reached: up to 30 lecture slide conversions per day. Your quota will reset in 24 hours.",
+              reset: rateResult.reset,
+              retryAfter: rateResult.retryAfter,
+            },
+          },
+          429,
+          { "Retry-After": (rateResult.retryAfter ?? 30).toString() },
+        );
+      }
+
+      // b. Pre-check shared deck cache using fileSha256 before parsing slides
+      const fileBytes = Buffer.from(await file.arrayBuffer());
+      const fileSha256 = computeFileSha256(fileBytes);
+      const normalizedFocus = (focus || "").trim().toLowerCase();
+      const focusHash = normalizedFocus
+        ? createHash("sha256").update(normalizedFocus).digest("hex").slice(0, 16)
+        : "";
+
+      const cachedFromStore = await getSharedDeckCache({
+        contentHash: "",
+        language: "en",
+        mode: "notes",
+        focusHash,
+        pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
+        fileSha256,
+      });
+
+      if (cachedFromStore?.clutchNote) {
+        return jsonResponse({
+          ok: true,
+          note: cachedFromStore.clutchNote,
+          warnings: [],
+          cached: true,
+        });
       }
 
       parsedDeck = await parseSlideDeck(file);
@@ -335,7 +413,6 @@ export async function POST(request: NextRequest) {
       : "";
     const enforceQuota =
       !isTest || Boolean(request.headers.get("x-enforce-quota"));
-    const effectiveTier = (proAuth.tier as any) || "pro";
     const reservedCostUsd = 0.02;
 
     if (enforceQuota) {
@@ -344,7 +421,7 @@ export async function POST(request: NextRequest) {
         language: "en",
         mode: "notes",
         focusHash,
-        pipelineVersion: "notes-v1",
+        pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
         fileSha256: parsedDeck?.fileSha256 ?? null,
       };
 
@@ -390,6 +467,15 @@ export async function POST(request: NextRequest) {
           { "Retry-After": "30" },
         );
       }
+
+      if (quotaResult.reserved || quotaResult.creditConsumed || quotaResult.isRegeneration) {
+        quotaReserved = true;
+        reservedActor = userIdentifier;
+        reservedTier = effectiveTier;
+        reservedContentHash = contentHash;
+        reservedCost = reservedCostUsd;
+        reservedIsRegeneration = Boolean(quotaResult.isRegeneration);
+      }
     }
 
     // 6. Generate Clutch Note via Academic Synthesis Engine
@@ -414,16 +500,24 @@ export async function POST(request: NextRequest) {
         reservedCostUsd,
         reservedCostUsd,
       );
-      await setSharedDeckCache({
-        contentHash,
-        fileSha256: parsedDeck?.fileSha256 ?? null,
-        language: "en",
-        mode: "notes",
-        focusHash,
-        pipelineVersion: "notes-v1",
-        questionPool: [],
-        clutchNote: note,
-      });
+      quotaReserved = false;
+      const validFileSha256 =
+        typeof parsedDeck?.fileSha256 === "string" && parsedDeck.fileSha256.trim().length > 0
+          ? parsedDeck.fileSha256.trim()
+          : null;
+
+      if (validFileSha256) {
+        await setSharedDeckCache({
+          contentHash,
+          fileSha256: validFileSha256,
+          language: "en",
+          mode: "notes",
+          focusHash,
+          pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
+          questionPool: [],
+          clutchNote: note,
+        });
+      }
     }
 
     return jsonResponse({
@@ -432,6 +526,32 @@ export async function POST(request: NextRequest) {
       warnings,
     });
   } catch (error) {
+    if (quotaReserved && reservedActor && reservedContentHash) {
+      try {
+        if (reservedIsRegeneration) {
+          await rollbackDeckQuotaReservation(
+            reservedActor,
+            reservedTier,
+            reservedContentHash,
+            reservedCost,
+            reservedIsRegeneration,
+          );
+        } else {
+          await rollbackDeckQuotaReservation(
+            reservedActor,
+            reservedTier,
+            reservedContentHash,
+            reservedCost,
+          );
+        }
+      } catch (rollbackError) {
+        console.error(
+          "[ClutchNotesAPI] Failed to rollback deck quota reservation:",
+          rollbackError,
+        );
+      }
+    }
+
     if (error instanceof IngestionError) {
       return jsonResponse(
         {
@@ -451,10 +571,7 @@ export async function POST(request: NextRequest) {
         ok: false,
         error: {
           code: "SYNTHESIS_FAILED",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Failed to synthesize lecture slides into notes. Please try again.",
+          message: "Failed to synthesize lecture slides into notes. Please try again.",
         },
       },
       500,

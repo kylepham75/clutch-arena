@@ -10,6 +10,7 @@ import {
 } from "@/lib/supabase/server";
 
 export type PayosPlanId =
+  | "trial_24h"
   | "cram_pass"
   | "pro"
   | "pro_monthly"
@@ -18,6 +19,122 @@ export type PayosPlanId =
   | "tutor_guild";
 
 export const SANDBOX_TEST_AMOUNT_VND = 5000;
+export const SANDBOX_COGS_CAP_USD = 0.05;
+
+const fulfilledOrderCache = new Map<
+  number,
+  {
+    userId: string;
+    tier: PayosPlanId;
+    expiresAt: string;
+    amount: number;
+    cogsCeilingUsd?: number;
+  }
+>();
+
+/**
+ * Clears the in-memory fulfilled order cache (used primarily in test harnesses).
+ */
+export function clearFulfilledOrderCache(): void {
+  fulfilledOrderCache.clear();
+}
+
+/**
+ * Returns the canonical configured application origin.
+ */
+export function getCanonicalAppOrigin(): string {
+  const candidates = [
+    process.env.NEXT_PUBLIC_APP_URL,
+    process.env.APP_URL,
+    process.env.VERCEL_URL
+      ? process.env.VERCEL_URL.trim().startsWith("http")
+        ? process.env.VERCEL_URL.trim()
+        : `https://${process.env.VERCEL_URL.trim()}`
+      : undefined,
+  ];
+
+  for (const raw of candidates) {
+    if (raw && raw.trim()) {
+      try {
+        return new URL(raw.trim()).origin;
+      } catch {
+        // Ignore malformed environment URL
+      }
+    }
+  }
+
+  return "http://localhost:3000";
+}
+
+/**
+ * Builds the explicit allowlist of trusted application origins.
+ */
+export function getAllowedPayosOrigins(): Set<string> {
+  const allowed = new Set<string>();
+  const envCandidates = [
+    process.env.NEXT_PUBLIC_APP_URL,
+    process.env.APP_URL,
+    process.env.VERCEL_URL
+      ? process.env.VERCEL_URL.trim().startsWith("http")
+        ? process.env.VERCEL_URL.trim()
+        : `https://${process.env.VERCEL_URL.trim()}`
+      : undefined,
+  ];
+
+  for (const raw of envCandidates) {
+    if (raw && raw.trim()) {
+      try {
+        allowed.add(new URL(raw.trim()).origin);
+      } catch {
+        // Ignore malformed environment URL
+      }
+    }
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    allowed.add("http://localhost:3000");
+    allowed.add("http://127.0.0.1:3000");
+  }
+
+  return allowed;
+}
+
+/**
+ * Checks whether a candidate origin is in the explicit application origin allowlist.
+ */
+export function isAllowedPayosOrigin(candidateOrigin?: string | null): boolean {
+  if (!candidateOrigin || typeof candidateOrigin !== "string") {
+    return false;
+  }
+  try {
+    const normalized = new URL(candidateOrigin.trim()).origin;
+    return getAllowedPayosOrigins().has(normalized);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates a candidate origin against the trusted allowlist and falls back
+ * to the canonical configured app origin when missing or untrusted.
+ */
+export function resolveTrustedPayosOrigin(
+  candidateOrigin?: string | null,
+): string {
+  const canonical = getCanonicalAppOrigin();
+  if (!candidateOrigin || typeof candidateOrigin !== "string") {
+    return canonical;
+  }
+  try {
+    const normalized = new URL(candidateOrigin.trim()).origin;
+    if (getAllowedPayosOrigins().has(normalized)) {
+      return normalized;
+    }
+  } catch {
+    // Fall back to canonical origin
+  }
+  return canonical;
+}
 
 /**
  * Checks whether the given email is in the admin test allowlist.
@@ -43,6 +160,7 @@ export function isAdminTestEmail(email?: string | null): boolean {
 }
 
 export const EXPECTED_PLAN_AMOUNTS_VND: Record<PayosPlanId, number> = {
+  trial_24h: 5_000,
   cram_pass: 69_000,
   pro: 299_000,
   pro_semester: 299_000,
@@ -54,7 +172,7 @@ export const EXPECTED_PLAN_AMOUNTS_VND: Record<PayosPlanId, number> = {
 export function getPlanBillingCycle(
   planId: PayosPlanId,
 ): "one_time" | "semester" | "monthly" {
-  if (planId === "cram_pass") {
+  if (planId === "cram_pass" || planId === "trial_24h") {
     return "one_time";
   }
   if (planId === "pro" || planId === "pro_semester") {
@@ -73,13 +191,20 @@ export function getPlanBillingCycle(
 export function mapPlanToUserTier(
   planId: PayosPlanId,
 ): "cram_pass" | "pro" | "tutor" {
-  if (planId === "cram_pass") {
+  if (planId === "cram_pass" || planId === "trial_24h") {
     return "cram_pass";
   }
   if (planId === "tutor" || planId === "tutor_guild") {
     return "tutor";
   }
   return "pro";
+}
+
+export function resolvePayosTierExpiration(planId: PayosPlanId): string | null {
+  if (planId === "trial_24h") {
+    return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  }
+  return calculateTierExpiration(planId);
 }
 
 export interface CreatePayosPaymentLinkInput {
@@ -122,9 +247,13 @@ export interface FulfillPayosOrderParams {
 
 export interface FulfillPayosOrderResult {
   fulfilled: boolean;
+  alreadyFulfilled?: boolean;
+  status?: string;
   userId: string | null;
   tier: PayosPlanId | null;
+  planId?: PayosPlanId | null;
   expiresAt: string | null;
+  expires_at?: string | null;
   cogsCeilingUsd?: number;
 }
 
@@ -166,6 +295,8 @@ export function generatePayosOrderCode(planId: PayosPlanId): number {
     planSuffix = 3;
   } else if (planId === "tutor" || planId === "tutor_guild") {
     planSuffix = 4;
+  } else if (planId === "trial_24h") {
+    planSuffix = 5;
   } else {
     planSuffix = 1;
   }
@@ -179,6 +310,7 @@ export function generatePayosOrderCode(planId: PayosPlanId): number {
  * - orderCode % 10 === 2 -> "pro"
  * - orderCode % 10 === 3 -> "pro_monthly"
  * - orderCode % 10 === 4 -> "tutor"
+ * - orderCode % 10 === 5 -> "trial_24h"
  * - amount === 5000 or 39000 or 69000 -> "cram_pass"
  * - amount === 109000 -> "pro_monthly"
  * - amount === 149000 or 299000 -> "pro"
@@ -200,6 +332,9 @@ export function decodePlanFromOrderCode(
   }
   if (lastDigit === 4) {
     return "tutor";
+  }
+  if (lastDigit === 5) {
+    return "trial_24h";
   }
   if (amount === 5000 || amount === 39000 || amount === 69000) {
     return "cram_pass";
@@ -231,6 +366,8 @@ export function buildPayosDescription(
     prefix = "CLUTCH MONTHLY";
   } else if (planId === "tutor" || planId === "tutor_guild") {
     prefix = "CLUTCH TUTOR";
+  } else if (planId === "trial_24h") {
+    prefix = "CLUTCH TRIAL";
   }
   const desc = `${prefix} ${suffix}`.toUpperCase().replace(/[^A-Z0-9 ]/g, "").trim();
   return desc.slice(0, 25);
@@ -351,19 +488,22 @@ export async function createPayosPaymentLink(
       ? "pro"
       : input.planId === "tutor_guild"
         ? "tutor"
-        : input.planId;
+        : input.planId === "trial_24h"
+          ? "cram_pass"
+          : input.planId;
 
   const plan = PRICING_PLANS.find((p) => p.id === canonicalPlanId);
   if (!plan) {
     throw new Error(`Plan "${input.planId}" not found in PRICING_PLANS`);
   }
 
-  const effectiveAmount =
-    typeof input.amount === "number" && input.amount > 0
-      ? input.amount
-      : (EXPECTED_PLAN_AMOUNTS_VND[input.planId] ?? plan.priceVnd);
+  const isSandbox =
+    input.amount === SANDBOX_TEST_AMOUNT_VND || input.planId === "trial_24h";
+  const effectiveAmount = isSandbox
+    ? SANDBOX_TEST_AMOUNT_VND
+    : (EXPECTED_PLAN_AMOUNTS_VND[input.planId] ?? plan.priceVnd);
 
-  if (effectiveAmount === SANDBOX_TEST_AMOUNT_VND || input.amount === SANDBOX_TEST_AMOUNT_VND) {
+  if (isSandbox) {
     let userEmail: string | null = input.userEmail ?? null;
     const supabase = getSupabaseServerClient(input.userToken);
 
@@ -427,11 +567,12 @@ export async function createPayosPaymentLink(
   }
 
   const cycle = getPlanBillingCycle(input.planId);
+  const trustedOrigin = resolveTrustedPayosOrigin(input.origin);
 
   const orderCode = generatePayosOrderCode(input.planId);
   const description = buildPayosDescription(input.planId, orderCode);
-  const returnUrl = `${input.origin}/?payment=success&orderCode=${orderCode}`;
-  const cancelUrl = `${input.origin}/?payment=cancelled&orderCode=${orderCode}`;
+  const returnUrl = `${trustedOrigin}/?payment=success&orderCode=${orderCode}`;
+  const cancelUrl = `${trustedOrigin}/?payment=cancelled&orderCode=${orderCode}`;
 
   const signature = computePayosPaymentSignature({
     amount: effectiveAmount,
@@ -442,26 +583,27 @@ export async function createPayosPaymentLink(
   });
 
   if (input.userId) {
-    try {
-      const supabase = getSupabaseServerClient(input.userToken);
-      if (supabase) {
-        const { error: upsertErr } = await supabase.from("user_subscriptions").upsert({
-          id: `payos_${orderCode}`,
-          user_id: input.userId,
-          tier: input.planId,
-          cycle,
-          amount: effectiveAmount,
-          currency: "VND",
-          payment_method: "payos_vietqr",
-          status: "pending",
-          expires_at: calculateTierExpiration(input.planId),
-        });
-        if (upsertErr) {
-          console.error("[PayOS] Failed to insert pending subscription:", upsertErr);
-        }
+    const supabase = getSupabaseServerClient(input.userToken);
+    if (!supabase && isSupabaseServerConfigured()) {
+      throw new Error("Failed to initialize database client for pending order persistence");
+    }
+    if (supabase) {
+      const { error: upsertErr } = await supabase.from("user_subscriptions").upsert({
+        id: `payos_${orderCode}`,
+        user_id: input.userId,
+        tier: input.planId,
+        cycle,
+        amount: effectiveAmount,
+        currency: "VND",
+        payment_method: "payos_vietqr",
+        status: "pending",
+        expires_at: resolvePayosTierExpiration(input.planId),
+      });
+      if (upsertErr) {
+        throw new Error(
+          `Failed to persist pending subscription: ${(upsertErr as { message?: string }).message || "Database error"}`,
+        );
       }
-    } catch (dbErr) {
-      console.error("[PayOS] DB exception inserting pending subscription:", dbErr);
     }
   }
 
@@ -591,6 +733,8 @@ export async function getPayosPaymentInfo(
 
 /**
  * Fulfills an order upon successful payment: updates subscription history and upgrades profile tiers in Supabase.
+ * Strictly idempotent: if an orderCode has already been fulfilled (status === 'active' in DB or in-memory cache),
+ * returns the existing subscription state immediately without recalculating expiresAt or re-applying mutations.
  */
 export async function fulfillPayosOrder(
   params: FulfillPayosOrderParams,
@@ -599,13 +743,16 @@ export async function fulfillPayosOrder(
   let resolvedTier: PayosPlanId | null = null;
   let recordedUserId: string | null = null;
   let recordedAmount: number | null = null;
+  let recordedStatus: string | null = null;
+  let recordedExpiresAt: string | null = null;
+  let recordedCogsCeilingUsd: number | undefined = undefined;
 
   const supabase = getSupabaseServerClient(params.userToken);
   if (supabase) {
     try {
       const { data: sub } = await supabase
         .from("user_subscriptions")
-        .select("user_id, tier, amount")
+        .select("id, user_id, tier, amount, status, expires_at, cogs_ceiling_usd")
         .eq("id", `payos_${params.orderCode}`)
         .maybeSingle();
 
@@ -614,6 +761,7 @@ export async function fulfillPayosOrder(
         resolvedUserId = sub.user_id;
       }
       if (
+        sub?.tier === "trial_24h" ||
         sub?.tier === "cram_pass" ||
         sub?.tier === "pro" ||
         sub?.tier === "pro_monthly" ||
@@ -626,6 +774,15 @@ export async function fulfillPayosOrder(
       if (typeof sub?.amount === "number") {
         recordedAmount = sub.amount;
       }
+      if (typeof (sub as { status?: string })?.status === "string") {
+        recordedStatus = (sub as { status?: string }).status ?? null;
+      }
+      if (typeof (sub as { expires_at?: string | null })?.expires_at === "string") {
+        recordedExpiresAt = (sub as { expires_at?: string | null }).expires_at ?? null;
+      }
+      if (typeof (sub as { cogs_ceiling_usd?: number })?.cogs_ceiling_usd === "number") {
+        recordedCogsCeilingUsd = (sub as { cogs_ceiling_usd?: number }).cogs_ceiling_usd;
+      }
     } catch {
       // Safe ignore DB query error
     }
@@ -634,7 +791,7 @@ export async function fulfillPayosOrder(
       try {
         const { data: po } = await supabase
           .from("pending_orders")
-          .select("user_id, tier, amount, expected_amount_vnd")
+          .select("user_id, tier, amount, expected_amount_vnd, status, expires_at")
           .eq("id", `payos_${params.orderCode}`)
           .maybeSingle();
         if (typeof po?.amount === "number") {
@@ -653,10 +810,73 @@ export async function fulfillPayosOrder(
         if (!resolvedTier && po?.tier) {
           resolvedTier = po.tier as PayosPlanId;
         }
+        if (!recordedStatus && typeof (po as { status?: string })?.status === "string") {
+          recordedStatus = (po as { status?: string }).status ?? null;
+        }
+        if (
+          !recordedExpiresAt &&
+          typeof (po as { expires_at?: string | null })?.expires_at === "string"
+        ) {
+          recordedExpiresAt = (po as { expires_at?: string | null }).expires_at ?? null;
+        }
       } catch {
         // Safe ignore pending_orders query error
       }
     }
+  }
+
+  // Idempotency Check 1: Database record already has status === 'active'
+  if (recordedStatus === "active") {
+    const cached = fulfilledOrderCache.get(params.orderCode);
+    const idempotentTier =
+      resolvedTier ??
+      cached?.tier ??
+      decodePlanFromOrderCode(params.orderCode, params.amount);
+    const idempotentExpiresAt = recordedExpiresAt ?? cached?.expiresAt ?? null;
+    const idempotentUserId = resolvedUserId ?? cached?.userId ?? null;
+    const isSandboxExisting =
+      idempotentTier === "trial_24h" ||
+      recordedAmount === SANDBOX_TEST_AMOUNT_VND ||
+      params.amount === SANDBOX_TEST_AMOUNT_VND ||
+      params.expectedAmount === SANDBOX_TEST_AMOUNT_VND;
+    const cogsUsd =
+      recordedCogsCeilingUsd ??
+      cached?.cogsCeilingUsd ??
+      (isSandboxExisting ? SANDBOX_COGS_CAP_USD : undefined);
+
+    return {
+      fulfilled: true,
+      alreadyFulfilled: true,
+      status: "active",
+      userId: idempotentUserId,
+      tier: idempotentTier ?? null,
+      planId: idempotentTier ?? null,
+      expiresAt: idempotentExpiresAt,
+      expires_at: idempotentExpiresAt,
+      ...(cogsUsd !== undefined ? { cogsCeilingUsd: cogsUsd } : {}),
+    };
+  }
+
+  // Idempotency Check 2: In-memory cache tracks fulfilled orderCodes within this process
+  const cachedFulfillment = fulfilledOrderCache.get(params.orderCode);
+  if (
+    cachedFulfillment &&
+    recordedStatus !== "pending" &&
+    (!recordedUserId || recordedUserId === cachedFulfillment.userId)
+  ) {
+    return {
+      fulfilled: true,
+      alreadyFulfilled: true,
+      status: "active",
+      userId: cachedFulfillment.userId,
+      tier: cachedFulfillment.tier,
+      planId: cachedFulfillment.tier,
+      expiresAt: cachedFulfillment.expiresAt,
+      expires_at: cachedFulfillment.expiresAt,
+      ...(cachedFulfillment.cogsCeilingUsd !== undefined
+        ? { cogsCeilingUsd: cachedFulfillment.cogsCeilingUsd }
+        : {}),
+    };
   }
 
   // Verify expected amount matching pendingOrder.amount if available
@@ -763,15 +983,45 @@ export async function fulfillPayosOrder(
       : (targetExpectedAmount ?? defaultPlanAmount);
 
   const isSandbox =
+    resolvedTier === "trial_24h" ||
     finalAmount === SANDBOX_TEST_AMOUNT_VND ||
     recordedAmount === SANDBOX_TEST_AMOUNT_VND ||
     params.expectedAmount === SANDBOX_TEST_AMOUNT_VND;
 
+  if (!isSandbox && resolvedTier) {
+    const expectedPlanAmount = EXPECTED_PLAN_AMOUNTS_VND[resolvedTier];
+    if (
+      typeof expectedPlanAmount === "number" &&
+      (finalAmount < expectedPlanAmount ||
+        (typeof params.amount === "number" && params.amount < expectedPlanAmount))
+    ) {
+      console.warn(
+        `[PayOS] Refusing fulfillment for orderCode ${params.orderCode}: paid amount ${params.amount ?? finalAmount} is less than expected plan amount ${expectedPlanAmount} for tier "${resolvedTier}".`,
+      );
+      return {
+        fulfilled: false,
+        userId: resolvedUserId ?? null,
+        tier: resolvedTier ?? null,
+        expiresAt: null,
+      };
+    }
+  }
+
   if (fulfilled && resolvedUserId && resolvedTier) {
-    expiresAt = calculateTierExpiration(resolvedTier);
+    expiresAt = resolvePayosTierExpiration(resolvedTier);
     const now = new Date().toISOString();
     const cycle = getPlanBillingCycle(resolvedTier);
-    const profileTier = normalizeTier(resolvedTier);
+    const profileTier =
+      resolvedTier === "trial_24h" ? "cram_pass" : normalizeTier(resolvedTier);
+    const cogsCeilingUsd = isSandbox ? SANDBOX_COGS_CAP_USD : undefined;
+
+    fulfilledOrderCache.set(params.orderCode, {
+      userId: resolvedUserId,
+      tier: resolvedTier,
+      expiresAt: expiresAt ?? now,
+      amount: finalAmount,
+      ...(cogsCeilingUsd !== undefined ? { cogsCeilingUsd } : {}),
+    });
 
     if (supabase) {
       try {
@@ -788,7 +1038,7 @@ export async function fulfillPayosOrder(
           expires_at: expiresAt,
         };
         if (isSandbox) {
-          subPayload.cogs_ceiling_usd = 0.05;
+          subPayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
         }
         const { error: subErr } = await supabase
           .from("user_subscriptions")
@@ -802,6 +1052,26 @@ export async function fulfillPayosOrder(
       }
 
       try {
+        const quotaPayload: Record<string, unknown> = {
+          user_id: `user:${resolvedUserId}`,
+          tier: profileTier,
+          deck_credits_used: 0,
+          cogs_spent_usd: 0,
+          daily_burst_used: 0,
+          updated_at: now,
+        };
+        if (isSandbox) {
+          quotaPayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
+        }
+        await supabase.from("user_quota_ledgers").upsert(
+          quotaPayload,
+          { onConflict: "user_id" },
+        );
+      } catch {
+        // Safe fallback if user_quota_ledgers table is pending migration
+      }
+
+      try {
         const profilePayload: Record<string, unknown> = {
           id: resolvedUserId,
           tier: profileTier,
@@ -809,7 +1079,7 @@ export async function fulfillPayosOrder(
           updated_at: now,
         };
         if (isSandbox) {
-          profilePayload.cogs_ceiling_usd = 0.05;
+          profilePayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
         }
         const { error: profErr } = await supabase
           .from("profiles")
@@ -841,7 +1111,7 @@ export async function fulfillPayosOrder(
           updated_at: now,
         };
         if (isSandbox) {
-          userProfilePayload.cogs_ceiling_usd = 0.05;
+          userProfilePayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
         }
         const { error: uProfErr } = await supabase
           .from("user_profiles")
@@ -866,16 +1136,18 @@ export async function fulfillPayosOrder(
       }
 
       try {
-        const userMetadata: Record<string, unknown> = {
+        const appMetadata: Record<string, unknown> = {
           tier: profileTier,
+          plan_id: resolvedTier,
           tier_expires_at: expiresAt,
         };
         if (isSandbox) {
-          userMetadata.cogs_ceiling_usd = 0.05;
-          userMetadata.is_sandbox = true;
+          appMetadata.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
+          appMetadata.cogs_limit_usd = SANDBOX_COGS_CAP_USD;
+          appMetadata.is_sandbox = true;
         }
         await supabase.auth.admin.updateUserById(resolvedUserId, {
-          user_metadata: userMetadata,
+          app_metadata: appMetadata,
         });
       } catch {
         // ignore admin auth failure
@@ -885,9 +1157,13 @@ export async function fulfillPayosOrder(
 
   return {
     fulfilled,
+    alreadyFulfilled: false,
+    ...(fulfilled ? { status: "active" } : {}),
     userId: resolvedUserId ?? null,
     tier: resolvedTier ?? null,
+    planId: resolvedTier ?? null,
     expiresAt,
-    ...(isSandbox ? { cogsCeilingUsd: 0.05 } : {}),
+    expires_at: expiresAt,
+    ...(isSandbox ? { cogsCeilingUsd: SANDBOX_COGS_CAP_USD } : {}),
   };
 }

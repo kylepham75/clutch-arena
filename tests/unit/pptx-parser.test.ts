@@ -7,8 +7,11 @@ import {
   extractOmmlEquationsFromXml,
   detectSlideEquationCandidates,
   transcribeEquationImageWithGemini,
+  MAX_PPTX_OCR_IMAGES,
+  assertPptxExpandedSize,
 } from "@/lib/ingestion/parse-pptx";
 import { validateSlideFile, parseSlideDeck } from "@/lib/notes/parse-slides";
+import { validatePptxArchive, validateDocxArchive } from "@/lib/ingestion/validate-file";
 import { IngestionError } from "@/lib/ingestion/errors";
 
 describe("PowerPoint (.pptx) & Slide Parser", () => {
@@ -105,6 +108,163 @@ describe("PowerPoint (.pptx) & Slide Parser", () => {
       type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     });
     expect(() => validateSlideFile(oversized)).toThrow(IngestionError);
+  });
+
+  it("rejects PPTX ZIP archives with path traversal, encrypted entries, corrupted central directory, or decompression bomb sizes", async () => {
+    const makeBasePptx = async () => {
+      const zip = new JSZip();
+      zip.file(
+        "ppt/slides/slide1.xml",
+        "<p:sp><p:txBody><a:p><a:r><a:t>Valid Slide</a:t></a:r></a:p></p:txBody></p:sp>",
+      );
+      return zip.generateAsync({ type: "nodebuffer" });
+    };
+
+    // 1. Path traversal in central directory entry name ("../slides/slide1.xml.")
+    const traversalBytes = Buffer.from(await makeBasePptx());
+    const cdOffset1 = traversalBytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    traversalBytes.write("../slides/slide1.xml.", cdOffset1 + 46, "utf8");
+    expect(() => validatePptxArchive(traversalBytes)).toThrow(
+      expect.objectContaining({ code: "INVALID_PPTX", status: 422 }),
+    );
+    await expect(parsePptx(traversalBytes)).rejects.toMatchObject({
+      code: "INVALID_PPTX",
+      status: 422,
+    });
+
+    // 2. Encrypted entry flag (bit 0 of general purpose bit flag at offset + 8)
+    const encryptedBytes = Buffer.from(await makeBasePptx());
+    const cdOffset2 = encryptedBytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    encryptedBytes.writeUInt16LE(1, cdOffset2 + 8);
+    expect(() => validatePptxArchive(encryptedBytes)).toThrow(
+      expect.objectContaining({ code: "INVALID_PPTX", status: 422 }),
+    );
+    await expect(parsePptx(encryptedBytes)).rejects.toMatchObject({
+      code: "INVALID_PPTX",
+      status: 422,
+    });
+
+    // 3. Corrupted central directory header signature
+    const corruptedBytes = Buffer.from(await makeBasePptx());
+    const cdOffset3 = corruptedBytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    corruptedBytes.writeUInt32LE(0xdeadbeef, cdOffset3);
+    expect(() => validatePptxArchive(corruptedBytes)).toThrow(
+      expect.objectContaining({ code: "INVALID_PPTX", status: 422 }),
+    );
+    await expect(parsePptx(corruptedBytes)).rejects.toMatchObject({
+      code: "INVALID_PPTX",
+      status: 422,
+    });
+
+    // 4. Expanded XML entry exceeding single-XML cap (20 MB) or total archive cap (50 MB)
+    const bombBytes = Buffer.from(await makeBasePptx());
+    const cdOffset4 = bombBytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    bombBytes.writeUInt32LE(21 * 1024 * 1024, cdOffset4 + 24);
+    expect(() => validatePptxArchive(bombBytes)).toThrow(
+      expect.objectContaining({ code: "DOCUMENT_TOO_LARGE", status: 413 }),
+    );
+    await expect(parsePptx(bombBytes)).rejects.toMatchObject({
+      code: "DOCUMENT_TOO_LARGE",
+      status: 413,
+    });
+  });
+
+  it("rejects falsified or mismatched local file header uncompressed size (decompression bomb defense)", async () => {
+    const zip = new JSZip();
+    zip.file(
+      "ppt/slides/slide1.xml",
+      "<p:sp><p:txBody><a:p><a:r><a:t>Valid Slide</a:t></a:r></a:p></p:txBody></p:sp>",
+    );
+    const validBytes = await zip.generateAsync({ type: "nodebuffer" });
+
+    // 1. Falsified local header size exceeding 20MB limit (while central directory size is normal)
+    const bombLocalBytes = Buffer.from(validBytes);
+    const cdOffset = bombLocalBytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    const localHeaderOffset = bombLocalBytes.readUInt32LE(cdOffset + 42);
+    // Write 25 MB into local header uncompressed size at localHeaderOffset + 22
+    bombLocalBytes.writeUInt32LE(25 * 1024 * 1024, localHeaderOffset + 22);
+
+    expect(() => validatePptxArchive(bombLocalBytes)).toThrow(
+      expect.objectContaining({ code: "DOCUMENT_TOO_LARGE", status: 413 }),
+    );
+    await expect(parsePptx(bombLocalBytes)).rejects.toMatchObject({
+      code: "DOCUMENT_TOO_LARGE",
+      status: 413,
+    });
+
+    // 2. Mismatched local header size (e.g. localSize !== size)
+    const mismatchedBytes = Buffer.from(validBytes);
+    const cdOffset2 = mismatchedBytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    const localHeaderOffset2 = mismatchedBytes.readUInt32LE(cdOffset2 + 42);
+    const originalLocalSize = mismatchedBytes.readUInt32LE(localHeaderOffset2 + 22);
+    // Falsify local size to different value (e.g. originalLocalSize + 50)
+    mismatchedBytes.writeUInt32LE(originalLocalSize + 50, localHeaderOffset2 + 22);
+
+    expect(() => validatePptxArchive(mismatchedBytes)).toThrow();
+    await expect(parsePptx(mismatchedBytes)).rejects.toThrow();
+
+    // 3. Corrupt local header signature (not 0x04034b50)
+    const corruptSigBytes = Buffer.from(validBytes);
+    const cdOffset3 = corruptSigBytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    const localHeaderOffset3 = corruptSigBytes.readUInt32LE(cdOffset3 + 42);
+    corruptSigBytes.writeUInt32LE(0xdeadbeef, localHeaderOffset3);
+
+    expect(() => validatePptxArchive(corruptSigBytes)).toThrow(
+      expect.objectContaining({ code: "INVALID_PPTX", status: 422 }),
+    );
+    await expect(parsePptx(corruptSigBytes)).rejects.toMatchObject({
+      code: "INVALID_PPTX",
+      status: 422,
+    });
+
+    // 4. Also verify validateDocxArchive rejects falsified local header size
+    const docxZip = new JSZip();
+    docxZip.file("[Content_Types].xml", "<Types/>");
+    docxZip.file("word/document.xml", "<w:document/>");
+    const docxBytes = await docxZip.generateAsync({ type: "nodebuffer" });
+    const bombDocxBytes = Buffer.from(docxBytes);
+    const docxCdOffset = bombDocxBytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    const docxLocalOffset = bombDocxBytes.readUInt32LE(docxCdOffset + 42);
+    bombDocxBytes.writeUInt32LE(25 * 1024 * 1024, docxLocalOffset + 22);
+
+    expect(() => validateDocxArchive(bombDocxBytes)).toThrow(
+      expect.objectContaining({ code: "DOCUMENT_TOO_LARGE", status: 413 }),
+    );
+  });
+
+  it("enforces archive decompression thresholds in assertPptxExpandedSize", () => {
+    // Single entry exceeding 20MB limit throws DOCUMENT_TOO_LARGE (413)
+    expect(() => assertPptxExpandedSize(21 * 1024 * 1024, 0)).toThrow(
+      expect.objectContaining({ code: "DOCUMENT_TOO_LARGE", status: 413 }),
+    );
+
+    // Cumulative total exceeding 50MB limit throws DOCUMENT_TOO_LARGE (413)
+    expect(() => assertPptxExpandedSize(1024, 50 * 1024 * 1024 + 1)).toThrow(
+      expect.objectContaining({ code: "DOCUMENT_TOO_LARGE", status: 413 }),
+    );
+
+    // Within limits does not throw
+    expect(() => assertPptxExpandedSize(1024, 1024)).not.toThrow();
+  });
+
+  it("rejects presentations with more than MAX_PDF_PAGES (150) slides with TOO_MANY_PAGES (413)", async () => {
+    const zip = new JSZip();
+    for (let i = 1; i <= 151; i++) {
+      zip.file(
+        `ppt/slides/slide${i}.xml`,
+        `<p:sp><p:txBody><a:p><a:r><a:t>Slide ${i} content</a:t></a:r></a:p></p:txBody></p:sp>`,
+      );
+    }
+    const pptxBuffer = await zip.generateAsync({ type: "nodebuffer" });
+    const mockTranscriber = vi.fn();
+
+    await expect(
+      parsePptx(pptxBuffer, { visionTranscriber: mockTranscriber }),
+    ).rejects.toMatchObject({
+      code: "TOO_MANY_PAGES",
+      status: 413,
+    });
+    expect(mockTranscriber).not.toHaveBeenCalled();
   });
 });
 
@@ -1161,6 +1321,82 @@ describe("Image & OLE Equation Detection and Vision Math Transcription (Roadmap 
       expect(deck.ocrEquations).toHaveLength(1);
       expect(deck.ocrEquations![0].latex).toContain("WACC = (E/V)*R_E + (D/V)*R_D*(1 - T_C)");
       expect(deck.sources[0].text).toContain("$WACC = (E/V)*R_E + (D/V)*R_D*(1 - T_C)$");
+    });
+
+    it("bounds equation image candidate transcriptions to MAX_PPTX_OCR_IMAGES (25) and accurately tracks visionOcrCostUsd", async () => {
+      const zip = new JSZip();
+
+      // Create a slide with 30 equation image candidates
+      const picXmlParts: string[] = [];
+      const relsParts: string[] = [];
+
+      for (let i = 1; i <= 30; i++) {
+        picXmlParts.push(`
+          <p:pic>
+            <p:nvPicPr>
+              <p:cNvPr id="${i + 1}" name="MathType Equation ${i}" descr="MathType Equation"/>
+            </p:nvPicPr>
+            <p:blipFill>
+              <a:blip r:embed="rId${i}"/>
+            </p:blipFill>
+          </p:pic>
+        `);
+        relsParts.push(
+          `<Relationship Id="rId${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${i}.png"/>`,
+        );
+        zip.file(
+          `ppt/media/image${i}.png`,
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        );
+      }
+
+      zip.file(
+        "ppt/slides/slide1.xml",
+        `
+        <p:sp xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <p:txBody>
+            <a:p><a:r><a:t>High-frequency math slide with many formulas</a:t></a:r></a:p>
+          </p:txBody>
+          ${picXmlParts.join("\n")}
+        </p:sp>
+      `,
+      );
+      zip.file(
+        "ppt/slides/_rels/slide1.xml.rels",
+        `
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          ${relsParts.join("\n")}
+        </Relationships>
+      `,
+      );
+
+      const pptxBuffer = await zip.generateAsync({ type: "nodebuffer" });
+
+      const mockTranscriber = vi.fn().mockImplementation(async ({ slide }) => [
+        {
+          raw: `x_${slide} = 1`,
+          latex: `x_${slide} = 1`,
+          confidence: 0.95,
+        },
+      ]);
+
+      const result = await parsePptx(pptxBuffer, {
+        visionTranscriber: mockTranscriber,
+      });
+
+      // Verify that transcriber was called exactly MAX_PPTX_OCR_IMAGES (25) times
+      expect(mockTranscriber).toHaveBeenCalledTimes(MAX_PPTX_OCR_IMAGES);
+      expect(mockTranscriber).toHaveBeenCalledTimes(25);
+
+      // Verify visionOcrCostUsd: 25 * 0.00012 = 0.003
+      expect(result.visionOcrCostUsd).toBeCloseTo(0.003, 5);
+
+      // Verify warning added when limit exceeded
+      expect(
+        result.warnings.some((w) =>
+          w.includes("Vision OCR transcription limit reached (25 images max)"),
+        ),
+      ).toBe(true);
     });
   });
 });

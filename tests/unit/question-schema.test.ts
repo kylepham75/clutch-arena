@@ -26,4 +26,29 @@ describe("question contract", () => {
       ]).success,
     ).toBe(false);
   });
+  it("rejects question strings >2000 chars, options >2000 chars, explanations >2000 chars, and IDs >200 chars (SA2-14)", () => {
+    const q = mockMicroeconomics.questions[0];
+    const longString = "a".repeat(2001);
+    const longId = "i".repeat(201);
+
+    expect(
+      questionSchema.safeParse({ ...q, question: longString }).success,
+    ).toBe(false);
+    expect(
+      questionSchema.safeParse({
+        ...q,
+        options: [longString, q.options[1], q.options[2], q.options[3]],
+      }).success,
+    ).toBe(false);
+    expect(
+      questionSchema.safeParse({ ...q, explanation: longString }).success,
+    ).toBe(false);
+    expect(questionSchema.safeParse({ ...q, id: longId }).success).toBe(false);
+    expect(
+      questionSchema.safeParse({
+        ...q,
+        conceptVariant: { ...q.conceptVariant, question: longString },
+      }).success,
+    ).toBe(false);
+  });
 });

@@ -302,7 +302,7 @@ describe("PDF Vision Triage & Multi-Signal Detection", () => {
       ]);
     });
 
-    it("allows targeted rescanPages to bypass the auto-OCR cap", async () => {
+    it("strictly bounds targeted rescanPages to the auto-OCR cap without bypass", async () => {
       const mockPages: MockPdfPage[] = Array.from({ length: 30 }, (_, i) => ({
         page: i + 1,
         text: "",
@@ -326,12 +326,10 @@ describe("PDF Vision Triage & Multi-Signal Detection", () => {
         visionTranscriber: transcriber,
       });
 
-      // 25 initial pages + 2 targeted rescan pages = 27 invocations
-      expect(transcriber).toHaveBeenCalledTimes(27);
-      expect(result.pageVisionStatus?.["page-26"]?.processed).toBe(true);
-      expect(result.pageVisionStatus?.["page-27"]?.processed).toBe(true);
-      expect(result.lowConfidenceSourceIds).not.toContain("page-26");
-      expect(result.lowConfidenceSourceIds).not.toContain("page-27");
+      // Strictly capped at 25 initial pages (0.03 / 0.0012); rescan pages cannot bypass budget
+      expect(transcriber).toHaveBeenCalledTimes(25);
+      expect(result.pageVisionStatus?.["page-26"]?.processed).toBe(false);
+      expect(result.pageVisionStatus?.["page-27"]?.processed).toBe(false);
     });
   });
 

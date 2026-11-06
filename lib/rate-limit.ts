@@ -6,29 +6,33 @@ import type { ServerTier } from "@/lib/auth/server-guard";
 import {
   TIER_LIMITS,
   evaluateCogsDegradation,
+  getRegionalCogsCeiling,
   type UserTier,
   type CogsBudgetStatus,
+  type BillingRegion,
 } from "@/lib/pricing/tiers";
 import { getSupabaseServerClient, isSupabaseServerConfigured } from "@/lib/supabase/server";
 
-// Check if Upstash Redis credentials are present in the environment
-const hasUpstashConfig = Boolean(
-  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
-);
+// Check if Upstash Redis credentials are present in the environment (supports UPSTASH_* or Vercel KV_* prefixes)
+const upstashUrl =
+  process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+const upstashToken =
+  process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+const hasUpstashConfig = Boolean(upstashUrl && upstashToken);
 
 let redis: Redis | null = null;
 if (hasUpstashConfig) {
   try {
     redis = new Redis({
-      url: process.env.UPSTASH_REDIS_REST_URL!,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+      url: upstashUrl!,
+      token: upstashToken!,
     });
   } catch {
     redis = null;
   }
 } else if (process.env.NODE_ENV === "production") {
   console.warn(
-    "[Security Warning] UPSTASH_REDIS_REST_URL/TOKEN not configured. Distributed rate limiting is degraded to in-memory fallback.",
+    "[Security Warning] UPSTASH_REDIS_REST_URL/TOKEN or KV_REST_API_URL/TOKEN not configured. Distributed rate limiting is degraded to in-memory fallback.",
   );
 }
 
@@ -181,18 +185,63 @@ export interface RateLimitResult {
 }
 
 /**
+ * Normalizes any server, client, or external tier string into a valid UserTier.
+ * Explicitly preserves pro_monthly and maps variations safely (SA-07).
+ */
+export function toUserTier(tier?: ServerTier | UserTier | string | null): UserTier {
+  if (!tier) return "contender";
+  const normalized = String(tier).toLowerCase().trim();
+  if (
+    normalized === "pro_monthly" ||
+    normalized === "pro-monthly" ||
+    normalized === "monthly"
+  ) {
+    return "pro_monthly";
+  }
+  if (
+    normalized === "cram_pass" ||
+    normalized === "crampass" ||
+    normalized === "cram-pass"
+  ) {
+    return "cram_pass";
+  }
+  if (
+    normalized === "pro" ||
+    normalized === "pro_semester" ||
+    normalized === "pro-semester" ||
+    normalized === "semester"
+  ) {
+    return "pro";
+  }
+  if (
+    normalized === "tutor" ||
+    normalized === "tutor_guild" ||
+    normalized === "tutor-guild"
+  ) {
+    return "tutor";
+  }
+  return "contender";
+}
+
+/**
  * Checks rate limits using Upstash Redis if configured,
  * or gracefully falls back to an in-memory sliding window.
  */
 export async function checkRateLimit(
   identifier: string,
   type: RateLimitType,
-  tier: ServerTier = "guest",
+  tier: ServerTier | UserTier = "guest",
 ): Promise<RateLimitResult> {
   const isNotes = type === "notes";
   const isIngest = type === "ingest";
-  const isPaid = tier === "cram_pass" || tier === "pro" || tier === "tutor";
-  const isPro = tier === "pro" || tier === "tutor";
+  const normTier = toUserTier(tier);
+  const isPaid =
+    normTier === "cram_pass" ||
+    normTier === "pro_monthly" ||
+    normTier === "pro" ||
+    normTier === "tutor";
+  const isPro =
+    normTier === "pro_monthly" || normTier === "pro" || normTier === "tutor";
 
   let limit: number;
   let windowMs: number;
@@ -221,7 +270,7 @@ export async function checkRateLimit(
         : freeCoachLimiter;
   if (limiter) {
     try {
-      const result = await limiter.limit(`${tier}:${identifier}`);
+      const result = await limiter.limit(`${normTier}:${identifier}`);
       const retryAfter = Math.max(
         1,
         Math.ceil((result.reset - Date.now()) / 1000),
@@ -240,7 +289,7 @@ export async function checkRateLimit(
 
   // 2. In-memory sliding window fallback
   const memResult = checkInMemoryRateLimit(
-    `${type}:${tier}:${identifier}`,
+    `${type}:${normTier}:${identifier}`,
     limit,
     windowMs,
   );
@@ -253,22 +302,159 @@ export async function checkRateLimit(
   };
 }
 
+function parseFirstIpToken(headerValue: string | null): string | null {
+  if (!headerValue) return null;
+  const first = headerValue.split(",")[0].trim();
+  if (first.length >= 3 && first.length <= 45 && !/[<>\s"']/.test(first)) {
+    return first;
+  }
+  return null;
+}
+
 /**
- * Resolves a reliable client IP address from standard proxy headers
+ * Resolves a reliable client IP address from proxy headers.
+ * Hardened against rotating spoofed Cloudflare headers on Vercel deployments (SA-15, SA2-06):
+ * 1. Platform-verified 'x-vercel-forwarded-for' takes strict priority over 'cf-connecting-ip'.
+ * 2. Verified 'cf-connecting-ip' (only when verified with 'cf-ray' header or TRUST_CLOUDFLARE_HEADERS === "true").
+ * 3. Reverse proxy / Nginx real IP header ('x-real-ip').
+ * 4. Fallback to 'x-forwarded-for' (sanitized first token).
+ * 5. Unverified 'cf-connecting-ip' (only when not on Vercel).
+ * 6. Default fallback to '127.0.0.1'.
  */
 export function getClientIp(request: Request): string {
-  const xForwardedFor = request.headers.get("x-forwarded-for");
-  if (xForwardedFor) {
-    const ip = xForwardedFor.split(",")[0].trim();
-    if (ip) return ip;
-  }
-  const cfConnectingIp = request.headers.get("cf-connecting-ip");
-  if (cfConnectingIp) return cfConnectingIp.trim();
+  // 1. Vercel platform-verified header takes strict priority
+  const vercel = parseFirstIpToken(request.headers.get("x-vercel-forwarded-for"));
+  if (vercel) return vercel;
 
-  const xRealIp = request.headers.get("x-real-ip");
-  if (xRealIp) return xRealIp.trim();
+  const cf = parseFirstIpToken(request.headers.get("cf-connecting-ip"));
+  const hasCfRay = Boolean(request.headers.get("cf-ray")?.trim());
+  const isCfVerified = hasCfRay || process.env.TRUST_CLOUDFLARE_HEADERS === "true";
+
+  // 2. Verified Cloudflare header (accompanied by cf-ray or TRUST_CLOUDFLARE_HEADERS)
+  if (cf && isCfVerified) {
+    return cf;
+  }
+
+  // 3. Reverse proxy / Nginx real IP header
+  const realIp = parseFirstIpToken(request.headers.get("x-real-ip"));
+  if (realIp) return realIp;
+
+  // 4. Fallback to X-Forwarded-For (sanitized first token)
+  const forwarded = parseFirstIpToken(request.headers.get("x-forwarded-for"));
+  if (forwarded) return forwarded;
+
+  // 5. Unverified cf-connecting-ip (only when not on Vercel)
+  const isOnVercel =
+    Boolean(process.env.VERCEL) ||
+    Boolean(request.headers.get("x-vercel-id"));
+  if (cf && !isOnVercel) {
+    return cf;
+  }
 
   return "127.0.0.1";
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Actor Identification & Namespaced Ledgers (SA-09 / SA-15)                 */
+/* -------------------------------------------------------------------------- */
+
+export type ActorIdentifier =
+  | string
+  | {
+      userId?: string | null;
+      ip?: string | null;
+      tier?: ServerTier | UserTier | string | null;
+      region?: BillingRegion | string | null;
+      authToken?: string | null;
+    };
+
+/**
+ * Ensures authenticated users use a distinct ledger namespace (user:${userId})
+ * and unauthenticated guests use a distinct namespace (ip:${ip}), preventing
+ * guest IPs and user IDs from colliding or overwriting each other's quota state.
+ */
+export function resolveActorKey(
+  actor:
+    | ActorIdentifier
+    | RollbackDeckQuotaParams
+    | null
+    | undefined,
+): string {
+  if (!actor) return "user:anonymous";
+
+  if (typeof actor === "string") {
+    const trimmed = actor.trim();
+    if (!trimmed) return "user:anonymous";
+    if (trimmed.startsWith("user:") || trimmed.startsWith("ip:")) {
+      return trimmed;
+    }
+    const isIpv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(trimmed);
+    const isIpv6 =
+      trimmed.includes(":") &&
+      !trimmed.startsWith("user-") &&
+      !trimmed.startsWith("u-");
+    const isLocalhost = trimmed === "localhost" || trimmed === "127.0.0.1";
+    if (isIpv4 || isIpv6 || isLocalhost) {
+      return `ip:${trimmed}`;
+    }
+    return `user:${trimmed}`;
+  }
+
+  if (actor.userId && actor.userId.trim()) {
+    const u = actor.userId.trim();
+    return u.startsWith("user:") ? u : `user:${u}`;
+  }
+
+  if (actor.ip && actor.ip.trim()) {
+    const i = actor.ip.trim();
+    return i.startsWith("ip:") ? i : `ip:${i}`;
+  }
+
+  return "user:anonymous";
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Per-Actor Async Mutex / Promise Queue for TOCTOU Prevention (SA-09)       */
+/* -------------------------------------------------------------------------- */
+
+const actorLockMap = new Map<string, Promise<unknown>>();
+
+export function getActorLockMapSize(): number {
+  return actorLockMap.size;
+}
+
+/**
+ * Serializes async quota mutations per actorKey using an in-process promise queue.
+ * Closes TOCTOU race conditions where concurrent calls read the same snapshot before writing.
+ * Automatically cleans up settled promises from the map once the queue drains to prevent memory leaks.
+ */
+export async function withActorQuotaLock<T>(
+  actorKey: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previousLock = actorLockMap.get(actorKey) ?? Promise.resolve();
+
+  let releaseLock: () => void;
+  const currentLock = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+
+  actorLockMap.set(actorKey, currentLock);
+
+  const task = previousLock
+    .catch(() => {})
+    .then(async () => {
+      return await fn();
+    });
+
+  try {
+    return await task;
+  } finally {
+    releaseLock!();
+    if (actorLockMap.get(actorKey) === currentLock) {
+      actorLockMap.delete(actorKey);
+    }
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -642,6 +828,8 @@ export interface UserQuotaLedger {
   dailyBurstDate: string; // YYYY-MM-DD
   unlockedDecks: Record<string, UnlockedDeckRecord>;
   updatedAt?: string;
+  decksGeneratedCount?: number;
+  estimatedCogsUsd?: number;
 }
 
 export interface CheckDeckQuotaOptions {
@@ -651,10 +839,15 @@ export interface CheckDeckQuotaOptions {
   focusHash?: string;
   pipelineVersion?: string;
   fileSha256?: string | null;
+  region?: BillingRegion | string | null;
+  maxDeckCredits?: number;
+  overrideLimit?: number;
+  burstLimit?: number;
 }
 
 export interface DeckQuotaReservationResult {
   allowed: boolean;
+  reserved: boolean;
   reason?:
     | "DAILY_BURST_EXCEEDED"
     | "DECK_CREDITS_EXCEEDED"
@@ -678,12 +871,11 @@ export function getUserQuotaMemoryStoreSize(): number {
   return userQuotaMemoryStore.size;
 }
 
-function toUserTier(tier: ServerTier = "guest"): UserTier {
-  if (tier === "cram_pass" || tier === "pro" || tier === "tutor") return tier;
-  return "contender";
-}
-
-function refreshLedgerRollover(ledger: UserQuotaLedger, currentTier: UserTier): UserQuotaLedger {
+function refreshLedgerRollover(
+  ledger: UserQuotaLedger,
+  currentTier: UserTier,
+  region: BillingRegion = "VN",
+): UserQuotaLedger {
   const today = new Date().toISOString().slice(0, 10);
   let changed = false;
   if (ledger.dailyBurstDate !== today) {
@@ -694,10 +886,12 @@ function refreshLedgerRollover(ledger: UserQuotaLedger, currentTier: UserTier): 
   if (ledger.tier !== currentTier) {
     ledger.tier = currentTier;
     const limits = TIER_LIMITS[currentTier];
-    ledger.cogsCeilingUsd = limits.cogsCeilingUsd;
+    ledger.cogsCeilingUsd = getRegionalCogsCeiling(currentTier, region);
     ledger.deckCreditsLimit = limits.newDeckCredits;
     changed = true;
   }
+  ledger.decksGeneratedCount = ledger.deckCreditsUsed;
+  ledger.estimatedCogsUsd = ledger.cogsSpentUsd;
   if (changed) {
     ledger.updatedAt = new Date().toISOString();
   }
@@ -705,19 +899,26 @@ function refreshLedgerRollover(ledger: UserQuotaLedger, currentTier: UserTier): 
 }
 
 export async function getUserQuotaLedger(
-  userId: string,
-  tier: ServerTier = "contender",
+  actor: ActorIdentifier,
+  tier: ServerTier | UserTier = "contender",
+  region: BillingRegion = "VN",
 ): Promise<UserQuotaLedger> {
-  const userTier = toUserTier(tier);
+  const actorKey = resolveActorKey(actor);
+  const effectiveTier =
+    typeof actor === "object" && actor !== null && actor.tier
+      ? actor.tier
+      : tier;
+  const userTier = toUserTier(effectiveTier);
   const limits = TIER_LIMITS[userTier];
+  const effectiveCeiling = getRegionalCogsCeiling(userTier, region);
 
   // 1. Check in-memory store
-  const existing = userQuotaMemoryStore.get(userId);
+  const existing = userQuotaMemoryStore.get(actorKey);
   if (existing) {
-    const refreshed = refreshLedgerRollover(existing, userTier);
+    const refreshed = refreshLedgerRollover(existing, userTier, region);
     setBoundedMapEntry(
       userQuotaMemoryStore,
-      userId,
+      actorKey,
       refreshed,
       MAX_USER_QUOTA_LEDGER_ENTRIES,
     );
@@ -727,13 +928,13 @@ export async function getUserQuotaLedger(
   // 2. Check Upstash Redis
   if (redis) {
     try {
-      const raw = await redis.get<string | UserQuotaLedger>(`clutch:quota:ledger:${userId}`);
+      const raw = await redis.get<string | UserQuotaLedger>(`clutch:quota:ledger:${actorKey}`);
       if (raw) {
         const parsed: UserQuotaLedger = typeof raw === "string" ? JSON.parse(raw) : raw;
-        const refreshed = refreshLedgerRollover(parsed, userTier);
+        const refreshed = refreshLedgerRollover(parsed, userTier, region);
         setBoundedMapEntry(
           userQuotaMemoryStore,
-          userId,
+          actorKey,
           refreshed,
           MAX_USER_QUOTA_LEDGER_ENTRIES,
         );
@@ -749,30 +950,42 @@ export async function getUserQuotaLedger(
     try {
       const supabase = getSupabaseServerClient();
       if (supabase) {
-        const { data } = await supabase
+        let { data } = await supabase
           .from("user_quota_ledgers")
           .select("*")
-          .eq("user_id", userId)
+          .eq("user_id", actorKey)
           .maybeSingle();
+
+        if (!data && actorKey.startsWith("user:")) {
+          const rawId = actorKey.slice(5);
+          const legacyRes = await supabase
+            .from("user_quota_ledgers")
+            .select("*")
+            .eq("user_id", rawId)
+            .maybeSingle();
+          data = legacyRes.data;
+        }
 
         if (data) {
           const parsed: UserQuotaLedger = {
-            userId: data.user_id,
+            userId: actorKey,
             tier: (data.tier as UserTier) ?? userTier,
-            cogsSpentUsd: Number(data.cogs_spent_usd ?? 0),
+            cogsSpentUsd: Number(data.cogs_spent_usd ?? data.estimated_cogs_usd ?? 0),
+            estimatedCogsUsd: Number(data.estimated_cogs_usd ?? data.cogs_spent_usd ?? 0),
             cogsReservedUsd: Number(data.cogs_reserved_usd ?? 0),
-            cogsCeilingUsd: Number(data.cogs_ceiling_usd ?? limits.cogsCeilingUsd),
-            deckCreditsUsed: Number(data.deck_credits_used ?? 0),
+            cogsCeilingUsd: Number(data.cogs_ceiling_usd ?? effectiveCeiling),
+            deckCreditsUsed: Number(data.deck_credits_used ?? data.decks_generated_count ?? 0),
+            decksGeneratedCount: Number(data.decks_generated_count ?? data.deck_credits_used ?? 0),
             deckCreditsLimit: Number(data.deck_credits_limit ?? limits.newDeckCredits),
             dailyBurstUsed: Number(data.daily_burst_used ?? 0),
             dailyBurstDate: data.daily_burst_date ?? new Date().toISOString().slice(0, 10),
             unlockedDecks: (data.unlocked_decks as Record<string, UnlockedDeckRecord>) ?? {},
             updatedAt: data.updated_at,
           };
-          const refreshed = refreshLedgerRollover(parsed, userTier);
+          const refreshed = refreshLedgerRollover(parsed, userTier, region);
           setBoundedMapEntry(
             userQuotaMemoryStore,
-            userId,
+            actorKey,
             refreshed,
             MAX_USER_QUOTA_LEDGER_ENTRIES,
           );
@@ -787,12 +1000,14 @@ export async function getUserQuotaLedger(
   // 4. Default fresh ledger
   const today = new Date().toISOString().slice(0, 10);
   const fresh: UserQuotaLedger = {
-    userId,
+    userId: actorKey,
     tier: userTier,
     cogsSpentUsd: 0,
+    estimatedCogsUsd: 0,
     cogsReservedUsd: 0,
-    cogsCeilingUsd: limits.cogsCeilingUsd,
+    cogsCeilingUsd: effectiveCeiling,
     deckCreditsUsed: 0,
+    decksGeneratedCount: 0,
     deckCreditsLimit: limits.newDeckCredits,
     dailyBurstUsed: 0,
     dailyBurstDate: today,
@@ -801,7 +1016,7 @@ export async function getUserQuotaLedger(
   };
   setBoundedMapEntry(
     userQuotaMemoryStore,
-    userId,
+    actorKey,
     fresh,
     MAX_USER_QUOTA_LEDGER_ENTRIES,
   );
@@ -809,10 +1024,15 @@ export async function getUserQuotaLedger(
 }
 
 export async function saveUserQuotaLedger(ledger: UserQuotaLedger): Promise<void> {
+  const actorKey = resolveActorKey(ledger.userId);
+  ledger.userId = actorKey;
+  ledger.decksGeneratedCount = ledger.deckCreditsUsed;
+  ledger.estimatedCogsUsd = ledger.cogsSpentUsd;
   ledger.updatedAt = new Date().toISOString();
+
   setBoundedMapEntry(
     userQuotaMemoryStore,
-    ledger.userId,
+    actorKey,
     {
       ...ledger,
       unlockedDecks: { ...ledger.unlockedDecks },
@@ -822,7 +1042,7 @@ export async function saveUserQuotaLedger(ledger: UserQuotaLedger): Promise<void
 
   if (redis) {
     try {
-      await redis.set(`clutch:quota:ledger:${ledger.userId}`, JSON.stringify(ledger), {
+      await redis.set(`clutch:quota:ledger:${actorKey}`, JSON.stringify(ledger), {
         ex: 120 * 24 * 60 * 60, // 120 days TTL
       });
     } catch {
@@ -835,12 +1055,14 @@ export async function saveUserQuotaLedger(ledger: UserQuotaLedger): Promise<void
       const supabase = getSupabaseServerClient();
       if (supabase) {
         await supabase.from("user_quota_ledgers").upsert({
-          user_id: ledger.userId,
+          user_id: actorKey,
           tier: ledger.tier,
           cogs_spent_usd: ledger.cogsSpentUsd,
+          estimated_cogs_usd: ledger.cogsSpentUsd,
           cogs_reserved_usd: ledger.cogsReservedUsd,
           cogs_ceiling_usd: ledger.cogsCeilingUsd,
           deck_credits_used: ledger.deckCreditsUsed,
+          decks_generated_count: ledger.deckCreditsUsed,
           deck_credits_limit: ledger.deckCreditsLimit,
           daily_burst_used: ledger.dailyBurstUsed,
           daily_burst_date: ledger.dailyBurstDate,
@@ -854,230 +1076,405 @@ export async function saveUserQuotaLedger(ledger: UserQuotaLedger): Promise<void
   }
 }
 
+/**
+ * Checks and reserves deck generation quota.
+ * Wrapped with withActorQuotaLock to serialize concurrent requests per actor and eliminate TOCTOU races (SA-09).
+ */
 export async function checkAndReserveDeckQuota(
-  userId: string,
-  tier: ServerTier = "contender",
+  actor: ActorIdentifier,
+  tier: ServerTier | UserTier = "contender",
   contentHash: string,
   options?: CheckDeckQuotaOptions,
 ): Promise<DeckQuotaReservationResult> {
-  const userTier = toUserTier(tier);
-  const limits = TIER_LIMITS[userTier];
-  const ledger = await getUserQuotaLedger(userId, userTier);
+  const actorKey = resolveActorKey(actor);
+  const effectiveTier: ServerTier | UserTier =
+    typeof actor === "object" && actor !== null && actor.tier
+      ? (actor.tier as ServerTier | UserTier)
+      : tier;
+  const effectiveRegion: BillingRegion =
+    (options?.region as BillingRegion) ??
+    (typeof actor === "object" && actor !== null && actor.region ? (actor.region as BillingRegion) : "VN");
 
-  // 1. Check if contentHash exists in shared_deck_cache
-  let cachedDeck: SharedDeckCacheEntry | null = null;
-  if (options?.pipelineVersion) {
-    cachedDeck = await getSharedDeckCache({
-      contentHash,
-      language: options.language,
-      mode: options.mode,
-      focusHash: options.focusHash,
-      pipelineVersion: options.pipelineVersion,
-      fileSha256: options.fileSha256,
-    });
-  } else {
-    for (const [cKey, entry] of sharedDeckMemoryStore.entries()) {
-      if (entry.contentHash === contentHash) {
-        cachedDeck = entry;
-        setSharedDeckMemoryEntry(cKey, entry);
-        break;
+  return withActorQuotaLock(actorKey, async () => {
+    const userTier = toUserTier(effectiveTier);
+    const limits = TIER_LIMITS[userTier];
+    const ledger = await getUserQuotaLedger(actorKey, userTier, effectiveRegion);
+
+    const creditLimit =
+      options?.maxDeckCredits ?? options?.overrideLimit ?? ledger.deckCreditsLimit ?? limits.newDeckCredits;
+    const burstLimit = options?.burstLimit ?? limits.dailyDeckBurstLimit;
+
+    // 1. Check if contentHash exists in shared_deck_cache
+    let cachedDeck: SharedDeckCacheEntry | null = null;
+    if (options?.pipelineVersion) {
+      cachedDeck = await getSharedDeckCache({
+        contentHash,
+        language: options.language,
+        mode: options.mode,
+        focusHash: options.focusHash,
+        pipelineVersion: options.pipelineVersion,
+        fileSha256: options.fileSha256,
+      });
+    } else {
+      for (const [cKey, entry] of sharedDeckMemoryStore.entries()) {
+        if (entry.contentHash === contentHash) {
+          cachedDeck = entry;
+          setSharedDeckMemoryEntry(cKey, entry);
+          break;
+        }
       }
     }
-  }
 
-  const baseCogsStatus = evaluateCogsDegradation(
-    ledger.cogsSpentUsd,
-    ledger.cogsCeilingUsd,
-    0,
-    ledger.cogsReservedUsd,
-  );
+    const baseCogsStatus = evaluateCogsDegradation(
+      ledger.cogsSpentUsd,
+      ledger.cogsCeilingUsd,
+      0,
+      ledger.cogsReservedUsd,
+      effectiveRegion,
+    );
 
-  // Cache hit: consumes 0 deck credits and incurs $0.00 COGS!
-  if (cachedDeck) {
-    return {
-      allowed: true,
-      cacheHit: true,
-      creditConsumed: false,
-      isRegeneration: false,
-      creditsUsed: ledger.deckCreditsUsed,
-      creditsLimit: ledger.deckCreditsLimit,
-      dailyBurstUsed: ledger.dailyBurstUsed,
-      dailyBurstLimit: limits.dailyDeckBurstLimit,
-      cogsStatus: baseCogsStatus,
-      cachedDeck,
-      ledger,
-    };
-  }
-
-  // 2. Check if contentHash was already unlocked by this user in current period
-  const existingDeckRecord = ledger.unlockedDecks[contentHash];
-  if (existingDeckRecord) {
-    const maxRegens = existingDeckRecord.maxRegenerations ?? limits.freeRegenerationsPerDeck;
-    if (existingDeckRecord.regenerationsUsed >= maxRegens) {
+    // Cache hit: consumes 0 deck credits and incurs $0.00 COGS!
+    if (cachedDeck) {
       return {
-        allowed: false,
-        reason: "REGENERATION_LIMIT_EXCEEDED",
-        cacheHit: false,
+        allowed: true,
+        reserved: false,
+        cacheHit: true,
         creditConsumed: false,
-        isRegeneration: true,
+        isRegeneration: false,
         creditsUsed: ledger.deckCreditsUsed,
-        creditsLimit: ledger.deckCreditsLimit,
+        creditsLimit: creditLimit,
         dailyBurstUsed: ledger.dailyBurstUsed,
-        dailyBurstLimit: limits.dailyDeckBurstLimit,
+        dailyBurstLimit: burstLimit,
         cogsStatus: baseCogsStatus,
+        cachedDeck,
         ledger,
       };
     }
 
-    const estCost = options?.estimatedCostUsd ?? (userTier === "contender" ? 0.01 : 0.02);
-    const cogsStatus = evaluateCogsDegradation(
-      ledger.cogsSpentUsd,
-      ledger.cogsCeilingUsd,
-      estCost,
-      ledger.cogsReservedUsd,
-    );
+    // 2. Check if contentHash was already unlocked by this user in current period
+    const existingDeckRecord = ledger.unlockedDecks[contentHash];
+    if (existingDeckRecord) {
+      const maxRegens = existingDeckRecord.maxRegenerations ?? limits.freeRegenerationsPerDeck;
+      if (existingDeckRecord.regenerationsUsed >= maxRegens) {
+        return {
+          allowed: false,
+          reserved: false,
+          reason: "REGENERATION_LIMIT_EXCEEDED",
+          cacheHit: false,
+          creditConsumed: false,
+          isRegeneration: true,
+          creditsUsed: ledger.deckCreditsUsed,
+          creditsLimit: creditLimit,
+          dailyBurstUsed: ledger.dailyBurstUsed,
+          dailyBurstLimit: burstLimit,
+          cogsStatus: baseCogsStatus,
+          ledger,
+        };
+      }
 
-    if (cogsStatus.mode === "halted" || cogsStatus.serveCachedPoolsOnly) {
+      const estCost = options?.estimatedCostUsd ?? (userTier === "contender" ? 0.01 : 0.02);
+      const cogsStatus = evaluateCogsDegradation(
+        ledger.cogsSpentUsd,
+        ledger.cogsCeilingUsd,
+        estCost,
+        ledger.cogsReservedUsd,
+        effectiveRegion,
+      );
+
+      if (cogsStatus.mode === "halted" || cogsStatus.serveCachedPoolsOnly) {
+        return {
+          allowed: false,
+          reserved: false,
+          reason: "COGS_CEILING_EXCEEDED",
+          cacheHit: false,
+          creditConsumed: false,
+          isRegeneration: true,
+          creditsUsed: ledger.deckCreditsUsed,
+          creditsLimit: creditLimit,
+          dailyBurstUsed: ledger.dailyBurstUsed,
+          dailyBurstLimit: burstLimit,
+          cogsStatus,
+          ledger,
+        };
+      }
+
+      // Regeneration allowed without consuming new deck credit
+      existingDeckRecord.regenerationsUsed += 1;
+      ledger.cogsReservedUsd = Number((ledger.cogsReservedUsd + estCost).toFixed(6));
+      await saveUserQuotaLedger(ledger);
+
       return {
-        allowed: false,
-        reason: "COGS_CEILING_EXCEEDED",
+        allowed: true,
+        reserved: true,
         cacheHit: false,
         creditConsumed: false,
         isRegeneration: true,
         creditsUsed: ledger.deckCreditsUsed,
-        creditsLimit: ledger.deckCreditsLimit,
+        creditsLimit: creditLimit,
         dailyBurstUsed: ledger.dailyBurstUsed,
-        dailyBurstLimit: limits.dailyDeckBurstLimit,
+        dailyBurstLimit: burstLimit,
         cogsStatus,
         ledger,
       };
     }
 
-    // Regeneration allowed without consuming new deck credit
-    existingDeckRecord.regenerationsUsed += 1;
+    // 3. New distinct document (contentHash): enforce deck credits, daily burst, and COGS ceiling
+    if (ledger.deckCreditsUsed >= creditLimit) {
+      return {
+        allowed: false,
+        reserved: false,
+        reason: "DECK_CREDITS_EXCEEDED",
+        cacheHit: false,
+        creditConsumed: false,
+        isRegeneration: false,
+        creditsUsed: ledger.deckCreditsUsed,
+        creditsLimit: creditLimit,
+        dailyBurstUsed: ledger.dailyBurstUsed,
+        dailyBurstLimit: burstLimit,
+        cogsStatus: baseCogsStatus,
+        ledger,
+      };
+    }
+
+    if (ledger.dailyBurstUsed >= burstLimit) {
+      return {
+        allowed: false,
+        reserved: false,
+        reason: "DAILY_BURST_EXCEEDED",
+        cacheHit: false,
+        creditConsumed: false,
+        isRegeneration: false,
+        creditsUsed: ledger.deckCreditsUsed,
+        creditsLimit: creditLimit,
+        dailyBurstUsed: ledger.dailyBurstUsed,
+        dailyBurstLimit: burstLimit,
+        cogsStatus: baseCogsStatus,
+        ledger,
+      };
+    }
+
+    const estCost = options?.estimatedCostUsd ?? (userTier === "contender" ? 0.02 : 0.035);
+    const cogsStatus = evaluateCogsDegradation(
+      ledger.cogsSpentUsd,
+      ledger.cogsCeilingUsd,
+      estCost,
+      ledger.cogsReservedUsd,
+      effectiveRegion,
+    );
+
+    if (cogsStatus.mode === "halted" || cogsStatus.serveCachedPoolsOnly) {
+      return {
+        allowed: false,
+        reserved: false,
+        reason: "COGS_CEILING_EXCEEDED",
+        cacheHit: false,
+        creditConsumed: false,
+        isRegeneration: false,
+        creditsUsed: ledger.deckCreditsUsed,
+        creditsLimit: creditLimit,
+        dailyBurstUsed: ledger.dailyBurstUsed,
+        dailyBurstLimit: burstLimit,
+        cogsStatus,
+        ledger,
+      };
+    }
+
+    // Reserve COGS and consume 1 deck credit and 1 daily burst
+    ledger.deckCreditsUsed += 1;
+    ledger.decksGeneratedCount = ledger.deckCreditsUsed;
+    ledger.dailyBurstUsed += 1;
     ledger.cogsReservedUsd = Number((ledger.cogsReservedUsd + estCost).toFixed(6));
+    ledger.unlockedDecks[contentHash] = {
+      unlockedAt: new Date().toISOString(),
+      regenerationsUsed: 0,
+      maxRegenerations: limits.freeRegenerationsPerDeck,
+    };
+
     await saveUserQuotaLedger(ledger);
 
     return {
       allowed: true,
+      reserved: true,
       cacheHit: false,
-      creditConsumed: false,
-      isRegeneration: true,
+      creditConsumed: true,
+      isRegeneration: false,
       creditsUsed: ledger.deckCreditsUsed,
-      creditsLimit: ledger.deckCreditsLimit,
+      creditsLimit: creditLimit,
       dailyBurstUsed: ledger.dailyBurstUsed,
-      dailyBurstLimit: limits.dailyDeckBurstLimit,
+      dailyBurstLimit: burstLimit,
       cogsStatus,
       ledger,
     };
-  }
-
-  // 3. New distinct document (contentHash): enforce deck credits, daily burst, and COGS ceiling
-  if (ledger.deckCreditsUsed >= limits.newDeckCredits) {
-    return {
-      allowed: false,
-      reason: "DECK_CREDITS_EXCEEDED",
-      cacheHit: false,
-      creditConsumed: false,
-      isRegeneration: false,
-      creditsUsed: ledger.deckCreditsUsed,
-      creditsLimit: ledger.deckCreditsLimit,
-      dailyBurstUsed: ledger.dailyBurstUsed,
-      dailyBurstLimit: limits.dailyDeckBurstLimit,
-      cogsStatus: baseCogsStatus,
-      ledger,
-    };
-  }
-
-  if (ledger.dailyBurstUsed >= limits.dailyDeckBurstLimit) {
-    return {
-      allowed: false,
-      reason: "DAILY_BURST_EXCEEDED",
-      cacheHit: false,
-      creditConsumed: false,
-      isRegeneration: false,
-      creditsUsed: ledger.deckCreditsUsed,
-      creditsLimit: ledger.deckCreditsLimit,
-      dailyBurstUsed: ledger.dailyBurstUsed,
-      dailyBurstLimit: limits.dailyDeckBurstLimit,
-      cogsStatus: baseCogsStatus,
-      ledger,
-    };
-  }
-
-  const estCost = options?.estimatedCostUsd ?? (userTier === "contender" ? 0.02 : 0.035);
-  const cogsStatus = evaluateCogsDegradation(
-    ledger.cogsSpentUsd,
-    ledger.cogsCeilingUsd,
-    estCost,
-    ledger.cogsReservedUsd,
-  );
-
-  if (cogsStatus.mode === "halted" || cogsStatus.serveCachedPoolsOnly) {
-    return {
-      allowed: false,
-      reason: "COGS_CEILING_EXCEEDED",
-      cacheHit: false,
-      creditConsumed: false,
-      isRegeneration: false,
-      creditsUsed: ledger.deckCreditsUsed,
-      creditsLimit: ledger.deckCreditsLimit,
-      dailyBurstUsed: ledger.dailyBurstUsed,
-      dailyBurstLimit: limits.dailyDeckBurstLimit,
-      cogsStatus,
-      ledger,
-    };
-  }
-
-  // Reserve COGS and consume 1 deck credit and 1 daily burst
-  ledger.deckCreditsUsed += 1;
-  ledger.dailyBurstUsed += 1;
-  ledger.cogsReservedUsd = Number((ledger.cogsReservedUsd + estCost).toFixed(6));
-  ledger.unlockedDecks[contentHash] = {
-    unlockedAt: new Date().toISOString(),
-    regenerationsUsed: 0,
-    maxRegenerations: limits.freeRegenerationsPerDeck,
-  };
-
-  await saveUserQuotaLedger(ledger);
-
-  return {
-    allowed: true,
-    cacheHit: false,
-    creditConsumed: true,
-    isRegeneration: false,
-    creditsUsed: ledger.deckCreditsUsed,
-    creditsLimit: limits.newDeckCredits,
-    dailyBurstUsed: ledger.dailyBurstUsed,
-    dailyBurstLimit: limits.dailyDeckBurstLimit,
-    cogsStatus,
-    ledger,
-  };
+  });
 }
 
+/**
+ * Records actual COGS expenditure after AI generation completes, releasing reserved amount.
+ * Serialized per actorKey to eliminate race conditions on cumulative cost totals.
+ */
 export async function recordDeckGenerationCogs(
-  userId: string,
-  tier: ServerTier,
+  actor: ActorIdentifier,
+  tier: ServerTier | UserTier = "contender",
   actualCostUsd: number,
   reservedCostUsd?: number,
+  region?: BillingRegion,
 ): Promise<{ ledger: UserQuotaLedger; cogsStatus: CogsBudgetStatus }> {
-  const userTier = toUserTier(tier);
-  const ledger = await getUserQuotaLedger(userId, userTier);
+  const actorKey = resolveActorKey(actor);
+  const effectiveTier =
+    typeof actor === "object" && actor !== null && actor.tier
+      ? (actor.tier as ServerTier | UserTier)
+      : tier;
 
-  const release = reservedCostUsd !== undefined ? reservedCostUsd : actualCostUsd;
-  ledger.cogsReservedUsd = Math.max(0, Number((ledger.cogsReservedUsd - release).toFixed(6)));
-  ledger.cogsSpentUsd = Number((ledger.cogsSpentUsd + actualCostUsd).toFixed(6));
-  ledger.updatedAt = new Date().toISOString();
+  return withActorQuotaLock(actorKey, async () => {
+    const userTier = toUserTier(effectiveTier);
+    const ledger = await getUserQuotaLedger(actorKey, userTier, region);
 
-  const cogsStatus = evaluateCogsDegradation(
-    ledger.cogsSpentUsd,
-    ledger.cogsCeilingUsd,
-    0,
-    ledger.cogsReservedUsd,
-  );
+    const release = reservedCostUsd !== undefined ? reservedCostUsd : actualCostUsd;
+    ledger.cogsReservedUsd = Math.max(0, Number((ledger.cogsReservedUsd - release).toFixed(6)));
+    ledger.cogsSpentUsd = Number((ledger.cogsSpentUsd + actualCostUsd).toFixed(6));
+    ledger.estimatedCogsUsd = ledger.cogsSpentUsd;
+    ledger.updatedAt = new Date().toISOString();
 
-  await saveUserQuotaLedger(ledger);
-  return { ledger, cogsStatus };
+    const cogsStatus = evaluateCogsDegradation(
+      ledger.cogsSpentUsd,
+      ledger.cogsCeilingUsd,
+      0,
+      ledger.cogsReservedUsd,
+      region,
+    );
+
+    await saveUserQuotaLedger(ledger);
+    return { ledger, cogsStatus };
+  });
+}
+
+export interface RollbackDeckQuotaParams {
+  userId?: string | null;
+  ip?: string | null;
+  tier?: ServerTier | UserTier | string | null;
+  region?: BillingRegion | string | null;
+  authToken?: string | null;
+  contentHash?: string | null;
+  reservedCostUsd?: number | null;
+  isRegeneration?: boolean | null;
+}
+
+/**
+ * Rolls back a reserved deck quota slot and COGS reservation on upstream AI failure (SA-09, SA2-05).
+ * Safely decrements decksGeneratedCount / deckCreditsUsed / dailyBurstUsed (clamped at >= 0)
+ * ONLY when !isRegeneration. For regenerations, credits are left intact and regenerationsUsed is decremented.
+ */
+export async function rollbackDeckQuotaReservation(
+  actorOrParams: ActorIdentifier | RollbackDeckQuotaParams,
+  tier?: ServerTier | UserTier | string | null,
+  contentHash?: string | null,
+  reservedCostUsd?: number | null,
+  region?: BillingRegion | boolean | null,
+  isRegeneration?: boolean | null,
+): Promise<{ success: boolean; ledger: UserQuotaLedger; decksGeneratedCount: number }> {
+  const actorKey = resolveActorKey(actorOrParams);
+
+  let effectiveTier: ServerTier | UserTier | string | null = tier ?? "contender";
+  let targetContentHash: string | null = contentHash ?? null;
+  let targetReservedCost: number | null = reservedCostUsd ?? null;
+  let isRegen: boolean | null = null;
+  let effectiveRegion: BillingRegion = "VN";
+
+  if (typeof region === "boolean") {
+    isRegen = region;
+  } else if (region && typeof region === "string") {
+    effectiveRegion = region as BillingRegion;
+  }
+
+  if (typeof isRegeneration === "boolean" && isRegen === null) {
+    isRegen = isRegeneration;
+  }
+
+  if (typeof actorOrParams === "object" && actorOrParams !== null) {
+    if ("tier" in actorOrParams && actorOrParams.tier) {
+      effectiveTier = actorOrParams.tier;
+    }
+    if ("contentHash" in actorOrParams && actorOrParams.contentHash) {
+      targetContentHash = actorOrParams.contentHash;
+    }
+    if ("reservedCostUsd" in actorOrParams && actorOrParams.reservedCostUsd !== undefined && actorOrParams.reservedCostUsd !== null) {
+      targetReservedCost = actorOrParams.reservedCostUsd;
+    }
+    if ("isRegeneration" in actorOrParams && actorOrParams.isRegeneration !== undefined && actorOrParams.isRegeneration !== null) {
+      isRegen = Boolean(actorOrParams.isRegeneration);
+    }
+    if ("region" in actorOrParams && actorOrParams.region && typeof actorOrParams.region === "string") {
+      effectiveRegion = actorOrParams.region as BillingRegion;
+    }
+  }
+
+  const isRegenActive = Boolean(isRegen);
+
+  return withActorQuotaLock(actorKey, async () => {
+    const userTier = toUserTier(effectiveTier);
+    const ledger = await getUserQuotaLedger(actorKey, userTier, effectiveRegion);
+
+    // CRITICAL (SA2-05): Only decrement deckCreditsUsed, decksGeneratedCount, and dailyBurstUsed
+    // when NOT a regeneration. Regeneration reservations consume 0 deck credits and 0 daily burst,
+    // so rolling back must not refund credits or burst limits (infinite credit refund exploit).
+    if (!isRegenActive) {
+      ledger.deckCreditsUsed = Math.max(0, (ledger.deckCreditsUsed ?? 0) - 1);
+      ledger.decksGeneratedCount = ledger.deckCreditsUsed;
+      ledger.dailyBurstUsed = Math.max(0, (ledger.dailyBurstUsed ?? 0) - 1);
+    }
+
+    // Roll back reserved COGS if specified or default
+    const estToRelease =
+      typeof targetReservedCost === "number"
+        ? targetReservedCost
+        : userTier === "contender"
+          ? (isRegenActive ? 0.01 : 0.02)
+          : (isRegenActive ? 0.02 : 0.035);
+
+    ledger.cogsReservedUsd = Math.max(
+      0,
+      Number(((ledger.cogsReservedUsd ?? 0) - estToRelease).toFixed(6)),
+    );
+
+    // If contentHash was passed, adjust unlockedDecks
+    if (targetContentHash && ledger.unlockedDecks[targetContentHash]) {
+      if (isRegenActive) {
+        ledger.unlockedDecks[targetContentHash].regenerationsUsed = Math.max(
+          0,
+          (ledger.unlockedDecks[targetContentHash].regenerationsUsed ?? 1) - 1,
+        );
+      } else if (ledger.unlockedDecks[targetContentHash].regenerationsUsed === 0) {
+        delete ledger.unlockedDecks[targetContentHash];
+      }
+    }
+
+    ledger.updatedAt = new Date().toISOString();
+    await saveUserQuotaLedger(ledger);
+
+    return {
+      success: true,
+      ledger,
+      decksGeneratedCount: ledger.deckCreditsUsed,
+    };
+  });
+}
+
+/**
+ * Checks notes rate limits with in-process lock to prevent concurrent bypass.
+ */
+export async function checkNotesRateLimit(
+  actor: ActorIdentifier,
+  tier?: ServerTier | UserTier | string | null,
+): Promise<RateLimitResult> {
+  const actorKey = resolveActorKey(actor);
+  const resolvedTier: ServerTier =
+    typeof actor === "object" && actor !== null && actor.tier
+      ? (actor.tier as ServerTier)
+      : ((tier as ServerTier) ?? "contender");
+
+  return withActorQuotaLock(actorKey, async () => {
+    return checkRateLimit(actorKey, "notes", resolvedTier);
+  });
 }
 
 export function resetQuotaLedgersForTests(): void {
@@ -1085,4 +1482,5 @@ export function resetQuotaLedgersForTests(): void {
   localMemoryStore.clear();
   sharedDeckMemoryStore.clear();
   fileSha256ToCompositeMap.clear();
+  actorLockMap.clear();
 }

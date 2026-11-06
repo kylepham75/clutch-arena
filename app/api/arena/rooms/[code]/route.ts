@@ -8,6 +8,18 @@ export async function GET(
   props: { params: Promise<{ code: string }> },
 ) {
   const { code } = await props.params;
+  if (!/^[A-Z0-9]{6}$/i.test(code)) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: {
+          code: "INVALID_ROOM_CODE",
+          message: "Invalid arena room code.",
+        },
+      },
+      { status: 400 },
+    );
+  }
 
   const partyHost = getPartyHost();
   if (partyHost) {

@@ -266,7 +266,7 @@ export function UploadPanel({
       if (session?.access_token) {
         headers["Authorization"] = `Bearer ${session.access_token}`;
       }
-      if (tier && tier !== "contender") {
+      if (process.env.NODE_ENV !== "production" && tier && tier !== "contender") {
         headers["x-test-tier"] = tier;
       }
 

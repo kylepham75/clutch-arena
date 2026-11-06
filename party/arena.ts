@@ -12,20 +12,23 @@ import {
   type ServerRoom,
 } from "@/lib/multiplayer/room-manager";
 import { getMaxArenaPlayersForTier, type UserTier } from "@/lib/pricing/tiers";
-import type {
-  ArenaPlayer,
-  ArenaRoomState,
-  MultiplayerQuestion,
-  RevealedFeedback,
-  RoomAction,
-  RoomStatus,
+import {
+  createRoomSchema,
+  joinRoomSchema,
+  roomActionSchema,
+  type ArenaPlayer,
+  type ArenaRoomState,
+  type MultiplayerQuestion,
+  type RevealedFeedback,
+  type RoomAction,
+  type RoomStatus,
 } from "@/lib/schemas/multiplayer";
 import type { QuestionItem, StudyPack } from "@/lib/schemas/question";
 
-const CORS_HEADERS = {
+export const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, x-player-token",
 };
 
 export const STALE_LOBBY_TIMEOUT_MS = 15 * 60_000;
@@ -48,6 +51,7 @@ export type PartyRoomData = {
   feedbackDeadline: number;
   countdownEndsAt: number;
   players: Record<string, ArenaPlayer>;
+  playerTokens?: Record<string, string>;
   createdAt: string;
   podium: ArenaRoomState["podium"];
 };
@@ -68,6 +72,7 @@ export default class ArenaServer implements Party.Server {
   private roundTimeout: any = null;
   private feedbackTimeout: any = null;
   private countdownTimeout: any = null;
+  private connectionPlayers: Map<string, string> = new Map();
 
   // Directory state if this instance is running as the "__lobby__" room
   private directory: Map<string, OpenRoomSummary> = new Map();
@@ -99,6 +104,7 @@ export default class ArenaServer implements Party.Server {
         lastActiveAt: stored.lastActiveAt ?? Date.now(),
         roundHistory: stored.roundHistory ?? {},
         earlyEliminatedIds: new Set(earlyEliminated),
+        playerTokens: stored.playerTokens ?? {},
       };
       await this.cleanupIfStaleLobby();
     }
@@ -116,14 +122,23 @@ export default class ArenaServer implements Party.Server {
     const code = this.state.code;
     this.clearTimers();
     this.state = null;
+    this.connectionPlayers.clear();
     await this.room.storage.deleteAll();
     for (const conn of this.room.getConnections()) {
       conn.close();
     }
     try {
+      const secret =
+        (this.room.env as any)?.PARTYKIT_INTERNAL_SECRET ||
+        process.env.PARTYKIT_INTERNAL_SECRET ||
+        "1";
       await this.room.context.parties.arena
         .get("__lobby__")
-        .fetch({ method: "DELETE", body: JSON.stringify({ code }) });
+        .fetch({
+          method: "DELETE",
+          headers: { "Content-Type": "application/json", "x-party-internal": secret },
+          body: JSON.stringify({ code }),
+        });
     } catch {
       // directory notification is non-blocking
     }
@@ -154,17 +169,50 @@ export default class ArenaServer implements Party.Server {
     }
   }
 
+  onClose(conn: Party.Connection) {
+    this.connectionPlayers.delete(conn.id);
+  }
+
   async onMessage(message: string, sender: Party.Connection) {
     try {
       const parsed = JSON.parse(message);
 
       if (parsed.type === "INIT_ROOM") {
-        const { hostPlayer } = this.initializeRoom(parsed.payload);
+        if (this.state !== null) {
+          sender.send(
+            JSON.stringify({
+              type: "ERROR",
+              code: "ALREADY_INITIALIZED",
+              message: "Room is already initialized.",
+            }),
+          );
+          return;
+        }
+
+        const parsedPayload = createRoomSchema.safeParse(parsed.payload);
+        if (!parsedPayload.success) {
+          sender.send(
+            JSON.stringify({
+              type: "ERROR",
+              code: "INVALID_PAYLOAD",
+              message: "Invalid room creation payload.",
+            }),
+          );
+          return;
+        }
+
+        const { hostPlayer, playerToken } = this.initializeRoom({
+          ...parsedPayload.data,
+          hostTier: "contender",
+          maxPlayers: Math.min(parsedPayload.data.maxPlayers ?? 8, 8),
+        });
+        this.connectionPlayers.set(sender.id, hostPlayer.id);
         sender.send(
           JSON.stringify({
             type: "INIT_SUCCESS",
             code: this.room.id,
             hostPlayer,
+            playerToken,
             room: this.getClientState(),
           }),
         );
@@ -175,6 +223,19 @@ export default class ArenaServer implements Party.Server {
       }
 
       if (parsed.type === "JOIN_ROOM") {
+        const parsedJoin = joinRoomSchema.safeParse(parsed.payload);
+        if (!parsedJoin.success) {
+          sender.send(
+            JSON.stringify({
+              type: "ERROR",
+              code: "INVALID_PAYLOAD",
+              message: "Invalid join payload.",
+              errors: parsedJoin.error.flatten(),
+            }),
+          );
+          return;
+        }
+
         if (
           this.state &&
           Object.keys(this.state.players).length >= (this.state.maxPlayers || 8)
@@ -190,13 +251,15 @@ export default class ArenaServer implements Party.Server {
           );
           return;
         }
-        const player = this.joinPlayer(parsed.payload);
+        const player = this.joinPlayer(parsedJoin.data);
         if (player) {
+          this.connectionPlayers.set(sender.id, player.id);
           sender.send(
             JSON.stringify({
               type: "JOIN_SUCCESS",
               code: this.room.id,
               player,
+              playerToken: this.state!.playerTokens?.[player.id],
               room: this.getClientState(),
             }),
           );
@@ -215,7 +278,68 @@ export default class ArenaServer implements Party.Server {
       }
 
       if (parsed.type === "ACTION") {
-        const { playerId, action } = parsed;
+        const parsedAction = roomActionSchema.safeParse(parsed.action);
+        if (!parsedAction.success) {
+          sender.send(
+            JSON.stringify({
+              type: "ERROR",
+              code: "INVALID_ACTION",
+              message: "Invalid room action.",
+              errors: parsedAction.error.flatten(),
+            }),
+          );
+          return;
+        }
+
+        const action = parsedAction.data;
+        const { playerId } = parsed;
+        if (this.connectionPlayers.has(sender.id)) {
+          if (this.connectionPlayers.get(sender.id) !== playerId) {
+            sender.send(
+              JSON.stringify({
+                type: "ERROR",
+                code: "UNAUTHORIZED_PLAYER",
+                message: "Unauthorized player action.",
+              }),
+            );
+            return;
+          }
+          if (
+            parsed.token !== undefined &&
+            parsed.token !== null &&
+            parsed.token !== this.state?.playerTokens?.[playerId]
+          ) {
+            sender.send(
+              JSON.stringify({
+                type: "ERROR",
+                code: "UNAUTHORIZED_PLAYER",
+                message: "Unauthorized player action.",
+              }),
+            );
+            return;
+          }
+        } else {
+          const expectedToken = this.state?.playerTokens?.[playerId];
+          const isPlayerBoundToOtherConn = Array.from(this.connectionPlayers.entries()).some(
+            ([connId, boundPlayerId]) => connId !== sender.id && boundPlayerId === playerId,
+          );
+          if (
+            !expectedToken ||
+            !parsed.token ||
+            parsed.token !== expectedToken ||
+            isPlayerBoundToOtherConn
+          ) {
+            sender.send(
+              JSON.stringify({
+                type: "ERROR",
+                code: "UNAUTHORIZED_PLAYER",
+                message: "Unauthorized player action.",
+              }),
+            );
+            return;
+          }
+          this.connectionPlayers.set(sender.id, playerId);
+        }
         const ok = this.handleAction(playerId, action);
         if (ok) {
           await this.persist();
@@ -243,6 +367,20 @@ export default class ArenaServer implements Party.Server {
     }
   }
 
+  private isInternalAuthorized(req: Party.Request): boolean {
+    const configuredSecret =
+      (this.room.env as any)?.PARTYKIT_INTERNAL_SECRET ||
+      process.env.PARTYKIT_INTERNAL_SECRET;
+    const providedSecret =
+      req.headers.get("x-party-internal") ||
+      req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+
+    if (configuredSecret) {
+      return Boolean(providedSecret && providedSecret === configuredSecret);
+    }
+    return providedSecret === "1";
+  }
+
   // -------------------------------------------------------------
   // HTTP REST API Handlers (Supports Vercel & CORS)
   // -------------------------------------------------------------
@@ -260,11 +398,32 @@ export default class ArenaServer implements Party.Server {
         return Response.json({ ok: true, rooms }, { headers: CORS_HEADERS });
       }
 
+      if (req.method === "POST" || req.method === "DELETE") {
+        if (!this.isInternalAuthorized(req)) {
+          return Response.json(
+            {
+              ok: false,
+              error: {
+                code: "FORBIDDEN",
+                message: "Direct lobby mutation is forbidden.",
+              },
+            },
+            { status: 403, headers: CORS_HEADERS },
+          );
+        }
+      }
+
       if (req.method === "POST") {
         const summary: OpenRoomSummary = await req.json();
         if (summary.status === "podium") {
           this.directory.delete(summary.code);
         } else {
+          if (!this.directory.has(summary.code) && this.directory.size >= 500) {
+            const oldestKey = this.directory.keys().next().value;
+            if (oldestKey !== undefined) {
+              this.directory.delete(oldestKey);
+            }
+          }
           this.directory.set(summary.code, summary);
         }
         await this.room.storage.put("directory", Object.fromEntries(this.directory));
@@ -297,8 +456,33 @@ export default class ArenaServer implements Party.Server {
       const pathname = url.pathname;
 
       if (pathname.endsWith("/init") || pathname.endsWith("/create")) {
+        if (!this.isInternalAuthorized(req)) {
+          return Response.json(
+            {
+              ok: false,
+              error: {
+                code: "UNAUTHORIZED",
+                message: "Direct room initialization requires server authorization.",
+              },
+            },
+            { status: 401, headers: CORS_HEADERS },
+          );
+        }
+
+        if (this.state !== null) {
+          return Response.json(
+            {
+              ok: false,
+              error: {
+                code: "ALREADY_INITIALIZED",
+                message: "Room is already initialized.",
+              },
+            },
+            { status: 409, headers: CORS_HEADERS },
+          );
+        }
         const body = (await req.json()) as any;
-        const { hostPlayer } = this.initializeRoom(body);
+        const { hostPlayer, playerToken } = this.initializeRoom(body);
         await this.persist();
         this.broadcastRoom();
         await this.notifyDirectory();
@@ -308,6 +492,7 @@ export default class ArenaServer implements Party.Server {
             code: this.room.id,
             hostPlayer,
             player: hostPlayer,
+            playerToken,
             room: this.getClientState(),
           },
           { status: 201, headers: CORS_HEADERS },
@@ -316,6 +501,13 @@ export default class ArenaServer implements Party.Server {
 
       if (pathname.endsWith("/join")) {
         const body = (await req.json()) as any;
+        const parsedJoin = joinRoomSchema.safeParse(body);
+        if (!parsedJoin.success) {
+          return Response.json(
+            { ok: false, error: parsedJoin.error.flatten() },
+            { status: 400, headers: CORS_HEADERS },
+          );
+        }
         if (!this.state) {
           return Response.json(
             { ok: false, error: { message: `Arena room "${this.room.id}" not found.` } },
@@ -342,7 +534,7 @@ export default class ArenaServer implements Party.Server {
             { status: 403, headers: CORS_HEADERS },
           );
         }
-        const player = this.joinPlayer(body);
+        const player = this.joinPlayer(parsedJoin.data);
         if (!player) {
           return Response.json(
             { ok: false, error: { message: "Cannot join room." } },
@@ -353,14 +545,40 @@ export default class ArenaServer implements Party.Server {
         this.broadcastRoom();
         await this.notifyDirectory();
         return Response.json(
-          { ok: true, player, room: this.getClientState() },
+          {
+            ok: true,
+            player,
+            playerToken: this.state.playerTokens?.[player.id],
+            room: this.getClientState(),
+          },
           { headers: CORS_HEADERS },
         );
       }
 
       if (pathname.endsWith("/action")) {
         const body = (await req.json()) as any;
-        const ok = this.handleAction(body.playerId, body.action);
+        const parsedAction = roomActionSchema.safeParse(body?.action);
+        if (!parsedAction.success) {
+          return Response.json(
+            { ok: false, error: parsedAction.error.flatten() },
+            { status: 400, headers: CORS_HEADERS },
+          );
+        }
+        const providedToken = body.token ?? req.headers.get("x-player-token");
+        const expectedToken = this.state?.playerTokens?.[body.playerId];
+        if (!expectedToken || !providedToken || providedToken !== expectedToken) {
+          return Response.json(
+            {
+              ok: false,
+              error: {
+                code: "UNAUTHORIZED_PLAYER",
+                message: "Invalid player token.",
+              },
+            },
+            { status: 403, headers: CORS_HEADERS },
+          );
+        }
+        const ok = this.handleAction(body.playerId, parsedAction.data);
         if (!ok) {
           return Response.json(
             { ok: false, error: { message: "Action rejected." } },
@@ -390,7 +608,7 @@ export default class ArenaServer implements Party.Server {
     pack?: StudyPack;
     maxPlayers?: number;
     hostTier?: UserTier;
-  }): { hostPlayer: ArenaPlayer } {
+  }): { hostPlayer: ArenaPlayer; playerToken: string } {
     this.clearTimers();
 
     const hostPlayer: ArenaPlayer = {
@@ -407,6 +625,7 @@ export default class ArenaServer implements Party.Server {
       status: "waiting",
       lastAnswer: null,
     };
+    const hostToken = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
 
     const pack = params.pack || mockMicroeconomics;
     const hostTier: UserTier = params.hostTier || "contender";
@@ -445,11 +664,14 @@ export default class ArenaServer implements Party.Server {
       players: {
         [hostPlayer.id]: hostPlayer,
       },
+      playerTokens: {
+        [hostPlayer.id]: hostToken,
+      },
       createdAt: new Date().toISOString(),
       podium: null,
     };
 
-    return { hostPlayer };
+    return { hostPlayer, playerToken: hostToken };
   }
 
   private joinPlayer(params: { nickname: string; avatar?: string }): ArenaPlayer | null {
@@ -470,8 +692,13 @@ export default class ArenaServer implements Party.Server {
       status: "waiting",
       lastAnswer: null,
     };
+    const playerToken = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
 
     this.state.players[player.id] = player;
+    if (!this.state.playerTokens) {
+      this.state.playerTokens = {};
+    }
+    this.state.playerTokens[player.id] = playerToken;
     return player;
   }
 
@@ -795,7 +1022,7 @@ export default class ArenaServer implements Party.Server {
     return this.state.pack.questions[this.state.currentQuestionIndex];
   }
 
-  private getClientState(): ArenaRoomState {
+  private getClientState(_forPlayerId?: string): ArenaRoomState {
     if (!this.state) {
       throw new Error("No room state initialized.");
     }
@@ -837,6 +1064,55 @@ export default class ArenaServer implements Party.Server {
       }
     }
 
+    const clientPlayers: Record<string, ArenaPlayer> =
+      this.state.status === "answering"
+        ? Object.fromEntries(
+            Object.entries(this.state.players).map(([id, p]) => {
+              const isSelf = Boolean(_forPlayerId && _forPlayerId === p.id);
+              if (!p.lastAnswer) {
+                return [
+                  id,
+                  {
+                    ...p,
+                    lastAnswer: null,
+                  },
+                ];
+              }
+
+              const maskedScore = p.score - (p.lastAnswer.points || 0);
+              const maskedLives = !p.lastAnswer.correct ? p.lives + 1 : p.lives;
+
+              let preStreak = 0;
+              for (let q = this.state!.currentQuestionIndex - 1; q >= 0; q--) {
+                if (this.state!.roundHistory?.[q]?.[p.id]?.correct) {
+                  preStreak++;
+                } else {
+                  break;
+                }
+              }
+              const maskedStreak = preStreak;
+              const maskedStatus = p.status === "eliminated" ? "submitted" : p.status;
+
+              return [
+                id,
+                {
+                  ...p,
+                  score: isSelf ? p.score : maskedScore,
+                  lives: isSelf ? p.lives : maskedLives,
+                  streak: isSelf ? p.streak : maskedStreak,
+                  status: isSelf ? p.status : maskedStatus,
+                  lastAnswer: {
+                    selected: isSelf ? p.lastAnswer.selected : null,
+                    correct: null,
+                    points: 0,
+                    answeredAtMs: p.lastAnswer.answeredAtMs,
+                  },
+                },
+              ];
+            }),
+          )
+        : this.state.players;
+
     return {
       code: this.state.code,
       title: this.state.title,
@@ -847,7 +1123,7 @@ export default class ArenaServer implements Party.Server {
       roundDeadline: this.state.roundDeadline,
       feedbackDeadline: this.state.feedbackDeadline,
       countdownEndsAt: this.state.countdownEndsAt,
-      players: this.state.players,
+      players: clientPlayers,
       currentQuestion,
       revealedFeedback,
       createdAt: this.state.createdAt,
@@ -888,10 +1164,17 @@ export default class ArenaServer implements Party.Server {
   private async notifyDirectory() {
     if (!this.state || this.room.id === "__lobby__") return;
     try {
+      const secret =
+        (this.room.env as any)?.PARTYKIT_INTERNAL_SECRET ||
+        process.env.PARTYKIT_INTERNAL_SECRET ||
+        "1";
       const lobby = this.room.context.parties.arena.get("__lobby__");
       await lobby.fetch({
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-party-internal": secret,
+        },
         body: JSON.stringify({
           code: this.state.code,
           title: this.state.title,

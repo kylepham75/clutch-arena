@@ -1,7 +1,23 @@
 -- ClutchArena: Shared Deck Cache & Durable COGS Quota Migration
 -- Stage 1: Fast-path caching & unit economic COGS enforcement
 
+-- ============================================================================
+-- Helper: Identify service_role / internal admin context
+-- ============================================================================
+CREATE OR REPLACE FUNCTION public.is_service_role()
+RETURNS boolean AS $$
+BEGIN
+  RETURN (
+    COALESCE(current_setting('request.jwt.claim.role', true), '') = 'service_role'
+    OR (auth.jwt() ->> 'role') = 'service_role'
+    OR current_user IN ('postgres', 'service_role', 'supabase_admin')
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp;
+
+-- ============================================================================
 -- 1. Create `public.shared_deck_cache` table
+-- ============================================================================
 CREATE TABLE IF NOT EXISTS public.shared_deck_cache (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   content_hash text NOT NULL,
@@ -31,30 +47,36 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_shared_deck_cache_composite
 -- Enable RLS on shared_deck_cache
 ALTER TABLE public.shared_deck_cache ENABLE ROW LEVEL SECURITY;
 
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'shared_deck_cache' AND policyname = 'Anyone can view shared deck cache'
-  ) THEN
-    CREATE POLICY "Anyone can view shared deck cache"
-      ON public.shared_deck_cache FOR SELECT USING (true);
-  END IF;
+-- Clean up any legacy or permissive policies
+DROP POLICY IF EXISTS "Anyone can view shared deck cache" ON public.shared_deck_cache;
+DROP POLICY IF EXISTS "Authenticated or service can insert shared deck cache" ON public.shared_deck_cache;
+DROP POLICY IF EXISTS "Authenticated or service can update shared deck cache" ON public.shared_deck_cache;
+DROP POLICY IF EXISTS "Service role can select shared deck cache" ON public.shared_deck_cache;
+DROP POLICY IF EXISTS "Service role can insert shared deck cache" ON public.shared_deck_cache;
+DROP POLICY IF EXISTS "Service role can update shared deck cache" ON public.shared_deck_cache;
+DROP POLICY IF EXISTS "Service role can delete shared deck cache" ON public.shared_deck_cache;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'shared_deck_cache' AND policyname = 'Authenticated or service can insert shared deck cache'
-  ) THEN
-    CREATE POLICY "Authenticated or service can insert shared deck cache"
-      ON public.shared_deck_cache FOR INSERT WITH CHECK (true);
-  END IF;
+-- Restrict all mutations and reads on shared_deck_cache strictly to service_role
+CREATE POLICY "Service role can select shared deck cache"
+  ON public.shared_deck_cache FOR SELECT
+  USING (public.is_service_role());
 
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'shared_deck_cache' AND policyname = 'Authenticated or service can update shared deck cache'
-  ) THEN
-    CREATE POLICY "Authenticated or service can update shared deck cache"
-      ON public.shared_deck_cache FOR UPDATE USING (true);
-  END IF;
-END $$;
+CREATE POLICY "Service role can insert shared deck cache"
+  ON public.shared_deck_cache FOR INSERT
+  WITH CHECK (public.is_service_role());
 
+CREATE POLICY "Service role can update shared deck cache"
+  ON public.shared_deck_cache FOR UPDATE
+  USING (public.is_service_role())
+  WITH CHECK (public.is_service_role());
+
+CREATE POLICY "Service role can delete shared deck cache"
+  ON public.shared_deck_cache FOR DELETE
+  USING (public.is_service_role());
+
+-- ============================================================================
 -- 2. Create `public.user_quota_ledgers` table
+-- ============================================================================
 CREATE TABLE IF NOT EXISTS public.user_quota_ledgers (
   user_id text PRIMARY KEY,
   tier text NOT NULL DEFAULT 'contender',
@@ -73,25 +95,28 @@ CREATE TABLE IF NOT EXISTS public.user_quota_ledgers (
 -- Enable RLS on user_quota_ledgers
 ALTER TABLE public.user_quota_ledgers ENABLE ROW LEVEL SECURITY;
 
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'user_quota_ledgers' AND policyname = 'Users can view their own quota ledger'
-  ) THEN
-    CREATE POLICY "Users can view their own quota ledger"
-      ON public.user_quota_ledgers FOR SELECT USING (auth.uid()::text = user_id);
-  END IF;
+-- Clean up any legacy or permissive policies
+DROP POLICY IF EXISTS "Users can insert their own quota ledger" ON public.user_quota_ledgers;
+DROP POLICY IF EXISTS "Users can update their own quota ledger" ON public.user_quota_ledgers;
+DROP POLICY IF EXISTS "Users can view their own quota ledger" ON public.user_quota_ledgers;
+DROP POLICY IF EXISTS "Service role can insert quota ledger" ON public.user_quota_ledgers;
+DROP POLICY IF EXISTS "Service role can update quota ledger" ON public.user_quota_ledgers;
+DROP POLICY IF EXISTS "Service role can delete quota ledger" ON public.user_quota_ledgers;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'user_quota_ledgers' AND policyname = 'Users can insert their own quota ledger'
-  ) THEN
-    CREATE POLICY "Users can insert their own quota ledger"
-      ON public.user_quota_ledgers FOR INSERT WITH CHECK (auth.uid()::text = user_id);
-  END IF;
+-- Users can only view their own ledger; all writes restricted to service_role
+CREATE POLICY "Users can view their own quota ledger"
+  ON public.user_quota_ledgers FOR SELECT
+  USING (auth.uid()::text = user_id OR public.is_service_role());
 
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'user_quota_ledgers' AND policyname = 'Users can update their own quota ledger'
-  ) THEN
-    CREATE POLICY "Users can update their own quota ledger"
-      ON public.user_quota_ledgers FOR UPDATE USING (auth.uid()::text = user_id);
-  END IF;
-END $$;
+CREATE POLICY "Service role can insert quota ledger"
+  ON public.user_quota_ledgers FOR INSERT
+  WITH CHECK (public.is_service_role());
+
+CREATE POLICY "Service role can update quota ledger"
+  ON public.user_quota_ledgers FOR UPDATE
+  USING (public.is_service_role())
+  WITH CHECK (public.is_service_role());
+
+CREATE POLICY "Service role can delete quota ledger"
+  ON public.user_quota_ledgers FOR DELETE
+  USING (public.is_service_role());

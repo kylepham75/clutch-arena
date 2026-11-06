@@ -1,5 +1,6 @@
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 import { IngestionError } from "./errors";
+import { MAX_PDF_PAGES } from "./limits";
 export function parseTxt(bytes: Buffer): SourceBlock[] {
   let text: string;
   try {
@@ -34,6 +35,13 @@ export function parseTxt(bytes: Buffer): SourceBlock[] {
           text: content,
         });
       }
+    }
+    if (sources.length > MAX_PDF_PAGES) {
+      throw new IngestionError(
+        "TOO_MANY_PAGES",
+        `Upload at most ${MAX_PDF_PAGES} slides at a time.`,
+        413,
+      );
     }
     if (sources.length > 0) {
       return sources;
