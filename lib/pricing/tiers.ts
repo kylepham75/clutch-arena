@@ -28,6 +28,7 @@ export interface TierLimits {
   hasCohortAnalytics: boolean;
   canUseClutchNotes: boolean;
   maxNotesPerDay: number;
+  canCustomWatermarkPdf?: boolean;
   // Stage 1 Section 7 Quota & COGS fields
   newDeckCredits: number;
   dailyDeckBurstLimit: number;
@@ -90,6 +91,7 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
     maxNotesPerDay: 1,
+    canCustomWatermarkPdf: false,
     newDeckCredits: 2,
     dailyDeckBurstLimit: 2,
     freeRegenerationsPerDeck: 1,
@@ -110,6 +112,7 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
     maxNotesPerDay: 5,
+    canCustomWatermarkPdf: false,
     newDeckCredits: 5,
     dailyDeckBurstLimit: 4,
     freeRegenerationsPerDeck: 3,
@@ -130,6 +133,7 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
     maxNotesPerDay: 8,
+    canCustomWatermarkPdf: false,
     newDeckCredits: 15,
     dailyDeckBurstLimit: 8,
     freeRegenerationsPerDeck: 5,
@@ -150,6 +154,7 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
     maxNotesPerDay: 10,
+    canCustomWatermarkPdf: false,
     newDeckCredits: 60,
     dailyDeckBurstLimit: 10,
     freeRegenerationsPerDeck: 5,
@@ -170,6 +175,7 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     hasCohortAnalytics: true,
     canUseClutchNotes: true,
     maxNotesPerDay: 25,
+    canCustomWatermarkPdf: true,
     newDeckCredits: 150,
     dailyDeckBurstLimit: 25,
     freeRegenerationsPerDeck: 5,
@@ -181,6 +187,10 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
 
 export function getMaxArenaPlayersForTier(tier: UserTier | TierKey): number {
   return TIER_LIMITS[tier]?.maxArenaPlayers ?? 8;
+}
+
+export function canUseCustomWatermarkPdf(tier: UserTier | TierKey): boolean {
+  return tier === "tutor";
 }
 
 export function formatDeckCreditsCounter(used: number, limit: number): string {
@@ -485,9 +495,9 @@ export const PRICING_PLANS: PlanPricing[] = [
     nameVi: "Giảng Viên & Nhóm Học",
     taglineEn: "For university TAs, IELTS/SAT tutors & study guilds",
     taglineVi: "Dành cho trợ giảng đại học, gia sư IELTS/SAT & câu lạc bộ học tập",
-    badgeEn: "Coming Soon",
-    badgeVi: "Sắp ra mắt",
-    comingSoon: true,
+    badgeEn: "For TAs & Study Guilds",
+    badgeVi: "Dành cho Trợ Giảng & CLB",
+    comingSoon: false,
     pricing: {
       VN: { amount: 399_000, currency: "VND", formatted: "399.000đ/tháng" },
       ROW: { amount: 24.99, currency: "USD", formatted: "$24.99/mo" },

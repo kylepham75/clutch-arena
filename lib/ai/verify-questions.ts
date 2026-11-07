@@ -1,4 +1,5 @@
 import { generateObject, type LanguageModel } from "ai";
+import * as Sentry from "@sentry/nextjs";
 import { z } from "zod";
 import {
   assertCrossFamilyVerifier,
@@ -613,6 +614,9 @@ export async function verifyQuestionsBlindly<
         prompt,
       });
     } catch (primaryError) {
+      Sentry.captureException(primaryError, {
+        tags: { component: "verify-questions", generatorSlug },
+      });
       const allowFallbacks =
         options?.allowFallbacks ??
         (options?.fallbackVerifierModel !== undefined);

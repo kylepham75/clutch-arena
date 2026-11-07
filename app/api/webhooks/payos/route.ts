@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import {
   fulfillPayosOrder,
   isAdminTestEmail,
@@ -198,6 +199,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ error: 0, message: "Ok", data: null });
   } catch (err) {
+    Sentry.captureException(err, {
+      tags: { route: "api/webhooks/payos" },
+    });
     return NextResponse.json(
       {
         error: -1,

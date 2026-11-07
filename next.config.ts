@@ -1,4 +1,14 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs/config";
+
+if (
+  process.env.NODE_ENV === "production" &&
+  !process.env.NEXT_PUBLIC_PARTYKIT_HOST
+) {
+  console.error(
+    "[Clutch Arena] CRITICAL CONFIG ERROR: NEXT_PUBLIC_PARTYKIT_HOST is not set in production! Edge WebSockets will not work across multi-device rooms.",
+  );
+}
 
 const cspHeader = [
   "default-src 'self'",
@@ -57,4 +67,11 @@ const config: NextConfig = {
   },
 };
 
-export default config;
+const sentryOptions = {
+  silent: true,
+  widenClientFileUpload: true,
+  hideSourceMaps: true,
+  disableLogger: true,
+};
+
+export default withSentryConfig(config, sentryOptions as any);

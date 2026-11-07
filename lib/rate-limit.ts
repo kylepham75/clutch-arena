@@ -14,11 +14,42 @@ import {
 import { getSupabaseServerClient, isSupabaseServerConfigured } from "@/lib/supabase/server";
 
 // Check if Upstash Redis credentials are present in the environment (supports UPSTASH_* or Vercel KV_* prefixes)
+export function assertProductionRateLimitConfig(): void {
+  if (process.env.SKIP_REDIS_CHECK_FOR_TESTS === "true") {
+    return;
+  }
+  if (process.env.NODE_ENV === "production") {
+    if (process.env.NEXT_PHASE === "phase-production-build") {
+      return;
+    }
+    const hasUpstash = Boolean(
+      process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
+    );
+    const hasKv = Boolean(
+      process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN,
+    );
+    if (!hasUpstash && !hasKv) {
+      throw new Error(
+        "[RateLimit] CRITICAL CONFIG ERROR: UPSTASH_REDIS_REST_URL/TOKEN or KV_REST_API_URL/TOKEN is not configured in production! Distributed rate limiting cannot be guaranteed on serverless instances.",
+      );
+    }
+  }
+}
+
+// Enforce configuration check on module load in production runtime
+assertProductionRateLimitConfig();
+
+const hasUpstash = Boolean(
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
+);
+const hasKv = Boolean(
+  process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN,
+);
+const hasUpstashConfig = hasUpstash || hasKv;
 const upstashUrl =
   process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
 const upstashToken =
   process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
-const hasUpstashConfig = Boolean(upstashUrl && upstashToken);
 
 let redis: Redis | null = null;
 if (hasUpstashConfig) {
@@ -32,7 +63,7 @@ if (hasUpstashConfig) {
   }
 } else if (process.env.NODE_ENV === "production") {
   console.warn(
-    "[Security Warning] UPSTASH_REDIS_REST_URL/TOKEN or KV_REST_API_URL/TOKEN not configured. Distributed rate limiting is degraded to in-memory fallback.",
+    "[RateLimit] Warning: UPSTASH_REDIS_REST_URL/TOKEN or KV_REST_API_URL/TOKEN not configured. Distributed rate limiting is degraded to in-memory fallback.",
   );
 }
 
@@ -232,6 +263,7 @@ export async function checkRateLimit(
   type: RateLimitType,
   tier: ServerTier | UserTier = "guest",
 ): Promise<RateLimitResult> {
+  assertProductionRateLimitConfig();
   const isNotes = type === "notes";
   const isIngest = type === "ingest";
   const normTier = toUserTier(tier);
@@ -282,9 +314,19 @@ export async function checkRateLimit(
         reset: result.reset,
         retryAfter,
       };
-    } catch {
+    } catch (err) {
       // Fallback to in-memory on network failure
+      if (process.env.NODE_ENV === "production") {
+        console.warn(
+          `[RateLimit] Warning: Upstash Redis rate limiter error for ${normTier}:${identifier} (${type}). Degrading to in-memory fallback:`,
+          err,
+        );
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    console.warn(
+      `[RateLimit] Warning: Distributed rate limiter is null in production for ${normTier}:${identifier} (${type}). Degrading to in-memory fallback.`,
+    );
   }
 
   // 2. In-memory sliding window fallback
@@ -1086,6 +1128,7 @@ export async function checkAndReserveDeckQuota(
   contentHash: string,
   options?: CheckDeckQuotaOptions,
 ): Promise<DeckQuotaReservationResult> {
+  assertProductionRateLimitConfig();
   const actorKey = resolveActorKey(actor);
   const effectiveTier: ServerTier | UserTier =
     typeof actor === "object" && actor !== null && actor.tier
@@ -1466,6 +1509,7 @@ export async function checkNotesRateLimit(
   actor: ActorIdentifier,
   tier?: ServerTier | UserTier | string | null,
 ): Promise<RateLimitResult> {
+  assertProductionRateLimitConfig();
   const actorKey = resolveActorKey(actor);
   const resolvedTier: ServerTier =
     typeof actor === "object" && actor !== null && actor.tier

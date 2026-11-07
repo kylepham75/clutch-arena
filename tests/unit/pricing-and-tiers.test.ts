@@ -18,6 +18,7 @@ import {
   PRICING_PLANS,
   TIER_LIMITS,
   getMaxArenaPlayersForTier,
+  canUseCustomWatermarkPdf,
   getStoredUserTier,
   setStoredUserTier,
   getStoredTierExpires,
@@ -232,8 +233,8 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(tutor.pricing.ROW.formatted).toBe("$24.99/mo");
     expect(tutor.priceVndFormatted).toBe("399.000đ");
     expect(tutor.priceUsdFormatted).toBe("$24.99");
-    expect(tutor.comingSoon).toBe(true);
-    expect(tutor.badgeEn).toBe("Coming Soon");
+    expect(tutor.comingSoon).toBe(false);
+    expect(tutor.badgeEn).toBe("For TAs & Study Guilds");
     expect(TIER_LIMITS.tutor.newDeckCredits).toBe(150);
     expect(TIER_LIMITS.tutor.dailyDeckBurstLimit).toBe(25);
     expect(TIER_LIMITS.tutor.maxQuestionsPerRun).toBe(30);
@@ -241,6 +242,7 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(TIER_LIMITS.tutor.maxFilesPerUpload).toBe(10);
     expect(TIER_LIMITS.tutor.maxArenaPlayers).toBe(50);
     expect(TIER_LIMITS.tutor.hasCohortAnalytics).toBe(true);
+    expect(TIER_LIMITS.tutor.canCustomWatermarkPdf).toBe(true);
     expect(TIER_LIMITS.tutor.cogsCeilingUsd.VN).toBe(3.00);
     expect(TIER_LIMITS.tutor.cogsCeilingUsd.ROW).toBe(6.50);
 
@@ -249,6 +251,12 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(getMaxArenaPlayersForTier("pro_monthly")).toBe(15);
     expect(getMaxArenaPlayersForTier("pro")).toBe(15);
     expect(getMaxArenaPlayersForTier("tutor")).toBe(50);
+
+    expect(canUseCustomWatermarkPdf("tutor")).toBe(true);
+    expect(canUseCustomWatermarkPdf("pro")).toBe(false);
+    expect(canUseCustomWatermarkPdf("pro_monthly")).toBe(false);
+    expect(canUseCustomWatermarkPdf("cram_pass")).toBe(false);
+    expect(canUseCustomWatermarkPdf("contender")).toBe(false);
   });
 
   it("handles tier persistence and retrieval cleanly", () => {

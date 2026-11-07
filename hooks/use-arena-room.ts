@@ -17,6 +17,23 @@ export function useArenaRoom(
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
 
+  const partyHost = getPartyHost();
+  const isPartyKit = Boolean(partyHost);
+
+  useEffect(() => {
+    if (!partyHost) {
+      if (process.env.NODE_ENV === "production") {
+        console.error(
+          "[Clutch Arena] CRITICAL: NEXT_PUBLIC_PARTYKIT_HOST is not configured in production! Multiplayer rooms will fall back to serverless SSE and fail across separate serverless instances.",
+        );
+      } else {
+        console.warn(
+          "[Clutch Arena] Dev Warning: NEXT_PUBLIC_PARTYKIT_HOST is not configured. Falling back to local SSE for multiplayer.",
+        );
+      }
+    }
+  }, [partyHost]);
+
   const audio = useGameAudio();
   const prevStatusRef = useRef<string | null>(null);
   const prevQuestionIndexRef = useRef<number>(-1);
@@ -318,6 +335,7 @@ export function useArenaRoom(
     loading,
     error,
     connected,
+    isPartyKit,
     startMatch,
     submitAnswer,
     toggleReady,

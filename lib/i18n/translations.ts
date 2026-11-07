@@ -762,6 +762,10 @@ export interface TranslationDict {
     signUpError: string;
     signUpSuccess: string;
     oauthError: string;
+    termsOfService: string;
+    privacyPolicy: string;
+    agreeNoticePrefix: string;
+    legalNotice: string;
   };
   pricing: {
     vietQrHeader: string;
@@ -781,6 +785,8 @@ export interface TranslationDict {
     backToPlans: string;
     autoVerifiedIn3s: string;
     payosLinkedBank: string;
+    termsOfService: string;
+    privacyPolicy: string;
   };
   tutorial: {
     quickTourBadge: string;
@@ -1634,6 +1640,10 @@ export const translations: Record<Language, TranslationDict> = {
       signUpError: "Failed to create account.",
       signUpSuccess: "Account created! Please check your email to verify your account, or sign in now.",
       oauthError: "Failed to sign in with provider.",
+      termsOfService: "Terms of Service",
+      privacyPolicy: "Privacy Policy",
+      agreeNoticePrefix: "By continuing, you agree to our",
+      legalNotice: "By continuing, you agree to our Terms of Service and Privacy Policy.",
     },
     pricing: {
       vietQrHeader: "Scan VietQR (MoMo, ZaloPay, Any Banking App)",
@@ -1653,6 +1663,8 @@ export const translations: Record<Language, TranslationDict> = {
       backToPlans: "Back to all plans",
       autoVerifiedIn3s: "Auto-verified in 3 seconds",
       payosLinkedBank: "PayOS Linked Bank",
+      termsOfService: "Terms of Service",
+      privacyPolicy: "Privacy Policy",
     },
     tutorial: {
       quickTourBadge: "Quick Tour",
@@ -2504,6 +2516,10 @@ export const translations: Record<Language, TranslationDict> = {
       signUpError: "Tạo tài khoản thất bại.",
       signUpSuccess: "Tài khoản đã tạo thành công! Vui lòng kiểm tra email để xác thực, hoặc đăng nhập ngay.",
       oauthError: "Đăng nhập qua dịch vụ liên kết thất bại.",
+      termsOfService: "Điều khoản dịch vụ",
+      privacyPolicy: "Chính sách bảo mật",
+      agreeNoticePrefix: "Bằng việc tiếp tục, bạn đồng ý với",
+      legalNotice: "Bằng việc tiếp tục, bạn đồng ý với Điều khoản dịch vụ và Chính sách bảo mật của chúng tôi.",
     },
     pricing: {
       vietQrHeader: "Quét mã VietQR (MoMo, ZaloPay, Mọi Ngân Hàng)",
@@ -2523,6 +2539,8 @@ export const translations: Record<Language, TranslationDict> = {
       backToPlans: "Quay lại danh sách gói",
       autoVerifiedIn3s: "Xác nhận tự động trong 3 giây",
       payosLinkedBank: "Ngân hàng liên kết PayOS",
+      termsOfService: "Điều khoản dịch vụ",
+      privacyPolicy: "Chính sách bảo mật",
     },
     tutorial: {
       quickTourBadge: "Hướng dẫn nhanh",

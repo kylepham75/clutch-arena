@@ -9,7 +9,7 @@ import { useArenaRoom } from "@/hooks/use-arena-room";
 import type { ArenaPlayer, ArenaRoomState } from "@/lib/schemas/multiplayer";
 import type { StudyPack } from "@/lib/schemas/question";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, AlertTriangle } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/context";
 
 export function ArenaManager({
@@ -47,6 +47,7 @@ export function ArenaManager({
     room,
     loading,
     error,
+    isPartyKit,
     startMatch,
     submitAnswer,
     toggleReady,
@@ -175,6 +176,18 @@ export function ArenaManager({
   // Render view depending on room status
   return (
     <div className="arena-wrapper">
+      {process.env.NODE_ENV === "development" && !isPartyKit && (
+        <div
+          role="status"
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/20 mb-3"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+          <span>
+            <strong>Dev Notice:</strong> PartyKit host is not configured (<code className="font-mono text-[11px]">NEXT_PUBLIC_PARTYKIT_HOST</code>). Local SSE fallback is active.
+          </span>
+        </div>
+      )}
+
       <div className="arena-top-bar">
         <Button variant="ghost" size="sm" onClick={handleLeave} className="leave-arena-link">
           <ArrowLeft size={14} />

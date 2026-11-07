@@ -14,6 +14,12 @@ import type {
   TextbookDivergenceNotice,
 } from "@/lib/schemas/notes";
 
+export interface PdfWatermarkOptions {
+  customBrandName?: string;
+  customLogoUrl?: string;
+  tier?: string;
+}
+
 export interface UncapturedFormulaItem {
   id: string;
   slide?: number;
@@ -508,7 +514,35 @@ function renderUncapturedSectionHtml(items: UncapturedFormulaItem[]): string {
   `;
 }
 
-export function generateClutchNotePdfHtml(note: ClutchNote): string {
+function isValidCustomLogoUrl(url?: string): boolean {
+  if (!url || typeof url !== "string") return false;
+  const trimmed = url.trim();
+  return (
+    trimmed.startsWith("https://") ||
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("data:image/")
+  );
+}
+
+export function generateClutchNotePdfHtml(
+  note: ClutchNote,
+  options?: PdfWatermarkOptions,
+): string {
+  const canCustomize =
+    options !== undefined &&
+    (options.tier === undefined || options.tier === "tutor");
+
+  const brandName =
+    canCustomize && options?.customBrandName && options.customBrandName.trim().length > 0
+      ? escapeHtml(options.customBrandName.trim())
+      : CLUTCH_ARENA_BRAND_NAME;
+
+  const logoUrl =
+    canCustomize && options?.customLogoUrl && isValidCustomLogoUrl(options.customLogoUrl)
+      ? escapeHtml(options.customLogoUrl.trim())
+      : CLUTCH_ARENA_ICON_DATA_URL;
+
   const unattachedDivergences = getUnattachedDivergenceNotices(note);
   const uncapturedFormulas = getUncapturedFormulas(note);
 
@@ -1440,8 +1474,8 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
 <body>
   <div class="screen-toolbar no-print">
     <div class="screen-toolbar-title">
-      <img src="${CLUTCH_ARENA_ICON_DATA_URL}" class="brand-header-icon" alt="Clutch Arena" />
-      <span>${CLUTCH_ARENA_BRAND_NAME} · Clutch Notes AI</span>
+      <img src="${logoUrl}" class="brand-header-icon" alt="${brandName}" />
+      <span>${brandName} · Clutch Notes AI</span>
       <span class="screen-pro-badge">PRO NOTE</span>
       <span class="screen-stats">(${note.originalSlideCount} Slides → ${note.estimatedDistilledPages} Pages · ${displayNoiseRate}% Noise Stripped)</span>
     </div>
@@ -1453,8 +1487,8 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
 
   <div class="watermark-overlay" aria-hidden="true">
     <div class="watermark-center-badge">
-      <img src="${CLUTCH_ARENA_ICON_DATA_URL}" class="watermark-big-icon" alt="Clutch Arena" />
-      <div class="watermark-name-below">${CLUTCH_ARENA_BRAND_NAME}</div>
+      <img src="${logoUrl}" class="watermark-big-icon" alt="${brandName}" />
+      <div class="watermark-name-below">${brandName}</div>
     </div>
   </div>
 
@@ -1470,7 +1504,7 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
     </main>
 
     <footer class="pdf-footer">
-      <div>${CLUTCH_ARENA_BRAND_NAME} · Concise Study Handout</div>
+      <div>${brandName} · Concise Study Handout</div>
       <div>${escapeHtml(note.originalFileName)}</div>
     </footer>
   </div>
@@ -1482,7 +1516,10 @@ export function generateClutchNotePdfHtml(note: ClutchNote): string {
 
 export const buildPrintableNotesHtml = generateClutchNotePdfHtml;
 
-export function exportClutchNotePdf(note: ClutchNote): void {
+export function exportClutchNotePdf(
+  note: ClutchNote,
+  options?: PdfWatermarkOptions,
+): void {
   if (typeof window === "undefined") return;
 
   const printWindow = window.open("", "_blank");
@@ -1494,7 +1531,7 @@ export function exportClutchNotePdf(note: ClutchNote): void {
   // Isolate popup window from opener context to prevent tab-nabbing / window reference leaks
   printWindow.opener = null;
 
-  const html = generateClutchNotePdfHtml(note);
+  const html = generateClutchNotePdfHtml(note, options);
   printWindow.document.open();
   printWindow.document.write(html);
   printWindow.document.close();

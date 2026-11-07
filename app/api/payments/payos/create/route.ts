@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import {
   createPayosPaymentLink,
   isPayosConfigured,
@@ -85,6 +86,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: true, payment });
   } catch (err) {
+    Sentry.captureException(err, {
+      tags: { route: "api/payments/payos/create" },
+    });
     return NextResponse.json(
       {
         ok: false,

@@ -10,7 +10,9 @@ import {
   renderFormulaStatusBadge,
   renderDivergenceNoticeHtml,
   getUncapturedFormulas,
+  type PdfWatermarkOptions,
 } from "@/lib/notes/export-pdf";
+import { CLUTCH_ARENA_BRAND_NAME, CLUTCH_ARENA_ICON_DATA_URL } from "@/lib/notes/brand-assets";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 import type { ClutchNote, NoteFormula } from "@/lib/schemas/notes";
 
@@ -703,6 +705,152 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
 
       vi.advanceTimersByTime(300);
       expect(mockPrintWindow.print).toHaveBeenCalled();
+    });
+  });
+
+  describe("Tutor & Guild Tier Custom Watermarked PDF Exports", () => {
+    it("renders custom watermark brand name and logo URL cleanly for tutor tier", () => {
+      const options: PdfWatermarkOptions = {
+        tier: "tutor",
+        customBrandName: "IELTS Master Guild",
+        customLogoUrl: "https://example.com/guild-logo.png",
+      };
+
+      const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE, options);
+
+      // Centered watermark overlay checks
+      expect(html).toContain("watermark-overlay");
+      expect(html).toContain("watermark-center-badge");
+      expect(html).toContain('<img src="https://example.com/guild-logo.png" class="watermark-big-icon" alt="IELTS Master Guild" />');
+      expect(html).toContain('<div class="watermark-name-below">IELTS Master Guild</div>');
+
+      // Top toolbar checks
+      expect(html).toContain('<img src="https://example.com/guild-logo.png" class="brand-header-icon" alt="IELTS Master Guild" />');
+      expect(html).toContain("<span>IELTS Master Guild · Clutch Notes AI</span>");
+
+      // Footer checks
+      expect(html).toContain("<div>IELTS Master Guild · Concise Study Handout</div>");
+
+      // Default brand name must not appear in the watermark, toolbar title, or footer brand slot
+      expect(html).not.toContain('<div class="watermark-name-below">CLUTCH ARENA</div>');
+      expect(html).not.toContain("<span>CLUTCH ARENA · Clutch Notes AI</span>");
+      expect(html).not.toContain("<div>CLUTCH ARENA · Concise Study Handout</div>");
+    });
+
+    it("enforces default CLUTCH ARENA watermark and logo when non-tutor tiers attempt custom branding override", () => {
+      const nonTutorTiers = ["pro", "pro_monthly", "cram_pass", "contender"];
+
+      for (const tier of nonTutorTiers) {
+        const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE, {
+          tier,
+          customBrandName: "Unauthorized Guild Brand",
+          customLogoUrl: "https://example.com/unauthorized.png",
+        });
+
+        // Must reject custom brand and enforce official branding
+        expect(html).not.toContain("Unauthorized Guild Brand");
+        expect(html).not.toContain("https://example.com/unauthorized.png");
+
+        expect(html).toContain(`<div class="watermark-name-below">${CLUTCH_ARENA_BRAND_NAME}</div>`);
+        expect(html).toContain(`<span>${CLUTCH_ARENA_BRAND_NAME} · Clutch Notes AI</span>`);
+        expect(html).toContain(`<div>${CLUTCH_ARENA_BRAND_NAME} · Concise Study Handout</div>`);
+        expect(html).toContain(CLUTCH_ARENA_ICON_DATA_URL);
+      }
+    });
+
+    it("allows direct branding configuration when tier is omitted", () => {
+      const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE, {
+        customBrandName: "Direct Academy",
+        customLogoUrl: "https://example.com/academy.png",
+      });
+
+      expect(html).toContain('<div class="watermark-name-below">Direct Academy</div>');
+      expect(html).toContain("<span>Direct Academy · Clutch Notes AI</span>");
+      expect(html).toContain("<div>Direct Academy · Concise Study Handout</div>");
+      expect(html).toContain('<img src="https://example.com/academy.png" class="watermark-big-icon" alt="Direct Academy" />');
+    });
+
+    it("sanitizes customBrandName against HTML/XSS injection", () => {
+      const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE, {
+        tier: "tutor",
+        customBrandName: "<script>alert('xss')</script>\"&'Test",
+        customLogoUrl: "https://example.com/clean.png",
+      });
+
+      // Must be HTML-escaped
+      expect(html).not.toContain("<script>alert('xss')</script>");
+      expect(html).toContain("&lt;script&gt;alert(&#039;xss&#039;)&lt;/script&gt;&quot;&amp;&#039;Test");
+    });
+
+    it("falls back to default icon if customLogoUrl is not a safe protocol or format", () => {
+      const unsafeUrls = [
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "data:text/html,<script>alert(1)</script>",
+        "blob:http://example.com/evil",
+      ];
+
+      for (const unsafeUrl of unsafeUrls) {
+        const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE, {
+          tier: "tutor",
+          customBrandName: "Safe Tutor",
+          customLogoUrl: unsafeUrl,
+        });
+
+        expect(html).not.toContain(unsafeUrl);
+        expect(html).toContain(CLUTCH_ARENA_ICON_DATA_URL);
+        expect(html).toContain('<div class="watermark-name-below">Safe Tutor</div>');
+      }
+    });
+
+    it("supports data:image/ URIs and relative / paths for customLogoUrl", () => {
+      const dataUri = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=";
+      const htmlData = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE, {
+        tier: "tutor",
+        customBrandName: "SVG Guild",
+        customLogoUrl: dataUri,
+      });
+      expect(htmlData).toContain(dataUri);
+
+      const relPath = "/logos/guild-logo.png";
+      const htmlRel = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE, {
+        tier: "tutor",
+        customBrandName: "Relative Path Guild",
+        customLogoUrl: relPath,
+      });
+      expect(htmlRel).toContain(relPath);
+    });
+
+    it("passes watermark options through exportClutchNotePdf to popup print window", () => {
+      const mockDocument = {
+        open: vi.fn(),
+        write: vi.fn(),
+        close: vi.fn(),
+      };
+      const mockPrintWindow = {
+        opener: "initial-parent-opener" as any,
+        document: mockDocument,
+        focus: vi.fn(),
+        print: vi.fn(),
+      };
+      const openMock = vi.fn().mockReturnValue(mockPrintWindow);
+      vi.stubGlobal("window", {
+        open: openMock,
+        location: { origin: "http://localhost:3000" },
+      });
+
+      exportClutchNotePdf(SAMPLE_CLUTCH_NOTE, {
+        tier: "tutor",
+        customBrandName: "Export Tutor Guild",
+        customLogoUrl: "https://example.com/guild-icon.png",
+      });
+
+      expect(openMock).toHaveBeenCalledWith("", "_blank");
+      expect(mockPrintWindow.opener).toBeNull();
+      expect(mockDocument.write).toHaveBeenCalled();
+      const writtenHtml = mockDocument.write.mock.calls[0][0];
+      expect(writtenHtml).toContain("Export Tutor Guild");
+      expect(writtenHtml).toContain("https://example.com/guild-icon.png");
     });
   });
 });

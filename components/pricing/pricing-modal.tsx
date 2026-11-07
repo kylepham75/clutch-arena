@@ -77,15 +77,18 @@ export function PricingModal({
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
-  const [earlyContact, setEarlyContact] = useState("");
+  const [earlyContact, setEarlyContact] = useState(() => user?.email || "");
   const [intentSubmitted, setIntentSubmitted] = useState(false);
 
   const [payosOrder, setPayosOrder] = useState<PayosCheckoutData | null>(null);
   const [creatingOrder, setCreatingOrder] = useState(false);
   const [authRequiredForPayment, setAuthRequiredForPayment] = useState(false);
+  const [usdCheckingOut, setUsdCheckingOut] = useState(false);
+  const [usdCheckoutError, setUsdCheckoutError] = useState<string | null>(null);
   const isCreatingRef = useRef(false);
 
   const isVi = language === "vi";
+  const isVnCheckout = billingRegion === "VN" || currency === "vnd";
 
   // When modal opens, sync state from client billing region cookie
   useEffect(() => {
@@ -93,19 +96,24 @@ export function PricingModal({
       const currentRegion = getBillingRegionClient();
       setBillingRegion(currentRegion);
       setCurrency(getEffectiveCurrency(currentRegion).toLowerCase() as "vnd" | "usd");
+      if (user?.email && !earlyContact) {
+        setEarlyContact(user.email);
+      }
     }
-  }, [open]);
+  }, [open, user?.email]);
 
   const handleSelectVnd = () => {
     setBillingRegion("VN");
     setCurrency("vnd");
     setBillingRegionClient("VN");
+    setVerificationError(null);
   };
 
   const handleSelectUsd = () => {
     setBillingRegion("ROW");
     setCurrency("usd");
     setBillingRegionClient("ROW");
+    setVerificationError(null);
   };
 
   const sendSmokeTestTelemetry = (
@@ -129,7 +137,14 @@ export function PricingModal({
 
   const createPayosOrder = useCallback(
     async (plan: PlanPricing) => {
-      if (plan.id !== "cram_pass" && plan.id !== "pro" && plan.id !== "pro_monthly") return;
+      if (
+        plan.id !== "cram_pass" &&
+        plan.id !== "pro" &&
+        plan.id !== "pro_monthly" &&
+        plan.id !== "tutor" &&
+        plan.id !== "tutor_guild"
+      )
+        return;
       if (isCreatingRef.current) return;
       isCreatingRef.current = true;
       setCreatingOrder(true);
@@ -200,12 +215,13 @@ export function PricingModal({
       return;
     }
 
-    const isVnCheckout = billingRegion === "VN" || currency === "vnd";
     const isPayosPlan =
       selectedPlan &&
       (selectedPlan.id === "cram_pass" ||
         selectedPlan.id === "pro" ||
-        selectedPlan.id === "pro_monthly");
+        selectedPlan.id === "pro_monthly" ||
+        selectedPlan.id === "tutor" ||
+        selectedPlan.id === "tutor_guild");
 
     if (isVnCheckout && isPayosPlan) {
       if (payosOrder && payosOrder.orderCode) {
@@ -217,7 +233,7 @@ export function PricingModal({
       setCreatingOrder(false);
       setAuthRequiredForPayment(false);
     }
-  }, [open, billingRegion, currency, selectedPlan?.id, user?.id, payosOrder, createPayosOrder]);
+  }, [open, isVnCheckout, selectedPlan?.id, user?.id, payosOrder, createPayosOrder]);
 
   // Automatic 4-second Polling for PayOS transaction confirmation
   useEffect(() => {
@@ -283,7 +299,7 @@ export function PricingModal({
   }, [open, payosOrder?.orderCode, paymentSuccess, session?.access_token, user?.id, refreshTier, onClose]);
 
   const handleSelectPlan = (plan: PlanPricing) => {
-    if (plan.comingSoon || plan.id === "tutor") return;
+    if (plan.comingSoon) return;
     if (plan.id === "contender") {
       onClose();
       return;
@@ -294,10 +310,14 @@ export function PricingModal({
     ) {
       return;
     }
+    if (plan.id === "pro" && tier === "tutor") {
+      return;
+    }
     if (
       plan.id === "cram_pass" ||
       plan.id === "pro" ||
-      plan.id === "pro_monthly"
+      plan.id === "pro_monthly" ||
+      plan.id === "tutor"
     ) {
       sendSmokeTestTelemetry(plan.id, "plan_selected");
     }
@@ -305,9 +325,11 @@ export function PricingModal({
     setPayosOrder(null);
     setCreatingOrder(false);
     setAuthRequiredForPayment(false);
+    setUsdCheckingOut(false);
+    setUsdCheckoutError(null);
     setPaymentSuccess(false);
     setVerificationError(null);
-    setEarlyContact("");
+    setEarlyContact(user?.email || "");
     setIntentSubmitted(false);
   };
 
@@ -401,6 +423,77 @@ export function PricingModal({
       }
     } finally {
       setSimulating(false);
+    }
+  };
+
+  const handleUsdCheckout = async () => {
+    if (!selectedPlan) return;
+    setUsdCheckingOut(true);
+    setUsdCheckoutError(null);
+
+    try {
+      let token = session?.access_token;
+      if (!token) {
+        const supabase = getSupabaseBrowserClient();
+        if (supabase) {
+          const { data } = await supabase.auth.getSession();
+          token = data.session?.access_token;
+        }
+      }
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      const res = await fetch("/api/payments/usd/create", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          planId: selectedPlan.id,
+          userId: user?.id,
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (res.status === 401 || data?.error === "AUTH_REQUIRED") {
+        setAuthRequiredForPayment(true);
+        return;
+      }
+
+      if (res.status === 503) {
+        setUsdCheckoutError(
+          isVi
+            ? "Cổng thanh toán thẻ quốc tế USD đang hoàn tất cấu hình. Bạn có thể để lại email bên dưới để nhận thông báo ngay khi mở cổng."
+            : "Global USD card checkout is finalizing setup. Please leave your email below to receive priority access.",
+        );
+        return;
+      }
+
+      if (res.ok && data?.ok && data.checkout?.checkoutUrl) {
+        window.location.assign(data.checkout.checkoutUrl);
+        return;
+      }
+
+      setUsdCheckoutError(
+        data?.message ||
+          data?.error ||
+          (isVi
+            ? "Không thể khởi tạo cổng thanh toán USD. Vui lòng thử lại sau."
+            : "Failed to initialize USD checkout session. Please try again later."),
+      );
+    } catch (err) {
+      console.error("USD checkout error:", err);
+      setUsdCheckoutError(
+        isVi
+          ? "Lỗi kết nối khi khởi tạo thanh toán USD. Vui lòng thử lại."
+          : "Network error when creating USD checkout session. Please try again.",
+      );
+    } finally {
+      setUsdCheckingOut(false);
     }
   };
 
@@ -504,6 +597,8 @@ export function PricingModal({
                 setPayosOrder(null);
                 setCreatingOrder(false);
                 setAuthRequiredForPayment(false);
+                setUsdCheckingOut(false);
+                setUsdCheckoutError(null);
                 setVerificationError(null);
               }}
               className="text-xs font-semibold text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 mb-3 flex items-center gap-1"
@@ -550,7 +645,7 @@ export function PricingModal({
                     : `Your ${selectedPlan.nameEn} is now active across all devices.`}
                 </p>
               </div>
-            ) : billingRegion === "VN" || currency === "vnd" ? (
+            ) : isVnCheckout ? (
               /* Vietnam VietQR Checkout */
               <div className="vietqr-checkout grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
                 <div className="flex flex-col items-center justify-center p-4 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800 shadow-sm text-center">
@@ -731,9 +826,10 @@ export function PricingModal({
                 </div>
               </div>
             ) : (
-              /* Global USD Checkout */
-              <div className="global-usd-checkout max-w-md mx-auto text-center space-y-4 py-4">
-                <div className="p-4 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800">
+              /* Global USD Checkout — Dedicated Early Access Waitlist */
+              <div className="global-usd-checkout max-w-md mx-auto space-y-4 py-3">
+                {/* Selected Plan Summary Card */}
+                <div className="p-4 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800 text-center shadow-xs">
                   <span className="text-xs text-stone-500 font-medium">{t.pricing.selectedPlanLabel}</span>
                   <div className="text-xl font-black text-amber-600 dark:text-amber-400 mt-1">
                     {isVi ? selectedPlan.nameVi : selectedPlan.nameEn}
@@ -767,34 +863,147 @@ export function PricingModal({
                   </div>
                 </div>
 
-                <div className="flex items-center justify-center gap-2 text-stone-500 text-xs font-medium">
-                  <CreditCard size={15} />
-                  <span>{t.pricing.globalCardsLabel}</span>
+                {/* Primary USD Checkout Card */}
+                <div className="p-4 bg-white dark:bg-stone-950 rounded-xl border border-stone-200 dark:border-stone-800 space-y-3 shadow-xs">
+                  <Button
+                    onClick={handleUsdCheckout}
+                    disabled={usdCheckingOut}
+                    className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 px-4 rounded-xl shadow-sm cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    {usdCheckingOut ? (
+                      <>
+                        <Loader2 size={16} className="animate-spin" />
+                        <span>
+                          {isVi
+                            ? "Đang chuyển tiếp cổng thanh toán USD..."
+                            : "Connecting to Secure USD Checkout..."}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <CreditCard size={16} />
+                        <span>
+                          {isVi
+                            ? "Thanh toán Thẻ Quốc tế USD (Visa / Mastercard / Apple Pay)"
+                            : "Proceed to Secure USD Card Checkout (Polar.sh)"}
+                        </span>
+                      </>
+                    )}
+                  </Button>
+
+                  {usdCheckoutError && (
+                    <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300">
+                      {usdCheckoutError}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-center gap-2 text-[11px] text-stone-500 pt-1">
+                    <ShieldCheck size={13} className="text-emerald-600 shrink-0" />
+                    <span>
+                      {isVi
+                        ? "Bảo mật chuẩn PCI-DSS · Polar.sh Merchant of Record"
+                        : "Powered by Polar.sh · PCI-DSS Compliant Merchant of Record"}
+                    </span>
+                  </div>
                 </div>
 
-                {verificationError && (
-                  <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300">
-                    {verificationError}
+                {/* Dedicated Early Access Waitlist Card */}
+                <div className="p-5 bg-gradient-to-b from-amber-500/10 via-amber-500/5 to-transparent dark:from-amber-950/30 dark:via-stone-900/40 dark:to-stone-950 rounded-2xl border border-amber-300/70 dark:border-amber-700/50 shadow-xs space-y-3.5">
+                  <div className="space-y-2">
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-100/90 dark:bg-amber-950/80 text-amber-900 dark:text-amber-200 text-xs font-bold border border-amber-300 dark:border-amber-700/70 shadow-2xs">
+                      <Sparkles size={13} className="text-amber-600 dark:text-amber-400 shrink-0" />
+                      <span>
+                        {isVi
+                          ? "Hiện đã mở qua VietQR tại Việt Nam — Đăng ký danh sách chờ Thẻ Quốc tế (USD)"
+                          : "Early Access Live in Vietnam (VietQR) — Join the Global USD Card Waitlist"}
+                      </span>
+                    </div>
                   </div>
-                )}
 
-                <Button
-                  onClick={handleVerifyPayment}
-                  disabled={simulating}
-                  className="w-full bg-stone-900 dark:bg-amber-500 dark:text-stone-950 text-white hover:bg-stone-800 font-bold py-3 rounded-xl shadow-sm flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  {simulating ? t.pricing.checkingPaymentBtn : t.pricing.verifyPaymentBtn}
-                  <ExternalLink size={15} />
-                </Button>
+                  <p className="text-xs text-stone-600 dark:text-stone-400 leading-relaxed text-left">
+                    {isVi
+                      ? "Tính năng thanh toán tức thì hiện đã hoạt động trên toàn Việt Nam thông qua VietQR (MBBank / Napas 24/7). Cổng thanh toán thẻ quốc tế (Visa, Mastercard, Apple Pay) đang được hoàn tất kiểm thử và sẽ chính thức mở cổng trong đợt phát hành tới. Đăng ký thông tin dưới đây để nhận thông báo ưu tiên ngay khi thẻ USD sẵn sàng."
+                      : "Instant checkout is currently live across Vietnam via VietQR. Global card processing (Visa, Mastercard, Apple Pay) is launching shortly. Leave your email below to receive priority access and exclusive early-bird benefits the moment international checkout opens."}
+                  </p>
 
-                <p className="text-[11px] text-stone-500 flex items-center justify-center gap-1">
-                  <ShieldCheck size={13} className="text-emerald-600" />
-                  {t.pricing.globalSecurityNote}
+                  {intentSubmitted ? (
+                    <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex items-start gap-2.5 text-xs font-semibold text-emerald-800 dark:text-emerald-300">
+                      <CheckCircle2 size={18} className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      <div className="text-left space-y-0.5">
+                        <div className="font-bold">
+                          {isVi ? "Đã ghi nhận đăng ký thành công!" : "You're on the global waitlist!"}
+                        </div>
+                        <p className="text-[11px] font-normal text-emerald-700 dark:text-emerald-400">
+                          {isVi
+                            ? "Đội ngũ Clutch Arena sẽ gửi thông báo kích hoạt ưu tiên đến bạn ngay khi cổng thẻ USD được mở."
+                            : "The Clutch Arena team will notify you immediately once global card checkout is live."}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const contact = earlyContact.trim() || user?.email || "";
+                        if (
+                          selectedPlan.id === "cram_pass" ||
+                          selectedPlan.id === "pro" ||
+                          selectedPlan.id === "pro_monthly" ||
+                          selectedPlan.id === "tutor"
+                        ) {
+                          sendSmokeTestTelemetry(
+                            selectedPlan.id,
+                            "early_access_requested",
+                            contact,
+                          );
+                        }
+                        setIntentSubmitted(true);
+                      }}
+                      className="space-y-3 pt-1 text-left"
+                    >
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          value={earlyContact}
+                          onChange={(e) => setEarlyContact(e.target.value)}
+                          placeholder={
+                            user?.email || (isVi ? "Zalo / Số ĐT / Email của bạn" : "Your email address or contact")
+                          }
+                          maxLength={160}
+                          className="flex-1 px-3.5 py-2 text-xs bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-xl text-stone-900 dark:text-stone-100 placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-amber-500 shadow-2xs"
+                        />
+                        <Button
+                          type="submit"
+                          className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs py-2 px-4 rounded-xl cursor-pointer shadow-xs whitespace-nowrap"
+                        >
+                          {isVi ? "Tham gia danh sách chờ thẻ USD" : "Join Global USD Card Waitlist"}
+                        </Button>
+                      </div>
+
+                      <div className="flex items-center gap-2 text-[11px] text-stone-500">
+                        <CreditCard size={13} className="text-stone-400 shrink-0" />
+                        <span>
+                          {isVi
+                            ? "Sắp hỗ trợ: Visa, Mastercard, Apple Pay & Google Pay"
+                            : "Upcoming: Visa, Mastercard, Apple Pay & Google Pay"}
+                        </span>
+                      </div>
+                    </form>
+                  )}
+                </div>
+
+                <p className="text-[11px] text-stone-500 flex items-center justify-center gap-1.5 pt-1">
+                  <ShieldCheck size={13} className="text-emerald-600 shrink-0" />
+                  <span>
+                    {isVi
+                      ? "Bảo mật chuẩn mã hóa quốc tế · Đảm bảo quyền lợi học viên Clutch Arena"
+                      : "Enterprise-grade encryption · Student priority protection"}
+                  </span>
                 </p>
               </div>
             )}
 
-            {!paymentSuccess && (
+            {!paymentSuccess && isVnCheckout && (
               <div className="mt-5 pt-4 border-t border-stone-200 dark:border-stone-800">
                 <div className="p-3.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/40">
                   {intentSubmitted ? (
@@ -871,8 +1080,10 @@ export function PricingModal({
               const isRecommended = plan.id === "pro";
               const isIncluded =
                 (plan.id === "contender" && tier !== "contender") ||
-                ((plan.id === "cram_pass" || plan.id === "pro_monthly") &&
-                  (tier === "pro" || tier === "tutor"));
+                (tier === "tutor" &&
+                  (plan.id === "cram_pass" || plan.id === "pro_monthly" || plan.id === "pro")) ||
+                (tier === "pro" &&
+                  (plan.id === "cram_pass" || plan.id === "pro_monthly"));
               const isButtonDisabled = isCurrent || Boolean(plan.comingSoon) || isIncluded;
 
               const buttonLabel = plan.comingSoon
@@ -887,14 +1098,19 @@ export function PricingModal({
                     ? isVi
                       ? "Gói cơ bản"
                       : "Included"
-                    : (plan.id === "cram_pass" || plan.id === "pro_monthly") &&
-                        (tier === "pro" || tier === "tutor")
+                    : tier === "tutor" &&
+                        (plan.id === "cram_pass" || plan.id === "pro_monthly" || plan.id === "pro")
                       ? isVi
-                        ? "Đã có trong gói Pro"
-                        : "Included in Pro"
-                      : isVi
-                        ? "Mở khóa ngay"
-                        : "Unlock Now";
+                        ? "Đã có trong gói Giảng Viên"
+                        : "Included in Tutor"
+                      : tier === "pro" &&
+                          (plan.id === "cram_pass" || plan.id === "pro_monthly")
+                        ? isVi
+                          ? "Đã có trong gói Pro"
+                          : "Included in Pro"
+                        : isVi
+                          ? "Mở khóa ngay"
+                          : "Unlock Now";
 
               let badgeLabel: string | null = null;
               if (plan.id === "cram_pass") {
@@ -1104,6 +1320,32 @@ export function PricingModal({
             <div>
               Clutch Arena · {isVi ? "Ôn thi chủ động" : "Active Recall & Grounded Learning"}
             </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-100 dark:border-stone-800 text-[10px] text-stone-400 dark:text-stone-500">
+            <div className="flex items-center gap-2.5">
+              <a
+                href="/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-stone-700 dark:hover:text-stone-300 transition-colors"
+              >
+                {t.pricing.termsOfService}
+              </a>
+              <span>•</span>
+              <a
+                href="/privacy"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-stone-700 dark:hover:text-stone-300 transition-colors"
+              >
+                {t.pricing.privacyPolicy}
+              </a>
+            </div>
+            <span>
+              {isVi
+                ? "Tuân thủ NĐ 13/2023/NĐ-CP & Quy định NHNN"
+                : "Decree 13/2023/ND-CP & SBV Compliant"}
+            </span>
           </div>
         </div>
       </div>

@@ -1,5 +1,6 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
+import * as Sentry from "@sentry/nextjs";
 import { generateQuestions } from "@/lib/ai/generate-questions";
 import {
   getGenerationModel,
@@ -516,6 +517,9 @@ export function createIngestionHandler(
         ...result,
       });
     } catch (error) {
+      Sentry.captureException(error, {
+        tags: { route: "api/ingest" },
+      });
       if (quotaReserved && reservedActor && reservedContentHash) {
         try {
           if (reservedIsRegeneration) {
