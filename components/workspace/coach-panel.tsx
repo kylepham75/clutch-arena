@@ -14,6 +14,7 @@ import {
   Square,
   User,
   Bot,
+  ArrowLeft,
 } from "lucide-react";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
 import type { CoachFocus } from "@/lib/schemas/coach";
@@ -28,14 +29,19 @@ export function CoachPanel({
   onClearFocus,
   onSelectCitation,
   onOpenUpload,
+  onBackToQuiz,
+  backToQuizLabel,
 }: {
   document: ParsedDocument | null;
   activeFocus?: CoachFocus | null;
   onClearFocus?: () => void;
   onSelectCitation?: (sourceId: string) => void;
   onOpenUpload?: () => void;
+  onBackToQuiz?: () => void;
+  backToQuizLabel?: string;
 }) {
   const { language, t } = useLanguage();
+  const returnLabel = backToQuizLabel || t.coach.backToQuiz;
   const [inputVal, setInputVal] = useState("");
   const documentRef = useRef(document);
   documentRef.current = document;
@@ -110,12 +116,20 @@ export function CoachPanel({
           </div>
           <h3>{t.coach.noDocument}</h3>
           <p>{t.coach.noDocDesc}</p>
-          {onOpenUpload && (
-            <Button onClick={onOpenUpload} size="sm">
-              <Sparkles size={14} />
-              {t.coach.uploadPrompt}
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {onOpenUpload && (
+              <Button onClick={onOpenUpload} size="sm">
+                <Sparkles size={14} />
+                {t.coach.uploadPrompt}
+              </Button>
+            )}
+            {onBackToQuiz && (
+              <Button onClick={onBackToQuiz} variant="outline" size="sm">
+                <ArrowLeft size={14} />
+                {returnLabel}
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -124,16 +138,31 @@ export function CoachPanel({
   return (
     <section className="coach-panel surface" aria-label={t.coach.title}>
       <header className="coach-header">
-        <div className="section-top">
-          <div className="section-icon">
-            <Sparkles size={18} />
+        <div className="coach-header-main flex items-center justify-between gap-4">
+          <div className="section-top">
+            <div className="section-icon">
+              <Sparkles size={18} />
+            </div>
+            <div>
+              <h2>{t.coach.title}</h2>
+              <p>
+                {t.coach.groundedIn} <strong>{document.fileName}</strong>
+              </p>
+            </div>
           </div>
-          <div>
-            <h2>{t.coach.title}</h2>
-            <p>
-              {t.coach.groundedIn} <strong>{document.fileName}</strong>
-            </p>
-          </div>
+
+          {onBackToQuiz && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onBackToQuiz}
+              className="coach-return-btn inline-flex items-center gap-1.5 font-semibold text-orange-700 bg-orange-50 border-orange-200 hover:bg-orange-100 hover:text-orange-800 transition-colors shadow-xs"
+            >
+              <ArrowLeft size={15} />
+              <span>{returnLabel}</span>
+            </Button>
+          )}
         </div>
 
         {activeFocus && (
@@ -298,6 +327,16 @@ export function CoachPanel({
       {/* Quick follow-up chips when chatting */}
       {messages.length > 0 && !isStreaming && (
         <div className="coach-quick-chips" role="toolbar" aria-label="Quick follow-up actions">
+          {onBackToQuiz && (
+            <button
+              type="button"
+              className="coach-quick-chip coach-quick-chip-return font-semibold text-orange-700 bg-orange-50/90 border-orange-300 hover:bg-orange-100"
+              onClick={onBackToQuiz}
+            >
+              <ArrowLeft size={13} className="inline mr-1 text-orange-600" />
+              {returnLabel}
+            </button>
+          )}
           <button
             type="button"
             className="coach-quick-chip"

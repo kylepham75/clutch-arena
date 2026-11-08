@@ -3584,6 +3584,32 @@ svg {
   border-bottom: 1px solid #e8eae1;
   background: #fafbf8;
 }
+.coach-header-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.coach-return-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: #c2410c;
+  background-color: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.coach-return-btn:hover {
+  background-color: #ffedd5;
+  color: #9a3412;
+  border-color: #fdba74;
+}
 .coach-focus-banner {
   background: #fdf6ec;
   border: 1px solid #f9deb7;
@@ -3793,6 +3819,17 @@ svg {
   border-color: #e96943;
   color: #e96943;
   transform: translateY(-1px);
+}
+.coach-quick-chip-return {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #c2410c;
+  font-weight: 600;
+}
+.coach-quick-chip-return:hover {
+  background: #ffedd5;
+  border-color: #fdba74;
+  color: #9a3412;
 }
 .coach-input-bar {
   padding: 14px 18px;

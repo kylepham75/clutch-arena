@@ -109,6 +109,8 @@ describe("i18n Vietnamese & English translations", () => {
     expect(translations.vi.run.correct).toBe("Chính xác!");
     expect(translations.vi.run.wrong).toBe("Chưa đúng");
     expect(translations.vi.run.timeout).toBe("Hết giờ!");
+    expect(translations.vi.coach.backToQuiz).toBe("Quay lại bài tập");
+    expect(translations.vi.coach.backToResults).toBe("Quay lại kết quả");
   });
 
   it("contains valid English translations for core navigation and actions", () => {
@@ -117,6 +119,8 @@ describe("i18n Vietnamese & English translations", () => {
     expect(translations.en.nav.aiCoach).toBe("AI study coach");
     expect(translations.en.run.changeDeck).toBe("Change Deck");
     expect(translations.en.run.startRun).toBe("Start Clutch Run");
+    expect(translations.en.coach.backToQuiz).toBe("Return to Exercise");
+    expect(translations.en.coach.backToResults).toBe("Return to Results");
   });
 
   it("verifies all 19 expected top-level namespaces exist on both translations.en and translations.vi", () => {

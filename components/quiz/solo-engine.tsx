@@ -733,10 +733,10 @@ export function SoloEngine({
             <button
               className={`nav-item ${activeTab === "play" ? "active" : ""}`}
               onClick={() => {
-                if (inRun) openPanel("leave");
-                else {
+                if (activeTab === "play") {
+                  if (inRun) openPanel("leave");
+                } else {
                   setActiveTab("play");
-                  reset();
                 }
               }}
             >
@@ -1067,6 +1067,18 @@ export function SoloEngine({
                     onClearFocus={() => setCoachFocus(null)}
                     onSelectCitation={(sourceId) => handleCitationClick(sourceId)}
                     onOpenUpload={() => setActiveTab("ingest")}
+                    onBackToQuiz={
+                      inRun || pack
+                        ? () => setActiveTab("play")
+                        : undefined
+                    }
+                    backToQuizLabel={
+                      inRun
+                        ? t.coach.backToQuiz
+                        : state.phase === "finished"
+                          ? t.coach.backToResults
+                          : t.coach.backToQuiz
+                    }
                   />
                 ) : (
                   <>

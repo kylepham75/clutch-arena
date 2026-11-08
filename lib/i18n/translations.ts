@@ -330,6 +330,8 @@ export interface TranslationDict {
     quickChipStepsPrompt: string;
     quickChipRule: string;
     quickChipRulePrompt: string;
+    backToQuiz: string;
+    backToResults: string;
   };
   library: {
     title: string;
@@ -1207,6 +1209,8 @@ export const translations: Record<Language, TranslationDict> = {
       quickChipStepsPrompt: "Can you break down the exact step-by-step calculation from the problem given?",
       quickChipRule: "🎯 Memory Rule",
       quickChipRulePrompt: "Give me a 1-sentence rule of thumb or memory hook to never get tricked by this again.",
+      backToQuiz: "Return to Exercise",
+      backToResults: "Return to Results",
     },
     library: {
       title: "Study Library",
@@ -2083,6 +2087,8 @@ export const translations: Record<Language, TranslationDict> = {
       quickChipStepsPrompt: "Chỉ cho mình từng bước tính cụ thể từ các dữ kiện đề bài nhé?",
       quickChipRule: "🎯 Mẹo nhớ nhanh",
       quickChipRulePrompt: "Cho mình một mẹo ngắn gọn hoặc câu thần chú để không bao giờ bị bẫy ở dạng này nhé.",
+      backToQuiz: "Quay lại bài tập",
+      backToResults: "Quay lại kết quả",
     },
     library: {
       title: "Thư viện bộ đề",
