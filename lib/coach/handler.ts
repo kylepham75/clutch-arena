@@ -26,6 +26,14 @@ import {
   recordDeckGenerationCogs,
 } from "@/lib/rate-limit";
 
+const COACH_STOP_WORDS = new Set([
+  "why", "did", "the", "this", "that", "what", "how", "when", "where", "which", "who", "whom", "whose",
+  "and", "for", "with", "from", "about", "into", "over", "after", "before", "more", "room",
+  "miss", "answer", "question", "wrong", "right", "correct", "explain", "help", "please", "tell",
+  "tai", "sao", "lai", "dung", "sai", "cau", "hoi", "nay", "giai", "thich", "giup", "voi", "cho", "minh", "em",
+  "tại", "sao", "lại", "đúng", "sai", "câu", "hỏi", "này", "giải", "thích", "giúp", "với", "cho", "mình", "em",
+]);
+
 export function selectCoachContextSources(
   sources: CoachRequest["document"]["sources"],
   activeFocus: CoachFocus | undefined,
@@ -70,6 +78,29 @@ export function selectCoachContextSources(
     });
 
     if (selectedIndices.size > 0) {
+      // If there is remaining budget within maxChars, also scan other slides for substantive query terms in lastUserText
+      let currentChars = [...selectedIndices].reduce((sum, idx) => sum + (sources[idx]?.text.length || 0), 0);
+      if (currentChars < maxChars && lastUserText && lastUserText.trim().length >= 3) {
+        const queryTerms = lastUserText
+          .toLowerCase()
+          .replace(/[^a-z0-9àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ\s]/gi, " ")
+          .split(/\s+/)
+          .filter((w) => w.length >= 3 && !COACH_STOP_WORDS.has(w));
+
+        if (queryTerms.length > 0) {
+          for (let idx = 0; idx < sources.length; idx++) {
+            if (selectedIndices.has(idx)) continue;
+            const textLower = sources[idx].text.toLowerCase();
+            const matches = queryTerms.some((term) => textLower.includes(term));
+            if (matches) {
+              selectedIndices.add(idx);
+              currentChars += sources[idx].text.length;
+              if (currentChars >= maxChars) break;
+            }
+          }
+        }
+      }
+
       const ordered = [...selectedIndices]
         .sort((a, b) => a - b)
         .map((i) => sources[i]);

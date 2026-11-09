@@ -261,6 +261,52 @@ describe("coach HTTP handler", () => {
     expect(selected.some((s) => s.id === "slide-1")).toBe(false);
   });
 
+  it("empowers coach with academic domain knowledge and ~300-450 words room to explain rather than refusing with no source", async () => {
+    const { buildCoachSystemPrompt } = await import("@/lib/ai/coach-prompt");
+    const prompt = buildCoachSystemPrompt(
+      { fileName: doc.fileName, sources: doc.sources },
+      "en",
+    );
+
+    // Verifies the prompt explicitly instructs the coach not to dismiss the student or say "there is no source"
+    expect(prompt).toContain("Academic Domain Knowledge & Conceptual Freedom");
+    expect(prompt).toContain("NEVER dismiss the student or simply say \"there is no source about this\"");
+    expect(prompt).toContain("incremental savings");
+    expect(prompt).toContain("300–450 words");
+    expect(prompt).not.toContain("under 220 words");
+  });
+
+  it("includes additional slide containing student's topical query keyword (e.g. incremental saving) when within context budget", () => {
+    const deckSources = Array.from({ length: 25 }, (_, i) => ({
+      id: `slide-${i + 1}`,
+      label: `Page ${i + 1}`,
+      text: i === 21
+        ? "Incremental savings from cost reductions increase operating income and cash flows before taxes in capital budgeting projects."
+        : `Slide content for topic on page ${i + 1}.`,
+    }));
+
+    const selected = selectCoachContextSources(
+      deckSources,
+      {
+        type: "explain",
+        question: "Calculate NPV for HomeNet project",
+        options: ["A", "B", "C", "D"],
+        correctIndex: 0,
+        selected: 1,
+        explanation: "NPV = PV(Inflows) - Initial Investment",
+        topic: "Capital Budgeting",
+        rule: "NPV Decision Rule",
+        sourceId: "slide-5",
+      },
+      "How do incremental savings affect the cash flows?",
+    );
+
+    // Target slide 5 and neighbors 4, 6
+    expect(selected.some((s) => s.id === "slide-5")).toBe(true);
+    // Slide 22 contains "incremental savings" from user's question, so it is also included
+    expect(selected.some((s) => s.id === "slide-22")).toBe(true);
+  });
+
   it("rejects chunked bodies exceeding MAX_COACH_BODY_BYTES with 413", async () => {
     const handler = createCoachHandler();
     const chunk1 = new Uint8Array(3 * 1024 * 1024); // 3 MB
