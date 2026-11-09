@@ -143,7 +143,7 @@ export function ClutchNotesPanel() {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       controller.abort();
-    }, 120_000); // 2 minutes matching serverless maxDuration
+    }, 300_000); // 5 minutes matching serverless maxDuration
 
     try {
       let extracted: ExtractedSlideDeck | null = null;

@@ -835,11 +835,13 @@ export function isFormulaGroundedOnSlide(
 
 /**
  * Extracts formulas and claims from slide sources in chunked batches (default 8 slides/chunk).
+ * Chunks are executed concurrently (up to 4 in parallel) to dramatically reduce latency on large decks.
  */
 export async function extractChunkedSlideInventory(options: {
   sources: SourceBlock[];
   model: LanguageModel;
   chunkSize?: number;
+  concurrency?: number;
   signal?: AbortSignal;
 }): Promise<{
   formulas: ExtractedFormulaItem[];
@@ -859,56 +861,81 @@ export async function extractChunkedSlideInventory(options: {
     };
   }
 
+  const concurrency = Math.max(1, options.concurrency ?? 4);
+  const chunkResults: Array<{
+    formulas: ExtractedFormulaItem[];
+    claims: ExtractedSlideClaim[];
+  }> = new Array(chunks.length);
+
+  let nextIdx = 0;
+  const workerCount = Math.min(concurrency, chunks.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIdx < chunks.length) {
+      const idx = nextIdx++;
+      const chunk = chunks[idx];
+      const chunkSlideSet = new Set(chunk.map((item) => item.slide));
+
+      const response = await generateObject({
+        model: options.model,
+        schema: extractionSchema,
+        system: EXTRACTION_SYSTEM_PROMPT,
+        prompt: buildChunkExtractionPrompt(chunk),
+        temperature: 0,
+        abortSignal: options.signal,
+      });
+
+      const result = response.object as ExtractionResult;
+      const formulas: ExtractedFormulaItem[] = [];
+      const claims: ExtractedSlideClaim[] = [];
+
+      if (result.formulas && Array.isArray(result.formulas)) {
+        for (const item of result.formulas) {
+          if (!chunkSlideSet.has(item.slide)) continue;
+
+          const cleanLatex = (item.latex || "")
+            .replace(/^\s*\$+|\$+\s*$/g, "")
+            .trim();
+          if (!cleanLatex) continue;
+
+          if (
+            !isNontrivialFormula(cleanLatex) ||
+            isNumericPluginOrScalarAssignment(cleanLatex)
+          ) {
+            continue;
+          }
+
+          formulas.push({
+            ...item,
+            latex: cleanLatex,
+            raw: item.raw || cleanLatex,
+            label: item.label ?? "",
+            variables: item.variables ?? [],
+            evidence: item.evidence ?? "",
+            isExerciseOnly: Boolean(item.isExerciseOnly),
+          });
+        }
+      }
+
+      if (result.claims && Array.isArray(result.claims)) {
+        for (const claim of result.claims) {
+          if (!chunkSlideSet.has(claim.slide)) continue;
+          claims.push(claim);
+        }
+      }
+
+      chunkResults[idx] = { formulas, claims };
+    }
+  });
+
+  await Promise.all(workers);
+
   const allFormulas: ExtractedFormulaItem[] = [];
   const allClaims: ExtractedSlideClaim[] = [];
 
-  for (const chunk of chunks) {
-    const chunkSlideSet = new Set(chunk.map((item) => item.slide));
-
-    const response = await generateObject({
-      model: options.model,
-      schema: extractionSchema,
-      system: EXTRACTION_SYSTEM_PROMPT,
-      prompt: buildChunkExtractionPrompt(chunk),
-      temperature: 0,
-      abortSignal: options.signal,
-    });
-
-    const result = response.object as ExtractionResult;
-
-    if (result.formulas && Array.isArray(result.formulas)) {
-      for (const item of result.formulas) {
-        if (!chunkSlideSet.has(item.slide)) continue;
-
-        const cleanLatex = (item.latex || "")
-          .replace(/^\s*\$+|\$+\s*$/g, "")
-          .trim();
-        if (!cleanLatex) continue;
-
-        if (
-          !isNontrivialFormula(cleanLatex) ||
-          isNumericPluginOrScalarAssignment(cleanLatex)
-        ) {
-          continue;
-        }
-
-        allFormulas.push({
-          ...item,
-          latex: cleanLatex,
-          raw: item.raw || cleanLatex,
-          label: item.label ?? "",
-          variables: item.variables ?? [],
-          evidence: item.evidence ?? "",
-          isExerciseOnly: Boolean(item.isExerciseOnly),
-        });
-      }
-    }
-
-    if (result.claims && Array.isArray(result.claims)) {
-      for (const claim of result.claims) {
-        if (!chunkSlideSet.has(claim.slide)) continue;
-        allClaims.push(claim);
-      }
+  for (const cr of chunkResults) {
+    if (cr) {
+      allFormulas.push(...cr.formulas);
+      allClaims.push(...cr.claims);
     }
   }
 

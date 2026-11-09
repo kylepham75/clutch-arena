@@ -25,7 +25,7 @@ import {
 import type { SourceBlock } from "@/lib/schemas/ingestion";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 300;
 const NOTES_SHARED_CACHE_PIPELINE_VERSION = "notes-v1";
 
 function getQuotaExceededMessage(reason?: string): string {
