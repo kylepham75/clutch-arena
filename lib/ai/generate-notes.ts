@@ -2211,7 +2211,10 @@ export async function generateClutchNote(
   let resolvedVerifierModel = options.verifierModel;
   if (!resolvedVerifierModel && Boolean(process.env.OPENROUTER_API_KEY?.trim())) {
     try {
-      resolvedVerifierModel = getVerifierModel();
+      resolvedVerifierModel = getVerifierModel({
+        generatorSlug: (model as any)?.modelId,
+        allowSameFamily: true,
+      });
     } catch (err) {
       console.warn("[generateClutchNote] Default verifierModel resolution failed:", err);
       resolvedVerifierModel = undefined;

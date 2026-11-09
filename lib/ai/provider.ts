@@ -458,6 +458,20 @@ export function getNoteSummarizerModel(
   tier: string = "contender",
   options?: { degraded?: boolean; modelOverride?: string },
 ) {
+  const isPaid = tier === "cram_pass" || tier === "pro" || tier === "tutor";
+  const notesModel =
+    options?.modelOverride?.trim() ||
+    process.env.OPENROUTER_NOTES_MODEL?.trim() ||
+    process.env.OPENROUTER_NOTES_GENERATOR_MODEL?.trim() ||
+    (isPaid
+      ? process.env.OPENROUTER_NOTES_PAID_MODEL?.trim()
+      : process.env.OPENROUTER_NOTES_FREE_MODEL?.trim());
+
+  if (notesModel) {
+    assertPinnedOpenRouterSlug(notesModel);
+    return getOpenRouterModel(notesModel);
+  }
+
   // NOTE SUMMARIZER: same model as the tier's generator (one prompt template, one schema, one eval set per tier)
   return getOpenRouterGeneratorModel(tier, options);
 }
@@ -535,18 +549,25 @@ export function getCoachModel(
 export function getVerifierModel(options?: {
   generatorSlug?: string;
   modelOverride?: string;
+  allowSameFamily?: boolean;
 }) {
   const generatorSlug =
     options?.generatorSlug?.trim() ||
+    process.env.OPENROUTER_NOTES_MODEL?.trim() ||
+    process.env.OPENROUTER_NOTES_GENERATOR_MODEL?.trim() ||
     process.env.OPENROUTER_GENERATOR_MODEL?.trim() ||
     DEFAULT_GENERATOR_SLUG;
 
   const verifierSlug =
     options?.modelOverride?.trim() ||
+    process.env.OPENROUTER_NOTES_VERIFIER_MODEL?.trim() ||
+    (options?.allowSameFamily ? process.env.OPENROUTER_NOTES_MODEL?.trim() : undefined) ||
     process.env.OPENROUTER_VERIFIER_MODEL?.trim() ||
     DEFAULT_VERIFIER_SLUG;
 
-  assertCrossFamilyVerifier(generatorSlug, verifierSlug);
+  if (!options?.allowSameFamily) {
+    assertCrossFamilyVerifier(generatorSlug, verifierSlug);
+  }
 
   // Verifier must differ in family from the generator; never fall back into Anthropic
   if (getModelFamily(verifierSlug) === "anthropic") {
