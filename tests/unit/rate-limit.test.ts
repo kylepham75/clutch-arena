@@ -279,7 +279,7 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
       expect(initialRes.isRegeneration).toBe(false);
 
       // Simulate successful generation recording actual COGS
-      await recordDeckGenerationCogs(userId, "contender", 0.02, 0.02);
+      await recordDeckGenerationCogs(userId, "contender", 0.02, 0.028);
 
       const initialLedger = await getUserQuotaLedger(userId, "contender");
       expect(initialLedger.deckCreditsUsed).toBe(1);
@@ -370,22 +370,63 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
       expect(toUserTier("monthly")).toBe("pro_monthly");
       expect(toUserTier("PRO_MONTHLY")).toBe("pro_monthly");
 
-      // 2. Quota ledger limit verification (15 decks, not 2 from contender)
+      // 2. Quota ledger limit verification (12 decks, not 2 from contender)
       const userId = `user-promonthly-${Date.now()}`;
       const ledger = await getUserQuotaLedger(userId, "pro_monthly");
       expect(ledger.tier).toBe("pro_monthly");
-      expect(ledger.deckCreditsLimit).toBe(15);
+      expect(ledger.deckCreditsLimit).toBe(12);
 
-      // 3. Regional COGS ceiling verification (0.75 VN, 2.25 ROW)
+      // 3. Regional COGS ceiling verification (1.50 VN, 3.20 ROW)
       const vnCeiling = getRegionalCogsCeiling("pro_monthly", "VN");
       const rowCeiling = getRegionalCogsCeiling("pro_monthly", "ROW");
-      expect(vnCeiling).toBe(0.75);
-      expect(rowCeiling).toBe(2.25);
+      expect(vnCeiling).toBe(1.50);
+      expect(rowCeiling).toBe(3.20);
 
       // 4. Rate limiter recognizes pro_monthly as paid
       const rateRes = await checkRateLimit(userId, "ingest", "pro_monthly");
       expect(rateRes.limit).toBe(50); // Paid ingest limit is 50/day, not 2/week
       expect(rateRes.allowed).toBe(true);
+    });
+  });
+
+  describe("Haiku Overflow Step-Down & DECK_CREDITS_EXCEEDED Boundary Enforcement", () => {
+    it("steps down from Sonnet Pro to Haiku overflow when sonnetProDeckCredits are exhausted and blocks on total exhaustion", async () => {
+      const userId = `user-haiku-overflow-${Date.now()}`;
+      const ledger = await getUserQuotaLedger(userId, "cram_pass");
+      // Cram pass: 5 sonnetProDeckCredits, 10 haikuOverflowDeckCredits
+      ledger.deckCreditsUsed = 5;
+      ledger.dailyBurstUsed = 0;
+      await saveUserQuotaLedger(ledger);
+
+      // Without allowHaikuOverflow: true -> immediately blocked
+      const noOverflowRes = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-no-overflow", {
+        allowHaikuOverflow: false,
+      });
+      expect(noOverflowRes.allowed).toBe(false);
+      expect(noOverflowRes.reason).toBe("DECK_CREDITS_EXCEEDED");
+
+      // With allowHaikuOverflow: true -> step down to Haiku
+      const overflowRes = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-haiku-1", {
+        allowHaikuOverflow: true,
+        burstLimit: 20,
+      });
+      expect(overflowRes.allowed).toBe(true);
+      expect(overflowRes.isHaikuOverflow).toBe(true);
+      expect(overflowRes.cogsStatus.useCheaperGeneratorSlug).toBe(true);
+      expect(overflowRes.creditsUsed).toBe(6);
+
+      // When sonnetProDeckCredits + haikuOverflowDeckCredits (5 + 10 = 15) are exhausted:
+      const exhaustedLedger = await getUserQuotaLedger(userId, "cram_pass");
+      exhaustedLedger.deckCreditsUsed = 15;
+      exhaustedLedger.dailyBurstUsed = 0;
+      await saveUserQuotaLedger(exhaustedLedger);
+
+      const blockedRes = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-haiku-exceeded", {
+        allowHaikuOverflow: true,
+        burstLimit: 20,
+      });
+      expect(blockedRes.allowed).toBe(false);
+      expect(blockedRes.reason).toBe("DECK_CREDITS_EXCEEDED");
     });
   });
 

@@ -138,6 +138,7 @@ export function createIngestionHandler(
     let reservedContentHash: string | null = null;
     let reservedCost = 0.02;
     let reservedIsRegeneration = false;
+    let useCheaperGenerator = false;
     const json = (body: unknown, status = 200) =>
       Response.json(body, {
         status,
@@ -294,7 +295,12 @@ export function createIngestionHandler(
         };
 
         let cachedDeck = await getDeckCache(cacheLookupKey);
-        if (isPaid && cachedDeck && isDegradedCachedDeck(cachedDeck, options.questionCount)) {
+        if (
+          cachedDeck &&
+          (!Array.isArray(cachedDeck.questionPool) ||
+            (options.questionCount > 10 && cachedDeck.questionPool.length < options.questionCount) ||
+            (isPaid && isDegradedCachedDeck(cachedDeck, options.questionCount)))
+        ) {
           cachedDeck = null;
         }
 
@@ -306,6 +312,7 @@ export function createIngestionHandler(
             {
               ...cacheLookupKey,
               estimatedCostUsd: reservedCostUsd,
+              allowHaikuOverflow: isPaid,
             },
           );
 
@@ -323,23 +330,38 @@ export function createIngestionHandler(
             );
           }
 
+          if (quotaResult.isHaikuOverflow || quotaResult.cogsStatus?.useCheaperGeneratorSlug) {
+            useCheaperGenerator = true;
+          }
+
           if (quotaResult.reserved || quotaResult.creditConsumed || quotaResult.isRegeneration) {
             quotaReserved = true;
             reservedActor = rateLimitKey;
             reservedTier = auth.tier;
             reservedContentHash = contentHash;
-            reservedCost = reservedCostUsd;
+            reservedCost = quotaResult.isHaikuOverflow
+              ? Math.min(reservedCostUsd, 0.028)
+              : reservedCostUsd;
             reservedIsRegeneration = Boolean(quotaResult.isRegeneration);
           }
 
           if (!cachedDeck && quotaResult.cachedDeck) {
-            if (!isPaid || !isDegradedCachedDeck(quotaResult.cachedDeck, options.questionCount)) {
+            if (
+              Array.isArray(quotaResult.cachedDeck.questionPool) &&
+              (options.questionCount <= 10 || quotaResult.cachedDeck.questionPool.length >= options.questionCount) &&
+              (!isPaid || !isDegradedCachedDeck(quotaResult.cachedDeck, options.questionCount))
+            ) {
               cachedDeck = quotaResult.cachedDeck;
             }
           }
         }
 
-        if (isPaid && cachedDeck && isDegradedCachedDeck(cachedDeck, options.questionCount)) {
+        if (
+          cachedDeck &&
+          (!Array.isArray(cachedDeck.questionPool) ||
+            (options.questionCount > 10 && cachedDeck.questionPool.length < options.questionCount) ||
+            (isPaid && isDegradedCachedDeck(cachedDeck, options.questionCount)))
+        ) {
           cachedDeck = null;
         }
 
@@ -447,7 +469,11 @@ export function createIngestionHandler(
 
       const result = await generate(
         document,
-        { ...options, tier: auth.tier },
+        {
+          ...options,
+          tier: auth.tier,
+          ...(useCheaperGenerator ? { degraded: true } : {}),
+        },
         signal,
       );
       signal.throwIfAborted();
@@ -467,10 +493,10 @@ export function createIngestionHandler(
                   0.000001,
                   Number(((result.usage.totalTokens / 1_000_000) * 0.5).toFixed(6)),
                 )
-              : reservedCostUsd;
+              : reservedCost;
         const actualCostUsd = Number((tokenCostUsd + visionCostUsd).toFixed(6));
 
-        await recordCogs(rateLimitKey, auth.tier, actualCostUsd, reservedCostUsd);
+        await recordCogs(rateLimitKey, auth.tier, actualCostUsd, reservedCost);
         quotaReserved = false;
 
         const questionsToStore = result.pack.questions.map((q) => {

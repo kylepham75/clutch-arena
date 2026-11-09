@@ -14,13 +14,18 @@ import {
   hasBannedNegationOrMetaOption,
   shuffleQuestionOptions,
   mergeAndDeduplicateBatches,
+  compressSourcesForSonnetCascade,
   MAX_QUESTIONS_PER_BATCH,
   MCQ_GENERATION_TEMPERATURE,
   MCQ_GENERATION_TOP_P,
 } from "@/lib/ai/generate-questions";
 import { filterBlindVerifiedQuestions } from "@/lib/ai/verify-questions";
 import { ingestionSystemPrompt } from "@/lib/ai/prompts";
-import { getGenerationModel } from "@/lib/ai/provider";
+import {
+  getGenerationModel,
+  assertSonnetInputTokenGuard,
+  SONNET_MAX_INPUT_TOKENS,
+} from "@/lib/ai/provider";
 import { solveFinanceSpec } from "@/lib/math/finance-solver";
 import {
   ingestionOptionsSchema,
@@ -1101,4 +1106,546 @@ describe("structured generation", () => {
       ),
     ).toBe(true);
   });
+
+  // ==========================================================================
+  // Task 3.2: Multi-Chapter 30-Question & Haiku -> Sonnet Cascade Regression Suite
+  // ==========================================================================
+
+  it("filters Pearson Chapter 7 & 8 non-content slides (covers, outlines, learning objectives with calculate/compute, disclaimers, captions) while retaining substantive slides in isNonContentSlide", () => {
+    const ch8Cover: SourceBlock = {
+      id: "doc0_page-1",
+      label: "Page 1",
+      text: "Corporate Finance\nSixth Edition, Global Edition\nChapter 8 Fundamentals of Capital Budgeting\n© 2024 Pearson Education, Ltd. All Rights Reserved",
+    };
+    const ch7Cover: SourceBlock = {
+      id: "doc1_page-1",
+      label: "Page 1",
+      text: "Corporate Finance\nSixth Edition, Global Edition\nChapter 7 Investment Decision Rules\n© 2024 Pearson Education, Ltd. All Rights Reserved",
+    };
+    const ch8Outline: SourceBlock = {
+      id: "doc0_page-2",
+      label: "Page 2",
+      text: "Chapter Outline\n8.1 Forecasting Earnings\n8.2 Determining Free Cash Flow and NPV\n8.3 Choosing Among Alternatives\n8.4 Further Adjustments to Free Cash Flow",
+    };
+    const ch8Objectives: SourceBlock = {
+      id: "doc0_page-3",
+      label: "Page 3",
+      text: "Learning Objectives\n• Calculate free cash flows for a project\n• Compute the NPV of an investment\n• Understand sensitivity analysis and break-even points",
+    };
+    const copyrightDisclaimer: SourceBlock = {
+      id: "doc0_page-4",
+      label: "Page 4",
+      text: "This work is provided solely for the use of instructors in teaching their courses and assessing student learning. Dissemination or sale of any part of this work is not permitted.",
+    };
+    const captionOnlyFigure: SourceBlock = {
+      id: "doc0_page-5",
+      label: "Page 5",
+      text: "Figure 8.1 HomeNet's NPV Under Best-and Worst-Case Parameter Assumptions",
+    };
+
+    const substantiveHomeNet: SourceBlock = {
+      id: "doc0_page-6",
+      label: "Page 6",
+      text: "HomeNet Incremental Earnings Forecast\nYear 0: Unlevered Net Income = $0\nYear 1: Revenues = $26,000, Cost of Goods Sold = $11,000, Gross Profit = $15,000\nCalculate the Free Cash Flow = Cash Flow from Operations - Capital Expenditures = $15,000 - $3,000 = $12,000.",
+    };
+    const substantiveNPV: SourceBlock = {
+      id: "doc1_page-6",
+      label: "Page 6",
+      text: "Calculating NPV for Project Alpha:\nInitial Outlay = -$100,000\nCash flow Year 1 = $40,000, Year 2 = $50,000, Year 3 = $60,000 at r = 10%.\nNPV = -$100,000 + 40,000/1.1 + 50,000/1.1^2 + 60,000/1.1^3 = $22,877.54.",
+    };
+
+    expect(isNonContentSlide(ch8Cover)).toBe(true);
+    expect(isNonContentSlide(ch7Cover)).toBe(true);
+    expect(isNonContentSlide(ch8Outline)).toBe(true);
+    expect(isNonContentSlide(ch8Objectives)).toBe(true);
+    expect(isNonContentSlide(copyrightDisclaimer)).toBe(true);
+    expect(isNonContentSlide(captionOnlyFigure)).toBe(true);
+
+    expect(isNonContentSlide(substantiveHomeNet)).toBe(false);
+    expect(isSubstantiveSlide(substantiveHomeNet)).toBe(true);
+    expect(isNonContentSlide(substantiveNPV)).toBe(false);
+    expect(isSubstantiveSlide(substantiveNPV)).toBe(true);
+  });
+
+  it("uniformly partitions a 170-slide multi-chapter composite upload (Ch. 8 + Ch. 7) across 6 batches with >= 15 substantive slides per batch and no stranded non-content slides", () => {
+    // doc0_: Chapter 8 (100 slides: 5 front-matter non-content, 80 substantive, 15 appendix/figure non-content)
+    const ch8Slides: SourceBlock[] = [];
+    ch8Slides.push(
+      {
+        id: "doc0_page-1",
+        label: "Ch 8 Page 1",
+        text: "Corporate Finance\nSixth Edition, Global Edition\nChapter 8 Fundamentals of Capital Budgeting\n© 2024 Pearson Education, Ltd. All Rights Reserved",
+      },
+      {
+        id: "doc0_page-2",
+        label: "Ch 8 Page 2",
+        text: "Chapter Outline\n8.1 Forecasting Earnings\n8.2 Determining Free Cash Flow and NPV",
+      },
+      {
+        id: "doc0_page-3",
+        label: "Ch 8 Page 3",
+        text: "Learning Objectives\n• Calculate free cash flows for a project\n• Compute the NPV",
+      },
+      {
+        id: "doc0_page-4",
+        label: "Ch 8 Page 4",
+        text: "This work is provided solely for the use of instructors in teaching their courses and assessing student learning. Dissemination or sale of any part of this work is not permitted.",
+      },
+      {
+        id: "doc0_page-5",
+        label: "Ch 8 Page 5",
+        text: "Figure 8.1 HomeNet's NPV Under Best-and Worst-Case Parameter Assumptions",
+      },
+    );
+    for (let i = 6; i <= 85; i++) {
+      ch8Slides.push({
+        id: `doc0_page-${i}`,
+        label: `Ch 8 Page ${i}`,
+        text: `HomeNet Forecasting Concept ${i}\nRevenue = $${1000 * i}, Expenses = $${400 * i}, EBITDA = $${600 * i}.\nCalculate the Free Cash Flow = Cash Flow from Operations - CapEx = $${500 * i}.`,
+      });
+    }
+    for (let i = 86; i <= 100; i++) {
+      ch8Slides.push({
+        id: `doc0_page-${i}`,
+        label: `Ch 8 Page ${i}`,
+        text: `Figure 8.${i - 80} Sensitivity Graph and Appendix Notes ${i}`,
+      });
+    }
+
+    // doc1_: Chapter 7 (70 slides: 4 front-matter non-content, 55 substantive, 11 outro/figure non-content)
+    const ch7Slides: SourceBlock[] = [];
+    ch7Slides.push(
+      {
+        id: "doc1_page-1",
+        label: "Ch 7 Page 1",
+        text: "Corporate Finance\nSixth Edition, Global Edition\nChapter 7 Investment Decision Rules\n© 2024 Pearson Education, Ltd. All Rights Reserved",
+      },
+      {
+        id: "doc1_page-2",
+        label: "Ch 7 Page 2",
+        text: "Chapter Outline\n7.1 The NPV Decision Rule\n7.2 The Internal Rate of Return (IRR) Rule",
+      },
+      {
+        id: "doc1_page-3",
+        label: "Ch 7 Page 3",
+        text: "Learning Objectives\n• Calculate NPV and IRR\n• Compare payback rule",
+      },
+      {
+        id: "doc1_page-4",
+        label: "Ch 7 Page 4",
+        text: "This work is provided solely for the use of instructors in teaching their courses and assessing student learning.",
+      },
+    );
+    for (let i = 5; i <= 59; i++) {
+      ch7Slides.push({
+        id: `doc1_page-${i}`,
+        label: `Ch 7 Page ${i}`,
+        text: `Investment Decision Rule Concept ${i}\nInitial Outlay = -$${500 * i}, Cash Flow Year 1 = $${700 * i}.\nCompute the NPV at discount rate r = 10%.`,
+      });
+    }
+    for (let i = 60; i <= 70; i++) {
+      ch7Slides.push({
+        id: `doc1_page-${i}`,
+        label: `Ch 7 Page ${i}`,
+        text: `Figure 7.${i - 50} Investment Summary and Chapter Conclusion ${i}`,
+      });
+    }
+
+    const all170Slides = [...ch8Slides, ...ch7Slides];
+    expect(all170Slides).toHaveLength(170);
+
+    const substantiveTotal = all170Slides.filter(isSubstantiveSlide);
+    expect(substantiveTotal).toHaveLength(135);
+
+    const partitions = partitionSourcesAcrossBatches(all170Slides, 6);
+    expect(partitions).toHaveLength(6);
+
+    for (const batch of partitions) {
+      // Every single batch receives >= 15 substantive slides
+      const substantiveInBatch = batch.filter(isSubstantiveSlide);
+      expect(substantiveInBatch.length).toBeGreaterThanOrEqual(15);
+      // 0 non-content slides are stranded as standalone batch inputs
+      expect(batch.every(isNonContentSlide)).toBe(false);
+      expect(batch.some(isSubstantiveSlide)).toBe(true);
+    }
+
+    // Both chapters are evenly represented across the 6 batches
+    const batch0HasDoc0 = partitions[0].some((s) => s.id.startsWith("doc0_"));
+    const batch5HasDoc1 = partitions[5].some((s) => s.id.startsWith("doc1_"));
+    expect(batch0HasDoc0).toBe(true);
+    expect(batch5HasDoc1).toBe(true);
+
+    const totalDoc0 = partitions.flat().filter((s) => s.id.startsWith("doc0_")).length;
+    const totalDoc1 = partitions.flat().filter((s) => s.id.startsWith("doc1_")).length;
+    expect(totalDoc0).toBe(80);
+    expect(totalDoc1).toBe(55);
+  });
+
+  it("executes 2-stage Haiku 5.5 -> Sonnet 5.5 compression cascade on large batch slide chunks (> 3,200 chars) and enforces SONNET_MAX_INPUT_TOKENS guard", async () => {
+    const distillSlideChunkForSonnet = compressSourcesForSonnetCascade;
+
+    const largeSlideChunk: SourceBlock[] = [
+      {
+        id: "slide-1",
+        label: "Slide 1",
+        text:
+          "Free cash flow to firm represents the operating cash flow available to all capital providers after meeting capital expenditure requirements.\n" +
+          "FCFF = EBIT * (1 - T) + D&A - CapEx - Delta NWC = $18,500,000 in Year 1.\n" +
+          "When calculating unlevered net income, interest expenses are excluded because financing choices should be evaluated separately.\n" +
+          "Detailed background: " +
+          "Capital budgeting decisions require estimating incremental cash flows rather than accounting profits. ".repeat(
+            15,
+          ),
+      },
+      {
+        id: "slide-2",
+        label: "Slide 2",
+        text:
+          "Net Working Capital requirements directly impact free cash flows through investments in inventory and receivables.\n" +
+          "Delta NWC = (Cash + Inventory + Receivables) - (Payables) = $2,400,000.\n" +
+          "An increase in net working capital represents a cash outflow because additional funds are tied up in operations.\n" +
+          "Detailed background: " +
+          "Working capital management ensures that the firm maintains sufficient liquidity to satisfy short-term obligations. ".repeat(
+            15,
+          ),
+      },
+      {
+        id: "slide-3",
+        label: "Slide 3",
+        text:
+          "Depreciation tax shield provides a valuable non-cash tax deduction that increases incremental project cash flows.\n" +
+          "Depreciation Tax Shield = Depreciation * Tax Rate = $5,000,000 * 0.21 = $1,050,000.\n" +
+          "Even though depreciation is a non-cash expense, its tax deductibility saves actual cash taxes paid.\n" +
+          "Detailed background: " +
+          "MACRS depreciation allows accelerated write-offs compared to straight-line depreciation methods. ".repeat(
+            15,
+          ),
+      },
+    ];
+
+    const uncompressedTotalChars = largeSlideChunk.reduce(
+      (sum, s) => sum + s.text.length,
+      0,
+    );
+    expect(uncompressedTotalChars).toBeGreaterThan(3_200);
+
+    // Verify distillSlideChunkForSonnet compresses chunk, preserving sourceId and verbatim quote anchors
+    const compressed = distillSlideChunkForSonnet(largeSlideChunk, 18_000);
+    expect(compressed).toHaveLength(3);
+
+    for (let i = 0; i < largeSlideChunk.length; i++) {
+      expect(compressed[i].id).toBe(largeSlideChunk[i].id);
+      expect(compressed[i].text.length).toBeLessThan(largeSlideChunk[i].text.length);
+    }
+    // Verbatim quote anchors (the first substantive sentences >= 12 words) must be preserved
+    expect(compressed[0].text).toContain(
+      "Free cash flow to firm represents the operating cash flow available to all capital providers",
+    );
+    expect(compressed[1].text).toContain(
+      "Net Working Capital requirements directly impact free cash flows through investments",
+    );
+    expect(compressed[2].text).toContain(
+      "Depreciation tax shield provides a valuable non-cash tax deduction",
+    );
+    // Key formulas and numbers must be preserved
+    expect(compressed[0].text).toContain("FCFF = EBIT");
+    expect(compressed[1].text).toContain("Delta NWC =");
+    expect(compressed[2].text).toContain("Depreciation Tax Shield =");
+
+    // Verify assertSonnetInputTokenGuard
+    const normalPrompt = "A".repeat(12_000); // ~3,000 tokens
+    const normalGuard = assertSonnetInputTokenGuard(
+      normalPrompt,
+      "anthropic/claude-sonnet-5.5",
+      SONNET_MAX_INPUT_TOKENS,
+    );
+    expect(normalGuard.withinLimit).toBe(true);
+    expect(normalGuard.truncatedPromptText).toBe(normalPrompt);
+
+    const oversizedPrompt = "A".repeat(40_000); // ~10,000 tokens (> 8,000 limit)
+    const oversizedGuard = assertSonnetInputTokenGuard(
+      oversizedPrompt,
+      "anthropic/claude-sonnet-5.5",
+      SONNET_MAX_INPUT_TOKENS,
+    );
+    expect(oversizedGuard.withinLimit).toBe(false);
+    expect(oversizedGuard.estimatedTokens).toBe(10_000);
+    expect(oversizedGuard.truncatedPromptText.length).toBe(
+      SONNET_MAX_INPUT_TOKENS * 4,
+    );
+    expect(oversizedGuard.warning).toContain(
+      `SONNET_MAX_INPUT_TOKENS=${SONNET_MAX_INPUT_TOKENS}`,
+    );
+
+    // End-to-end generateQuestions call with Sonnet 5.5 mock model on paid tier
+    let capturedPrompt = "";
+    const sonnetModel: TestModel = {
+      specificationVersion: "v2" as const,
+      provider: "anthropic",
+      modelId: "anthropic/claude-sonnet-5.5",
+      supportedUrls: {},
+      doGenerate: vi.fn<TestModel["doGenerate"]>(async (options) => {
+        capturedPrompt = JSON.stringify(options.prompt);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                title: "Fundamentals of Capital Budgeting",
+                sourceKind: "lecture",
+                questions: [
+                  {
+                    id: "sonnet-q1",
+                    question:
+                      "What is the value of the depreciation tax shield with $5M depreciation and a 21% tax rate?",
+                    options: [
+                      "$1,050,000",
+                      "$5,000,000",
+                      "$3,950,000",
+                      "$210,000",
+                    ],
+                    correctIndex: 0,
+                    explanation:
+                      "Depreciation tax shield equals depreciation multiplied by the corporate tax rate.",
+                    conceptVariant: {
+                      question:
+                        "How does a 21% tax rate affect cash flow when depreciation is $5M?",
+                      options: [
+                        "It saves $1,050,000 in cash taxes",
+                        "It saves $5,000,000 in cash taxes",
+                        "It reduces cash flow by $1,050,000",
+                        "It has zero cash effect",
+                      ],
+                      correctIndex: 0,
+                      explanation:
+                        "The tax deductibility of depreciation creates a cash tax savings equal to the shield.",
+                    },
+                  },
+                ],
+                annotations: [
+                  {
+                    questionId: "sonnet-q1",
+                    sourceId: "slide-3",
+                    excerpt:
+                      "Depreciation tax shield provides a valuable non-cash tax deduction that increases incremental project cash flows.",
+                    topic: "Tax Shield",
+                    chapter: "Chapter 8",
+                    rule: "Depreciation Tax Shield = Depreciation * Tax Rate",
+                  },
+                ],
+                warnings: [],
+              }),
+            },
+          ],
+          finishReason: "stop",
+          usage: { inputTokens: 400, outputTokens: 200, totalTokens: 600 },
+          warnings: [],
+        };
+      }),
+      doStream: async () => {
+        throw new Error("Streaming is not used by ingestion");
+      },
+    };
+
+    const docWithLargeBatch: ParsedDocument = {
+      fileName: "lecture_large.txt",
+      format: "txt",
+      sources: largeSlideChunk,
+      characterCount: uncompressedTotalChars,
+      pageCount: 3,
+      warnings: [],
+    };
+
+    const res = await generateQuestions(
+      docWithLargeBatch,
+      ingestionOptionsSchema.parse({ questionCount: 1, tier: "pro" }),
+      new AbortController().signal,
+      sonnetModel,
+      false,
+    );
+
+    expect(sonnetModel.doGenerate).toHaveBeenCalledTimes(1);
+    expect(capturedPrompt).toContain(
+      "Depreciation tax shield provides a valuable non-cash tax deduction",
+    );
+    expect(Math.ceil(capturedPrompt.length / 4)).toBeLessThan(
+      SONNET_MAX_INPUT_TOKENS,
+    );
+    expect(res.pack.questions).toHaveLength(1);
+    expect(res.pack.questions[0].question).toContain("depreciation tax shield");
+  });
+
+  it("delivers full 30 questions via Smart Deficit Fill when 3 base questions are dropped and synthesizes multi-chapter composite title", async () => {
+    // 30 slides across two chapters (15 for Ch. 8 + 15 for Ch. 7) to respect MAX_ITEMS_PER_SLIDE = 2
+    const ch8Sources: SourceBlock[] = Array.from({ length: 15 }, (_, i) => ({
+      id: `doc0_slide-${i + 1}`,
+      label: `Ch 8 Slide ${i + 1}`,
+      text: `Fundamentals of Capital Budgeting Principle ${i + 1}: Free cash flow item ${i + 1} measures operating cash after capital expenditures. Project evaluation requires discounting these flows at the appropriate cost of capital.`,
+    }));
+
+    const ch7Sources: SourceBlock[] = Array.from({ length: 15 }, (_, i) => ({
+      id: `doc1_slide-${i + 1}`,
+      label: `Ch 7 Slide ${i + 1}`,
+      text: `Investment Decision Rules Principle ${i + 1}: The Net Present Value criterion ${i + 1} directs firms to accept all positive NPV investment opportunities to maximize firm equity value.`,
+    }));
+
+    const multiChapterDoc: ParsedDocument = {
+      fileName: "Corporate_Finance_Ch8_Ch7.pdf",
+      format: "pdf",
+      sources: [...ch8Sources, ...ch7Sources],
+      characterCount: 6000,
+      pageCount: 30,
+      warnings: [],
+    };
+
+    let batchExecutionCount = 0;
+    const multiBatchModel: TestModel = {
+      specificationVersion: "v2" as const,
+      provider: "test",
+      modelId: "fixture",
+      supportedUrls: {},
+      doGenerate: vi.fn<TestModel["doGenerate"]>(async (opts) => {
+        const batchIdx = batchExecutionCount++;
+        const isCh8 = batchIdx < 3;
+        const title = isCh8
+          ? "Fundamentals of Capital Budgeting"
+          : "Investment Decision Rules";
+
+        // Determine the 5 slides allocated to this batch
+        const batchOffset = isCh8 ? batchIdx * 5 : (batchIdx - 3) * 5;
+        const slidePool = isCh8 ? ch8Sources : ch7Sources;
+        const currentBatchSlides = slidePool.slice(batchOffset, batchOffset + 5);
+
+        // Return 5 questions per batch (6 batches * 5 = 30 total).
+        // In batches 0, 2, and 4, the 1st question has a fabricated excerpt (so 3 base questions will be dropped by validation).
+        const questions = Array.from({ length: 5 }, (_, qIdx) => {
+          const isDefective = (batchIdx === 0 || batchIdx === 2 || batchIdx === 4) && qIdx === 0;
+          const qId = `b${batchIdx + 1}-q${qIdx + 1}`;
+          return {
+            id: qId,
+            question: isDefective
+              ? `Defective question stem for ${qId} with fabricated quote`
+              : `Batch ${batchIdx + 1} Question ${qIdx + 1}: What principle governs ${title}?`,
+            options: [
+              `Correct choice for ${qId}`,
+              `Distractor A for ${qId}`,
+              `Distractor B for ${qId}`,
+              `Distractor C for ${qId}`,
+            ],
+            correctIndex: 0,
+            explanation: `Explanation for ${qId} grounded in lecture materials.`,
+            conceptVariant: {
+              question: `Batch ${batchIdx + 1} Variant ${qIdx + 1}: How does the concept apply in context?`,
+              options: [
+                `Variant correct for ${qId}`,
+                `Variant distractor A for ${qId}`,
+                `Variant distractor B for ${qId}`,
+                `Variant distractor C for ${qId}`,
+              ],
+              correctIndex: 0,
+              explanation: `Variant explanation for ${qId} grounded in lecture materials.`,
+            },
+          };
+        });
+
+        const annotations = questions.map((q, qIdx) => {
+          const isDefective = (batchIdx === 0 || batchIdx === 2 || batchIdx === 4) && qIdx === 0;
+          const assignedSlide = currentBatchSlides[qIdx] || currentBatchSlides[0];
+          return {
+            questionId: q.id,
+            sourceId: assignedSlide.id,
+            excerpt: isDefective
+              ? "Fabricated quote that is completely missing from uploaded slides."
+              : assignedSlide.text,
+            topic: isCh8 ? "Capital Budgeting" : "Decision Rules",
+            chapter: isCh8 ? "Chapter 8" : "Chapter 7",
+            rule: isCh8
+              ? "Free cash flow measures available capital."
+              : "Accept positive NPV projects.",
+          };
+        });
+
+        const batchPayload = {
+          title,
+          sourceKind: "lecture",
+          questions,
+          annotations,
+          warnings: [],
+        };
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(batchPayload) }],
+          finishReason: "stop",
+          usage: { inputTokens: 120, outputTokens: 300, totalTokens: 420 },
+          warnings: [],
+        };
+      }),
+      doStream: async () => {
+        throw new Error("Streaming is not used by ingestion");
+      },
+    };
+
+    const options30 = ingestionOptionsSchema.parse({ questionCount: 30 });
+    const result = await generateQuestions(
+      multiChapterDoc,
+      options30,
+      new AbortController().signal,
+      multiBatchModel,
+      false, // Skip blind verifier for deterministic unit test
+    );
+
+    // 30 questions requested -> 6 parallel batches of 5
+    expect(batchExecutionCount).toBe(6);
+
+    // The synthesized title combines Chapter 8 and Chapter 7 distinct topics
+    expect(result.pack.title).toBe(
+      "Fundamentals of Capital Budgeting & Investment Decision Rules",
+    );
+
+    // 3 defective base questions were dropped, and Smart Deficit Fill promoted 3 concept variants to achieve full 30
+    expect(result.pack.questions).toHaveLength(30);
+
+    // The first 27 questions are base questions, and the last 3 questions (q-28, q-29, q-30) are promoted concept variants
+    expect(result.pack.questions[0].id).toBe("q-1");
+    expect(result.pack.questions[26].id).toBe("q-27");
+    expect(result.pack.questions[27].id).toBe("q-28");
+    expect(result.pack.questions[28].id).toBe("q-29");
+    expect(result.pack.questions[29].id).toBe("q-30");
+
+    // Verify promoted questions have valid variant questions and citations
+    expect(result.pack.questions[27].question).toContain("Variant");
+    expect(result.pack.metadata["q-28"].citation).toBeDefined();
+    expect(result.references["q-28"].excerpt).toBeDefined();
+    expect(result.pack.metadata["q-30"].citation).toBeDefined();
+    expect(result.references["q-30"].excerpt).toBeDefined();
+  });
+
+  it("suppresses all 6 LLM compliance warning strings from production screenshots in isUserFacingWarning", () => {
+    // 6 warning strings from user's screenshot
+    const complianceWarnings = [
+      "The only source block is a title slide...",
+      "Only the third source block contains testable concepts; pages 1 and 2 are title and outline slides...",
+      "Only 6 questions from this batch",
+      "Only 2 questions could be supported; the page 83 and Chapter 7 title blocks lack testable concepts",
+      "The source blocks contain only a title page, a chapter outline, and learning objectives...",
+      "Q6 stem wording is awkward; the arithmetic is correct",
+    ];
+
+    for (const warning of complianceWarnings) {
+      expect(isUserFacingWarning(warning)).toBe(false);
+    }
+
+    // Legitimate user-facing warnings are preserved
+    expect(
+      isUserFacingWarning(
+        "Created 27 of 30 requested questions; the source or selected focus did not support more.",
+      ),
+    ).toBe(true);
+    expect(
+      isUserFacingWarning(
+        "Tài liệu không có sẵn câu hỏi trắc nghiệm nguyên văn; hệ thống đã tự động chuyển sang chế độ Biến thể khái niệm.",
+      ),
+    ).toBe(true);
+  });
 });
+

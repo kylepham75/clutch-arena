@@ -40,6 +40,71 @@ export function getOpenRouterRequestConfig(options?: { allowFallbacks?: boolean 
 }
 
 // ============================================================================
+// Per-Deck & Per-Stage Cost Estimator Constants & Sonnet Token Guard
+// ============================================================================
+
+export const HAIKU_5_5_DECK_COST_USD = 0.0146;
+export const DEEPSEEK_VERIFIER_COST_USD = 0.0135;
+export const SONNET_5_5_UNCOMPRESSED_COST_USD = 0.370;
+export const SONNET_5_5_CASCADED_COST_USD = 0.085;
+export const HAIKU_TO_SONNET_CASCADE_DECK_COST_USD = 0.113;
+export const DIRECT_HAIKU_VERIFIED_DECK_COST_USD = 0.028;
+export const SONNET_MAX_INPUT_TOKENS = 8_000;
+
+export interface DeckStageCostBreakdown {
+  stage1_haiku_usd: number;
+  stage2_sonnet_usd: number;
+  stage3_deepseek_usd: number;
+  total_deck_usd: number;
+  cache_hit: boolean;
+  cascaded: boolean;
+}
+
+export function computeDeckStageCostBreakdown(params: {
+  cacheHit?: boolean;
+  cascaded?: boolean;
+  verifierEnabled?: boolean;
+  stage1CostUsd?: number;
+  stage2CostUsd?: number;
+  stage3CostUsd?: number;
+}): DeckStageCostBreakdown {
+  if (params.cacheHit) {
+    return {
+      stage1_haiku_usd: 0,
+      stage2_sonnet_usd: 0,
+      stage3_deepseek_usd: 0,
+      total_deck_usd: 0,
+      cache_hit: true,
+      cascaded: false,
+    };
+  }
+
+  const cascaded = Boolean(params.cascaded);
+  const stage1_haiku_usd = Number(
+    (params.stage1CostUsd ?? HAIKU_5_5_DECK_COST_USD).toFixed(6),
+  );
+  const stage2_sonnet_usd = cascaded
+    ? Number((params.stage2CostUsd ?? SONNET_5_5_CASCADED_COST_USD).toFixed(6))
+    : 0;
+  const stage3_deepseek_usd =
+    params.verifierEnabled === false
+      ? 0
+      : Number((params.stage3CostUsd ?? DEEPSEEK_VERIFIER_COST_USD).toFixed(6));
+  const total_deck_usd = Number(
+    (stage1_haiku_usd + stage2_sonnet_usd + stage3_deepseek_usd).toFixed(6),
+  );
+
+  return {
+    stage1_haiku_usd,
+    stage2_sonnet_usd,
+    stage3_deepseek_usd,
+    total_deck_usd,
+    cache_hit: false,
+    cascaded,
+  };
+}
+
+// ============================================================================
 // Token Cliff Assertion (Haiku 5.5 100K 5x Price Cliff Warning)
 // ============================================================================
 
@@ -48,6 +113,43 @@ export const HAIKU_TOKEN_CLIFF_THRESHOLD = 90_000;
 export function estimateTokenCount(text: string): number {
   if (!text) return 0;
   return Math.ceil(text.length / 4);
+}
+
+export interface SonnetInputTokenGuardResult {
+  withinLimit: boolean;
+  estimatedTokens: number;
+  maxTokens: number;
+  truncatedPromptText: string;
+  warning?: string;
+}
+
+export function assertSonnetInputTokenGuard(
+  promptText: string,
+  modelId: string = PRIORITY_GENERATOR_SLUG,
+  maxInputTokens: number = SONNET_MAX_INPUT_TOKENS,
+): SonnetInputTokenGuardResult {
+  const estimatedTokens = estimateTokenCount(promptText);
+  const isSonnet = modelId.toLowerCase().includes("claude-sonnet");
+
+  if (isSonnet && estimatedTokens > maxInputTokens) {
+    const warning = `[TokenGuard] Sonnet 5.5 prompt estimated at ${estimatedTokens} tokens (exceeds SONNET_MAX_INPUT_TOKENS=${maxInputTokens}). Truncating to ${maxInputTokens} tokens to protect unit economics.`;
+    console.warn(warning);
+    const truncatedPromptText = promptText.slice(0, maxInputTokens * 4);
+    return {
+      withinLimit: false,
+      estimatedTokens,
+      maxTokens: maxInputTokens,
+      truncatedPromptText,
+      warning,
+    };
+  }
+
+  return {
+    withinLimit: true,
+    estimatedTokens,
+    maxTokens: maxInputTokens,
+    truncatedPromptText: promptText,
+  };
 }
 
 export interface TokenCliffOptions {
@@ -358,6 +460,56 @@ export function getNoteSummarizerModel(
 ) {
   // NOTE SUMMARIZER: same model as the tier's generator (one prompt template, one schema, one eval set per tier)
   return getOpenRouterGeneratorModel(tier, options);
+}
+
+export function getDistillerModel(options?: {
+  modelOverride?: string;
+  reasoningEffort?: "low" | "medium" | "high" | "none";
+}) {
+  // Stage 1 Lossless Academic Distiller is strictly locked to Claude Haiku 5.5
+  const modelId =
+    options?.modelOverride?.trim() ||
+    process.env.OPENROUTER_DISTILLER_MODEL?.trim() ||
+    DEFAULT_GENERATOR_SLUG; // "anthropic/claude-haiku-5.5"
+
+  assertPinnedOpenRouterSlug(modelId);
+
+  const openRouterKey = getOpenRouterApiKey();
+  if (openRouterKey) {
+    const model = getOpenRouterModel(
+      modelId,
+      options?.reasoningEffort
+        ? { reasoningEffort: options.reasoningEffort }
+        : undefined,
+    );
+    return Object.assign(model, { model });
+  }
+
+  try {
+    const fallbackModel = getGenerationModel("contender", {
+      modelOverride: modelId,
+      reasoningEffort: options?.reasoningEffort,
+    });
+    return Object.assign(fallbackModel, { model: fallbackModel });
+  } catch {
+    const providerConfig = {
+      ...OPENROUTER_PRIVACY_PROVIDER_CONFIG,
+      require_parameters: false,
+      zdr: false,
+    };
+    const extraBody = {
+      provider: providerConfig,
+      reasoning: {
+        effort: options?.reasoningEffort ?? "low",
+      },
+    };
+    const openrouter = createOpenRouter({
+      apiKey: "sk-or-v1-fallback-key",
+      extraBody,
+    });
+    const model = openrouter(modelId, { extraBody });
+    return Object.assign(model, { model });
+  }
 }
 
 export function getCoachModel(

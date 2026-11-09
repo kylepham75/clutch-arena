@@ -31,6 +31,8 @@ export interface TierLimits {
   canCustomWatermarkPdf?: boolean;
   // Stage 1 Section 7 Quota & COGS fields
   newDeckCredits: number;
+  sonnetProDeckCredits: number;
+  haikuOverflowDeckCredits: number;
   dailyDeckBurstLimit: number;
   freeRegenerationsPerDeck: number;
   cogsCeilingUsd: number | { VN: number; ROW: number };
@@ -93,9 +95,11 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     maxNotesPerDay: 1,
     canCustomWatermarkPdf: false,
     newDeckCredits: 2,
+    sonnetProDeckCredits: 0,
+    haikuOverflowDeckCredits: 0,
     dailyDeckBurstLimit: 2,
     freeRegenerationsPerDeck: 1,
-    cogsCeilingUsd: createRegionalCeiling(0.03, 0.05),
+    cogsCeilingUsd: createRegionalCeiling(0.08, 0.08),
     verifiedPoolSize: 15,
     servedSubsetSize: 15,
   },
@@ -114,9 +118,11 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     maxNotesPerDay: 5,
     canCustomWatermarkPdf: false,
     newDeckCredits: 5,
+    sonnetProDeckCredits: 5,
+    haikuOverflowDeckCredits: 10,
     dailyDeckBurstLimit: 4,
     freeRegenerationsPerDeck: 3,
-    cogsCeilingUsd: createRegionalCeiling(0.45, 1.10),
+    cogsCeilingUsd: createRegionalCeiling(0.85, 1.50),
     verifiedPoolSize: 35,
     servedSubsetSize: 30,
   },
@@ -134,10 +140,12 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     canUseClutchNotes: true,
     maxNotesPerDay: 8,
     canCustomWatermarkPdf: false,
-    newDeckCredits: 15,
+    newDeckCredits: 12,
+    sonnetProDeckCredits: 12,
+    haikuOverflowDeckCredits: 20,
     dailyDeckBurstLimit: 8,
     freeRegenerationsPerDeck: 5,
-    cogsCeilingUsd: createRegionalCeiling(0.75, 2.25),
+    cogsCeilingUsd: createRegionalCeiling(1.50, 3.20),
     verifiedPoolSize: 35,
     servedSubsetSize: 30,
   },
@@ -155,10 +163,12 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     canUseClutchNotes: true,
     maxNotesPerDay: 10,
     canCustomWatermarkPdf: false,
-    newDeckCredits: 60,
+    newDeckCredits: 30,
+    sonnetProDeckCredits: 30,
+    haikuOverflowDeckCredits: 60,
     dailyDeckBurstLimit: 10,
     freeRegenerationsPerDeck: 5,
-    cogsCeilingUsd: createRegionalCeiling(2.20, 7.50),
+    cogsCeilingUsd: createRegionalCeiling(3.80, 8.50),
     verifiedPoolSize: 35,
     servedSubsetSize: 30,
   },
@@ -176,10 +186,12 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     canUseClutchNotes: true,
     maxNotesPerDay: 25,
     canCustomWatermarkPdf: true,
-    newDeckCredits: 150,
+    newDeckCredits: 45,
+    sonnetProDeckCredits: 45,
+    haikuOverflowDeckCredits: 105,
     dailyDeckBurstLimit: 25,
     freeRegenerationsPerDeck: 5,
-    cogsCeilingUsd: createRegionalCeiling(3.00, 6.50),
+    cogsCeilingUsd: createRegionalCeiling(6.50, 10.50),
     verifiedPoolSize: 35,
     servedSubsetSize: 30,
   },
@@ -389,7 +401,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsdFormatted: "$4.99",
     featuresEn: [
       "7 days full Pro access (one-time purchase)",
-      "5 document deck credits (up to 30 questions per pack)",
+      "5 Sonnet Pro deck credits + 10 Fast-Track Haiku overflow decks (up to 30 questions/pack + unlimited $0 shared syllabus cache plays)",
       "Full distractor rationale ('why the others are wrong')",
       "Full Clutch Notes revision notes generator (up to 5 full notesheets)",
       "3 free regenerations per deck",
@@ -399,7 +411,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     ],
     featuresVi: [
       "7 ngày toàn quyền Pro (mua 1 lần, không trừ tiền tự động)",
-      "5 lượt tạo bộ đề tài liệu (tối đa 30 câu hỏi / bộ)",
+      "5 lượt bộ đề Sonnet Pro + 10 bộ đề Haiku tăng tốc (tối đa 30 câu/bộ + chơi bộ đề kho chung $0 không giới hạn)",
       "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
       "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (tối đa 5 bộ)",
       "3 lần tạo lại miễn phí cho mỗi bộ đề",
@@ -425,7 +437,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsdFormatted: "$9.99",
     featuresEn: [
       "Full access for 1 month (auto-renews or cancel anytime)",
-      "15 document deck credits (up to 30 questions per pack)",
+      "12 Sonnet Pro deck credits + 20 Fast-Track Haiku overflow decks (up to 30 questions/pack + unlimited $0 shared syllabus cache plays)",
       "Full distractor rationale ('why the others are wrong')",
       "Full Clutch Notes revision notes generator (max 8/day)",
       "5 free regenerations per deck",
@@ -436,7 +448,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     ],
     featuresVi: [
       "Toàn quyền truy cập trong 1 tháng",
-      "15 lượt tạo bộ đề tài liệu (tối đa 30 câu hỏi / bộ)",
+      "12 lượt bộ đề Sonnet Pro + 20 bộ đề Haiku tăng tốc (tối đa 30 câu/bộ + chơi bộ đề kho chung $0 không giới hạn)",
       "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
       "Tạo tài liệu Clutch Notes đầy đủ (tối đa 8 bộ/ngày)",
       "5 lần tạo lại miễn phí cho mỗi bộ đề",
@@ -466,7 +478,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsdFormatted: "$29",
     featuresEn: [
       "Full access for entire 4-month semester",
-      "60 document deck credits (up to 30 questions per pack)",
+      "30 Sonnet Pro deck credits + 60 Fast-Track Haiku overflow decks (up to 30 questions/pack + unlimited $0 shared syllabus cache plays)",
       "Full distractor rationale ('why the others are wrong')",
       "Full, sectioned Clutch Notes revision notes generator (max 10/day)",
       "5 free regenerations per deck",
@@ -477,7 +489,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     ],
     featuresVi: [
       "Toàn quyền suốt 4 tháng học kỳ (tương đương 74.750đ/tháng)",
-      "60 lượt tạo bộ đề tài liệu (tối đa 30 câu hỏi / bộ)",
+      "30 lượt bộ đề Sonnet Pro + 60 bộ đề Haiku tăng tốc (tối đa 30 câu/bộ + chơi bộ đề kho chung $0 không giới hạn)",
       "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
       "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (tối đa 10 bộ/ngày)",
       "5 lần tạo lại miễn phí cho mỗi bộ đề",
@@ -507,7 +519,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsd: 24.99,
     priceUsdFormatted: "$24.99",
     featuresEn: [
-      "150 document deck credits / month (up to 30 questions per pack)",
+      "45 Sonnet Pro deck credits + 105 Fast-Track Haiku overflow decks / month (150 total fresh decks + unlimited $0 shared syllabus cache plays)",
       "Full Clutch Notes revision notes generator (max 25/day)",
       "50 player /arena lobbies for live classroom reviews",
       "Custom branded Base64 pack links (your name & logo)",
@@ -516,7 +528,7 @@ export const PRICING_PLANS: PlanPricing[] = [
       "Priority API queue for high-concurrency match starts",
     ],
     featuresVi: [
-      "150 lượt tạo bộ đề tài liệu / tháng (tối đa 30 câu hỏi / bộ)",
+      "45 lượt bộ đề Sonnet Pro + 105 bộ đề Haiku tăng tốc / tháng (tổng 150 bộ đề mới + chơi kho chung $0 không giới hạn)",
       "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (tối đa 25 bộ/ngày)",
       "Phòng đấu /arena lên đến 50 người cho lớp học trực tiếp",
       "Mã chia sẻ Base64 gắn thương hiệu & logo riêng của bạn",

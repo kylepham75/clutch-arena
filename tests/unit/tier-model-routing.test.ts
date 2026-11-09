@@ -13,12 +13,22 @@ import {
   assertCrossFamilyVerifier,
   getOpenRouterGeneratorModel,
   getNoteSummarizerModel,
+  getDistillerModel,
   getVerifierModel,
   computePipelineVersion,
   extractOpenRouterProvenance,
   assertPromptTokenCliff,
   estimateTokenCount,
   HAIKU_TOKEN_CLIFF_THRESHOLD,
+  HAIKU_5_5_DECK_COST_USD,
+  DEEPSEEK_VERIFIER_COST_USD,
+  SONNET_5_5_UNCOMPRESSED_COST_USD,
+  SONNET_5_5_CASCADED_COST_USD,
+  HAIKU_TO_SONNET_CASCADE_DECK_COST_USD,
+  DIRECT_HAIKU_VERIFIED_DECK_COST_USD,
+  SONNET_MAX_INPUT_TOKENS,
+  assertSonnetInputTokenGuard,
+  computeDeckStageCostBreakdown,
 } from "@/lib/ai/provider";
 import {
   MCQ_GENERATION_TEMPERATURE,
@@ -207,14 +217,18 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
       expect(free.maxNotesPerDay).toBe(1); // 1 short summary note
     });
 
-    it("configures paid tier (cram_pass, pro) caps: 5/60 decks, 30 items, 3/5 regens, verification ON", () => {
+    it("configures paid tier (cram_pass, pro) caps: 5/30 decks, 30 items, 3/5 regens, verification ON", () => {
       const cram = TIER_LIMITS.cram_pass;
       expect(cram.newDeckCredits).toBe(5);
+      expect(cram.sonnetProDeckCredits).toBe(5);
+      expect(cram.haikuOverflowDeckCredits).toBe(10);
       expect(cram.maxQuestionsPerRun).toBe(30);
       expect(cram.freeRegenerationsPerDeck).toBe(3);
 
       const pro = TIER_LIMITS.pro;
-      expect(pro.newDeckCredits).toBe(60);
+      expect(pro.newDeckCredits).toBe(30);
+      expect(pro.sonnetProDeckCredits).toBe(30);
+      expect(pro.haikuOverflowDeckCredits).toBe(60);
       expect(pro.maxQuestionsPerRun).toBe(30);
       expect(pro.freeRegenerationsPerDeck).toBe(5);
     });
@@ -227,7 +241,8 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
 
       const proPlan = PRICING_PLANS.find((p) => p.id === "pro")!;
       expect(proPlan.featuresEn.some((f) => f.includes("30 questions"))).toBe(true);
-      expect(proPlan.featuresEn.some((f) => f.includes("60 document deck credits"))).toBe(true);
+      expect(proPlan.featuresEn.some((f) => f.includes("30 Sonnet Pro deck credits"))).toBe(true);
+      expect(proPlan.featuresEn.some((f) => f.includes("60 Fast-Track Haiku overflow decks"))).toBe(true);
       expect(proPlan.featuresEn.some((f) => f.includes("Full distractor rationale"))).toBe(true);
     });
   });
@@ -276,6 +291,117 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
           throwOnExceeded: true,
         });
       }).toThrowError(/exceeds the free plan limit.*buy a 7-Day Cram Pass or upgrade to Pro/);
+    });
+  });
+
+  describe("5. 2-Stage Haiku -> Sonnet Compression Cascade & SONNET_MAX_INPUT_TOKENS Guard", () => {
+    it("exports accurate per-stage and per-deck cost constants and SONNET_MAX_INPUT_TOKENS = 8_000", () => {
+      expect(HAIKU_5_5_DECK_COST_USD).toBe(0.0146);
+      expect(DEEPSEEK_VERIFIER_COST_USD).toBe(0.0135);
+      expect(SONNET_5_5_UNCOMPRESSED_COST_USD).toBe(0.370);
+      expect(SONNET_5_5_CASCADED_COST_USD).toBe(0.085);
+      expect(HAIKU_TO_SONNET_CASCADE_DECK_COST_USD).toBe(0.113);
+      expect(DIRECT_HAIKU_VERIFIED_DECK_COST_USD).toBe(0.028);
+      expect(SONNET_MAX_INPUT_TOKENS).toBe(8_000);
+    });
+
+    it("routes Stage 1 Distiller model to anthropic/claude-haiku-5.5", () => {
+      vi.stubEnv("OPENROUTER_API_KEY", "sk-or-v1-mock-key");
+      delete process.env.OPENROUTER_DISTILLER_MODEL;
+
+      const distiller = getDistillerModel();
+      expect(distiller.modelId).toBe("anthropic/claude-haiku-5.5");
+      expect(distiller.model.modelId).toBe("anthropic/claude-haiku-5.5");
+    });
+
+    it("guards Sonnet 5.5 prompts at <= 8,000 tokens and warns + truncates prompts > 8,000 tokens while leaving Haiku 5.5 untouched", () => {
+      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      // 32,000 chars = 8,000 tokens (within limit)
+      const safeSonnetPrompt = "x".repeat(32_000);
+      const safeResult = assertSonnetInputTokenGuard(
+        safeSonnetPrompt,
+        "anthropic/claude-sonnet-5.5",
+      );
+      expect(safeResult.withinLimit).toBe(true);
+      expect(safeResult.estimatedTokens).toBe(8_000);
+      expect(safeResult.maxTokens).toBe(8_000);
+      expect(safeResult.truncatedPromptText).toHaveLength(32_000);
+      expect(safeResult.warning).toBeUndefined();
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
+
+      // 40,000 chars = 10,000 tokens (exceeds limit for Sonnet 5.5)
+      const oversizedSonnetPrompt = "y".repeat(40_000);
+      const exceededResult = assertSonnetInputTokenGuard(
+        oversizedSonnetPrompt,
+        "anthropic/claude-sonnet-5.5",
+      );
+      expect(exceededResult.withinLimit).toBe(false);
+      expect(exceededResult.estimatedTokens).toBe(10_000);
+      expect(exceededResult.maxTokens).toBe(8_000);
+      expect(exceededResult.truncatedPromptText).toHaveLength(32_000);
+      expect(exceededResult.warning).toContain(
+        "exceeds SONNET_MAX_INPUT_TOKENS=8000",
+      );
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Truncating to 8000 tokens to protect unit economics"),
+      );
+
+      consoleWarnSpy.mockClear();
+
+      // 40,000 chars on Haiku 5.5 is untouched by Sonnet token guard
+      const haikuResult = assertSonnetInputTokenGuard(
+        oversizedSonnetPrompt,
+        "anthropic/claude-haiku-5.5",
+      );
+      expect(haikuResult.withinLimit).toBe(true);
+      expect(haikuResult.estimatedTokens).toBe(10_000);
+      expect(haikuResult.truncatedPromptText).toHaveLength(40_000);
+      expect(haikuResult.warning).toBeUndefined();
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
+
+      consoleWarnSpy.mockRestore();
+    });
+
+    it("computes structured stage cost breakdown for cache hits, cascaded Sonnet decks, and direct Haiku decks", () => {
+      const cachedBreakdown = computeDeckStageCostBreakdown({
+        cacheHit: true,
+        cascaded: true,
+      });
+      expect(cachedBreakdown).toEqual({
+        stage1_haiku_usd: 0,
+        stage2_sonnet_usd: 0,
+        stage3_deepseek_usd: 0,
+        total_deck_usd: 0,
+        cache_hit: true,
+        cascaded: false,
+      });
+
+      const cascadedBreakdown = computeDeckStageCostBreakdown({
+        cacheHit: false,
+        cascaded: true,
+      });
+      expect(cascadedBreakdown).toEqual({
+        stage1_haiku_usd: 0.0146,
+        stage2_sonnet_usd: 0.085,
+        stage3_deepseek_usd: 0.0135,
+        total_deck_usd: 0.1131,
+        cache_hit: false,
+        cascaded: true,
+      });
+
+      const directHaikuBreakdown = computeDeckStageCostBreakdown({
+        cacheHit: false,
+        cascaded: false,
+      });
+      expect(directHaikuBreakdown).toEqual({
+        stage1_haiku_usd: 0.0146,
+        stage2_sonnet_usd: 0,
+        stage3_deepseek_usd: 0.0135,
+        total_deck_usd: 0.0281,
+        cache_hit: false,
+        cascaded: false,
+      });
     });
   });
 });

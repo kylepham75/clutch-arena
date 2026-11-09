@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useDropzone } from "react-dropzone";
 import {
   UploadCloud,
@@ -20,6 +20,7 @@ import type {
   IngestionOptions,
   ParsedDocument,
   GenerationResult,
+  SourceReference,
 } from "@/lib/schemas/ingestion";
 import type { StudyPack } from "@/lib/schemas/question";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,132 @@ import { useUserTier } from "@/hooks/use-user-tier";
 import { PricingModal } from "@/components/pricing/pricing-modal";
 import { formatRejectionError } from "@/lib/utils/format-upload-error";
 import { optimizeUploadFileIfNeeded } from "@/lib/ingestion/client-compress";
+
+export interface CoverageSummary {
+  chapters: Array<{ label: string; count: number }>;
+  topics: string[];
+}
+
+export function normalizeChapterName(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const matchChapter = trimmed.match(/^chapter\s*(.*)$/i);
+  if (matchChapter) {
+    const rest = matchChapter[1].trim();
+    return rest ? `Ch. ${rest}` : "Chapter";
+  }
+  const matchCh = trimmed.match(/^ch\.?\s*(.*)$/i);
+  if (matchCh) {
+    const rest = matchCh[1].trim();
+    return rest ? `Ch. ${rest}` : "Ch.";
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return `Ch. ${trimmed}`;
+  }
+  return trimmed;
+}
+
+export function extractDocPrefix(
+  sourceId?: string,
+  citation?: string,
+): string | null {
+  if (sourceId) {
+    const m = sourceId.match(/^doc(\d+)(?:_.*)?$/i);
+    if (m) {
+      const idx = parseInt(m[1], 10);
+      return !isNaN(idx) ? `Doc ${idx + 1}` : null;
+    }
+  }
+  if (citation) {
+    const m = citation.match(/\bdoc(\d+)\b/i);
+    if (m) {
+      const idx = parseInt(m[1], 10);
+      return !isNaN(idx) ? `Doc ${idx + 1}` : null;
+    }
+  }
+  return null;
+}
+
+export function deriveCoverageSummary(
+  pack?: StudyPack | null,
+  references?: Record<string, SourceReference> | null,
+): CoverageSummary | null {
+  if (!pack || !pack.questions || pack.questions.length === 0) {
+    return null;
+  }
+  const metadata = pack.metadata;
+  if (!metadata || typeof metadata !== "object") {
+    return null;
+  }
+
+  // Check if multiple document prefixes exist in sourceId or citation
+  const distinctDocPrefixes = new Set<string>();
+  for (const q of pack.questions) {
+    const ref = references?.[q.id];
+    const meta = metadata[q.id];
+    const docPfx = extractDocPrefix(ref?.sourceId, meta?.citation);
+    if (docPfx) {
+      distinctDocPrefixes.add(docPfx);
+    }
+  }
+  const hasMultipleDocs = distinctDocPrefixes.size > 1;
+
+  // Group question counts by distinct chapter or multi-doc prefix
+  const chapterCounts = new Map<string, number>();
+
+  for (const q of pack.questions) {
+    const meta = metadata[q.id];
+    const rawChapter = meta?.chapter?.trim();
+    let groupKey: string | null = null;
+
+    if (rawChapter) {
+      groupKey = normalizeChapterName(rawChapter);
+    } else if (hasMultipleDocs) {
+      const ref = references?.[q.id];
+      groupKey = extractDocPrefix(ref?.sourceId, meta?.citation) || null;
+    }
+
+    if (groupKey) {
+      chapterCounts.set(groupKey, (chapterCounts.get(groupKey) || 0) + 1);
+    }
+  }
+
+  const chapters: Array<{ label: string; count: number }> = Array.from(
+    chapterCounts.entries(),
+  ).map(([label, count]) => ({ label, count }));
+
+  // Collect top 4-6 unique non-empty topics ordered by frequency descending, then appearance
+  const topicStats = new Map<string, { count: number; firstSeen: number }>();
+  pack.questions.forEach((q, idx) => {
+    const meta = metadata[q.id];
+    const rawTopic = meta?.topic?.trim();
+    if (rawTopic) {
+      const existing = topicStats.get(rawTopic);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        topicStats.set(rawTopic, { count: 1, firstSeen: idx });
+      }
+    }
+  });
+
+  const sortedTopics = Array.from(topicStats.entries())
+    .sort((a, b) => {
+      if (b[1].count !== a[1].count) {
+        return b[1].count - a[1].count;
+      }
+      return a[1].firstSeen - b[1].firstSeen;
+    })
+    .map(([topic]) => topic);
+
+  const topics = sortedTopics.slice(0, 6);
+
+  if (chapters.length === 0 && topics.length === 0) {
+    return null;
+  }
+
+  return { chapters, topics };
+}
 
 export function UploadPanel({
   onPackGenerated,
@@ -77,6 +204,13 @@ export function UploadPanel({
   const [error, setError] = useState<{ code: string; message: string } | null>(null);
   const [previewResult, setPreviewResult] = useState<ParsedDocument | null>(null);
   const [generatedResult, setGeneratedResult] = useState<GenerationResult | null>(null);
+  const coverage = useMemo(() => {
+    if (!generatedResult?.pack) return null;
+    return deriveCoverageSummary(
+      generatedResult.pack,
+      generatedResult.references,
+    );
+  }, [generatedResult]);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
@@ -656,6 +790,41 @@ export function UploadPanel({
               </span>
             </div>
           </div>
+          {coverage && (coverage.chapters.length > 0 || coverage.topics.length > 0) && (
+            <div className="mt-3 pt-3 border-t border-emerald-100/80 dark:border-stone-800 text-xs">
+              <div className="flex items-center gap-1.5 font-medium text-stone-600 dark:text-stone-400 mb-2">
+                <Layers size={13} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span>
+                  {(t as { workspace?: { coverageSummaryLabel?: string } }).workspace?.coverageSummaryLabel ||
+                    t.upload.coverageSummaryLabel}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {coverage.chapters.map((ch, idx) => (
+                  <span key={`ch-${ch.label}-${idx}`} className="inline-flex items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11.5px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200/80 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/60 shadow-xs">
+                      <span>{ch.label}</span>
+                      <span className="text-[10.5px] text-emerald-600 dark:text-emerald-400 font-semibold">({ch.count})</span>
+                    </span>
+                    {idx < coverage.chapters.length - 1 && (
+                      <span className="text-stone-300 dark:text-stone-600 select-none">·</span>
+                    )}
+                  </span>
+                ))}
+                {coverage.chapters.length > 0 && coverage.topics.length > 0 && (
+                  <span className="text-stone-300 dark:text-stone-600 px-0.5 select-none">·</span>
+                )}
+                {coverage.topics.map((topic, idx) => (
+                  <span
+                    key={`topic-${topic}-${idx}`}
+                    className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-normal bg-stone-100 text-stone-700 border border-stone-200/80 dark:bg-stone-800/80 dark:text-stone-300 dark:border-stone-700 shadow-xs"
+                  >
+                    {topic}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           {generatedResult.warnings.length > 0 && (
             <div className="result-warnings">
               {generatedResult.warnings.map((w, i) => (

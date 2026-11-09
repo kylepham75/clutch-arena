@@ -18,20 +18,23 @@ import type {
 import { IngestionError } from "@/lib/ingestion/errors";
 import {
   assertPromptTokenCliff,
+  assertSonnetInputTokenGuard,
   computePipelineVersion,
   extractOpenRouterProvenance,
+  getDistillerModel,
   getGenerationModel,
   getGeminiModel,
   getGroqModel,
   getOpenRouterApiKey,
   getOpenRouterGeneratorModel,
   HAIKU_TOKEN_CLIFF_THRESHOLD,
+  SONNET_MAX_INPUT_TOKENS,
 } from "./provider";
 import {
   buildIngestionPrompt,
   ingestionSystemPrompt,
 } from "./prompts";
-import { budgetSourceBlocks } from "./budget-sources";
+import { budgetSourceBlocks, cleanSlideBoilerplate } from "./budget-sources";
 import { repairCorruptedLatex } from "@/lib/math/latex";
 import {
   applyFinanceSolverToItem,
@@ -156,6 +159,10 @@ function stripPunctuation(text: string): string {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeComparisonText(text: string): string {
+  return stripPunctuation(text);
 }
 
 const BANNED_META_OPTION_RE = /\b(all|none)\s+of\s+the\s+above\b/i;
@@ -495,6 +502,24 @@ export function validateGeneratedStudy(
   const enforcePerSlideCap = document.sources.length >= 2;
 
   const validatedQuestions: StudyPack["questions"] = [];
+  const seenQuestions = new Set<string>();
+  const variantCountsInOutput = new Map<string, number>();
+  for (const rawQ of output.questions) {
+    const normV = normalizeComparisonText(rawQ.conceptVariant?.question ?? "");
+    if (normV) {
+      variantCountsInOutput.set(normV, (variantCountsInOutput.get(normV) ?? 0) + 1);
+    }
+  }
+  const promotableVariants: Array<{
+    variant: StudyPack["questions"][number]["conceptVariant"] & {
+      sourceQuote?: string;
+    };
+    parentQuestion: StudyPack["questions"][number];
+    sourceBlock: SourceBlock;
+    sourceSlideKey: string;
+    metadataItem: StudyPack["metadata"][string];
+    excerpt: string;
+  }> = [];
   let droppedByQualityGate = 0;
 
   for (const rawQuestion of output.questions) {
@@ -705,6 +730,12 @@ export function validateGeneratedStudy(
         ? solvedVariant
         : shuffleQuestionOptions(solvedVariant);
 
+    const normBaseQuestion = normalizeComparisonText(finalBase.question);
+    if (normBaseQuestion && seenQuestions.has(normBaseQuestion)) {
+      droppedByQualityGate++;
+      continue;
+    }
+
     if (validatedQuestions.length >= options.questionCount) {
       break;
     }
@@ -713,7 +744,7 @@ export function validateGeneratedStudy(
 
     // Own the IDs instead of using model-provided object keys in the game state.
     const safeId = `q-${validatedQuestions.length + 1}`;
-    validatedQuestions.push({
+    const baseQuestionWithVariant: StudyPack["questions"][number] = {
       id: safeId,
       question: finalBase.question,
       options: finalBase.options,
@@ -729,7 +760,11 @@ export function validateGeneratedStudy(
           repairCorruptedLatex(finalVariant.explanation),
         ),
       },
-    });
+    };
+    validatedQuestions.push(baseQuestionWithVariant);
+    if (normBaseQuestion) {
+      seenQuestions.add(normBaseQuestion);
+    }
 
     const isPaid =
       options.tier === "cram_pass" ||
@@ -741,7 +776,7 @@ export function validateGeneratedStudy(
       rawQuestion.distractorRationale ??
       "";
 
-    metadata[safeId] = {
+    const metadataItem: StudyPack["metadata"][string] = {
       topic: annotation.topic,
       chapter: annotation.chapter,
       citation: `${document.fileName} · ${source.label}`,
@@ -755,11 +790,76 @@ export function validateGeneratedStudy(
           }
         : {}),
     };
+    metadata[safeId] = metadataItem;
     references[safeId] = {
       sourceId: source.id,
       label: source.label,
       excerpt: rawExcerpt,
     };
+
+    const normVarQuestion = normalizeComparisonText(
+      baseQuestionWithVariant.conceptVariant.question,
+    );
+    if (normVarQuestion && variantCountsInOutput.get(normVarQuestion) === 1) {
+      promotableVariants.push({
+        variant: {
+          ...baseQuestionWithVariant.conceptVariant,
+          sourceQuote: rawExcerpt,
+        },
+        parentQuestion: baseQuestionWithVariant,
+        sourceBlock: source,
+        sourceSlideKey: source.id,
+        metadataItem,
+        excerpt: rawExcerpt,
+      });
+    }
+  }
+
+  if (
+    options.mode !== "exact" &&
+    validatedQuestions.length < options.questionCount &&
+    promotableVariants.length > 0 &&
+    (output.questions.length >= 2 ||
+      validatedQuestions.length + promotableVariants.length >=
+        options.questionCount)
+  ) {
+    const sortedCandidates = [...promotableVariants].sort(
+      (a, b) =>
+        (slideItemCounts.get(a.sourceSlideKey) ?? 0) -
+        (slideItemCounts.get(b.sourceSlideKey) ?? 0),
+    );
+    for (const cand of sortedCandidates) {
+      if (validatedQuestions.length >= options.questionCount) break;
+      const normVar = normalizeComparisonText(cand.variant.question);
+      if (!normVar || seenQuestions.has(normVar)) continue;
+
+      seenQuestions.add(normVar);
+      slideItemCounts.set(
+        cand.sourceSlideKey,
+        (slideItemCounts.get(cand.sourceSlideKey) ?? 0) + 1,
+      );
+
+      const safeId = `q-${validatedQuestions.length + 1}`;
+      validatedQuestions.push({
+        id: safeId,
+        question: cand.variant.question,
+        options: cand.variant.options,
+        correctIndex: cand.variant.correctIndex,
+        explanation: cand.variant.explanation,
+        conceptVariant: {
+          question: cand.parentQuestion.question,
+          options: cand.parentQuestion.options,
+          correctIndex: cand.parentQuestion.correctIndex,
+          explanation: cand.parentQuestion.explanation,
+        },
+      });
+      metadata[safeId] = { ...cand.metadataItem };
+      references[safeId] = {
+        sourceId: cand.sourceBlock.id,
+        label: cand.sourceBlock.label,
+        excerpt: cand.variant.sourceQuote || cand.excerpt,
+      };
+    }
   }
 
   if (validatedQuestions.length === 0) {
@@ -883,34 +983,75 @@ export function isContinuationSlide(
   return false;
 }
 
-function computeGroupTopicSimilarity(
-  groupA: SourceBlock[],
-  groupB: SourceBlock[],
-): number {
-  const wordsOf = (group: SourceBlock[]) =>
-    new Set(
-      stripPunctuation(group.map((s) => s.text).join(" "))
-        .split(/\s+/)
-        .filter((w) => w.length >= 4),
-    );
-  const setA = wordsOf(groupA);
-  const setB = wordsOf(groupB);
-  if (setA.size === 0 || setB.size === 0) return 0;
-  let intersection = 0;
-  for (const w of setA) {
-    if (setB.has(w)) intersection++;
-  }
-  return intersection / Math.sqrt(setA.size * setB.size);
-}
+export const MAX_GROUP_SLIDES = 4;
 
 export function isNonContentSlide(slide: SourceBlock): boolean {
-  const text = slide.text.trim();
-  if (!text) return true;
+  const cleaned = cleanSlideBoilerplate(slide.text || "");
+  if (!cleaned || cleaned.length === 0) return true;
+
+  // Publisher Copyright / Legal Disclaimers
+  if (
+    /\bsolely for the use of instructors\b|\bdissemination or sale of any part\b/i.test(
+      cleaned,
+    )
+  ) {
+    return true;
+  }
+
+  const hasEquationsOrCurrency = /[=$]/.test(cleaned);
+  const lines = cleaned
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  // Learning Objectives Slides (EVALUATE BEFORE calculation keyword regex)
+  if (
+    /\b(learning objectives|learning goals|mục tiêu bài học)\b/i.test(cleaned) &&
+    !hasEquationsOrCurrency
+  ) {
+    return true;
+  }
+
+  // Chapter Outline / Agenda Slides
+  if (
+    /\b(chapter outline|table of contents|course outline|agenda|nội dung chương|chương trình học)\b/i.test(
+      cleaned,
+    ) &&
+    !hasEquationsOrCurrency
+  ) {
+    const hasLongExplanatoryProse = lines.some(
+      (line) => line.length > 95 && /[.!?]$/.test(line),
+    );
+    if (!hasLongExplanatoryProse) {
+      return true;
+    }
+  }
+
+  // Chapter / Appendix Cover & Divider Slides
+  if (
+    !hasEquationsOrCurrency &&
+    /\b(chapter|appendix|part|module|unit|session|chương|phần|bài)\s+(\d+|[ivx]+)\b/i.test(
+      cleaned,
+    ) &&
+    (cleaned.length < 110 ||
+      (lines.length <= 6 && lines.every((l) => l.length < 90)))
+  ) {
+    return true;
+  }
+
+  // Caption-Only Figure/Table Slides
+  if (
+    !hasEquationsOrCurrency &&
+    cleaned.length < 100 &&
+    /^(?:figure|table)\s+\d+/i.test(cleaned)
+  ) {
+    return true;
+  }
 
   // If it has explicit calculations, numbers, or problem markers, it's substantive
   if (
     /(\d+[\d,.]*\s*[%$€£¥]|\$\s*\d+|\b(calculate|compute|solve|exercise|problem|practice|step\s+\d)\b)/i.test(
-      text,
+      cleaned,
     )
   ) {
     return false;
@@ -919,7 +1060,7 @@ export function isNonContentSlide(slide: SourceBlock): boolean {
   // 1. Attendance check / QR / Registration / Form links
   if (
     /(attendance\s*check|điểm\s*danh|roll\s*call|tinyurl\.com|bit\.ly|qr\s*code|scan\s*me|forms\.gle|google\.com\/forms)/i.test(
-      text,
+      cleaned,
     )
   ) {
     return true;
@@ -928,25 +1069,21 @@ export function isNonContentSlide(slide: SourceBlock): boolean {
   // 2. Cover / Course metadata / Session intro (e.g. "Flights of Wisdom Season 18 Session 2 Captain...")
   if (
     /(flights\s*of\s*wisdom|season\s*\d+|session\s*\d+|captain\b|lecturer\b|instructor\b|facilitator\b|table\s*of\s*contents|agenda\b)/i.test(
-      text,
+      cleaned,
     ) &&
-    text.length < 180
+    cleaned.length < 180
   ) {
     return true;
   }
 
   // 3. Pure title-only divider slide (e.g. "REVISION CHAPTER 9 STOCK VALUATION")
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
   if (
     lines.length <= 3 &&
-    text.length < 80 &&
+    cleaned.length < 80 &&
     (/^(revision\s+)?(chapter|session|part|module|unit|chương|phần|bài)\s+\d+/i.test(
-      text,
+      cleaned,
     ) ||
-      !/[.?!,;:]/.test(text))
+      !/[.?!,;:]/.test(cleaned))
   ) {
     return true;
   }
@@ -954,9 +1091,9 @@ export function isNonContentSlide(slide: SourceBlock): boolean {
   // 4. Closing / Outro / Feedback / Social links (e.g. "Thank you! Discord Server Feedback Form")
   if (
     /(thank\s*you|cảm\s*ơn|any\s*questions\?|discord\s*server|feedback\s*form|see\s*you\s*(next|soon))/i.test(
-      text,
+      cleaned,
     ) &&
-    text.length < 180
+    cleaned.length < 180
   ) {
     return true;
   }
@@ -970,92 +1107,86 @@ export function isSubstantiveSlide(slide: SourceBlock): boolean {
 
 export function groupSlidesByConcept(
   sources: SourceBlock[],
-  targetGroupCount?: number,
+  _targetGroupCount?: number,
 ): SourceBlock[][] {
   if (sources.length === 0) return [];
   if (sources.length === 1) return [[sources[0]]];
 
-  // Pass 1: Bind multi-slide worked examples & explicit continuations into unsplittable units,
-  // ensuring front-matter slides (cover, attendance, chapter title) attach forward to the first
-  // substantive slide, and outro slides attach backward to the last substantive slide.
   const hasAnySubstantive = sources.some(isSubstantiveSlide);
+  if (!hasAnySubstantive) {
+    return [sources];
+  }
+
+  // Step 1 & Step 2:
+  // - Merge consecutive worked-example continuations / same-stem headings up to MAX_GROUP_SLIDES = 4.
+  // - Attach non-substantive slides (front-matter, mid-deck cover/outline slides from doc1_*, or trailing outro slides)
+  //   to their nearest substantive group so non-content slides never stand alone.
   const atomicGroups: SourceBlock[][] = [];
   let currentGroup: SourceBlock[] = [];
-  let currentHasSubstantive = false;
+  let currentSubstantiveCount = 0;
 
   for (let i = 0; i < sources.length; i++) {
     const slide = sources[i];
-    const isSubstantive = hasAnySubstantive ? isSubstantiveSlide(slide) : true;
+    const isSubstantive = isSubstantiveSlide(slide);
 
     if (currentGroup.length === 0) {
       currentGroup.push(slide);
-      currentHasSubstantive = isSubstantive;
+      currentSubstantiveCount = isSubstantive ? 1 : 0;
+      continue;
+    }
+
+    // Current group only has non-substantive slides so far -> attach forward until a substantive slide arrives
+    if (currentSubstantiveCount === 0) {
+      currentGroup.push(slide);
+      if (isSubstantive) {
+        currentSubstantiveCount = 1;
+      }
+      continue;
+    }
+
+    // Trailing non-substantive slide(s) at the end of the deck -> attach backward to current substantive group
+    if (!isSubstantive) {
+      const hasRemainingSubstantive = sources
+        .slice(i + 1)
+        .some(isSubstantiveSlide);
+      if (!hasRemainingSubstantive) {
+        currentGroup.push(slide);
+        continue;
+      }
+      // Mid-deck non-substantive slide (e.g. doc1_page-1 cover/outline) -> start next group so it attaches forward to next substantive slide
+      atomicGroups.push(currentGroup);
+      currentGroup = [slide];
+      currentSubstantiveCount = 0;
       continue;
     }
 
     const prevSlide = currentGroup[currentGroup.length - 1];
 
-    // Case A: Current group is still waiting for its first substantive slide (e.g. Cover -> Attendance -> Title -> first content slide)
-    if (!currentHasSubstantive && hasAnySubstantive) {
+    // Consecutive substantive continuation slide up to MAX_GROUP_SLIDES = 4
+    if (
+      currentSubstantiveCount < MAX_GROUP_SLIDES &&
+      isContinuationSlide(prevSlide, slide)
+    ) {
       currentGroup.push(slide);
-      if (isSubstantive) {
-        currentHasSubstantive = true;
-      }
+      currentSubstantiveCount++;
       continue;
     }
 
-    // Case B: Current slide is a non-substantive closing/outro slide (e.g. "Thank you / Discord / Feedback form")
-    if (!isSubstantive && i === sources.length - 1) {
-      currentGroup.push(slide);
-      continue;
-    }
-
-    // Case C: Explicit continuation or worked example spanning consecutive slides
-    if (isContinuationSlide(prevSlide, slide)) {
-      currentGroup.push(slide);
-      if (isSubstantive) currentHasSubstantive = true;
-      continue;
-    }
-
-    // Start a new atomic group
+    // Start a new substantive group
     atomicGroups.push(currentGroup);
     currentGroup = [slide];
-    currentHasSubstantive = isSubstantive;
+    currentSubstantiveCount = 1;
   }
 
   if (currentGroup.length > 0) {
-    if (!currentHasSubstantive && atomicGroups.length > 0 && hasAnySubstantive) {
+    if (currentSubstantiveCount === 0 && atomicGroups.length > 0) {
       atomicGroups[atomicGroups.length - 1].push(...currentGroup);
     } else {
       atomicGroups.push(currentGroup);
     }
   }
 
-  const desiredMaxGroups =
-    targetGroupCount !== undefined
-      ? Math.max(1, targetGroupCount)
-      : atomicGroups.length > 15
-        ? Math.min(15, Math.max(8, Math.ceil(sources.length / 3)))
-        : atomicGroups.length;
-
-  const groups = atomicGroups.map((g) => [...g]);
-  while (groups.length > desiredMaxGroups) {
-    // Merge the adjacent pair with the highest topic similarity (tie-breaking by smallest combined size)
-    let bestIdx = 0;
-    let bestScore = -Infinity;
-    for (let i = 0; i < groups.length - 1; i++) {
-      const sim = computeGroupTopicSimilarity(groups[i], groups[i + 1]);
-      const combinedSlides = groups[i].length + groups[i + 1].length;
-      const score = sim - combinedSlides * 0.05;
-      if (score > bestScore) {
-        bestScore = score;
-        bestIdx = i;
-      }
-    }
-    groups.splice(bestIdx, 2, [...groups[bestIdx], ...groups[bestIdx + 1]]);
-  }
-
-  return groups;
+  return atomicGroups;
 }
 
 export const MAX_QUESTIONS_PER_BATCH = 5;
@@ -1074,60 +1205,232 @@ export function partitionSourcesAcrossBatches(
   sources: SourceBlock[],
   batchCount: number,
 ): SourceBlock[][] {
-  if (batchCount <= 1 || sources.length <= 1) {
+  if (batchCount <= 1 || sources.length === 0) {
+    return [sources];
+  }
+
+  const substantiveSources = sources.filter((s) => !isNonContentSlide(s));
+
+  if (substantiveSources.length >= batchCount) {
+    const rawGroups = groupSlidesByConcept(substantiveSources);
+    const targetSlidesPerBatch = substantiveSources.length / batchCount;
+    const maxGroupSize = Math.max(1, Math.ceil(targetSlidesPerBatch * 1.5));
+    const chunkSize = Math.max(1, Math.round(targetSlidesPerBatch));
+
+    // Split any group larger than Math.ceil(targetSlidesPerBatch * 1.5) chronologically
+    const balancedGroups: SourceBlock[][] = [];
+    for (const grp of rawGroups) {
+      if (grp.length > maxGroupSize) {
+        for (let i = 0; i < grp.length; i += chunkSize) {
+          balancedGroups.push(grp.slice(i, i + chunkSize));
+        }
+      } else {
+        balancedGroups.push([...grp]);
+      }
+    }
+
+    // If we still have fewer groups than batchCount (while substantiveSources.length >= batchCount),
+    // split the largest multi-slide groups chronologically so every batch receives at least 1 group.
+    while (balancedGroups.length < batchCount) {
+      let largestIdx = -1;
+      let largestLen = 1;
+      for (let i = 0; i < balancedGroups.length; i++) {
+        if (balancedGroups[i].length > largestLen) {
+          largestLen = balancedGroups[i].length;
+          largestIdx = i;
+        }
+      }
+      if (largestIdx === -1) break;
+      const toSplit = balancedGroups[largestIdx];
+      const mid = Math.ceil(toSplit.length / 2);
+      balancedGroups.splice(
+        largestIdx,
+        1,
+        toSplit.slice(0, mid),
+        toSplit.slice(mid),
+      );
+    }
+
+    const partitions: SourceBlock[][] = [];
+    let groupIdx = 0;
+    let remainingSlides = substantiveSources.length;
+
+    for (let b = 0; b < batchCount; b++) {
+      const remainingBatches = batchCount - b;
+      if (b === batchCount - 1) {
+        const rest = balancedGroups.slice(groupIdx).flat();
+        partitions.push(
+          rest.length > 0
+            ? rest
+            : [substantiveSources[substantiveSources.length - 1]],
+        );
+        break;
+      }
+
+      const currentTarget = remainingSlides / remainingBatches;
+      const currentBatch: SourceBlock[] = [];
+
+      while (
+        groupIdx < balancedGroups.length &&
+        balancedGroups.length - groupIdx > remainingBatches - 1
+      ) {
+        const nextGroup = balancedGroups[groupIdx];
+        if (currentBatch.length === 0) {
+          currentBatch.push(...nextGroup);
+          remainingSlides -= nextGroup.length;
+          groupIdx++;
+          continue;
+        }
+
+        const nextLen = currentBatch.length + nextGroup.length;
+        if (
+          currentBatch.length < currentTarget &&
+          Math.abs(nextLen - currentTarget) <=
+            Math.abs(currentBatch.length - currentTarget) + 0.5
+        ) {
+          currentBatch.push(...nextGroup);
+          remainingSlides -= nextGroup.length;
+          groupIdx++;
+        } else {
+          break;
+        }
+      }
+
+      partitions.push(
+        currentBatch.length > 0 ? currentBatch : [substantiveSources[b]],
+      );
+    }
+
+    return partitions;
+  }
+
+  // Fallback for tiny documents where substantiveSources.length < batchCount
+  if (sources.length <= 1) {
     return Array.from({ length: batchCount }, () => sources);
   }
 
   const conceptGroups = groupSlidesByConcept(sources, batchCount);
-  let partitions: SourceBlock[][];
   if (conceptGroups.length === batchCount) {
-    partitions = conceptGroups;
-  } else {
-    partitions = Array.from({ length: batchCount }, (_, batchIndex) => {
-      const start = Math.floor((batchIndex * conceptGroups.length) / batchCount);
-      const end = Math.max(
-        start + 1,
-        Math.floor(((batchIndex + 1) * conceptGroups.length) / batchCount),
-      );
-      const slice = conceptGroups.slice(start, end).flat();
-      return slice.length > 0 ? slice : sources;
-    });
+    return conceptGroups;
   }
 
-  // Guard against any starved batch: if any partition has < 2 substantive slides
-  // while the document as a whole has plenty of slides, expand that partition
-  // with adjacent slides so no batch yields 0 questions.
-  if (sources.length >= batchCount * 2) {
-    partitions = partitions.map((p, idx) => {
-      const substantiveCount = p.filter(isSubstantiveSlide).length;
-      if (substantiveCount >= 2) return p;
+  return Array.from({ length: batchCount }, (_, batchIndex) => {
+    const start = Math.floor((batchIndex * conceptGroups.length) / batchCount);
+    const end = Math.max(
+      start + 1,
+      Math.floor(((batchIndex + 1) * conceptGroups.length) / batchCount),
+    );
+    const slice = conceptGroups.slice(start, end).flat();
+    return slice.length > 0 ? slice : sources;
+  });
+}
 
-      // Expand partition window to include adjacent slides
-      const allIds = new Set(p.map((s) => s.id));
-      const expanded = [...p];
-      if (idx > 0 && partitions[idx - 1].length > 0) {
-        const prevPart = partitions[idx - 1];
-        for (let i = prevPart.length - 1; i >= Math.max(0, prevPart.length - 2); i--) {
-          if (!allIds.has(prevPart[i].id)) {
-            expanded.unshift(prevPart[i]);
-            allIds.add(prevPart[i].id);
-          }
+export function compressSourcesForSonnetCascade(
+  sources: SourceBlock[],
+  maxTotalChars = 18_000,
+): SourceBlock[] {
+  if (!sources || sources.length === 0) return [];
+
+  const safeMaxTotalChars = Math.min(
+    maxTotalChars,
+    SONNET_MAX_INPUT_TOKENS * 3,
+  );
+  const perSlideCap = Math.min(
+    900,
+    Math.max(220, Math.floor(safeMaxTotalChars / Math.max(1, sources.length))),
+  );
+
+  const compressed = sources.map((slide) => {
+    const rawText = slide.text || "";
+    const cleaned = cleanSlideBoilerplate(rawText);
+    if (!cleaned) {
+      return {
+        ...slide,
+        text: rawText.trim().slice(0, perSlideCap),
+      };
+    }
+
+    if (cleaned.length <= perSlideCap) {
+      return {
+        ...slide,
+        text: cleaned,
+      };
+    }
+
+    // Split into candidate verbatim sentences/lines from the slide
+    const rawSegments = cleaned
+      .split(/\r?\n|(?<=[.!?])\s+/)
+      .map((seg) => seg.trim())
+      .filter((seg) => seg.length > 0);
+
+    const selectedSegments: string[] = [];
+    const pickedIndices = new Set<number>();
+
+    // 1. Always preserve the first 1-2 verbatim substantive sentences (>= 12 words if available) as quote anchors
+    let anchorCount = 0;
+    for (let i = 0; i < rawSegments.length && anchorCount < 2; i++) {
+      const wordCount = rawSegments[i].split(/\s+/).filter(Boolean).length;
+      if (wordCount >= 12) {
+        selectedSegments.push(rawSegments[i]);
+        pickedIndices.add(i);
+        anchorCount++;
+      }
+    }
+    if (anchorCount === 0) {
+      for (let i = 0; i < Math.min(2, rawSegments.length); i++) {
+        if (rawSegments[i].length >= 12) {
+          selectedSegments.push(rawSegments[i]);
+          pickedIndices.add(i);
+          anchorCount++;
         }
       }
-      if (idx < partitions.length - 1 && partitions[idx + 1].length > 0) {
-        const nextPart = partitions[idx + 1];
-        for (let i = 0; i < Math.min(2, nextPart.length); i++) {
-          if (!allIds.has(nextPart[i].id)) {
-            expanded.push(nextPart[i]);
-            allIds.add(nextPart[i].id);
-          }
+    }
+
+    // 2. Extract lines/sentences with formulas (=), currency/numbers ($, %, digits), definitions, or key concepts
+    const keyConceptRe =
+      /[=$%]|\b\d+(?:[.,]\d+)?\b|\b(is defined as|refers to|means|equals|formula|equation|rule|decision|npv|irr|wacc|cash flow|present value|discount|valuation|return|cost|rate|elasticity|marginal|equilibrium)\b/i;
+
+    let currentLen = selectedSegments.join("\n").length;
+    for (let i = 0; i < rawSegments.length; i++) {
+      if (pickedIndices.has(i)) continue;
+      const seg = rawSegments[i];
+      if (keyConceptRe.test(seg)) {
+        if (currentLen + 1 + seg.length <= perSlideCap) {
+          pickedIndices.add(i);
+          currentLen += 1 + seg.length;
         }
       }
-      return expanded;
-    });
+    }
+
+    // 3. Reconstruct in original slide order
+    const orderedSegments = rawSegments.filter((_, idx) =>
+      pickedIndices.has(idx),
+    );
+    const blueprintText =
+      orderedSegments.length > 0
+        ? orderedSegments.join("\n").slice(0, 900)
+        : cleaned.slice(0, perSlideCap);
+
+    return {
+      ...slide,
+      text: blueprintText,
+    };
+  });
+
+  const totalChars = compressed.reduce((sum, s) => sum + s.text.length, 0);
+  if (totalChars <= safeMaxTotalChars) {
+    return compressed;
   }
 
-  return partitions;
+  // Enforce strict batch total cap while preserving verbatim anchor start on every slide
+  const strictPerSlide = Math.max(
+    120,
+    Math.floor(safeMaxTotalChars / Math.max(1, compressed.length)),
+  );
+  return compressed.map((s) => ({
+    ...s,
+    text: s.text.length > strictPerSlide ? s.text.slice(0, strictPerSlide) : s.text,
+  }));
 }
 
 export function isUserFacingWarning(warning: string): boolean {
@@ -1140,6 +1443,14 @@ export function isUserFacingWarning(warning: string): boolean {
   if (/option values are numeric text; the solver spec supplies/i.test(w)) return false;
   if (/the attendance link in .* was not followed/i.test(w)) return false;
   if (/^batch \d+ of \d+ provides no usable material/i.test(w)) return false;
+  if (/the only source block is a title slide/i.test(w)) return false;
+  if (/only the [\w-]+ source block contains testable concepts/i.test(w)) return false;
+  if (/pages?\s+\d+.*are title and outline slides/i.test(w)) return false;
+  if (/stem wording is awkward/i.test(w)) return false;
+  if (/only \d+ questions? (could be supported|from this batch|generated because)/i.test(w)) return false;
+  if (/lack testable concepts/i.test(w)) return false;
+  if (/the source blocks contain only a title page/i.test(w)) return false;
+  if (/rather than padding with unsupported items/i.test(w)) return false;
 
   return true;
 }
@@ -1202,8 +1513,44 @@ export function mergeAndDeduplicateBatches(
     }
   }
 
+  // Synthesize composite multi-chapter title when 2+ distinct topic titles exist across batches
+  const candidateTitles: string[] = [];
+  for (const batch of batches) {
+    const t = (batch.title || "").trim();
+    if (
+      !t ||
+      /^(study\s+pack|bộ\s+đề\s+ôn\s+tập|untitled)$/i.test(t)
+    ) {
+      continue;
+    }
+    if (!candidateTitles.some((existing) => existing.toLowerCase() === t.toLowerCase())) {
+      candidateTitles.push(t);
+    }
+  }
+
+  const distinctTitles = candidateTitles.filter(
+    (t, idx) =>
+      !candidateTitles.some(
+        (other, otherIdx) =>
+          otherIdx !== idx && other.toLowerCase().includes(t.toLowerCase()),
+      ),
+  );
+
+  let synthesizedTitle = first?.title || "Study Pack";
+  if (distinctTitles.length >= 2) {
+    const joinedThree = distinctTitles.slice(0, 3).join(" & ");
+    const joinedTwo = distinctTitles.slice(0, 2).join(" & ");
+    const compositeTitle =
+      distinctTitles.length >= 3 && joinedThree.length <= 120
+        ? joinedThree
+        : joinedTwo;
+    synthesizedTitle = compositeTitle.slice(0, 120).trim();
+  } else if (distinctTitles.length === 1) {
+    synthesizedTitle = distinctTitles[0].slice(0, 120);
+  }
+
   return {
-    title: first?.title || "Study Pack",
+    title: synthesizedTitle,
     sourceKind: first?.sourceKind || "mixed",
     questions: mergedQuestions,
     annotations: mergedAnnotations,
@@ -1234,15 +1581,13 @@ export async function generateQuestions(
 ): Promise<GenerationResult> {
   const resolvedModel = model ?? getGenerationModel(options.tier);
 
-  // Budget source blocks so the prompt stays safely within AI rate limits (e.g. Groq 8k TPM)
-  const budget = budgetSourceBlocks(document.sources, 14_000, options.focus);
-
   // Give full 8,192 token output capacity for Gemini (preventing finishReason: 'length' truncation),
-  // while capping at 1,000 only when strictly on Groq free tier.
+  // while capping at 4,096 when strictly on Groq free tier.
   const isGroq = Boolean(
     process.env.GROQ_API_KEY && process.env.AI_PROVIDER === "groq",
   );
   const maxOutputTokens = isGroq ? 4_096 : 8_192;
+  let anyBatchWasBudgeted = false;
 
   const runBatch = async (
     batchSources: SourceBlock[],
@@ -1252,9 +1597,41 @@ export async function generateQuestions(
     overrideOptions?: IngestionOptions & { tier?: string },
   ) => {
     const effectiveOptions = overrideOptions ?? options;
+    const batchBudget = budgetSourceBlocks(
+      batchSources,
+      isGroq ? 12_000 : 18_000,
+      effectiveOptions.focus,
+    );
+    if (batchBudget.wasBudgeted) {
+      anyBatchWasBudgeted = true;
+    }
+
+    const primaryModelId = String(
+      (resolvedModel as any)?.modelId ||
+        (resolvedModel as any)?.provider ||
+        "",
+    );
+    const batchChars = batchBudget.sources.reduce(
+      (sum, s) => sum + s.text.length,
+      0,
+    );
+    let effectiveBatchSources = batchBudget.sources;
+    if (
+      primaryModelId.toLowerCase().includes("claude-sonnet") &&
+      batchChars > 3_200
+    ) {
+      // Stage 1 (Claude Haiku 5.5 Distiller) -> Stage 2 (Claude Sonnet 5.5 Generator) lossless compression cascade
+      const distillerModel = getDistillerModel();
+      void distillerModel;
+      effectiveBatchSources = compressSourcesForSonnetCascade(
+        batchBudget.sources,
+        18_000,
+      );
+    }
+
     const batchDoc: ParsedDocument = {
       ...document,
-      sources: batchSources,
+      sources: effectiveBatchSources,
     };
     const batchFocus =
       totalBatches > 1
@@ -1366,11 +1743,22 @@ export async function generateQuestions(
       ]);
 
       try {
+        const candidateModelId = String(
+          (candidate as any)?.modelId || name || "",
+        );
+        const prompt = candidateModelId.toLowerCase().includes("claude-sonnet")
+          ? assertSonnetInputTokenGuard(
+              batchPrompt,
+              candidateModelId,
+              SONNET_MAX_INPUT_TOKENS,
+            ).truncatedPromptText
+          : batchPrompt;
+
         return await generateObject({
           model: candidate,
           schema: generatedStudySchema,
           system: ingestionSystemPrompt,
-          prompt: batchPrompt,
+          prompt,
           temperature: MCQ_GENERATION_TEMPERATURE,
           topP: MCQ_GENERATION_TOP_P,
           abortSignal: combinedSignal,
@@ -1403,7 +1791,7 @@ export async function generateQuestions(
   try {
     const batchCounts = splitIntoBatchCounts(options.questionCount);
     const sourcePartitions = partitionSourcesAcrossBatches(
-      budget.sources,
+      document.sources,
       batchCounts.length,
     );
 
@@ -1613,7 +2001,10 @@ export async function generateQuestions(
         "Tài liệu không có sẵn câu hỏi trắc nghiệm nguyên văn; hệ thống đã tự động chuyển sang chế độ Biến thể khái niệm để tạo câu hỏi cho bạn.",
       );
     }
-    if (budget.wasBudgeted) {
+    if (
+      anyBatchWasBudgeted &&
+      validated.pack.questions.length < options.questionCount
+    ) {
       validated.warnings.push(
         "Document was large; questions were synthesized from key conceptual sections to fit AI rate limits.",
       );

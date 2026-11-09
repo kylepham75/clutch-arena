@@ -288,6 +288,7 @@ export interface TranslationDict {
     generateQuestionsNowSuffix: string;
     multiDocLimitReason: string;
     sampleQuestion: string;
+    coverageSummaryLabel: string;
   };
   coach: {
     title: string;
@@ -1167,6 +1168,7 @@ export const translations: Record<Language, TranslationDict> = {
       generateQuestionsNowSuffix: "Questions Now",
       multiDocLimitReason: "Multi-document synthesis (up to 10 files / 25MB) requires a 7-Day Cram Pass or Clutch Pro. Free Contender includes 1 file per upload.",
       sampleQuestion: "Sample Question",
+      coverageSummaryLabel: "Covered sections",
     },
     coach: {
       title: "AI Study Coach",
@@ -2045,6 +2047,7 @@ export const translations: Record<Language, TranslationDict> = {
       generateQuestionsNowSuffix: "câu hỏi",
       multiDocLimitReason: "Tổng hợp đa tài liệu cùng lúc (tối đa 10 tệp / 25MB) yêu cầu Vé Ôn Thi Cấp Tốc (Cram Pass) hoặc Clutch Pro. Gói Contender miễn phí hỗ trợ 1 tệp mỗi lần tải.",
       sampleQuestion: "Câu hỏi mẫu",
+      coverageSummaryLabel: "Phạm vi kiến thức",
     },
     coach: {
       title: "Gia sư AI học tập",

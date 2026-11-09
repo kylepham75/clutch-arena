@@ -45,6 +45,8 @@ export interface ProfileQuotaSummary {
   noteCreditsRemaining: number;
   noteQuotaLabel: string;
   showUpgradeToSemesterPro: boolean;
+  sonnetProDeckCredits?: number;
+  haikuOverflowDeckCredits?: number;
 }
 
 /**
@@ -163,6 +165,8 @@ export function computeProfileQuotaSummary(
     noteCreditsRemaining,
     noteQuotaLabel,
     showUpgradeToSemesterPro,
+    sonnetProDeckCredits: limits.sonnetProDeckCredits,
+    haikuOverflowDeckCredits: limits.haikuOverflowDeckCredits,
   };
 }
 

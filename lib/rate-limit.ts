@@ -885,6 +885,7 @@ export interface CheckDeckQuotaOptions {
   maxDeckCredits?: number;
   overrideLimit?: number;
   burstLimit?: number;
+  allowHaikuOverflow?: boolean;
 }
 
 export interface DeckQuotaReservationResult {
@@ -898,6 +899,7 @@ export interface DeckQuotaReservationResult {
   cacheHit: boolean;
   creditConsumed: boolean;
   isRegeneration: boolean;
+  isHaikuOverflow?: boolean;
   creditsUsed: number;
   creditsLimit: number;
   dailyBurstUsed: number;
@@ -1184,6 +1186,7 @@ export async function checkAndReserveDeckQuota(
         cacheHit: true,
         creditConsumed: false,
         isRegeneration: false,
+        isHaikuOverflow: false,
         creditsUsed: ledger.deckCreditsUsed,
         creditsLimit: creditLimit,
         dailyBurstUsed: ledger.dailyBurstUsed,
@@ -1206,6 +1209,7 @@ export async function checkAndReserveDeckQuota(
           cacheHit: false,
           creditConsumed: false,
           isRegeneration: true,
+          isHaikuOverflow: false,
           creditsUsed: ledger.deckCreditsUsed,
           creditsLimit: creditLimit,
           dailyBurstUsed: ledger.dailyBurstUsed,
@@ -1232,6 +1236,7 @@ export async function checkAndReserveDeckQuota(
           cacheHit: false,
           creditConsumed: false,
           isRegeneration: true,
+          isHaikuOverflow: false,
           creditsUsed: ledger.deckCreditsUsed,
           creditsLimit: creditLimit,
           dailyBurstUsed: ledger.dailyBurstUsed,
@@ -1252,6 +1257,7 @@ export async function checkAndReserveDeckQuota(
         cacheHit: false,
         creditConsumed: false,
         isRegeneration: true,
+        isHaikuOverflow: false,
         creditsUsed: ledger.deckCreditsUsed,
         creditsLimit: creditLimit,
         dailyBurstUsed: ledger.dailyBurstUsed,
@@ -1262,21 +1268,31 @@ export async function checkAndReserveDeckQuota(
     }
 
     // 3. New distinct document (contentHash): enforce deck credits, daily burst, and COGS ceiling
+    let isHaikuOverflow = false;
     if (ledger.deckCreditsUsed >= creditLimit) {
-      return {
-        allowed: false,
-        reserved: false,
-        reason: "DECK_CREDITS_EXCEEDED",
-        cacheHit: false,
-        creditConsumed: false,
-        isRegeneration: false,
-        creditsUsed: ledger.deckCreditsUsed,
-        creditsLimit: creditLimit,
-        dailyBurstUsed: ledger.dailyBurstUsed,
-        dailyBurstLimit: burstLimit,
-        cogsStatus: baseCogsStatus,
-        ledger,
-      };
+      if (
+        options?.allowHaikuOverflow === true &&
+        limits.haikuOverflowDeckCredits > 0 &&
+        ledger.deckCreditsUsed < creditLimit + limits.haikuOverflowDeckCredits
+      ) {
+        isHaikuOverflow = true;
+      } else {
+        return {
+          allowed: false,
+          reserved: false,
+          reason: "DECK_CREDITS_EXCEEDED",
+          cacheHit: false,
+          creditConsumed: false,
+          isRegeneration: false,
+          isHaikuOverflow: false,
+          creditsUsed: ledger.deckCreditsUsed,
+          creditsLimit: creditLimit,
+          dailyBurstUsed: ledger.dailyBurstUsed,
+          dailyBurstLimit: burstLimit,
+          cogsStatus: baseCogsStatus,
+          ledger,
+        };
+      }
     }
 
     if (ledger.dailyBurstUsed >= burstLimit) {
@@ -1287,6 +1303,7 @@ export async function checkAndReserveDeckQuota(
         cacheHit: false,
         creditConsumed: false,
         isRegeneration: false,
+        isHaikuOverflow,
         creditsUsed: ledger.deckCreditsUsed,
         creditsLimit: creditLimit,
         dailyBurstUsed: ledger.dailyBurstUsed,
@@ -1296,14 +1313,25 @@ export async function checkAndReserveDeckQuota(
       };
     }
 
-    const estCost = options?.estimatedCostUsd ?? (userTier === "contender" ? 0.02 : 0.035);
-    const cogsStatus = evaluateCogsDegradation(
+    const defaultCost = userTier === "contender" || isHaikuOverflow ? 0.028 : 0.098;
+    const estCost =
+      options?.estimatedCostUsd !== undefined
+        ? isHaikuOverflow
+          ? Math.min(options.estimatedCostUsd, 0.028)
+          : options.estimatedCostUsd
+        : defaultCost;
+
+    let cogsStatus = evaluateCogsDegradation(
       ledger.cogsSpentUsd,
       ledger.cogsCeilingUsd,
       estCost,
       ledger.cogsReservedUsd,
       effectiveRegion,
     );
+
+    if (isHaikuOverflow) {
+      cogsStatus = { ...cogsStatus, useCheaperGeneratorSlug: true };
+    }
 
     if (cogsStatus.mode === "halted" || cogsStatus.serveCachedPoolsOnly) {
       return {
@@ -1313,6 +1341,7 @@ export async function checkAndReserveDeckQuota(
         cacheHit: false,
         creditConsumed: false,
         isRegeneration: false,
+        isHaikuOverflow,
         creditsUsed: ledger.deckCreditsUsed,
         creditsLimit: creditLimit,
         dailyBurstUsed: ledger.dailyBurstUsed,
@@ -1341,6 +1370,7 @@ export async function checkAndReserveDeckQuota(
       cacheHit: false,
       creditConsumed: true,
       isRegeneration: false,
+      isHaikuOverflow,
       creditsUsed: ledger.deckCreditsUsed,
       creditsLimit: creditLimit,
       dailyBurstUsed: ledger.dailyBurstUsed,
