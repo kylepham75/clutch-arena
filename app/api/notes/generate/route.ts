@@ -484,6 +484,7 @@ export async function POST(request: NextRequest) {
       slideCount,
       sources,
       focus,
+      throwOnContradictedFormula: false,
       ...(parsedDeck
         ? {
             ommlEquations: parsedDeck.ommlEquations,

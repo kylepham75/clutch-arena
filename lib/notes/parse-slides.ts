@@ -111,7 +111,13 @@ export async function parseSlideDeck(
 
   if (format === "pptx") {
     const parsed = await parsePptx(bytes, signalOrOptions);
-    sources = parsed.sources;
+    sources = parsed.sources.map((src) => ({
+      ...src,
+      text: src.text
+        .replace(/[\t\v\f\r]+/g, " ")
+        .replace(/[\x00-\x08\x0E-\x1F]/g, "")
+        .trim(),
+    }));
     slideCount = parsed.pageCount;
     warnings = parsed.warnings;
     ocrEquations = parsed.ocrEquations;
@@ -127,7 +133,10 @@ export async function parseSlideDeck(
       return {
         id: `slide-${pageNum}`,
         label: `Slide ${pageNum}`,
-        text: src.text,
+        text: src.text
+          .replace(/[\t\v\f\r]+/g, " ")
+          .replace(/[\x00-\x08\x0E-\x1F]/g, "")
+          .trim(),
       };
     });
     slideCount = parsed.pageCount;

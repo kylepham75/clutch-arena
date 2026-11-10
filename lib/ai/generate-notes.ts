@@ -2068,7 +2068,7 @@ export async function generateClutchNote(
   const isGroqPrimary = Boolean(
     process.env.GROQ_API_KEY && process.env.AI_PROVIDER?.trim().toLowerCase() === "groq",
   );
-  const primaryMaxTokens = isGroqPrimary ? 4_096 : 8_192;
+  const primaryMaxTokens = isGroqPrimary ? 4_096 : 16_384;
 
   let lastMeta: any = null;
 
@@ -2121,6 +2121,11 @@ export async function generateClutchNote(
               thinkingLevel: "low",
             },
           },
+          openrouter: {
+            reasoning: {
+              effort: "none",
+            },
+          },
         },
       });
       resObject = res.object;
@@ -2170,7 +2175,10 @@ export async function generateClutchNote(
       hasDistinctFallback ? 180_000 : 240_000,
     );
   } catch (primaryErr) {
-    if (hasDistinctFallback && fallback) {
+    const promptTokenEstimate = Math.ceil(prompt.length / 3.5);
+    const canUseGroq =
+      hasDistinctFallback && fallback && promptTokenEstimate < 6_000;
+    if (canUseGroq && fallback) {
       console.warn(
         "[generateClutchNote] Primary model failed or returned empty sections; failing over to Groq...",
         primaryErr,

@@ -715,7 +715,7 @@ CRITICAL EXTRACTION RULES:
 
 2. FORMULA SPECIFICATIONS:
    - 'latex': Clean LaTeX representation WITHOUT surrounding dollar signs ($ or $$).
-   - 'raw': Verbatim formula string or line as it appears on the slide.
+   - 'raw': Verbatim formula string or line as it appears on the slide. Never include literal unescaped tab characters or raw control characters.
    - 'label': Short name or title of the formula if mentioned on the slide (e.g. "Gordon Growth Model", "Net Working Capital"), or "" if unnamed.
    - 'variables': Array of variables defined on the slide ({ symbol, definition }), or [] if none explicitly defined.
    - 'isExerciseOnly': Set to true IF AND ONLY IF the formula appears exclusively inside an exercise, practice problem, numerical example, or worked solution on the slide. Otherwise false.
@@ -725,7 +725,10 @@ CRITICAL EXTRACTION RULES:
    - Extract key rules, takeaways, core assumptions, model boundaries, and definitions as claims.
    - 'topic': Concise concept or model name.
    - 'claim': Factual assertion or rule directly stated on the slide.
-   - 'evidence': Verbatim supporting quote from the slide.`;
+   - 'evidence': Verbatim supporting quote from the slide.
+
+4. JSON COMPLIANCE:
+   - Always return strictly valid RFC 8259 JSON. Never place raw unescaped tabs or control characters inside JSON strings.`;
 
 /**
  * Builds the user prompt for extracting formulas and claims from an 8-slide chunk.
@@ -735,7 +738,10 @@ export function buildChunkExtractionPrompt(chunk: SlideWithNumber[]): string {
   const slideBlocks = chunk
     .map(({ slide, source }) => {
       const label = source.label ? ` [${source.label}]` : "";
-      const text = (source.text || "").trim();
+      const text = (source.text || "")
+        .replace(/[\t\v\f\r]+/g, " ")
+        .replace(/[\x00-\x08\x0E-\x1F]/g, "")
+        .trim();
       return `=== SLIDE ${slide}${label} ===\n${text || "(No text content)"}`;
     })
     .join("\n\n");
@@ -882,6 +888,18 @@ export async function extractChunkedSlideInventory(options: {
         prompt: buildChunkExtractionPrompt(chunk),
         temperature: 0,
         abortSignal: options.signal,
+        providerOptions: {
+          google: {
+            thinkingConfig: {
+              thinkingLevel: "low",
+            },
+          },
+          openrouter: {
+            reasoning: {
+              effort: "none",
+            },
+          },
+        },
       });
 
       const result = response.object as ExtractionResult;
