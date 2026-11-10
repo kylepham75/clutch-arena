@@ -124,7 +124,40 @@ export async function parseSlideDeck(
     ommlEquations = parsed.ommlEquations;
   } else {
     // format === "pdf"
-    const parsed = await parsePdf(bytes, signal ?? new AbortController().signal);
+    const abortSignal = signal ?? new AbortController().signal;
+    const isMockOrCustom = Boolean(
+      signalOrOptions &&
+        typeof signalOrOptions === "object" &&
+        ("mockPages" in signalOrOptions ||
+          "visionTranscriber" in signalOrOptions ||
+          "maxAutoOcrBudgetUsd" in signalOrOptions),
+    );
+
+    // Fast-path for digital slide PDFs:
+    // First extract text with maxAutoOcrBudgetUsd = 0.
+    // Digital slides exported from PowerPoint / Keynote already contain full vector text.
+    // This bypasses 40+ seconds of sequential network OCR calls on decorative images or icons.
+    let parsed: Awaited<ReturnType<typeof parsePdf>>;
+
+    if (isMockOrCustom) {
+      parsed = await parsePdf(bytes, abortSignal, signalOrOptions as any);
+    } else {
+      parsed = await parsePdf(bytes, abortSignal, {
+        maxAutoOcrBudgetUsd: 0,
+      });
+
+      const nativeCharCount = parsed.sources.reduce(
+        (sum, s) => sum + s.text.trim().length,
+        0,
+      );
+
+      // If native digital text is insufficient (< 40 characters across the deck),
+      // this is a scanned PDF or image-only deck. Fall back to standard OCR extraction.
+      if (nativeCharCount < 40) {
+        parsed = await parsePdf(bytes, abortSignal);
+      }
+    }
+
     imageHashes = (parsed as { imageHashes?: string[] }).imageHashes;
     // Transform "Page X" to "Slide X" preserving page number from src.id
     sources = parsed.sources.map((src, index) => {
