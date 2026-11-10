@@ -640,6 +640,11 @@ export interface TranslationDict {
     copiedBtn: string;
     copyMarkdownBtn: string;
     exportPdfBtn: string;
+    createQuizBtn: string;
+    generatingQuizBtn: string;
+    quizCtaBadge: string;
+    quizCtaTitle: string;
+    quizCtaDesc: string;
     verifiedBadge: string;
     derivedBadge: string;
     derivedFromPrefix: string;
@@ -1520,6 +1525,11 @@ export const translations: Record<Language, TranslationDict> = {
       copiedBtn: "Copied",
       copyMarkdownBtn: "Copy Markdown",
       exportPdfBtn: "Export PDF",
+      createQuizBtn: "Create Quiz Deck",
+      generatingQuizBtn: "Generating Quiz...",
+      quizCtaBadge: "Active Recall Practice",
+      quizCtaTitle: "Turn this Revision Note into a Practice Quiz",
+      quizCtaDesc: "Test your mastery of key formulas and concepts with 15 exam-style questions generated directly from this slide deck.",
       verifiedBadge: "Verified",
       derivedBadge: "Derived",
       derivedFromPrefix: "Derived from",
@@ -2399,6 +2409,11 @@ export const translations: Record<Language, TranslationDict> = {
       copiedBtn: "Đã chép",
       copyMarkdownBtn: "Chép Markdown",
       exportPdfBtn: "Xuất PDF",
+      createQuizBtn: "Tạo Bộ Đề Trắc Nghiệm",
+      generatingQuizBtn: "Đang tạo bộ đề...",
+      quizCtaBadge: "Thực Hành Active Recall",
+      quizCtaTitle: "Biến tài liệu ôn thi thành Đề trắc nghiệm",
+      quizCtaDesc: "Kiểm tra ngay mức độ ghi nhớ các công thức và khái niệm cốt lõi bằng bộ 15 câu trắc nghiệm thực chiến trong Quiz Arena.",
       verifiedBadge: "Đã kiểm chứng",
       derivedBadge: "Suy dẫn",
       derivedFromPrefix: "Suy dẫn từ",

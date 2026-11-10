@@ -11,6 +11,7 @@ export interface ExtractedSlideDeck {
   slideCount: number;
   sources: SourceBlock[];
   warnings: string[];
+  fileSha256?: string;
 }
 
 export type ClientSlideExtractionErrorCode =
@@ -363,6 +364,20 @@ async function extractPdfSlides(
   }
 }
 
+async function computeBrowserSha256(buffer: ArrayBuffer): Promise<string | undefined> {
+  try {
+    if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.subtle) {
+      const digest = await globalThis.crypto.subtle.digest("SHA-256", buffer);
+      return Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
+  } catch {
+    // ignore in environments without subtle crypto
+  }
+  return undefined;
+}
+
 export async function extractSlidesInBrowser(
   file: File,
   signal?: AbortSignal,
@@ -393,9 +408,14 @@ export async function extractSlidesInBrowser(
   signal?.throwIfAborted();
   const bytes = new Uint8Array(arrayBuffer);
 
-  if (isPptx) {
-    return extractPptxSlides(file.name, bytes, signal);
+  const result = isPptx
+    ? await extractPptxSlides(file.name, bytes, signal)
+    : await extractPdfSlides(file.name, bytes, signal);
+
+  const fileSha256 = await computeBrowserSha256(arrayBuffer);
+  if (fileSha256) {
+    result.fileSha256 = fileSha256;
   }
 
-  return extractPdfSlides(file.name, bytes, signal);
+  return result;
 }

@@ -9,6 +9,10 @@ import {
   Sparkles,
   AlertTriangle,
   AlertOctagon,
+  Zap,
+  RefreshCw,
+  Target,
+  ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MathText } from "@/components/ui/math-text";
@@ -60,6 +64,8 @@ export function useLanguage() {
 interface NoteRendererProps {
   note: ClutchNote;
   onReset: () => void;
+  onCreateQuiz?: (questionCount?: number) => void;
+  isCreatingQuiz?: boolean;
 }
 
 interface UncapturedFormulaItem {
@@ -753,9 +759,15 @@ export function notesToMarkdown(
   return parts.join("\n").trim();
 }
 
-export function NoteRenderer({ note, onReset }: NoteRendererProps) {
+export function NoteRenderer({
+  note,
+  onReset,
+  onCreateQuiz,
+  isCreatingQuiz = false,
+}: NoteRendererProps) {
   const { language, t } = useLanguage();
   const [copied, setCopied] = useState(false);
+  const [quizCount, setQuizCount] = useState<number>(15);
 
   const displayNoiseRate =
     note.noiseReductionRate > 0 && note.noiseReductionRate <= 1
@@ -822,7 +834,7 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Quick jump section anchors */}
           {note.sections.length > 1 && (
             <div className="hidden md:flex items-center gap-1 mr-1">
@@ -857,6 +869,26 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
             <Printer size={14} />
             <span>{t.notes.exportPdfBtn}</span>
           </Button>
+
+          {onCreateQuiz && (
+            <Button
+              size="sm"
+              onClick={() => onCreateQuiz(quizCount)}
+              disabled={isCreatingQuiz}
+              className="bg-[#b83811] hover:bg-[#9e2e0a] text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-all"
+            >
+              {isCreatingQuiz ? (
+                <RefreshCw size={13} className="animate-spin text-white" />
+              ) : (
+                <Zap size={13} className="fill-current text-white" />
+              )}
+              <span>
+                {isCreatingQuiz
+                  ? t.notes.generatingQuizBtn
+                  : t.notes.createQuizBtn}
+              </span>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1176,6 +1208,57 @@ export function NoteRenderer({ note, onReset }: NoteRendererProps) {
           )}
         </div>
       </article>
+
+      {/* Quiz Deck Call-to-Action Banner */}
+      {onCreateQuiz && (
+        <div className="bg-gradient-to-br from-[#fff8f5] via-white to-[#fef6ee] border-2 border-[#fbd5c5] rounded-2xl p-6 sm:p-7 shadow-sm text-center sm:text-left flex flex-col sm:flex-row items-center justify-between gap-5 font-sans">
+          <div className="space-y-1.5 max-w-xl">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#fbe0d5] text-[#b83811] text-xs font-bold uppercase tracking-wider">
+              <Target size={13} />
+              <span>{t.notes.quizCtaBadge}</span>
+            </div>
+            <h3 className="text-base sm:text-lg font-extrabold text-[#1f261b]">
+              {t.notes.quizCtaTitle}
+            </h3>
+            <p className="text-xs sm:text-sm text-[#67705f] leading-relaxed">
+              {t.notes.quizCtaDesc}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2.5 shrink-0">
+            <select
+              value={quizCount}
+              onChange={(e) => setQuizCount(Number(e.target.value))}
+              disabled={isCreatingQuiz}
+              aria-label={t.upload.questionCount}
+              className="px-3 py-2.5 bg-white border border-[#fbd5c5] rounded-xl text-xs sm:text-sm font-bold text-[#b83811] focus:outline-none focus:border-[#b83811] cursor-pointer shadow-2xs"
+            >
+              <option value={5}>5 {t.library.questionsCount}</option>
+              <option value={10}>10 {t.library.questionsCount}</option>
+              <option value={15}>15 {t.library.questionsCount}</option>
+              <option value={20}>20 {t.library.questionsCount}</option>
+            </select>
+
+            <Button
+              onClick={() => onCreateQuiz(quizCount)}
+              disabled={isCreatingQuiz}
+              className="px-6 py-3 bg-[#b83811] hover:bg-[#9e2e0a] text-white text-sm font-bold rounded-xl flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all shrink-0"
+            >
+              {isCreatingQuiz ? (
+                <>
+                  <RefreshCw size={15} className="animate-spin text-white" />
+                  <span>{t.notes.generatingQuizBtn}</span>
+                </>
+              ) : (
+                <>
+                  <Zap size={15} className="fill-current text-white" />
+                  <span>{t.notes.createQuizBtn}</span>
+                  <ArrowRight size={15} />
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

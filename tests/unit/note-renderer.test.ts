@@ -68,7 +68,12 @@ interface NoteRendererModule {
   ItemStatusChip: React.ComponentType<{ status?: string; reviewReason?: string }>;
   FormulaStatusBadge: React.ComponentType<{ formula: NoteFormula }>;
   TextbookDivergenceCard: React.ComponentType<{ notice: TextbookDivergenceNotice }>;
-  NoteRenderer: React.ComponentType<{ note: ClutchNote; onReset: () => void }>;
+  NoteRenderer: React.ComponentType<{
+    note: ClutchNote;
+    onReset: () => void;
+    onCreateQuiz?: (questionCount?: number) => void;
+    isCreatingQuiz?: boolean;
+  }>;
 }
 
 const {
@@ -685,6 +690,39 @@ describe("NoteRenderer Component Integration", () => {
       // Section and warning banner must be completely suppressed
       expect(html).not.toContain("Uncaptured Source Formulas");
       expect(html).not.toContain("Uncaptured formula IDs");
+    });
+
+    it("renders Quiz Deck creation CTA button and banner only when onCreateQuiz prop is provided", () => {
+      const htmlWithoutQuiz = renderToStaticMarkup(
+        React.createElement(NoteRenderer, {
+          note: SAMPLE_CLUTCH_NOTE,
+          onReset: () => {},
+        }),
+      );
+      expect(htmlWithoutQuiz).not.toContain("Create Quiz Deck");
+      expect(htmlWithoutQuiz).not.toContain("Turn this Revision Note into a Practice Quiz");
+
+      const htmlWithQuiz = renderToStaticMarkup(
+        React.createElement(NoteRenderer, {
+          note: SAMPLE_CLUTCH_NOTE,
+          onReset: () => {},
+          onCreateQuiz: () => {},
+          isCreatingQuiz: false,
+        }),
+      );
+      expect(htmlWithQuiz).toContain("Create Quiz Deck");
+      expect(htmlWithQuiz).toContain("Turn this Revision Note into a Practice Quiz");
+      expect(htmlWithQuiz).toContain("Active Recall Practice");
+
+      const htmlCreatingQuiz = renderToStaticMarkup(
+        React.createElement(NoteRenderer, {
+          note: SAMPLE_CLUTCH_NOTE,
+          onReset: () => {},
+          onCreateQuiz: () => {},
+          isCreatingQuiz: true,
+        }),
+      );
+      expect(htmlCreatingQuiz).toContain("Generating Quiz...");
     });
   });
 });

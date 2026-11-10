@@ -9,6 +9,7 @@ import {
   computeFileSha256,
   getSharedDeckCache,
   setSharedDeckCache,
+  getCachedParsedDocument,
   checkAndReserveDeckQuota,
   recordDeckGenerationCogs,
   rollbackDeckQuotaReservation,
@@ -155,6 +156,9 @@ export async function POST(request: NextRequest) {
     let warnings: string[] = [];
     let focus: string | undefined;
     let parsedDeck: Awaited<ReturnType<typeof parseSlideDeck>> | undefined;
+    let clientProvidedFileSha256: string | null = null;
+    let cachedImageHashes: string[] | undefined;
+    let cachedFormulaInventory: any[] | undefined;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await request.formData();
@@ -216,6 +220,7 @@ export async function POST(request: NextRequest) {
       // b. Pre-check shared deck cache using fileSha256 before parsing slides
       const fileBytes = Buffer.from(await file.arrayBuffer());
       const fileSha256 = computeFileSha256(fileBytes);
+      clientProvidedFileSha256 = fileSha256;
       const normalizedFocus = (focus || "").trim().toLowerCase();
       const focusHash = normalizedFocus
         ? createHash("sha256").update(normalizedFocus).digest("hex").slice(0, 16)
@@ -236,20 +241,40 @@ export async function POST(request: NextRequest) {
           note: cachedFromStore.clutchNote,
           warnings: [],
           cached: true,
+          contentHash: cachedFromStore.contentHash || "",
+          fileSha256: cachedFromStore.fileSha256 || fileSha256,
+          sources: cachedFromStore.studyMetadata?.sources || [],
         });
       }
 
-      parsedDeck = await parseSlideDeck(file);
-      fileName = parsedDeck.fileName;
-      slideCount = parsedDeck.slideCount;
-      sources = parsedDeck.sources;
-      warnings = parsedDeck.warnings || [];
+      const cachedParsedDoc = await getCachedParsedDocument(fileSha256);
+      if (cachedParsedDoc) {
+        fileName = file.name || cachedParsedDoc.fileName;
+        slideCount = cachedParsedDoc.pageCount ?? cachedParsedDoc.sources.length;
+        sources = cachedParsedDoc.sources;
+        warnings = cachedParsedDoc.warnings || [];
+        cachedImageHashes = cachedParsedDoc.imageHashes;
+        cachedFormulaInventory = cachedParsedDoc.formulaInventory;
+      } else {
+        parsedDeck = await parseSlideDeck(file);
+        fileName = parsedDeck.fileName;
+        slideCount = parsedDeck.slideCount;
+        sources = parsedDeck.sources;
+        warnings = parsedDeck.warnings || [];
+      }
     } else if (contentType.includes("application/json")) {
       const jsonBody = await request.json();
       fileName =
         typeof jsonBody?.fileName === "string" && jsonBody.fileName.trim()
           ? jsonBody.fileName.trim()
           : "lecture-slides.pdf";
+
+      if (
+        typeof jsonBody?.fileSha256 === "string" &&
+        /^[a-f0-9]{64}$/i.test(jsonBody.fileSha256.trim())
+      ) {
+        clientProvidedFileSha256 = jsonBody.fileSha256.trim();
+      }
 
       if (typeof jsonBody?.focus === "string") {
         const trimmed = jsonBody.focus.trim();
@@ -405,7 +430,7 @@ export async function POST(request: NextRequest) {
     const contentHash = computeContentHash({
       normalizedText: sources.map((s) => s.text).join("\n"),
       pageCount: slideCount,
-      imageHashes: parsedDeck?.imageHashes,
+      imageHashes: parsedDeck?.imageHashes ?? cachedImageHashes,
     });
     const normalizedFocus = (focus || "").trim().toLowerCase();
     const focusHash = normalizedFocus
@@ -422,7 +447,7 @@ export async function POST(request: NextRequest) {
         mode: "notes",
         focusHash,
         pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
-        fileSha256: parsedDeck?.fileSha256 ?? null,
+        fileSha256: parsedDeck?.fileSha256 ?? clientProvidedFileSha256 ?? null,
       };
 
       const cachedFromStore = await getSharedDeckCache(cacheLookupKey);
@@ -432,6 +457,9 @@ export async function POST(request: NextRequest) {
           note: cachedFromStore.clutchNote,
           warnings,
           cached: true,
+          contentHash: cachedFromStore.contentHash || contentHash,
+          fileSha256: cachedFromStore.fileSha256 || cacheLookupKey.fileSha256,
+          sources: cachedFromStore.studyMetadata?.sources || sources,
         });
       }
 
@@ -451,6 +479,9 @@ export async function POST(request: NextRequest) {
           note: quotaResult.cachedDeck.clutchNote,
           warnings,
           cached: true,
+          contentHash: quotaResult.cachedDeck.contentHash || contentHash,
+          fileSha256: quotaResult.cachedDeck.fileSha256 || cacheLookupKey.fileSha256,
+          sources: quotaResult.cachedDeck.studyMetadata?.sources || sources,
         });
       }
 
@@ -491,8 +522,17 @@ export async function POST(request: NextRequest) {
             ocrEquations: parsedDeck.ocrEquations,
             formulaInventory: parsedDeck.formulaInventory,
           }
-        : {}),
+        : cachedFormulaInventory
+          ? {
+              formulaInventory: cachedFormulaInventory,
+            }
+          : {}),
     });
+
+    const validFileSha256 =
+      typeof parsedDeck?.fileSha256 === "string" && parsedDeck.fileSha256.trim().length > 0
+        ? parsedDeck.fileSha256.trim()
+        : clientProvidedFileSha256;
 
     if (enforceQuota) {
       await recordDeckGenerationCogs(
@@ -502,10 +542,6 @@ export async function POST(request: NextRequest) {
         reservedCostUsd,
       );
       quotaReserved = false;
-      const validFileSha256 =
-        typeof parsedDeck?.fileSha256 === "string" && parsedDeck.fileSha256.trim().length > 0
-          ? parsedDeck.fileSha256.trim()
-          : null;
 
       if (validFileSha256) {
         await setSharedDeckCache({
@@ -517,6 +553,15 @@ export async function POST(request: NextRequest) {
           pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
           questionPool: [],
           clutchNote: note,
+          studyMetadata: {
+            fileName,
+            slideCount,
+            sources,
+            format: fileName.toLowerCase().endsWith(".pptx") ? "pptx" : "pdf",
+            warnings,
+            formulaInventory: parsedDeck?.formulaInventory ?? cachedFormulaInventory ?? [],
+            imageHashes: parsedDeck?.imageHashes ?? cachedImageHashes ?? [],
+          },
         });
       }
     }
@@ -525,6 +570,9 @@ export async function POST(request: NextRequest) {
       ok: true,
       note,
       warnings,
+      contentHash,
+      fileSha256: validFileSha256,
+      sources,
     });
   } catch (error) {
     if (quotaReserved && reservedActor && reservedContentHash) {

@@ -801,6 +801,128 @@ export async function setSharedDeckCache(
   return fullEntry;
 }
 
+export interface CachedParsedDocumentData {
+  fileName: string;
+  format: "pdf" | "pptx" | "docx" | "txt" | "mixed";
+  sources: Array<{ id: string; label: string; text: string }>;
+  pageCount: number | null;
+  characterCount: number;
+  warnings: string[];
+  fileSha256: string;
+  contentHash: string;
+  imageHashes?: string[];
+  dedupedSlideCount?: number;
+  formulaInventory?: any[];
+}
+
+/**
+ * Retrieves a pre-extracted parsed slide deck from the shared deck cache by file SHA-256.
+ * Bridges Clutch Notes AI and Quiz Arena ingestion to prevent redundant re-parsing & OCR.
+ */
+export async function getCachedParsedDocument(
+  fileSha256: string,
+): Promise<CachedParsedDocumentData | null> {
+  if (!fileSha256 || typeof fileSha256 !== "string" || !fileSha256.trim()) {
+    return null;
+  }
+  const cleanSha = fileSha256.trim();
+
+  // 1. Fast-path memory lookup via linked composite key
+  const linkedKey = fileSha256ToCompositeMap.get(cleanSha);
+  if (linkedKey) {
+    const entry = sharedDeckMemoryStore.get(linkedKey);
+    const meta = entry?.studyMetadata;
+    if (meta && Array.isArray(meta.sources) && meta.sources.length > 0) {
+      const charCount =
+        typeof meta.characterCount === "number" && meta.characterCount > 0
+          ? meta.characterCount
+          : meta.sources.reduce((sum: number, s: any) => sum + (s.text?.length || 0), 0);
+      return {
+        fileName: meta.fileName || "lecture-slides.pdf",
+        format: meta.format || (meta.fileName?.toLowerCase().endsWith(".pptx") ? "pptx" : "pdf"),
+        sources: meta.sources,
+        pageCount: typeof meta.slideCount === "number" ? meta.slideCount : meta.sources.length,
+        characterCount: charCount,
+        warnings: Array.isArray(meta.warnings) ? meta.warnings : [],
+        fileSha256: cleanSha,
+        contentHash: entry!.contentHash,
+        imageHashes: Array.isArray(meta.imageHashes) ? meta.imageHashes : undefined,
+        dedupedSlideCount: typeof meta.dedupedSlideCount === "number" ? meta.dedupedSlideCount : undefined,
+        formulaInventory: Array.isArray(meta.formulaInventory) ? meta.formulaInventory : undefined,
+      };
+    }
+  }
+
+  // 2. Scan all entries in sharedDeckMemoryStore for matching fileSha256
+  for (const entry of sharedDeckMemoryStore.values()) {
+    if (entry.fileSha256 === cleanSha) {
+      const meta = entry.studyMetadata;
+      if (meta && Array.isArray(meta.sources) && meta.sources.length > 0) {
+        const charCount =
+          typeof meta.characterCount === "number" && meta.characterCount > 0
+            ? meta.characterCount
+            : meta.sources.reduce((sum: number, s: any) => sum + (s.text?.length || 0), 0);
+        return {
+          fileName: meta.fileName || "lecture-slides.pdf",
+          format: meta.format || (meta.fileName?.toLowerCase().endsWith(".pptx") ? "pptx" : "pdf"),
+          sources: meta.sources,
+          pageCount: typeof meta.slideCount === "number" ? meta.slideCount : meta.sources.length,
+          characterCount: charCount,
+          warnings: Array.isArray(meta.warnings) ? meta.warnings : [],
+          fileSha256: cleanSha,
+          contentHash: entry.contentHash,
+          imageHashes: Array.isArray(meta.imageHashes) ? meta.imageHashes : undefined,
+          dedupedSlideCount: typeof meta.dedupedSlideCount === "number" ? meta.dedupedSlideCount : undefined,
+          formulaInventory: Array.isArray(meta.formulaInventory) ? meta.formulaInventory : undefined,
+        };
+      }
+    }
+  }
+
+  // 3. Cloud Supabase lookup if configured
+  if (isSupabaseServerConfigured()) {
+    try {
+      const supabase = getSupabaseServerClient();
+      if (supabase) {
+        const { data } = await supabase
+          .from("shared_deck_cache")
+          .select("content_hash, file_sha256, study_metadata")
+          .eq("file_sha256", cleanSha)
+          .limit(5);
+
+        if (Array.isArray(data)) {
+          for (const row of data) {
+            const meta = row.study_metadata;
+            if (meta && Array.isArray(meta.sources) && meta.sources.length > 0) {
+              const charCount =
+                typeof meta.characterCount === "number" && meta.characterCount > 0
+                  ? meta.characterCount
+                  : meta.sources.reduce((sum: number, s: any) => sum + (s.text?.length || 0), 0);
+              return {
+                fileName: meta.fileName || "lecture-slides.pdf",
+                format: meta.format || (meta.fileName?.toLowerCase().endsWith(".pptx") ? "pptx" : "pdf"),
+                sources: meta.sources,
+                pageCount: typeof meta.slideCount === "number" ? meta.slideCount : meta.sources.length,
+                characterCount: charCount,
+                warnings: Array.isArray(meta.warnings) ? meta.warnings : [],
+                fileSha256: cleanSha,
+                contentHash: row.content_hash,
+                imageHashes: Array.isArray(meta.imageHashes) ? meta.imageHashes : undefined,
+                dedupedSlideCount: typeof meta.dedupedSlideCount === "number" ? meta.dedupedSlideCount : undefined,
+                formulaInventory: Array.isArray(meta.formulaInventory) ? meta.formulaInventory : undefined,
+              };
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
 export function sampleQuestionsFromCachedPool<T = any>(
   pool: T[],
   count = 25,

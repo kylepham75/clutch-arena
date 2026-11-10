@@ -22,17 +22,34 @@ import { useUserTier } from "@/hooks/use-user-tier";
 import { useAuth } from "@/lib/auth/context";
 import { useLanguage } from "@/lib/i18n/context";
 import { BeforeAfterModal } from "./before-after-modal";
-import { NoteRenderer } from "./note-renderer";
+import { NoteRenderer, notesToMarkdown } from "./note-renderer";
 import { PricingModal } from "@/components/pricing/pricing-modal";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
+import { optimizeUploadFileIfNeeded } from "@/lib/ingestion/client-compress";
 import {
   extractSlidesInBrowser,
   ClientSlideExtractionError,
   type ExtractedSlideDeck,
 } from "@/lib/notes/client-extract-slides";
 import type { ClutchNote } from "@/lib/schemas/notes";
+import type { StudyPack } from "@/lib/schemas/question";
+import type { ParsedDocument, SourceBlock } from "@/lib/schemas/ingestion";
 
-export function ClutchNotesPanel() {
+export interface ClutchNotesPanelProps {
+  onPlayPack?: (pack: StudyPack) => void;
+  onPackGenerated?: (
+    pack: StudyPack,
+    doc: ParsedDocument,
+    references?: Record<string, any>,
+  ) => void;
+  onSwitchToTab?: (tab: "play" | "ingest" | "coach" | "arena" | "notes") => void;
+}
+
+export function ClutchNotesPanel({
+  onPlayPack,
+  onPackGenerated,
+  onSwitchToTab,
+}: ClutchNotesPanelProps = {}) {
   const { user, session } = useAuth();
   const { tier, isPaidTier, isCramPassOrAbove, isProOrAbove, setTier } = useUserTier();
   const { t, language } = useLanguage();
@@ -40,8 +57,12 @@ export function ClutchNotesPanel() {
   const [note, setNote] = useState<ClutchNote | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [currentSourceFile, setCurrentSourceFile] = useState<File | null>(null);
+  const [noteSources, setNoteSources] = useState<SourceBlock[]>([]);
   const [focus, setFocus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [isCreatingQuiz, setIsCreatingQuiz] = useState(false);
+  const [quizError, setQuizError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progressStep, setProgressStep] = useState<string | null>(null);
   const [dailyUsage, setDailyUsage] = useState<number>(0);
@@ -64,13 +85,11 @@ export function ClutchNotesPanel() {
     userAppTier === "CRAM_PASS" ||
     userAppTier === "TUTOR";
 
-
-
-
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
       setError(null);
       setWarnings([]);
+      setQuizError(null);
       if (!acceptedFiles || acceptedFiles.length === 0) return;
 
       // Free Tier Gate: trigger Before/After modal if not on a paid tier
@@ -119,8 +138,10 @@ export function ClutchNotesPanel() {
 
     setLoading(true);
     setError(null);
+    setQuizError(null);
     setWarnings([]);
     setProgressStep(t.notes.step1);
+    setCurrentSourceFile(selectedFile);
 
     const progressTimers = [
       setTimeout(() => {
@@ -180,7 +201,6 @@ export function ClutchNotesPanel() {
         headers["x-test-tier"] = effectiveTier;
       }
 
-
       let token = session?.access_token;
       if (!token) {
         try {
@@ -208,6 +228,7 @@ export function ClutchNotesPanel() {
           sources: extracted.sources,
           warnings: extracted.warnings,
           focus: focus.trim() || undefined,
+          ...(extracted.fileSha256 ? { fileSha256: extracted.fileSha256 } : {}),
         });
       } else {
         const formData = new FormData();
@@ -261,6 +282,13 @@ export function ClutchNotesPanel() {
       }
 
       setNote(data.note);
+      if (Array.isArray(data.sources) && data.sources.length > 0) {
+        setNoteSources(data.sources);
+      } else if (extracted?.sources) {
+        setNoteSources(extracted.sources);
+      } else {
+        setNoteSources([]);
+      }
       if (Array.isArray(data.warnings) && data.warnings.length > 0) {
         setWarnings(data.warnings);
       } else {
@@ -288,9 +316,128 @@ export function ClutchNotesPanel() {
     }
   };
 
+  const handleCreateQuizDeck = async (questionCount = 15) => {
+    if (!note || isCreatingQuiz) return;
+    setIsCreatingQuiz(true);
+    setQuizError(null);
+
+    try {
+      let fileToUpload: File | null = currentSourceFile;
+
+      // Handle files exceeding Vercel's 4.5MB multipart payload limit
+      if (fileToUpload && fileToUpload.size > 4.2 * 1024 * 1024) {
+        try {
+          const { file: optimized } = await optimizeUploadFileIfNeeded(fileToUpload);
+          fileToUpload = optimized;
+        } catch {
+          // keep original for threshold check below
+        }
+      }
+
+      // Fallback to already-extracted text sources or note markdown if no compact binary file is available
+      if (!fileToUpload || fileToUpload.size > 4.2 * 1024 * 1024) {
+        const safeBaseName = (note.title || "Clutch_Note")
+          .replace(/[^a-zA-Z0-9_-]/g, "_")
+          .slice(0, 60);
+        const textContent =
+          noteSources.length > 0
+            ? noteSources
+                .map((s, idx) => {
+                  const match = s.label.match(/(?:Slide|Page)\s+(\d+)/i);
+                  const slideNum = match ? match[1] : String(idx + 1);
+                  return `--- Slide ${slideNum} ---\n${s.text}`;
+                })
+                .join("\n\n")
+            : notesToMarkdown(note, t.notes) || note.rawMarkdown || note.title;
+        fileToUpload = new File([textContent], `${safeBaseName}.txt`, {
+          type: "text/plain",
+        });
+      }
+
+      const options = {
+        operation: "generate",
+        questionCount: Math.min(Math.max(questionCount, 5), 30),
+        mode: "variants",
+        language: language === "vi" ? "vi" : "en",
+        focus: focus.trim(),
+      };
+
+      const formData = new FormData();
+      formData.set("file", fileToUpload);
+      formData.set("options", JSON.stringify(options));
+
+      const headers: Record<string, string> = {};
+      let token = session?.access_token;
+      if (!token) {
+        try {
+          const { getSupabaseBrowserClient } = await import("@/lib/supabase/client");
+          const supabase = getSupabaseBrowserClient();
+          if (supabase) {
+            const { data } = await supabase.auth.getSession();
+            token = data.session?.access_token;
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const effectiveTier = tier && tier !== "contender" ? tier : "contender";
+      if (process.env.NODE_ENV !== "production" && effectiveTier !== "contender") {
+        headers["x-test-tier"] = effectiveTier;
+      }
+
+      const res = await fetch("/api/ingest", {
+        method: "POST",
+        headers,
+        body: formData,
+      });
+
+      let data: any = null;
+      try {
+        const rawText = await res.text();
+        data = JSON.parse(rawText);
+      } catch {
+        // non-JSON response
+      }
+
+      if (!res.ok || !data || !data.ok) {
+        if (res.status === 413) {
+          throw new Error(t.notes.errPayloadTooLarge);
+        }
+        if (res.status === 504) {
+          throw new Error(t.notes.errGatewayTimeout);
+        }
+        throw new Error(data?.error?.message || t.upload.genericIngestError);
+      }
+
+      if (onPackGenerated && data.pack && data.document) {
+        onPackGenerated(data.pack, data.document, data.references);
+      }
+      if (onPlayPack && data.pack) {
+        onPlayPack(data.pack);
+      } else if (onSwitchToTab) {
+        onSwitchToTab("play");
+      }
+    } catch (err: any) {
+      setQuizError(
+        err?.message ||
+          (language === "vi"
+            ? "Không thể tạo bộ đề trắc nghiệm. Vui lòng thử lại."
+            : "Failed to create quiz deck. Please try again."),
+      );
+    } finally {
+      setIsCreatingQuiz(false);
+    }
+  };
+
   const handleLoadSample = () => {
     setNote(SAMPLE_CLUTCH_NOTE);
+    setCurrentSourceFile(null);
+    setNoteSources([]);
     setError(null);
+    setQuizError(null);
     setWarnings([]);
   };
 
@@ -323,12 +470,26 @@ export function ClutchNotesPanel() {
             </p>
           </div>
         )}
+        {quizError && (
+          <div
+            role="alert"
+            className="bg-[#fef2f2] border border-red-200 rounded-xl p-3.5 flex items-start gap-3 text-red-800 text-xs animate-in fade-in"
+          >
+            <AlertCircle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 leading-relaxed">{quizError}</div>
+          </div>
+        )}
         <NoteRenderer
           note={note}
           onReset={() => {
             setNote(null);
+            setCurrentSourceFile(null);
+            setNoteSources([]);
             setWarnings([]);
+            setQuizError(null);
           }}
+          onCreateQuiz={handleCreateQuizDeck}
+          isCreatingQuiz={isCreatingQuiz}
         />
       </div>
     );

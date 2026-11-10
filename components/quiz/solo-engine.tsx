@@ -1059,7 +1059,11 @@ export function SoloEngine({
                     onSourceFileChanged={setActivePdfFile}
                   />
                 ) : activeTab === "notes" ? (
-                  <ClutchNotesPanel />
+                  <ClutchNotesPanel
+                    onPlayPack={handlePlayPack}
+                    onPackGenerated={handlePackGenerated}
+                    onSwitchToTab={(tab) => setActiveTab(tab)}
+                  />
                 ) : activeTab === "coach" ? (
                   <CoachPanel
                     document={document}

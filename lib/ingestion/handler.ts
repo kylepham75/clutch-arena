@@ -18,14 +18,16 @@ import {
   checkRateLimit,
   getClientIp,
   computeContentHash,
+  computeFileSha256,
   getSharedDeckCache,
   setSharedDeckCache,
+  getCachedParsedDocument,
   sampleQuestionsFromCachedPool,
   checkAndReserveDeckQuota,
   recordDeckGenerationCogs,
   rollbackDeckQuotaReservation,
 } from "@/lib/rate-limit";
-import type { GenerationResult } from "@/lib/schemas/ingestion";
+import type { GenerationResult, ParsedDocument } from "@/lib/schemas/ingestion";
 
 export const SHARED_CACHE_PIPELINE_VERSION = "v1";
 
@@ -111,6 +113,7 @@ export function createIngestionHandler(
     recordCogs?: typeof recordDeckGenerationCogs;
     getDeckCache?: typeof getSharedDeckCache;
     setDeckCache?: typeof setSharedDeckCache;
+    getCachedParsedDoc?: typeof getCachedParsedDocument;
     rollbackQuota?: typeof rollbackDeckQuotaReservation;
     parseDoc?: typeof parseDocument;
   } = {},
@@ -127,6 +130,7 @@ export function createIngestionHandler(
   const recordCogs = dependencies.recordCogs ?? recordDeckGenerationCogs;
   const getDeckCache = dependencies.getDeckCache ?? getSharedDeckCache;
   const setDeckCache = dependencies.setDeckCache ?? setSharedDeckCache;
+  const getCachedParsedDoc = dependencies.getCachedParsedDoc ?? getCachedParsedDocument;
   const rollbackQuota = dependencies.rollbackQuota ?? rollbackDeckQuotaReservation;
   const parseDoc = dependencies.parseDoc ?? parseDocument;
   let active = 0;
@@ -227,20 +231,52 @@ export function createIngestionHandler(
         checkConfiguration();
       }
 
-      const document = await parseDoc(
-        file,
-        signal,
-        options.operation === "preview"
-          ? {
-              parsePdfOptions: {
-                maxAutoOcrBudgetUsd: 0,
-                visionTranscriber: async () => null,
+      let document: ParsedDocument;
+      let cachedParsedDoc = null;
+      if (
+        (dependencies.parseDoc === undefined || dependencies.getCachedParsedDoc !== undefined) &&
+        (!options.rescanPages || options.rescanPages.length === 0)
+      ) {
+        try {
+          const bytes = Buffer.from(await file.arrayBuffer());
+          const fileSha = computeFileSha256(bytes);
+          cachedParsedDoc = await getCachedParsedDoc(fileSha);
+        } catch {
+          // fallback to normal parsing on error
+        }
+      }
+
+      if (cachedParsedDoc) {
+        document = {
+          fileName: file.name || cachedParsedDoc.fileName,
+          format: cachedParsedDoc.format,
+          sources: cachedParsedDoc.sources,
+          pageCount: cachedParsedDoc.pageCount,
+          characterCount: cachedParsedDoc.characterCount,
+          warnings: cachedParsedDoc.warnings || [],
+          fileSha256: cachedParsedDoc.fileSha256,
+          contentHash: cachedParsedDoc.contentHash,
+          ...(cachedParsedDoc.imageHashes ? { imageHashes: cachedParsedDoc.imageHashes } : {}),
+          ...(cachedParsedDoc.dedupedSlideCount
+            ? { dedupedSlideCount: cachedParsedDoc.dedupedSlideCount }
+            : {}),
+        };
+      } else {
+        document = await parseDoc(
+          file,
+          signal,
+          options.operation === "preview"
+            ? {
+                parsePdfOptions: {
+                  maxAutoOcrBudgetUsd: 0,
+                  visionTranscriber: async () => null,
+                },
+              }
+            : {
+                rescanPages: options.rescanPages,
               },
-            }
-          : {
-              rescanPages: options.rescanPages,
-            },
-      );
+        );
+      }
       if (options.operation === "preview")
         return json({ ok: true, requestId, operation: "preview", document });
 
@@ -519,13 +555,20 @@ export function createIngestionHandler(
           pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
           questionPool: questionsToStore,
           studyMetadata: {
+            fileName: document.fileName,
+            slideCount: document.pageCount,
+            sources: document.sources,
+            format: document.format,
+            characterCount: document.characterCount,
+            warnings: document.warnings,
+            imageHashes: document.imageHashes,
+            dedupedSlideCount: document.dedupedSlideCount,
             pack: {
               ...result.pack,
               questions: questionsToStore,
             },
             sourceKind: result.sourceKind,
             references: result.references,
-            warnings: result.warnings,
             usage: result.usage,
             pipelineVersion: result.pipelineVersion ?? SHARED_CACHE_PIPELINE_VERSION,
             costUsd: actualCostUsd,
