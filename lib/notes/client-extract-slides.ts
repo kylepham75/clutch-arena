@@ -40,18 +40,263 @@ export class ClientSlideExtractionError extends Error {
   }
 }
 
+import {
+  normalizePdfMathSymbols,
+  normalizePdfArrowSymbols,
+} from "@/lib/notes/pdf-symbol-normalizer";
+
+export { normalizePdfMathSymbols, normalizePdfArrowSymbols };
+
+export interface PositionedPdfItem {
+  str: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  hasEOL: boolean;
+  originalIndex: number;
+}
+
+interface RowCluster {
+  anchorY: number;
+  anchorFontSize: number;
+  dominantStrLen: number;
+  items: PositionedPdfItem[];
+}
+
 /**
- * Normalizes common PDF Private Use Area (Wingdings/Symbol) arrow codepoints
- * and geometric markers to standard Unicode arrows so directional meaning is preserved.
+ * Sorts raw PDF textContent.items into visual top-to-bottom (descending y)
+ * and left-to-right (ascending x) reading order, clustering baseline-shifted
+ * inline subscripts/superscripts onto their anchor line and normalizing PUA symbols.
  */
-export function normalizePdfArrowSymbols(text: string): string {
-  if (!text) return "";
-  return text
-    .replace(/[\uF0E1\uF0D9\uF0AD\u25B2\u2191]/g, "↑")
-    .replace(/[\uF0E2\uF0DA\uF0AF\u25BC\u2193]/g, "↓")
-    .replace(/[\uF0E0\uF0AE\uF0E8\u2192]/g, "→")
-    .replace(/[\uF0DF\uF0AC\u2190]/g, "←")
-    .replace(/[\uF0DC\u21D2]/g, "⇒");
+export function sortAndGroupPdfTextItems(rawItems: any[]): string {
+  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+    return "";
+  }
+
+  // 1. Filter valid text items
+  const validItems: Array<{ item: any; index: number }> = [];
+  let hasValidPosition = false;
+
+  for (let i = 0; i < rawItems.length; i++) {
+    const item = rawItems[i];
+    if (
+      !item ||
+      typeof item !== "object" ||
+      !("str" in item) ||
+      typeof item.str !== "string"
+    ) {
+      continue;
+    }
+    if (item.str.length === 0) {
+      continue;
+    }
+    validItems.push({ item, index: i });
+
+    if (
+      Array.isArray(item.transform) &&
+      item.transform.length >= 6 &&
+      (item.transform[0] !== 0 ||
+        item.transform[1] !== 0 ||
+        item.transform[2] !== 0 ||
+        item.transform[3] !== 0 ||
+        item.transform[4] !== 0 ||
+        item.transform[5] !== 0)
+    ) {
+      hasValidPosition = true;
+    }
+  }
+
+  if (validItems.length === 0) {
+    return "";
+  }
+
+  // 2. Fallback handling when transform is missing or all zero: preserve stream order
+  if (!hasValidPosition) {
+    const strBuf: string[] = [];
+    for (const { item } of validItems) {
+      strBuf.push(item.str);
+      if (item.hasEOL) {
+        strBuf.push("\n");
+      }
+    }
+    return normalizePdfMathSymbols(strBuf.join("").trim());
+  }
+
+  // 3. Extract positioned items (PDF coordinates: x = transform[4], y = transform[5])
+  const positionedItems: PositionedPdfItem[] = [];
+
+  for (const { item, index } of validItems) {
+    const transform =
+      Array.isArray(item.transform) && item.transform.length >= 6
+        ? item.transform
+        : [0, 0, 0, 0, 0, 0];
+
+    const x = typeof transform[4] === "number" ? transform[4] : 0;
+    const y = typeof transform[5] === "number" ? transform[5] : 0;
+    const fontSize =
+      Math.hypot(transform[0], transform[1]) || Math.abs(transform[3]) || 0;
+    const width = typeof item.width === "number" ? item.width : 0;
+    const height =
+      typeof item.height === "number" && item.height > 0
+        ? item.height
+        : fontSize > 0
+          ? fontSize
+          : 12;
+
+    positionedItems.push({
+      str: item.str,
+      x,
+      y,
+      width,
+      height,
+      fontSize,
+      hasEOL: Boolean(item.hasEOL),
+      originalIndex: index,
+    });
+  }
+
+  // 4. Initial sort: descending y (top-to-bottom), then ascending x (left-to-right)
+  positionedItems.sort((a, b) => {
+    const dy = b.y - a.y;
+    if (Math.abs(dy) > 0.001) {
+      return dy;
+    }
+    const dx = a.x - b.x;
+    if (Math.abs(dx) > 0.001) {
+      return dx;
+    }
+    return a.originalIndex - b.originalIndex;
+  });
+
+  // 5. Cluster items into baseline-aware visual rows
+  const rows: RowCluster[] = [];
+
+  for (const item of positionedItems) {
+    const effectiveItemWidth =
+      item.width > 0
+        ? item.width
+        : item.str.length * ((item.fontSize || 12) * 0.5);
+    const itemStartX = item.x;
+    const itemEndX = itemStartX + effectiveItemWidth;
+
+    let bestRow: RowCluster | null = null;
+    let bestDy = Infinity;
+
+    for (const row of rows) {
+      const dy = Math.abs(item.y - row.anchorY);
+      // Sensible vertical row-clustering tolerance (~6-8pt)
+      const tolerance = Math.max(6.5, Math.min(8.0, row.anchorFontSize * 0.55));
+      if (dy > tolerance) {
+        continue;
+      }
+
+      // Check horizontal collision with items currently in this row
+      let hasCollision = false;
+      for (const existing of row.items) {
+        const effectiveExistingWidth =
+          existing.width > 0
+            ? existing.width
+            : existing.str.length * ((existing.fontSize || 12) * 0.5);
+        const existingStartX = existing.x;
+        const existingEndX = existingStartX + effectiveExistingWidth;
+
+        const overlap =
+          Math.min(itemEndX, existingEndX) - Math.max(itemStartX, existingStartX);
+        const allowedOverlap = Math.min(
+          3.0,
+          Math.min(effectiveItemWidth, effectiveExistingWidth) * 0.35,
+        );
+
+        if (overlap > allowedOverlap) {
+          hasCollision = true;
+          break;
+        }
+      }
+
+      if (hasCollision) {
+        continue;
+      }
+
+      if (dy < bestDy) {
+        bestDy = dy;
+        bestRow = row;
+      }
+    }
+
+    if (bestRow !== null) {
+      bestRow.items.push(item);
+      // Update anchor baseline if current item is more dominant
+      if (
+        item.fontSize > bestRow.anchorFontSize ||
+        (item.fontSize === bestRow.anchorFontSize &&
+          item.str.length > bestRow.dominantStrLen)
+      ) {
+        bestRow.anchorY = item.y;
+        bestRow.anchorFontSize = item.fontSize || bestRow.anchorFontSize;
+        bestRow.dominantStrLen = item.str.length;
+      }
+    } else {
+      rows.push({
+        anchorY: item.y,
+        anchorFontSize: item.fontSize || item.height || 12,
+        dominantStrLen: item.str.length,
+        items: [item],
+      });
+    }
+  }
+
+  // 6. Sort rows top-to-bottom (descending anchorY)
+  rows.sort((a, b) => b.anchorY - a.anchorY);
+
+  // 7. Assemble lines with horizontal gap spacing
+  const lineStrings: string[] = [];
+
+  for (const row of rows) {
+    // Sort items within the row left-to-right (ascending x)
+    row.items.sort((a, b) => {
+      const dx = a.x - b.x;
+      if (Math.abs(dx) > 0.001) return dx;
+      return a.originalIndex - b.originalIndex;
+    });
+
+    const strBuf: string[] = [];
+    let lastEndX: number | undefined;
+
+    for (const item of row.items) {
+      const effectiveWidth =
+        item.width > 0
+          ? item.width
+          : item.str.length * ((item.fontSize || 12) * 0.5);
+
+      const spaceThreshold =
+        typeof item.fontSize === "number" && item.fontSize > 0
+          ? Math.min(7, Math.max(4.5, item.fontSize * 0.45))
+          : 7;
+
+      if (lastEndX !== undefined && item.x - lastEndX > spaceThreshold) {
+        const last = strBuf.length ? strBuf[strBuf.length - 1] : "";
+        if (
+          !last.endsWith(" ") &&
+          !last.endsWith("\n") &&
+          !item.str.startsWith(" ")
+        ) {
+          strBuf.push(" ");
+        }
+      }
+
+      strBuf.push(item.str);
+      lastEndX = item.x + effectiveWidth;
+    }
+
+    const lineText = strBuf.join("").trim();
+    if (lineText.length > 0) {
+      lineStrings.push(lineText);
+    }
+  }
+
+  return normalizePdfMathSymbols(lineStrings.join("\n").trim());
 }
 
 
@@ -150,7 +395,7 @@ async function extractPptxSlides(
       }
     }
 
-    const trimmed = normalizePdfArrowSymbols(text.trim());
+    const trimmed = normalizePdfMathSymbols(text.trim());
     if (!trimmed) {
       emptySlides++;
       continue;
@@ -256,52 +501,8 @@ async function extractPdfSlides(
       signal?.throwIfAborted();
       const page = await doc.getPage(pageNum);
       try {
-        const viewport = page.getViewport({ scale: 1 });
         const textContent = await page.getTextContent();
-        const strBuf: string[] = [];
-        let lastX: number | undefined;
-        let lastY: number | undefined;
-
-        for (const item of textContent.items) {
-          if (!("str" in item) || typeof item.str !== "string") {
-            continue;
-          }
-          const [x, y] = viewport.convertToViewportPoint(
-            item.transform[4],
-            item.transform[5],
-          );
-
-          if (lastY !== undefined && Math.abs(lastY - y) > 4.6) {
-            const last = strBuf.length ? strBuf[strBuf.length - 1] : "";
-            if (!last.endsWith("\n")) {
-              strBuf.push("\n");
-            }
-          } else if (
-            lastY !== undefined &&
-            lastX !== undefined &&
-            x - lastX > 7
-          ) {
-            const last = strBuf.length ? strBuf[strBuf.length - 1] : "";
-            if (
-              !last.endsWith(" ") &&
-              !last.endsWith("\n") &&
-              !item.str.startsWith(" ")
-            ) {
-              strBuf.push(" ");
-            }
-          }
-
-          strBuf.push(item.str);
-          lastX = x + (typeof item.width === "number" ? item.width : 0);
-          lastY = y;
-
-          if (item.hasEOL) {
-            strBuf.push("\n");
-            lastX = undefined;
-          }
-        }
-
-        const text = normalizePdfArrowSymbols(strBuf.join("").trim());
+        const text = sortAndGroupPdfTextItems(textContent.items);
         if (!text) {
           emptyPages++;
           continue;

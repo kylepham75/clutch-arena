@@ -811,4 +811,90 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     expect(parseDeckSpy).not.toHaveBeenCalled();
     expect(vi.mocked(generateClutchNote)).not.toHaveBeenCalled();
   });
+
+  it("sanitizes JSON sources with normalizePdfMathSymbols, control-char cleanup, deduplicateAnimationSlides, and extracts formula inventory", async () => {
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(mockNote);
+
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "pro",
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: "Corporate_Finance.pdf",
+        sources: [
+          {
+            id: "slide-1",
+            label: "Slide 1",
+            // Contains PUA math symbols (\uF05B, \uF05D, \uF0B4, \uF0E5, \uF0E0) and control characters (\r\n, \t, \x00, \x08)
+            text: "Valuation\r\n\tOverview:\x00\x08 \uF05B \uF0B4 \uF0E5 x \uF0E0 y \uF05D \t WACC = (E/V)*Re + (D/V)*Rd*(1-Tc)",
+          },
+          {
+            id: "slide-2",
+            label: "Slide 2",
+            // Animation build-up slide: subset of Slide 3
+            text: "Dividend Discount Model: P0 = D1 / (r - g)",
+          },
+          {
+            id: "slide-3",
+            label: "Slide 3",
+            // Final animated state containing Slide 2 text plus additional content
+            text: "Dividend Discount Model: P0 = D1 / (r - g)\nWhere g is the constant perpetual dividend growth rate.",
+          },
+        ],
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+
+    const data = await response.json();
+    expect(data.ok).toBe(true);
+    expect(data.warnings).toContain("Deduplicated 1 incremental animation slide(s).");
+
+    expect(vi.mocked(generateClutchNote)).toHaveBeenCalledTimes(1);
+    const callArgs = vi.mocked(generateClutchNote).mock.calls[0][0];
+
+    // Slide 2 was deduplicated, leaving 2 slides
+    expect(callArgs.sources).toHaveLength(2);
+    expect(callArgs.slideCount).toBe(2);
+
+    // Slide 1 has PUA symbols mapped and control characters stripped
+    expect(callArgs.sources[0].text).toBe(
+      "Valuation\nOverview: [ × ∑ x → y ] WACC = (E/V)*Re + (D/V)*Rd*(1-Tc)",
+    );
+
+    // Formula inventory was extracted from sanitized sources
+    expect(callArgs.formulaInventory).toBeDefined();
+    expect(Array.isArray(callArgs.formulaInventory)).toBe(true);
+    expect(callArgs.formulaInventory?.length).toBeGreaterThan(0);
+  });
+
+  it("sanitizes JSON slidesText with normalizePdfMathSymbols and control-char cleanup", async () => {
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(mockNote);
+
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "pro",
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: "SingleText.pdf",
+        slidesText: "Lecture Notes:\r\n\t\x00\x08 \uF05B \uF0D6 x \uF05D \t CAPM: E(R) = Rf + beta*(E(Rm) - Rf)",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+
+    const callArgs = vi.mocked(generateClutchNote).mock.calls[0][0];
+    expect(callArgs.sources[0].text).toBe(
+      "Lecture Notes:\n[ √ x ] CAPM: E(R) = Rf + beta*(E(Rm) - Rf)",
+    );
+    expect(callArgs.formulaInventory).toBeDefined();
+  });
 });

@@ -983,5 +983,165 @@ describe("Regression Tests: Bug 2 & Bug 3 (Multi-word English phrases, Currency 
   });
 });
 
+describe("Task 1.5: PUA symbols, backslash-stripped LaTeX, and Vietnamese math prose recovery", () => {
+  describe("Backslash-stripped LaTeX recovery in repairCorruptedLatex", () => {
+    it("repairs frac{1}{n} sum_{i=1}^n R_i and renders with zero katex-error", () => {
+      const formula = "frac{1}{n} sum_{i=1}^n R_i";
+      const repaired = repairCorruptedLatex(formula);
+
+      expect(repaired).toContain("\\frac{1}{n}");
+      expect(repaired).toContain("\\sum_{i=1}^n");
+      expect(repaired).toContain("R_i");
+
+      const html = renderKatexSafe(repaired, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("repairs R_t pm 2 times sigma and renders with zero katex-error", () => {
+      const formula = "R_t pm 2 times sigma";
+      const repaired = repairCorruptedLatex(formula);
+
+      expect(repaired).toContain("R_t");
+      expect(repaired).toContain("\\pm");
+      expect(repaired).toContain("\\times");
+      expect(repaired).toContain("\\sigma");
+
+      const html = renderKatexSafe(repaired, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("repairs beta_i = frac{Cov(R_i, R_M)}{Var(R_M)} and renders with zero katex-error", () => {
+      const formula = "beta_i = frac{Cov(R_i, R_M)}{Var(R_M)}";
+      const repaired = repairCorruptedLatex(formula);
+
+      expect(repaired).toContain("\\beta_i");
+      expect(repaired).toContain("\\frac{\\text{Cov}(R_i, R_M)}{\\text{Var}(R_M)}");
+
+      const html = renderKatexSafe(repaired, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("repairs text{Risk Premium} = E[R] - r_f and renders with zero katex-error", () => {
+      const formula = "text{Risk Premium} = E[R] - r_f";
+      const repaired = repairCorruptedLatex(formula);
+
+      expect(repaired).toContain("\\text{Risk Premium}");
+      expect(repaired).toContain("E[R] - r_f");
+
+      const html = renderKatexSafe(repaired, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+  });
+
+  describe("Vietnamese prose inside math equations wrapping", () => {
+    it("wraps 'Phần bù rủi ro = E[R] - r_f' preserving spaces with zero katex-error", () => {
+      const formula = "Phần bù rủi ro = E[R] - r_f";
+      const wrapped = wrapBareEnglishInLatex(formula);
+
+      expect(wrapped).toContain("\\text{Phần bù rủi ro}");
+      expect(wrapped).toContain("E[R] - r_f");
+
+      const html = renderKatexSafe(formula, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("wraps 'Tỷ suất cổ tức = \\frac{Div_{t+1}}{P_t}' preserving spaces with zero katex-error", () => {
+      const formula = "Tỷ suất cổ tức = \\frac{Div_{t+1}}{P_t}";
+      const wrapped = wrapBareEnglishInLatex(formula);
+
+      expect(wrapped).toContain("\\text{Tỷ suất cổ tức}");
+      expect(wrapped).toContain("\\frac{Div_{t+1}}{P_t}");
+
+      const html = renderKatexSafe(formula, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("wraps multi-phrase Vietnamese equation 'Phần bù rủi ro = Tỷ suất sinh lời kỳ vọng - Lãi suất phi rủi ro'", () => {
+      const formula = "Phần bù rủi ro = Tỷ suất sinh lời kỳ vọng - Lãi suất phi rủi ro";
+      const wrapped = wrapBareEnglishInLatex(formula);
+
+      expect(wrapped).toContain("\\text{Phần bù rủi ro}");
+      expect(wrapped).toContain("\\text{Tỷ suất sinh lời kỳ vọng}");
+      expect(wrapped).toContain("\\text{Lãi suất phi rủi ro}");
+
+      const html = renderKatexSafe(formula, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+
+    it("wraps parenthetical Vietnamese phrase 'Độ lệch chuẩn (Rủi ro trung bình độc lập) = \\frac{\\sigma}{\\sqrt{N}}'", () => {
+      const formula = "Độ lệch chuẩn (Rủi ro trung bình độc lập) = \\frac{\\sigma}{\\sqrt{N}}";
+      const wrapped = wrapBareEnglishInLatex(formula);
+
+      expect(wrapped).toContain("\\text{Độ lệch chuẩn}");
+      expect(wrapped).toContain("\\text{Rủi ro trung bình độc lập}");
+      expect(wrapped).toContain("\\frac{\\sigma}{\\sqrt{N}}");
+
+      const html = renderKatexSafe(formula, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+  });
+
+  describe("PUA math symbols normalization before KaTeX rendering", () => {
+    it("normalizes PUA symbols (\\uF0B4, \\uF0B8, \\uF0E5, \\uF0D6, \\uF0B1, \\uF05B, \\uF05D) without katex-error", () => {
+      // \uF0B4 = ×, \uF0B8 = ÷, \uF0E5 = ∑, \uF0D6 = √, \uF0B1 = ±, \uF05B = [, \uF05D = ]
+      const actualPua = "\uF05B \uF0B1 2 \uF0B4 \uF0D6{N} \uF05D";
+
+      const html = renderKatexSafe(actualPua, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+
+      const puaSumDiv = "\uF0E5_{i=1}^n R_i \uF0B8 n";
+      const htmlSumDiv = renderKatexSafe(puaSumDiv, false);
+      expect(htmlSumDiv).toContain("katex");
+      expect(htmlSumDiv).not.toContain("katex-error");
+      expect(htmlSumDiv).not.toContain("katex-fallback");
+    });
+
+    it("normalizes each PUA symbol individually in renderKatexSafe without error", () => {
+      const puaSymbols = [
+        "\uF0B4", // ×
+        "\uF0B8", // ÷
+        "\uF0E5", // ∑
+        "\uF0D6{x}", // √{x}
+        "\uF0B1", // ±
+        "\uF05B", // [
+        "\uF05D", // ]
+      ];
+
+      for (const sym of puaSymbols) {
+        const html = renderKatexSafe(sym, false);
+        expect(html).toContain("katex");
+        expect(html).not.toContain("katex-error");
+        expect(html).not.toContain("katex-fallback");
+      }
+    });
+
+    it("sanitizes unmapped PUA codepoints and replacement characters \\uFFFD in renderKatexSafe", () => {
+      const corrupted = "R_p = \\alpha + \uE123 \uFFFD \\beta R_M";
+      const html = renderKatexSafe(corrupted, false);
+      expect(html).toContain("katex");
+      expect(html).not.toContain("katex-error");
+      expect(html).not.toContain("katex-fallback");
+    });
+  });
+});
+
 
 

@@ -35,6 +35,37 @@ import type { ClutchNote } from "@/lib/schemas/notes";
 import type { StudyPack } from "@/lib/schemas/question";
 import type { ParsedDocument, SourceBlock } from "@/lib/schemas/ingestion";
 
+function hasCorruptedMath(sources: SourceBlock[]): boolean {
+  if (!Array.isArray(sources) || sources.length === 0) return false;
+
+  return sources.some((src) => {
+    const text = src.text;
+    if (!text || text.trim().length === 0) return false;
+
+    // 1. Missing font glyph placeholders or unmapped Private Use Area codepoints
+    if (/[\uE000-\uF8FF\uFFFD\u25A0-\u25AF\u25FB-\u25FC]/.test(text)) {
+      return true;
+    }
+
+    // 2. Dangling equality / assignment without expression (e.g., "WACC = \n", "y = \n")
+    if (/(?:^|\n|\r)\s*[A-Za-z0-9_\(\)]+\s*=\s*(?:$|\n|\r)/m.test(text)) {
+      return true;
+    }
+
+    // 3. Lines ending with dangling binary math operators without right-hand side
+    if (/(?:^|\s)[A-Za-z0-9_\)]+\s*(?:[+*/=≤≥≠≈÷×]|−)\s*$/m.test(text)) {
+      return true;
+    }
+
+    // 4. Broken adjacent conflicting operators (e.g. "+ =", "= /")
+    if (/(?:[+\-*/=≤≥≠≈÷×]|−)\s*(?:[=*/≤≥≠≈÷×])/.test(text)) {
+      return true;
+    }
+
+    return false;
+  });
+}
+
 export interface ClutchNotesPanelProps {
   onPlayPack?: (pack: StudyPack) => void;
   onPackGenerated?: (
@@ -195,6 +226,20 @@ export function ClutchNotesPanel({
         }
       }
 
+      // Check if client-extracted PDF slides exhibit corrupted math or heavy PUA substitutions
+      const isPdf = selectedFile.name.toLowerCase().endsWith(".pdf");
+      if (
+        !useMultipartFallback &&
+        extracted &&
+        isPdf &&
+        hasCorruptedMath(extracted.sources)
+      ) {
+        console.warn(
+          "[ClutchNotes] Unreadable/corrupted math streams or PUA substitutions detected in client-extracted PDF. Preferring server multipart upload for high-fidelity OCR.",
+        );
+        useMultipartFallback = true;
+      }
+
       const effectiveTier = tier && tier !== "contender" ? tier : "contender";
       const headers: Record<string, string> = {};
       if (process.env.NODE_ENV !== "production") {
@@ -231,8 +276,17 @@ export function ClutchNotesPanel({
           ...(extracted.fileSha256 ? { fileSha256: extracted.fileSha256 } : {}),
         });
       } else {
+        let uploadFile = selectedFile;
+        if (uploadFile.size > 4.5 * 1024 * 1024) {
+          try {
+            const result = await optimizeUploadFileIfNeeded(uploadFile);
+            uploadFile = result.file;
+          } catch {
+            // Keep original file if optimization is not possible
+          }
+        }
         const formData = new FormData();
-        formData.append("file", selectedFile);
+        formData.append("file", uploadFile);
         if (focus.trim()) {
           formData.append("focus", focus.trim());
         }

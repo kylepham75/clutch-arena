@@ -1,4 +1,5 @@
 import katex from "katex";
+import { normalizePdfMathSymbols } from "@/lib/notes/pdf-symbol-normalizer";
 
 /**
  * Escapes raw HTML characters to prevent XSS in fallback text.
@@ -107,11 +108,19 @@ const LATEX_COMMAND_NAMES = new Set([
   "Theta", "Lambda", "Xi", "Pi", "Upsilon", "Phi", "Psi",
 ]);
 
-function isEnglishWord(w: string): boolean {
+const VIETNAMESE_HOMOPHONE_WORDS = new Set([
+  "sinh", "phi", "chi", "tan", "cot", "sec", "cos", "mod", "mu", "gia", "tri",
+]);
+
+export function isEnglishWord(w: string, inVietnameseContext: boolean = false): boolean {
   if (!w || w.startsWith("\\")) return false;
   // Must have at least one lowercase letter (exclude all-caps acronyms like ROE, NPV, WACC)
-  if (!/[a-z]/.test(w)) return false;
+  // Supports English and non-ASCII Unicode (e.g. Vietnamese) lowercase letters
+  if (!/\p{Ll}/u.test(w) && !/[a-z]/.test(w)) return false;
   const clean = w.replace(/['’].*$/, "").replace(/[-_].*$/, "");
+  if (inVietnameseContext && VIETNAMESE_HOMOPHONE_WORDS.has(clean.toLowerCase())) {
+    return true;
+  }
   if (MATH_FUNCTIONS.has(clean) || GREEK_NAMES.has(clean) || LATEX_COMMAND_NAMES.has(clean)) return false;
   return true;
 }
@@ -124,7 +133,7 @@ export function replaceOutsideText(
   replacer: (nonText: string) => string,
 ): string {
   if (!tex || typeof tex !== "string") return "";
-  const textCmdRegex = /\\(?:text|mathrm|mathbf|operatorname)\{(?:[^{}]|\{[^{}]*\})*\}/g;
+  const textCmdRegex = /\\(?:text|textbf|textit|textrm|mathrm|mathbf|mathit|operatorname)\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}/g;
   let lastIndex = 0;
   let result = "";
   let match: RegExpExecArray | null;
@@ -216,18 +225,20 @@ export function wrapBareEnglishInLatex(latex: string): string {
   );
 
   // 3. Multi-word phrases outside existing \text{...}
-  // Sequences of 2+ space-separated English words (e.g. "Last quarter's sales", "Shareholders' Equity",
+  // Sequences of 2+ space-separated English or Vietnamese prose words (e.g. "Last quarter's sales", "Shareholders' Equity",
+  // "Phần bù rủi ro", "Tỷ suất sinh lời kỳ vọng", "Lãi suất phi rủi ro", "Độ lệch chuẩn", "Rủi ro trung bình độc lập",
   // "Increase Current Assets", "Decrease Use of Cash", "Cash inflow", "Source of Cash", "Use of Cash",
   // "Accounts Receivable period", "Long-Term Debt", "Short-Term Debt")
   s = replaceOutsideText(s, (part) => {
     return part.replace(
-      /(?<!\\)\b([A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?(?:\s+[A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?)+)\b/g,
+      /(?<![\p{L}\\])([\p{L}]+(?:-[\p{L}]+)*(?:'[\p{L}]+|')?(?:\s+[\p{L}]+(?:-[\p{L}]+)*(?:'[\p{L}]+|')?)+)(?![\p{L}])/gu,
       (match, _p1, offset, fullStr) => {
         if (offset > 0 && fullStr[offset - 1] === "\\") return match;
         const words = match.split(/\s+/);
         if (words.length < 2) return match;
-        const allWordsValid = words.every((w) => w.length >= 2 && isEnglishWord(w));
-        const hasLongWord = words.some((w) => w.length >= 3);
+        const hasVietnamese = /[^\x00-\x7F]/.test(match);
+        const allWordsValid = words.every((w) => w.length >= 2 && isEnglishWord(w, hasVietnamese));
+        const hasLongWord = words.some((w) => w.length >= 3 || /[^\x00-\x7F]/.test(w));
         if (allWordsValid && hasLongWord) {
           return `\\text{${match}}`;
         }
@@ -236,7 +247,7 @@ export function wrapBareEnglishInLatex(latex: string): string {
     );
   });
 
-  // 4. Bare English words adjacent to \text{...} blocks
+  // 4. Bare English/Vietnamese prose words adjacent to \text{...} blocks
   // e.g. "Increase \text{Current Assets}" -> "\text{Increase} \text{Current Assets}"
   // e.g. "\text{Accounts Receivable}period" -> "\text{Accounts Receivable} \text{period}"
   let prevAdjacent = "";
@@ -244,10 +255,11 @@ export function wrapBareEnglishInLatex(latex: string): string {
     prevAdjacent = s;
     // Word before \text{...}
     s = s.replace(
-      /(?<!\\)\b([A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?)\s*(\\text\{[^{}]+\})/g,
+      /(?<![\p{L}\\])([\p{L}]+(?:-[\p{L}]+)*(?:'[\p{L}]+|')?)\s*(\\text\{[^{}]+\})/gu,
       (match, word, textBlock, offset, fullStr) => {
         if (offset > 0 && fullStr[offset - 1] === "\\") return match;
-        if (word.length >= 3 && isEnglishWord(word) && !word.startsWith("\\")) {
+        const hasVietnamese = /[^\x00-\x7F]/.test(word) || /[^\x00-\x7F]/.test(textBlock);
+        if (word.length >= 2 && (word.length >= 3 || /[^\x00-\x7F]/.test(word)) && isEnglishWord(word, hasVietnamese) && !word.startsWith("\\")) {
           return `\\text{${word}} ${textBlock}`;
         }
         return match;
@@ -255,11 +267,12 @@ export function wrapBareEnglishInLatex(latex: string): string {
     );
     // Word after \text{...}
     s = s.replace(
-      /(\\text\{[^{}]+\})\s*([A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?)\b/g,
+      /(\\text\{[^{}]+\})\s*([\p{L}]+(?:-[\p{L}]+)*(?:'[\p{L}]+|')?)(?![\p{L}])/gu,
       (match, textBlock, word, offset, fullStr) => {
         const nextChar = fullStr[offset + match.length];
         if (nextChar === "(" || nextChar === "_" || nextChar === "^") return match;
-        if (word.length >= 3 && isEnglishWord(word) && !word.startsWith("\\")) {
+        const hasVietnamese = /[^\x00-\x7F]/.test(word) || /[^\x00-\x7F]/.test(textBlock);
+        if (word.length >= 2 && (word.length >= 3 || /[^\x00-\x7F]/.test(word)) && isEnglishWord(word, hasVietnamese) && !word.startsWith("\\")) {
           return `${textBlock} \\text{${word}}`;
         }
         return match;
@@ -267,17 +280,19 @@ export function wrapBareEnglishInLatex(latex: string): string {
     );
   }
 
-  // 5. Bare English words (>= 3 letters, not a math function) inside an equation with \text{...} or arrows
+  // 5. Bare English/Vietnamese words (>= 3 letters, or Vietnamese diacritics, not a math function) inside an equation with \text{...} or arrows
   const hasArrows =
     /\\(?:uparrow|downarrow|rightarrow|leftarrow|implies|impliedby|iff|Uparrow|Downarrow)\b|[↑↓→←⇒⇐⇔⇑⇓]/.test(s);
   const hasText = /\\text\{[^{}]+\}/.test(s);
 
   if (hasArrows || hasText) {
     s = replaceOutsideText(s, (part) => {
+      const hasVietnamese = /[^\x00-\x7F]/.test(s);
       return part.replace(
-        /\b([A-Za-z]+(?:-[A-Za-z]+)*(?:'[A-Za-z]+|')?)\b/g,
+        /(?<![\p{L}\\])([\p{L}]+(?:-[\p{L}]+)*(?:'[\p{L}]+|')?)(?![\p{L}])/gu,
         (match, word, offset, fullStr) => {
-          if (word.length < 3 || !isEnglishWord(word)) return match;
+          if (word.length < 2 || !isEnglishWord(word, hasVietnamese)) return match;
+          if (word.length === 2 && !/[^\x00-\x7F]/.test(word)) return match;
           const prevChar = offset > 0 ? fullStr[offset - 1] : "";
           if (prevChar === "\\" || prevChar === "_" || prevChar === "^") return match;
           const nextChar = fullStr[offset + match.length];
@@ -441,46 +456,97 @@ export function repairCorruptedLatex(text: string): string {
   s = s.replace(/(\$[^$\n]*?)[\x0a\n]eq\b/g, "$1\\neq ");
   s = s.replace(/(\$[^$\n]*?)[\x0a\n]abla\b/g, "$1\\nabla ");
 
-  // 2. Repair corrupted tokens where control characters collapsed into spaces or were stripped
-  // "imes" is never a standalone English word -> convert to \times
-  s = s.replace(/\bimes\b/g, "\\times");
+  // 2. Normalize PUA Symbol/Wingdings/MT Extra characters and replacement glyphs
+  s = normalizePdfMathSymbols(s);
 
-  // "rac{" -> \frac{, "qrt{" -> \sqrt{
-  s = s.replace(/(?:^|\s)rac\{/g, " \\frac{");
-  s = s.replace(/(?:^|\s)qrt\{/g, " \\sqrt{");
+  // 3. Recover structured commands missing leading backslash
+  s = s.replace(
+    /(?<![a-zA-Z\\])(frac|dfrac|tfrac|text|textbf|textit|textrm|mathrm|mathbf|mathit|sqrt|bar|hat|tilde|vec|overline|underline|operatorname)\{/g,
+    (_m, cmd) => `\\${cmd}{`,
+  );
+  s = s.replace(/(?<![a-zA-Z\\])sqrt\[/g, "\\sqrt[");
 
-  // Repair corrupted text{Cov}, text{Corr}, text{Var}
-  s = s.replace(/[\x09\t]ext\{(Cov|Corr|Var)\}/g, "\\text{$1}");
-  s = s.replace(/(?:^|[\s$+\-=*/(])ext\{(Cov|Corr|Var)\}/g, (match, fn) =>
+  // Truncated control-character stripped fragments
+  s = s.replace(/(?<![a-zA-Z\\])rac\{/g, "\\frac{");
+  s = s.replace(/(?<![a-zA-Z\\])qrt\{/g, "\\sqrt{");
+  s = s.replace(/(?<![a-zA-Z\\])ext\{/g, "\\text{");
+  s = s.replace(/(?<![a-zA-Z\\])extbf\{/g, "\\textbf{");
+  s = s.replace(/(?<![a-zA-Z\\])extit\{/g, "\\textit{");
+  s = s.replace(/(?<![a-zA-Z\\])extrm\{/g, "\\textrm{");
+
+  // Repair corrupted text{Cov}, text{Corr}, text{Var}, text{SD}, text{SE}
+  s = s.replace(/[\x09\t]ext\{(Cov|Corr|Var|SD|SE)\}/g, "\\text{$1}");
+  s = s.replace(/(?:^|[\s$+\-=*/({\[])ext\{(Cov|Corr|Var|SD|SE)\}/g, (match, fn) =>
     match.replace(`ext{${fn}}`, `\\text{${fn}}`),
   );
   s = s.replace(/\\text\{\s*(?:cov|Cov)\s*\}/g, "\\text{Cov}");
   s = s.replace(/\\text\{\s*(?:corr|Corr)\s*\}/g, "\\text{Corr}");
   s = s.replace(/\\text\{\s*(?:var|Var)\s*\}/g, "\\text{Var}");
-  s = s.replace(/(^|[\s$+\-=*/(])(?:Cov|cov)\s*\(/g, "$1\\text{Cov}(");
-  s = s.replace(/(^|[\s$+\-=*/(])(?:Corr|corr)\s*\(/g, "$1\\text{Corr}(");
-  s = s.replace(/(^|[\s$+\-=*/(])(?:Var|var)\s*\(/g, "$1\\text{Var}(");
+  s = s.replace(/(^|[\s$+\-=*/({\[])(?:Cov|cov)\s*\(/g, "$1\\text{Cov}(");
+  s = s.replace(/(^|[\s$+\-=*/({\[])(?:Corr|corr)\s*\(/g, "$1\\text{Corr}(");
+  s = s.replace(/(^|[\s$+\-=*/({\[])(?:Var|var)\s*\(/g, "$1\\text{Var}(");
+  s = s.replace(/(^|[\s$+\-=*/({\[])(?:SD|sd)\s*\(/g, "$1\\text{SD}(");
+  s = s.replace(/(^|[\s$+\-=*/({\[])(?:SE|se)\s*\(/g, "$1\\text{SE}(");
 
-  // "beta" corrupted to "eta" in math / operator context (e.g. "+  eta", "= eta", "eta \times", "eta imes")
-  s = s.replace(/([+\-=*\/]\s*)eta\b/g, "$1\\beta");
-  s = s.replace(/(^|[\s$])eta\s*(?=\\times|imes\b|[*_^(+\-=]|\b[a-zA-Z]\b)/g, "$1\\beta");
+  // 4. Recover standalone operators, symbols, sum, prod, and Greek variables outside \text{...}
+  s = replaceOutsideText(s, (segment) => {
+    let p = segment;
 
-  // "rho" corrupted to "ho" after operators or in math context
-  s = s.replace(/([+\-=*\/]\s*)ho\b/g, "$1\\rho");
-  s = s.replace(/(^|[\s$])ho\s*(?=\\times|imes\b|[*_^(+\-=]|\b[a-zA-Z0-9]\b)/g, "$1\\rho");
+    // "imes" is never a standalone English word -> convert to \times
+    p = p.replace(/\bimes\b/g, "\\times");
 
-  // Bare Greek / math function names in math / equation context
-  s = s.replace(/(^|[\s$+\-=*/(,])sigma(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\sigma");
-  s = s.replace(/(^|[\s$+\-=*/(,])beta(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\beta");
-  s = s.replace(/(^|[\s$+\-=*/(,])rho(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\rho");
-  s = s.replace(/(^|[\s$+\-=*/(,])alpha(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\alpha");
-  s = s.replace(/(^|[\s$+\-=*/(,])mu(?=[_^(\s+\-=*/,)]|\b)/g, "$1\\mu");
-  s = s.replace(/(^|[\s$+\-=*/(,])sum(?=\s*[_^({]|\s*[a-zA-Z0-9])/g, "$1\\sum");
-  s = s.replace(/(^|[\s$+\-=*/(,])sqrt(?=\s*\{)/g, "$1\\sqrt");
-  s = s.replace(/(^|[\s$+\-=*/(,])bar\{/g, "$1\\bar{");
+    // "beta" corrupted to "eta" in math / operator context
+    p = p.replace(/([+\-=*\/]\s*)eta\b/g, "$1\\beta");
+    p = p.replace(/(^|[\s$])eta\s*(?=\\times|imes\b|[*_^(+\-=]|\b[a-zA-Z]\b)/g, "$1\\beta");
+
+    // "rho" corrupted to "ho" after operators or in math context
+    p = p.replace(/([+\-=*\/]\s*)ho\b/g, "$1\\rho");
+    p = p.replace(/(^|[\s$])ho\s*(?=\\times|imes\b|[*_^(+\-=]|\b[a-zA-Z0-9]\b)/g, "$1\\rho");
+
+    // Standalone math operators/symbols
+    p = p.replace(
+      /(?<![\p{L}\\])(pm|mp|times|cdot|approx|neq|leq|geq|infty)(?![\p{L}])/gu,
+      (_m, op) => `\\${op} `,
+    );
+
+    // Summation and product
+    p = p.replace(
+      /(?<![\p{L}\\])sum(?=\s*[_^({]|\s*(?:[0-9%\\(]|\\?[a-zA-Z]{1,2}(?:_[a-zA-Z0-9{}]|\^[a-zA-Z0-9{}]|[+\-*=])))/gu,
+      "\\sum",
+    );
+    p = p.replace(/(?<![\p{L}\\])prod(?=\s*[_^{])/gu, "\\prod");
+
+    // Bare Greek variable names
+    p = p.replace(
+      /(?<![\p{L}\\])(alpha|beta|gamma|delta|epsilon|theta|lambda|mu|pi|rho|sigma|tau|phi|omega|Delta|Sigma|Omega)(?![\p{L}])/gu,
+      (match, g, offset, fullStr) => {
+        // Avoid replacing 'phi' or 'chi' when in Vietnamese phrase context (e.g. 'phi rủi ro', 'chi phí')
+        if (g === "phi" || g === "chi") {
+          const rest = fullStr.slice(offset);
+          const before = fullStr.slice(0, offset);
+          if (
+            /^(?:phi|chi)\s+(?:rủi|tài|thương|phí|trả|tiêu)/i.test(rest) ||
+            /(?:lãi|Lãi|tài|Tài|chi|Chi)\s+(?:suất|sản)?\s*$/i.test(before)
+          ) {
+            return match;
+          }
+        }
+        return `\\${g}`;
+      },
+    );
+
+    // Common Unicode math symbols converted to LaTeX commands
+    p = p.replace(/√\s*\{/g, "\\sqrt{");
+    p = p.replace(/√\s*([a-zA-Z0-9]+)/g, "\\sqrt{$1}");
+
+    return p;
+  });
 
   // Clean up duplicate backslashes if any: \\\sigma -> \sigma
-  s = s.replace(/\\\\(sigma|beta|rho|alpha|mu|sum|sqrt|bar|text|times|frac|Delta)/g, "\\$1");
+  s = s.replace(
+    /\\\\(sigma|beta|rho|alpha|mu|gamma|delta|epsilon|theta|lambda|pi|tau|phi|omega|Delta|Sigma|Omega|sum|prod|sqrt|bar|hat|tilde|vec|overline|underline|operatorname|text|textbf|textit|textrm|mathrm|mathbf|mathit|times|frac|dfrac|tfrac|pm|mp|cdot|approx|neq|leq|geq|infty)/g,
+    "\\$1",
+  );
 
   // Clean up formatting and spacing around \times and \beta
   s = s.replace(/\s*\\times\s*/g, " \\times ");
@@ -534,7 +600,8 @@ export function repairCorruptedLatex(text: string): string {
  */
 export function renderKatexSafe(tex: string, displayMode: boolean): string {
   try {
-    const repaired = repairCorruptedLatex(tex);
+    const normalized = normalizePdfMathSymbols(tex);
+    const repaired = repairCorruptedLatex(normalized);
     const wrapped = wrapBareEnglishInLatex(repaired);
 
     // Escape any unescaped dollar signs inside math mode so KaTeX never throws
@@ -545,12 +612,26 @@ export function renderKatexSafe(tex: string, displayMode: boolean): string {
     sanitized = sanitized.replace(/(?<!\\)\$/g, "\\$");
 
     // Sanitize unescaped % signs to \% so KaTeX doesn't treat them as comments
+    // and convert standard Unicode math symbols to KaTeX commands
     sanitized = sanitized
       .replace(/(^|[^\\])%/g, "$1\\%")
       .replace(/[\u0394Δ]/g, "\\Delta ")
       .replace(/÷/g, "\\div ")
       .replace(/×/g, "\\times ")
+      .replace(/±/g, "\\pm ")
+      .replace(/≤/g, "\\leq ")
+      .replace(/≥/g, "\\geq ")
+      .replace(/≠/g, "\\neq ")
+      .replace(/≈/g, "\\approx ")
+      .replace(/∑/g, "\\sum ")
+      .replace(/∏/g, "\\prod ")
+      .replace(/√\s*\{/g, "\\sqrt{")
+      .replace(/√\s*([a-zA-Z0-9]+)/g, "\\sqrt{$1}")
+      .replace(/−/g, "-")
       .replace(/(^|[^\\])\\\$([0-9])/g, "$1\\text{\\$}$2");
+
+    // Ensure no unmapped PUA codepoints reach KaTeX raw
+    sanitized = normalizePdfMathSymbols(sanitized);
 
     return katex.renderToString(sanitized, {
       displayMode,
@@ -698,9 +779,10 @@ export function convertAsciiMathSegment(segment: string): string {
  */
 export function ensureInlineMathDelimiters(text: string): string {
   if (!text || typeof text !== "string") return text;
+  const normalized = normalizePdfMathSymbols(text);
 
   // Split string into segments preserving already delimited math
-  const tokens = tokenizeMath(text);
+  const tokens = tokenizeMath(normalized);
   if (tokens.length === 0) return text;
 
   const parts: string[] = [];
@@ -887,8 +969,9 @@ export function ensureInlineMathDelimiters(text: string): string {
 export function normalizeMathFormulas(raw: string): string {
   if (!raw) return "";
 
+  const clean = normalizePdfMathSymbols(raw);
   // Always repair corrupted LaTeX escape sequences first
-  let text = repairCorruptedLatex(raw);
+  let text = repairCorruptedLatex(clean);
 
   // If already formatted with LaTeX display markers, run ensureInlineMathDelimiters to protect surrounding prose and return
   if (text.includes("$$") || text.includes("\\[") || text.includes("\\(")) {
@@ -896,17 +979,17 @@ export function normalizeMathFormulas(raw: string): string {
   }
 
   // Pattern 1: Cross-price elasticity: Exy = %ΔQx ÷ %ΔPy. Positive = substitutes; negative = complements
-  if (/E(xy)?\s*=\s*%\s*[Δ\u0394]Qx\s*[÷\/]\s*%\s*[Δ\u0394]Py/i.test(text)) {
+  if (/E(xy)?\s*=\s*%\s*[Δ\u0394]Qx\s*(?:[÷\/]|\\div\s*)\s*%\s*[Δ\u0394]Py/i.test(text)) {
     text = text.replace(
-      /E(xy)?\s*=\s*%\s*[Δ\u0394]Qx\s*[÷\/]\s*%\s*[Δ\u0394]Py\.?\s*/i,
+      /E(xy)?\s*=\s*%\s*[Δ\u0394]Qx\s*(?:[÷\/]|\\div\s*)\s*%\s*[Δ\u0394]Py\.?\s*/i,
       () => "$$E_{xy} = \\frac{\\%\\Delta Q_x}{\\%\\Delta P_y}$$\n",
     );
   }
 
   // Pattern 2: Price elasticity: |Ed| = |%Δ quantity demanded ÷ %Δ price|
-  if (/\|?E(d)?\|?\s*=\s*\|?%\s*[Δ\u0394]\s*(quantity demanded|Q(d)?)\s*[÷\/]\s*%\s*[Δ\u0394]\s*(price|P)\|?/i.test(text)) {
+  if (/\|?E(d)?\|?\s*=\s*\|?%\s*[Δ\u0394]\s*(quantity demanded|Q(d)?)\s*(?:[÷\/]|\\div\s*)\s*%\s*[Δ\u0394]\s*(price|P)\|?/i.test(text)) {
     text = text.replace(
-      /\|?E(d)?\|?\s*=\s*\|?%\s*[Δ\u0394]\s*(?:quantity demanded|Q(?:d)?)\s*[÷\/]\s*%\s*[Δ\u0394]\s*(?:price|P)\|?\.?\s*/i,
+      /\|?E(d)?\|?\s*=\s*\|?%\s*[Δ\u0394]\s*(?:quantity demanded|Q(?:d)?)\s*(?:[÷\/]|\\div\s*)\s*%\s*[Δ\u0394]\s*(?:price|P)\|?\.?\s*/i,
       () => "$$|E_d| = \\left|\\frac{\\%\\Delta Q_d}{\\%\\Delta P}\\right|$$\n",
     );
   }
@@ -917,7 +1000,7 @@ export function normalizeMathFormulas(raw: string): string {
     text.length <= 500 &&
     !text.includes("$") &&
     /\\(?:sigma|beta|rho|alpha|mu|text|frac|sqrt|sum|prod|Delta|bar)\b/.test(text) &&
-    /^[A-Za-z0-9_().\s\\\[\]{}]+=\s*[A-Za-z0-9_().\s+\-*\/^$≈\\\[\]{}]+$/.test(text.trim())
+    /^[\p{L}0-9_().\s\\\[\]{}]+=\s*[\p{L}0-9_().\s+\-*\/^$≈\\\[\]{}]+$/u.test(text.trim())
   ) {
     return `$${text.trim()}$`;
   }
@@ -927,7 +1010,7 @@ export function normalizeMathFormulas(raw: string): string {
   if (
     text.length <= 500 &&
     !text.includes("$") &&
-    /^[A-Za-z0-9_().\s\\\[\]{}]+=\s*[A-Za-z0-9_().\s+\-*\/^$≈\\\[\]{}]+$/.test(text.trim()) &&
+    /^[\p{L}0-9_().\s\\\[\]{}]+=\s*[\p{L}0-9_().\s+\-*\/^$≈\\\[\]{}]+$/u.test(text.trim()) &&
     /[+\-*\/^()\\\[\]]/.test(text)
   ) {
     let formula = text.trim();

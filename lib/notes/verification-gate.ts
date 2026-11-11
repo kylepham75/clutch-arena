@@ -41,6 +41,11 @@ import {
   type VerifiableNoteClaim,
 } from "@/lib/notes/verifier-llm";
 import { annotateNoteWithDivergenceNotices } from "@/lib/notes/domain-rule-packs";
+import { renderKatexSafe } from "@/lib/math/latex";
+import {
+  isDanglingOrEmptySideEquation,
+  isNontrivialFormula,
+} from "@/lib/notes/formula-inventory";
 import {
   CLUTCH_NOTES_SYSTEM_PROMPT,
   type FinancialConventionPin,
@@ -59,6 +64,39 @@ export {
   pinConventionsToSections,
   deduplicateNoteSections,
 };
+
+/**
+ * Deterministically checks whether a formula LaTeX equation is clean, non-dangling,
+ * nontrivial, and successfully parses in KaTeX without ParseError.
+ */
+export function isCleanValidLatexFormula(latex: string): boolean {
+  if (!latex || typeof latex !== "string") return false;
+  const trimmed = latex.replace(/^\$+|\$+$/g, "").trim();
+  if (!trimmed) return false;
+
+  // 1. Check dangling relation operators or empty sides (e.g. "T =", "S ==", "= 0.12")
+  if (isDanglingOrEmptySideEquation(trimmed)) {
+    return false;
+  }
+
+  // 2. Reject consecutive equality operators like "==" or "==="
+  if (/(?<![<>!])={2,}(?![=>])/.test(trimmed)) {
+    return false;
+  }
+
+  // 3. Reject nontriviality failures (scalar assignments, pure prose, numeric plug-in)
+  if (!isNontrivialFormula(trimmed)) {
+    return false;
+  }
+
+  // 4. Reject KaTeX parse errors
+  const rendered = renderKatexSafe(trimmed, true);
+  if (rendered.includes("katex-error") || rendered.includes("katex-fallback")) {
+    return false;
+  }
+
+  return true;
+}
 
 export type SectionQualityAction =
   | "SHIP"
@@ -344,7 +382,7 @@ export function buildTargetedRepairPrompt(
     "Please perform a surgical, single-pass repair on the study note sections below to resolve specific verification defects.",
   );
   parts.push(
-    "CRITICAL: Preserve all existing correct sections, headings, bullets, and formulas. Fix ONLY the targeted defects listed below.",
+    "CRITICAL: Preserve all existing correct sections, headings, bullets, and formulas across the entire deck (including late-deck sections such as Slides 90–105+ / CAPM). Fix ONLY the targeted defects listed below and ensure all uncaptured source formulas are placed without truncating later sections.",
   );
   parts.push("");
 
@@ -864,6 +902,8 @@ export function applyMarkPolicyAndGate(input: {
 
       let formulaStatus: VerificationStatus = f.status || "verified";
 
+      const detValidity = isCleanValidLatexFormula(f.latex);
+
       if (contradicts) {
         formulaStatus = "contradicted";
         f.status = "contradicted";
@@ -876,6 +916,13 @@ export function applyMarkPolicyAndGate(input: {
         formulaStatus = "needs_review";
         f.status = "needs_review";
         f.reviewReason = `Ungrounded symbols: ${symRes.ungroundedSymbols.join(", ")}`;
+        needsReviewCount++;
+      } else if (!detValidity) {
+        formulaStatus = "needs_review";
+        f.status = "needs_review";
+        f.reviewReason =
+          f.reviewReason ||
+          "Formula failed deterministic validity check (dangling equation, KaTeX parse error, or invalid equation)";
         needsReviewCount++;
       } else if (isLowConfidenceOcr) {
         formulaStatus = "needs_review";
@@ -1046,19 +1093,36 @@ export async function runVerificationGate(
   // Step 3: Check if targeted repair is warranted
   const detCoverage = initialPipeline.deterministicReport.coverage;
   const unjustifiedUncaptured = detCoverage.uncapturedErrorIds;
+  const uncapturedErrorCount =
+    (detCoverage as any).uncapturedErrors ??
+    detCoverage.uncapturedErrorIds?.length ??
+    0;
 
   const hasContradictedFormula =
     initialPipeline.equivalenceReport.contradictedFormulas > 0;
-  const hasUncapturedFormulas = unjustifiedUncaptured.length > 0;
+  const hasUncapturedFormulas =
+    uncapturedErrorCount > 0 || unjustifiedUncaptured.length > 0;
   const hasContradictedClaims =
     (initialPipeline.verifierLlmReport?.contradictedIds.length ?? 0) > 0;
   const hasResidualNumericBullets = residualNumericBullets.length > 0;
+  const hasSymbolErrors =
+    !initialPipeline.deterministicReport.symbols.passed ||
+    initialPipeline.deterministicReport.symbols.ungroundedSymbols.length > 0;
+  const hasDeterministicFormulaErrors =
+    initialPipeline.annotatedSections.some((sec) =>
+      (sec.formulas || []).some((f) => !isCleanValidLatexFormula(f.latex)) ||
+      (sec.subSections || []).some((sub) =>
+        (sub.formulas || []).some((f) => !isCleanValidLatexFormula(f.latex))
+      )
+    );
 
   const repairWarranted =
     hasContradictedFormula ||
     hasUncapturedFormulas ||
     hasContradictedClaims ||
-    hasResidualNumericBullets;
+    hasResidualNumericBullets ||
+    hasSymbolErrors ||
+    hasDeterministicFormulaErrors;
 
   const canRepair =
     Boolean(options?.repairFn || options?.repairModel) &&
@@ -1106,12 +1170,28 @@ export async function runVerificationGate(
         };
       });
 
+    const repairWarnings = [
+      ...initialPipeline.deterministicReport.summary.warnings,
+    ];
+    if (hasSymbolErrors) {
+      for (const ungrounded of initialPipeline.deterministicReport.symbols.ungroundedSymbols) {
+        repairWarnings.push(`Ungrounded formula symbol detected: ${ungrounded}`);
+      }
+      for (const res of initialPipeline.deterministicReport.symbols.perFormulaResults) {
+        if (!res.passed && res.ungroundedSymbols.length > 0) {
+          repairWarnings.push(
+            `Formula $${res.latex}$ uses ungrounded symbols (${res.ungroundedSymbols.join(", ")}). Reconcile with slide ${res.slide ?? "source"} notation.`,
+          );
+        }
+      }
+    }
+
     const repairPrompt = buildTargetedRepairPrompt({
       sections: currentSections,
       contradictedFormulas,
       uncapturedFormulas,
       contradictedClaims,
-      warnings: initialPipeline.deterministicReport.summary.warnings,
+      warnings: repairWarnings,
       residualNumericBullets,
     });
 
@@ -1142,7 +1222,7 @@ export async function runVerificationGate(
           abortSignal: options.signal,
         });
 
-        if (repairRes.object && Array.isArray(repairRes.object.sections)) {
+        if (repairRes?.object && Array.isArray(repairRes.object.sections)) {
           repairedSections = repairRes.object.sections.map((sec, idx) =>
             mapSynthesisSection(sec, idx, ledger),
           );

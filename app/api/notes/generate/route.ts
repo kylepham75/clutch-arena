@@ -16,6 +16,9 @@ import {
 } from "@/lib/rate-limit";
 import { parseSlideDeck } from "@/lib/notes/parse-slides";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
+import { normalizePdfMathSymbols } from "@/lib/notes/pdf-symbol-normalizer";
+import { deduplicateAnimationSlides } from "@/lib/ingestion/content-hash";
+import { buildFormulaInventory } from "@/lib/notes/formula-inventory";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { isAllowedOrigin } from "@/lib/utils";
 import {
@@ -372,11 +375,30 @@ export async function POST(request: NextRequest) {
         sources = jsonBody.sources.map((s: any, idx: number) => ({
           id: typeof s.id === "string" && s.id.trim() ? s.id.trim() : `slide-${idx + 1}`,
           label: s.label,
-          text: s.text,
+          text: normalizePdfMathSymbols(s.text)
+            .split("\n")
+            .map((line) =>
+              line
+                .replace(/[\t\v\f\r]+/g, " ")
+                .replace(/[\x00-\x08\x0E-\x1F]/g, "")
+                .trim(),
+            )
+            .filter(Boolean)
+            .join("\n"),
         }));
+
+        // Deduplicate progressive animation slides for JSON sources
+        const dedupeResult = deduplicateAnimationSlides(sources);
+        sources = dedupeResult.sources;
+        if (dedupeResult.droppedCount > 0) {
+          warnings.push(
+            `Deduplicated ${dedupeResult.droppedCount} incremental animation slide(s).`,
+          );
+        }
+
         slideCount =
           typeof jsonBody.slideCount === "number" && jsonBody.slideCount > 0
-            ? jsonBody.slideCount
+            ? (dedupeResult.droppedCount > 0 ? sources.length : jsonBody.slideCount)
             : sources.length;
       } else if (typeof jsonBody?.slidesText === "string" && jsonBody.slidesText.trim()) {
         const trimmedText = jsonBody.slidesText.trim();
@@ -393,11 +415,22 @@ export async function POST(request: NextRequest) {
           );
         }
 
+        const normalizedText = normalizePdfMathSymbols(trimmedText)
+          .split("\n")
+          .map((line) =>
+            line
+              .replace(/[\t\v\f\r]+/g, " ")
+              .replace(/[\x00-\x08\x0E-\x1F]/g, "")
+              .trim(),
+          )
+          .filter(Boolean)
+          .join("\n");
+
         sources = [
           {
             id: "slide-1",
             label: "Slide 1",
-            text: trimmedText,
+            text: normalizedText,
           },
         ];
         slideCount = 1;
@@ -510,6 +543,11 @@ export async function POST(request: NextRequest) {
     }
 
     // 6. Generate Clutch Note via Academic Synthesis Engine
+    const jsonFormulaInventory =
+      !parsedDeck && !cachedFormulaInventory
+        ? buildFormulaInventory({ sources })
+        : undefined;
+
     const note = await generateClutchNote({
       fileName,
       slideCount,
@@ -526,7 +564,11 @@ export async function POST(request: NextRequest) {
           ? {
               formulaInventory: cachedFormulaInventory,
             }
-          : {}),
+          : jsonFormulaInventory
+            ? {
+                formulaInventory: jsonFormulaInventory,
+              }
+            : {}),
     });
 
     const validFileSha256 =

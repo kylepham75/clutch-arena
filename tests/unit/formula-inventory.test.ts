@@ -1146,4 +1146,298 @@ describe("Regression Tests: Bug 2 & Bug 3 (normalizePdfArrowSymbols, extractText
   });
 });
 
+describe("Stage 1 Task 1.3: PUA Math Symbol Normalization, Dangling = Rejection, Numeric Plug-In & Prose Filtering", () => {
+  describe("Dangling / Empty-Side Equations Rejection", () => {
+    const danglingCases = [
+      "T =",
+      "S ==",
+      "(Average of Independent, Identical Risks) =",
+      "= 0.15",
+      "= 0.12",
+      "SD(Average of Independent, Identical Risks) =",
+    ];
+
+    it("rejects dangling equations in isNontrivialFormula", () => {
+      for (const eq of danglingCases) {
+        expect(isNontrivialFormula(eq)).toBe(false);
+      }
+    });
+
+    it("classifies dangling equations as numeric plugin / invalid assignment in isNumericPluginOrScalarAssignment", () => {
+      for (const eq of danglingCases) {
+        expect(isNumericPluginOrScalarAssignment(eq)).toBe(true);
+      }
+    });
+
+    it("returns empty string from cleanLatexEquation for dangling equations", () => {
+      for (const eq of danglingCases) {
+        expect(cleanLatexEquation(eq)).toBe("");
+      }
+    });
+
+    it("rejects dangling equations in extractTextFormulas", () => {
+      for (const eq of danglingCases) {
+        const results = extractTextFormulas(eq);
+        expect(results).toEqual([]);
+      }
+
+      // Also when embedded in multi-line text
+      const multiLine = danglingCases.join("\n");
+      expect(extractTextFormulas(multiLine)).toEqual([]);
+    });
+
+    it("filters out dangling equations in mergeFormulaLedger from both deterministic and LLM inputs", () => {
+      const deterministicInventory: FormulaInventoryItem[] = [
+        {
+          id: "F1",
+          slide: 1,
+          raw: "T =",
+          latex: "T =",
+          origin: "text",
+        },
+        {
+          id: "F2",
+          slide: 1,
+          raw: "S ==",
+          latex: "S ==",
+          origin: "text",
+        },
+        {
+          id: "F3",
+          slide: 2,
+          raw: "(Average of Independent, Identical Risks) =",
+          latex: "(Average of Independent, Identical Risks) =",
+          origin: "text",
+        },
+        {
+          id: "F4",
+          slide: 2,
+          raw: "= 0.15",
+          latex: "= 0.15",
+          origin: "text",
+        },
+        {
+          id: "F5",
+          slide: 3,
+          raw: "P_0 = D_1 / (R - g)",
+          latex: "P_0 = \\frac{D_1}{R - g}",
+          origin: "omml",
+        },
+      ];
+
+      const extractedFormulas: ExtractedFormulaItem[] = [
+        {
+          slide: 1,
+          raw: "T =",
+          latex: "T =",
+          label: "Dangling T",
+          variables: [],
+          evidence: "T =",
+          isExerciseOnly: false,
+        },
+        {
+          slide: 2,
+          raw: "= 0.15",
+          latex: "= 0.15",
+          label: "Dangling 0.15",
+          variables: [],
+          evidence: "= 0.15",
+          isExerciseOnly: false,
+        },
+      ];
+
+      const ledger = mergeFormulaLedger({
+        deterministicInventory,
+        extractedFormulas,
+      });
+
+      // Only the valid formula P_0 = D_1 / (R - g) should survive
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0].id).toBe("F1");
+      expect(ledger[0].latex).toBe("P_0 = \\frac{D_1}{R - g}");
+      expect(ledger[0].origin).toBe("omml");
+    });
+  });
+
+  describe("Multi-Term Numeric Worked-Example Plug-In Calculations", () => {
+    const numericPlugins = [
+      "0.26 = 0.04 + 1.1 \\times (0.24 - 0.04)",
+      "\\bar{R} = (0.10 + 0.12 - 0.04) / 3 = 0.06",
+      "\\sqrt{(0.12 - 0.08)^2 + (0.05 - 0.08)^2} = 0.05",
+      "Var = (0.2056)^2 = 0.04227",
+      "R = (0.21 - 0.05 + 0.14) / 3 = 0.10",
+      "= 2.50 / (0.10 - 0.05) = $50",
+      "P = 2.50 / (0.10 - 0.05) = 50",
+    ];
+
+    it("classifies multi-term worked examples as numeric plug-ins in isNumericPluginOrScalarAssignment", () => {
+      for (const eq of numericPlugins) {
+        expect(isNumericPluginOrScalarAssignment(eq)).toBe(true);
+      }
+    });
+
+    it("rejects multi-term worked examples in isNontrivialFormula", () => {
+      for (const eq of numericPlugins) {
+        expect(isNontrivialFormula(eq)).toBe(false);
+      }
+    });
+
+    it("does not extract multi-term worked examples in extractTextFormulas", () => {
+      for (const eq of numericPlugins) {
+        const results = extractTextFormulas(eq);
+        expect(results).toEqual([]);
+      }
+    });
+
+    it("excludes multi-term worked examples from mergeFormulaLedger", () => {
+      const deterministicInventory: FormulaInventoryItem[] = [
+        {
+          id: "F1",
+          slide: 1,
+          raw: "0.26 = 0.04 + 1.1 \\times (0.24 - 0.04)",
+          latex: "0.26 = 0.04 + 1.1 \\times (0.24 - 0.04)",
+          origin: "text",
+        },
+        {
+          id: "F2",
+          slide: 2,
+          raw: "Var = (0.2056)^2 = 0.04227",
+          latex: "\\text{Var} = (0.2056)^2 = 0.04227",
+          origin: "text",
+        },
+        {
+          id: "F3",
+          slide: 3,
+          raw: "E[R_i] = r_f + \\beta_i (E[R_M] - r_f)",
+          latex: "E[R_i] = r_f + \\beta_i (E[R_M] - r_f)",
+          origin: "text",
+        },
+      ];
+
+      const ledger = mergeFormulaLedger({ deterministicInventory });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0].id).toBe("F1");
+      expect(ledger[0].latex).toBe("E[R_i] = r_f + \\beta_i (E[R_M] - r_f)");
+    });
+  });
+
+  describe("Long Prose Fragments with = Exclusion", () => {
+    const proseFragments = [
+      "Total risk of a security = Systematic risk plus unsystematic risk",
+      "The average return of the portfolio = Expected return of benchmark index",
+      "Firm value is maximized when = Debt to equity ratio is optimal",
+      "Slide callout: Note that variance of returns = Standard deviation squared",
+    ];
+
+    it("rejects long prose fragments lacking symbolic math operators in isNontrivialFormula", () => {
+      for (const prose of proseFragments) {
+        expect(isNontrivialFormula(prose)).toBe(false);
+      }
+    });
+
+    it("does not extract pure prose fragments in extractTextFormulas", () => {
+      for (const prose of proseFragments) {
+        expect(extractTextFormulas(prose)).toEqual([]);
+      }
+    });
+
+    it("preserves legitimate word-based accounting formulas with math operators", () => {
+      const accounting =
+        "Net Working Capital = Current Assets - Current Liabilities";
+      expect(isNontrivialFormula(accounting)).toBe(true);
+      expect(isNumericPluginOrScalarAssignment(accounting)).toBe(false);
+
+      const res = extractTextFormulas(accounting);
+      expect(res).toHaveLength(1);
+      expect(res[0].latex).toBe(
+        "\\text{Net Working Capital} = \\text{Current Assets} - \\text{Current Liabilities}",
+      );
+
+      const growth = "g = Retention ratio × ROE";
+      expect(isNontrivialFormula(growth)).toBe(true);
+      expect(isNumericPluginOrScalarAssignment(growth)).toBe(false);
+      expect(extractTextFormulas(growth)).toHaveLength(1);
+
+      const period = "Inventory Period = 365 / Inventory Turnover";
+      expect(isNontrivialFormula(period)).toBe(true);
+      expect(isNumericPluginOrScalarAssignment(period)).toBe(false);
+      expect(extractTextFormulas(period)).toHaveLength(1);
+    });
+  });
+
+  describe("Valid Symbolic Finance Formulas & PUA Math Normalization", () => {
+    it("captures CAPM equation cleanly", () => {
+      const capm = "E[R_i] = r_f + \\beta_i (E[R_M] - r_f)";
+      expect(isNontrivialFormula(capm)).toBe(true);
+      expect(isNumericPluginOrScalarAssignment(capm)).toBe(false);
+
+      const text = `The capital asset pricing model is $${capm}$ for all assets.`;
+      const extracted = extractTextFormulas(text);
+      expect(extracted).toHaveLength(1);
+      expect(extracted[0].latex).toBe("E[R_i] = r_f + \\beta_i (E[R_M] - r_f)");
+    });
+
+    it("captures sample variance formula cleanly", () => {
+      const variance = "\\frac{1}{T - 1} \\sum_{t=1}^T (R_t - \\bar{R})^2";
+      expect(isNontrivialFormula(variance)).toBe(true);
+      expect(isNumericPluginOrScalarAssignment(variance)).toBe(false);
+
+      const text = `Sample variance is defined as $$${variance}$$.`;
+      const extracted = extractTextFormulas(text);
+      expect(extracted).toHaveLength(1);
+      expect(extracted[0].latex).toBe(variance);
+    });
+
+    it("captures dividend return formula cleanly", () => {
+      const divReturn = "R_{t+1} = \\frac{Div_{t+1} + P_{t+1} - P_t}{P_t}";
+      expect(isNontrivialFormula(divReturn)).toBe(true);
+      expect(isNumericPluginOrScalarAssignment(divReturn)).toBe(false);
+
+      const text = `Total return: $${divReturn}$`;
+      const extracted = extractTextFormulas(text);
+      expect(extracted).toHaveLength(1);
+      expect(extracted[0].latex).toBe(divReturn);
+    });
+
+    it("normalizes Private Use Area (PUA) math symbols in portfolio volatility formulas", () => {
+      // \uF073 is PUA for σ (sigma), \uF0D6 is PUA for √ (sqrt), \uF02B is PUA for +, \uF0D7 is PUA for ×
+      const puaFormula =
+        "\uF073_p = \uF0D6(w_1^2 \uF073_1^2 \uF02B w_2^2 \uF073_2^2 \uF02B 2 w_1 w_2 \uF073_{12})";
+
+      const cleaned = cleanLatexEquation(puaFormula);
+      // PUA symbols must be normalized to standard LaTeX and never contain \uF000-\uF0FF
+      expect(cleaned).toContain("\\sigma");
+      expect(cleaned).toContain("\\sqrt");
+      expect(cleaned).not.toMatch(/[\uE000-\uF8FF]/);
+
+      expect(isNontrivialFormula(cleaned)).toBe(true);
+      expect(isNumericPluginOrScalarAssignment(cleaned)).toBe(false);
+
+      const text = `Portfolio risk equation: ${puaFormula}`;
+      const extracted = extractTextFormulas(text);
+      expect(extracted).toHaveLength(1);
+      expect(extracted[0].latex).toContain("\\sigma");
+      expect(extracted[0].latex).not.toMatch(/[\uE000-\uF8FF]/);
+
+      // Verify mergeFormulaLedger also strips any PUA characters
+      const ledger = mergeFormulaLedger({
+        deterministicInventory: [
+          {
+            id: "F1",
+            slide: 1,
+            raw: puaFormula,
+            latex: puaFormula,
+            origin: "text",
+          },
+        ],
+      });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0].latex).toContain("\\sigma");
+      expect(ledger[0].latex).not.toMatch(/[\uE000-\uF8FF]/);
+      expect(ledger[0].raw).not.toMatch(/[\uE000-\uF8FF]/);
+    });
+  });
+});
+
+
 

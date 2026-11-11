@@ -56,6 +56,7 @@ import {
   buildTargetedRepairPrompt,
   executeVerificationPipeline,
   deduplicateNoteSections,
+  isCleanValidLatexFormula,
   type VerificationGateOptions,
   type VerificationGateResult,
   type VerificationPipelineReport,
@@ -69,6 +70,7 @@ export {
   buildTargetedRepairPrompt,
   executeVerificationPipeline,
   deduplicateNoteSections,
+  isCleanValidLatexFormula,
   type VerificationGateOptions,
   type VerificationGateResult,
   type VerificationPipelineReport,
@@ -225,7 +227,7 @@ export const generatedClutchNoteSchema = z
       .number()
       .int()
       .min(1)
-      .max(6)
+      .max(12)
       .describe("Estimated distilled handout page count (typically 2 or 3)"),
     noiseReductionRate: z
       .number()
@@ -234,7 +236,7 @@ export const generatedClutchNoteSchema = z
       .string()
       .min(1)
       .describe("One short 1-sentence summary of what this sheet covers (max 25 words)"),
-    sections: z.array(generatedNoteSectionSchema).min(3).max(6),
+    sections: z.array(generatedNoteSectionSchema).min(1).max(12),
   })
   .strict();
 
@@ -1078,20 +1080,20 @@ function consolidateSectionsUniversally(
     return consolidateFragmentedSections(sections, rawSlideText);
   }
 
-  // If sections are already between 3 and 5, keep them as is
-  if (sections.length <= 5 && sections.length >= 3) {
+  // If sections are between 1 and 12, keep them as is (ensures full coverage of 8-10+ section decks without dropping late CAPM topics)
+  if (sections.length <= 12 && sections.length >= 1) {
     return sections;
   }
 
-  // If sections > 5, consolidate into exactly 5 canonical sections (A through E)
-  if (sections.length > 5) {
-    const headSections = sections.slice(0, 4);
-    const baseSectionE = { ...sections[4] };
-    const mergedSubSections: NoteSubSection[] = baseSectionE.subSections
-      ? [...baseSectionE.subSections]
+  // If sections > 12, consolidate extra sections into section 12
+  if (sections.length > 12) {
+    const headSections = sections.slice(0, 11);
+    const baseSectionLast = { ...sections[11] };
+    const mergedSubSections: NoteSubSection[] = baseSectionLast.subSections
+      ? [...baseSectionLast.subSections]
       : [];
 
-    for (let i = 5; i < sections.length; i++) {
+    for (let i = 11; i < sections.length; i++) {
       const extraSec = sections[i];
       const extraSubHeading = extraSec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
       mergedSubSections.push({
@@ -1107,30 +1109,30 @@ function consolidateSectionsUniversally(
         mergedSubSections.push(...extraSec.subSections);
       }
       if (extraSec.keyTakeaways) {
-        if (!baseSectionE.keyTakeaways) {
-          baseSectionE.keyTakeaways = { ...extraSec.keyTakeaways };
+        if (!baseSectionLast.keyTakeaways) {
+          baseSectionLast.keyTakeaways = { ...extraSec.keyTakeaways };
         } else {
-          baseSectionE.keyTakeaways = {
-            ...baseSectionE.keyTakeaways,
+          baseSectionLast.keyTakeaways = {
+            ...baseSectionLast.keyTakeaways,
             items: [
-              ...(baseSectionE.keyTakeaways.items || []),
+              ...(baseSectionLast.keyTakeaways.items || []),
               ...(extraSec.keyTakeaways.items || []),
             ],
             summaryPoints: [
-              ...(baseSectionE.keyTakeaways.summaryPoints || []),
+              ...(baseSectionLast.keyTakeaways.summaryPoints || []),
               ...(extraSec.keyTakeaways.summaryPoints || []),
             ],
           };
         }
       }
       if (extraSec.sourceSlides && extraSec.sourceSlides.length > 0) {
-        const combined = new Set([...(baseSectionE.sourceSlides || []), ...extraSec.sourceSlides]);
-        baseSectionE.sourceSlides = Array.from(combined).sort((a, b) => a - b);
+        const combined = new Set([...(baseSectionLast.sourceSlides || []), ...extraSec.sourceSlides]);
+        baseSectionLast.sourceSlides = Array.from(combined).sort((a, b) => a - b);
       }
     }
 
-    baseSectionE.subSections = mergedSubSections;
-    return [...headSections, baseSectionE];
+    baseSectionLast.subSections = mergedSubSections;
+    return [...headSections, baseSectionLast];
   }
 
   return sections;
@@ -1623,34 +1625,51 @@ export function injectLedgerFormulasById(
     if (validRefs.length > 0 && validDerived.length === 0) {
       if (validRefs.length === 1) {
         const entry = validRefs[0];
-        placedIds.add(entry.id);
-        f.latex = entry.latex;
-        f.formulaRefs = [entry.id];
-        f.derivedFrom = [];
-        f.slide = f.slide ?? entry.slide;
-        f.origin = entry.origin;
-        f.confidence = entry.confidence;
+        const isEntryValid = isCleanValidLatexFormula(entry.latex);
+        const isCurrentValid = isCleanValidLatexFormula(f.latex);
 
-        if (
-          (!f.variables || f.variables.length === 0) &&
-          entry.variables &&
-          entry.variables.length > 0
-        ) {
-          const newVars = entry.variables.filter(
-            (v) => !definedSymbols.has(v.symbol.trim()),
-          );
-          f.variables = newVars.map((v) => ({ ...v }));
+        if (isEntryValid) {
+          placedIds.add(entry.id);
+          f.latex = entry.latex;
+          f.formulaRefs = [entry.id];
+          f.derivedFrom = [];
+          f.slide = f.slide ?? entry.slide;
+          f.origin = entry.origin;
+          f.confidence = entry.confidence;
+
+          if (
+            (!f.variables || f.variables.length === 0) &&
+            entry.variables &&
+            entry.variables.length > 0
+          ) {
+            const newVars = entry.variables.filter(
+              (v) => !definedSymbols.has(v.symbol.trim()),
+            );
+            f.variables = newVars.map((v) => ({ ...v }));
+          }
+        } else if (isCurrentValid) {
+          // Never overwrite a valid, KaTeX-parseable synthesized formula with an invalid ledger entry (e.g. "T =", "S ==")
+          f.slide = f.slide ?? entry.slide;
+          f.formulaRefs = [entry.id];
+          f.derivedFrom = [];
         }
       } else {
         // 2+ valid ledger entries referenced in formulaRefs
-        for (const e of validRefs) {
-          placedIds.add(e.id);
+        const validEntries = validRefs.filter((e) => isCleanValidLatexFormula(e.latex));
+        const isCurrentValid = isCleanValidLatexFormula(f.latex);
+
+        if (validEntries.length > 0) {
+          for (const e of validEntries) {
+            placedIds.add(e.id);
+          }
+          f.formulaRefs = validEntries.map((e) => e.id);
+          f.derivedFrom = [];
+          f.slide = f.slide ?? validEntries[0].slide;
+          f.origin = validEntries[0].origin;
+          f.latex = validEntries.map((e) => e.latex).join(", \\quad ");
+        } else if (isCurrentValid) {
+          f.slide = f.slide ?? validRefs[0].slide;
         }
-        f.formulaRefs = validRefs.map((e) => e.id);
-        f.derivedFrom = [];
-        f.slide = f.slide ?? validRefs[0].slide;
-        f.origin = validRefs[0].origin;
-        f.latex = validRefs.map((e) => e.latex).join(", \\quad ");
       }
     } else if (validDerived.length > 0) {
       // Case 2: Derived Formula (derivedFrom non-empty)
@@ -1667,23 +1686,32 @@ export function injectLedgerFormulasById(
       const normKey = normalizeFormulaKey(f.latex);
       const matchedEntry = normKey ? ledgerKeyMap.get(normKey) : undefined;
       if (matchedEntry) {
-        placedIds.add(matchedEntry.id);
-        f.formulaRefs = [matchedEntry.id];
-        f.derivedFrom = [];
-        f.latex = matchedEntry.latex;
-        f.slide = f.slide ?? matchedEntry.slide;
-        f.origin = matchedEntry.origin;
-        f.confidence = matchedEntry.confidence;
+        const isEntryValid = isCleanValidLatexFormula(matchedEntry.latex);
+        const isCurrentValid = isCleanValidLatexFormula(f.latex);
 
-        if (
-          (!f.variables || f.variables.length === 0) &&
-          matchedEntry.variables &&
-          matchedEntry.variables.length > 0
-        ) {
-          const newVars = matchedEntry.variables.filter(
-            (v) => !definedSymbols.has(v.symbol.trim()),
-          );
-          f.variables = newVars.map((v) => ({ ...v }));
+        if (isEntryValid) {
+          placedIds.add(matchedEntry.id);
+          f.formulaRefs = [matchedEntry.id];
+          f.derivedFrom = [];
+          f.latex = matchedEntry.latex;
+          f.slide = f.slide ?? matchedEntry.slide;
+          f.origin = matchedEntry.origin;
+          f.confidence = matchedEntry.confidence;
+
+          if (
+            (!f.variables || f.variables.length === 0) &&
+            matchedEntry.variables &&
+            matchedEntry.variables.length > 0
+          ) {
+            const newVars = matchedEntry.variables.filter(
+              (v) => !definedSymbols.has(v.symbol.trim()),
+            );
+            f.variables = newVars.map((v) => ({ ...v }));
+          }
+        } else if (isCurrentValid) {
+          f.slide = f.slide ?? matchedEntry.slide;
+          f.formulaRefs = [matchedEntry.id];
+          f.derivedFrom = [];
         }
       }
     }
@@ -2229,6 +2257,11 @@ export async function generateClutchNote(
     }
   }
 
+  let resolvedRepairModel = options.repairModel;
+  if (!resolvedRepairModel && !options.repairFn && (options.maxRepairAttempts ?? 1) > 0) {
+    resolvedRepairModel = model ?? resolvedVerifierModel;
+  }
+
   const gateResult = await runVerificationGate({
     sections: preGateSections,
     sources: options.sources,
@@ -2237,7 +2270,7 @@ export async function generateClutchNote(
     options: {
       enableVerifierLlm: options.enableVerifierLlm,
       verifierModel: resolvedVerifierModel,
-      repairModel: options.repairModel,
+      repairModel: resolvedRepairModel,
       repairFn: options.repairFn,
       skipVerifierLlm: options.skipVerifierLlm,
       maxRepairAttempts: options.maxRepairAttempts ?? 1,

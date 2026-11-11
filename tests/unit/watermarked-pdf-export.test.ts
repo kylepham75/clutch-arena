@@ -10,6 +10,9 @@ import {
   renderFormulaStatusBadge,
   renderDivergenceNoticeHtml,
   getUncapturedFormulas,
+  renderUncapturedSectionHtml,
+  renderPdfFormula,
+  cleanLatexForFallback,
   type PdfWatermarkOptions,
 } from "@/lib/notes/export-pdf";
 import { CLUTCH_ARENA_BRAND_NAME, CLUTCH_ARENA_ICON_DATA_URL } from "@/lib/notes/brand-assets";
@@ -20,8 +23,10 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
   it("generates concise study handout HTML with watermark, boxed equations, subSections, and KaTeX", () => {
     const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE);
 
-    // 1. Must include KaTeX stylesheet for vector math rendering
+    // 1. Must include KaTeX stylesheet for vector math rendering (katex 0.19.0)
     expect(html).toContain("katex.min.css");
+    expect(html).toContain("https://cdn.jsdelivr.net/npm/katex@0.19.0/dist/katex.min.css");
+    expect(html).not.toContain("katex@0.16.8");
 
     // 2. Must include official Clutch Arena branding & Pro note label
     expect(html).toContain("CLUTCH ARENA");
@@ -705,6 +710,304 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
 
       vi.advanceTimersByTime(300);
       expect(mockPrintWindow.print).toHaveBeenCalled();
+    });
+  });
+
+  describe("KaTeX 0.19.0 & Robust Formula Fallback Hardening (Zero Raw katex-error Leaks)", () => {
+    it("ensures katex@0.19.0 stylesheet matching package.json is embedded in generated HTML with zero references to 0.16.8", () => {
+      const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE);
+      expect(html).toContain("https://cdn.jsdelivr.net/npm/katex@0.19.0/dist/katex.min.css");
+      expect(html).not.toContain("katex@0.16.8");
+    });
+
+    it("normalizes PUA glyphs in uncaptured formulas and renders cleanly without raw katex-error leaks", () => {
+      const noteWithPuaUncaptured: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        verification: {
+          status: "marked",
+          repairAttempted: false,
+          coverageRatio: 0.5,
+          totalLedgerFormulas: 3,
+          placedFormulaIds: ["F1"],
+          uncapturedFormulaIds: ["F_PUA_1", "F_PUA_2"],
+          unsupportedClaimsRemoved: 0,
+          needsReviewCount: 0,
+          contradictedFormulaCount: 0,
+          evidenceMatchRatio: 1,
+          numberGroundingPassed: true,
+          ungroundedNumbers: [],
+          symbolGroundingPassed: true,
+          ungroundedSymbols: [],
+          claimVerdicts: [],
+          formulaResults: [],
+          warnings: ["Uncaptured formula IDs: F_PUA_1, F_PUA_2"],
+          divergenceNotices: [],
+        },
+        formulaLedger: [
+          {
+            id: "F1",
+            slide: 4,
+            raw: "P0 = D1/(1+R)",
+            latex: "P_0 = \\frac{D_1}{1 + R}",
+            variables: [],
+            origin: "omml",
+          },
+          {
+            id: "F_PUA_1",
+            slide: 14,
+            raw: "\uF0E1 Rate = \uF0B4 10%",
+            latex: "\\text{\uF0E1 Rate} = \uF0B4 10\\%",
+            label: "PUA Arrow \uF0E1 & Multiply \uF0B4 Formula",
+            variables: [],
+            origin: "text",
+            evidence: "Slide 14 context with \uF0E1 arrow",
+          },
+          {
+            id: "F_PUA_2",
+            slide: 15,
+            raw: "\uF044 P = \uF0D6{\uF0A5}",
+            latex: "\uF044 P = \\sqrt{\uF0A5}",
+            label: "PUA Delta \uF044 & Infinity \uF0A5",
+            variables: [],
+            origin: "text",
+            evidence: "Slide 15 context with \uF044 Delta",
+          },
+        ],
+        omitted: [
+          {
+            formulaId: "F_PUA_1",
+            status: "uncaptured_error",
+            reason: "Formula containing PUA arrow \uF0E1 and multiplication \uF0B4 omitted",
+          },
+          {
+            formulaId: "F_PUA_2",
+            status: "uncaptured_error",
+            reason: "Formula containing PUA Delta \uF044 omitted",
+          },
+        ],
+      };
+
+      const html = generateClutchNotePdfHtml(noteWithPuaUncaptured);
+
+      // 1. Uncaptured section must be present and contain formula IDs
+      expect(html).toContain("pdf-uncaptured-section");
+      expect(html).toContain("F_PUA_1");
+      expect(html).toContain("F_PUA_2");
+
+      // 2. Must NOT contain raw .katex-error or style="color:#cc0000"
+      expect(html).not.toContain("<span class=\"katex-error\"");
+      expect(html).not.toContain("class=\"katex-error\"");
+      expect(html).not.toContain("color:#cc0000");
+
+      // 3. PUA characters must be normalized to standard Unicode (↑, ×, Δ, ∞)
+      expect(html).toContain("↑");
+      expect(html).toContain("×");
+      expect(html).toContain("Δ");
+    });
+
+    it("handles edge-case broken LaTeX in uncaptured formulas with clean fallback and zero katex-error leaks", () => {
+      const noteWithBrokenUncaptured: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        verification: {
+          status: "marked",
+          repairAttempted: false,
+          coverageRatio: 0.5,
+          totalLedgerFormulas: 2,
+          placedFormulaIds: ["F1"],
+          uncapturedFormulaIds: ["F_BROKEN_1", "F_BROKEN_2"],
+          unsupportedClaimsRemoved: 0,
+          needsReviewCount: 0,
+          contradictedFormulaCount: 0,
+          evidenceMatchRatio: 1,
+          numberGroundingPassed: true,
+          ungroundedNumbers: [],
+          symbolGroundingPassed: true,
+          ungroundedSymbols: [],
+          claimVerdicts: [],
+          formulaResults: [],
+          warnings: ["Uncaptured formula IDs: F_BROKEN_1, F_BROKEN_2"],
+          divergenceNotices: [],
+        },
+        formulaLedger: [
+          {
+            id: "F1",
+            slide: 4,
+            raw: "P0 = D1/(1+R)",
+            latex: "P_0 = \\frac{D_1}{1 + R}",
+            variables: [],
+            origin: "omml",
+          },
+          {
+            id: "F_BROKEN_1",
+            slide: 18,
+            raw: "P0 = {broken unclosed brace",
+            latex: "P_0 = {broken unclosed brace",
+            label: "Broken Syntax Formula",
+            variables: [],
+            origin: "text",
+            evidence: "Slide 18 worked example",
+          },
+          {
+            id: "F_BROKEN_2",
+            slide: 19,
+            raw: "\\invalidLaTeXCommand{arg1}{arg2}",
+            latex: "\\invalidLaTeXCommand{arg1}{arg2}",
+            label: "Unsupported LaTeX Macro",
+            variables: [],
+            origin: "text",
+            evidence: "Slide 19 raw extraction",
+          },
+        ],
+        omitted: [
+          {
+            formulaId: "F_BROKEN_1",
+            status: "uncaptured_error",
+            reason: "Corrupted source equation with unclosed braces",
+          },
+          {
+            formulaId: "F_BROKEN_2",
+            status: "uncaptured_error",
+            reason: "Unknown command from OCR extraction",
+          },
+        ],
+      };
+
+      const html = generateClutchNotePdfHtml(noteWithBrokenUncaptured);
+
+      // Must NOT contain raw red .katex-error markup
+      expect(html).not.toContain("<span class=\"katex-error\"");
+      expect(html).not.toContain("class=\"katex-error\"");
+      expect(html).not.toContain("color:#cc0000");
+
+      // Must render clean fallback representation inside pdf-uncaptured-math
+      expect(html).toContain("pdf-uncaptured-section");
+      expect(html).toContain("pdf-math-fallback");
+      expect(html).toContain("P_0 = broken unclosed brace");
+      expect(html).toContain("invalidLaTeXCommand");
+    });
+
+    it("hardens core formula blocks against broken LaTeX syntax and PUA symbols with zero katex-error leakage", () => {
+      const noteWithEdgeCaseFormulas: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        sections: [
+          {
+            id: "sec-edge",
+            letter: "A",
+            titleVi: "A. CÔNG THỨC KIỂM THỬ GIỚI HẠN",
+            titleEn: "Edge-Case Formula Section",
+            overview: "Kiểm tra tính an toàn khi gặp công thức chứa ký tự PUA và lỗi cú pháp LaTeX.",
+            bulletPoints: [],
+            subSections: [],
+            sourceSlides: [5],
+            formulas: [
+              {
+                name: "Broken Syntax Formula in Section",
+                latex: "WACC = \\frac{E}{V} R_e + {\\brokenMacro",
+                variables: [
+                  {
+                    symbol: "\\brokenSym{",
+                    definition: "Broken variable symbol definition",
+                  },
+                ],
+                slide: 5,
+                status: "verified",
+              },
+              {
+                name: "PUA Symbol Formula in Section",
+                latex: "\\text{Growth} \uF0E1 = \uF061 + \uF062 \uF0B4 X",
+                variables: [],
+                slide: 5,
+                status: "verified",
+              },
+            ],
+          },
+        ],
+      };
+
+      const html = generateClutchNotePdfHtml(noteWithEdgeCaseFormulas);
+
+      // 1. Must NOT leak raw .katex-error markup or color:#cc0000
+      expect(html).not.toContain("<span class=\"katex-error\"");
+      expect(html).not.toContain("class=\"katex-error\"");
+      expect(html).not.toContain("color:#cc0000");
+
+      // 2. Broken formula and variable must use pdf-math-fallback
+      expect(html).toContain("pdf-formula-card");
+      expect(html).toContain("pdf-math-fallback");
+
+      // 3. PUA symbols must be normalized to standard Unicode (↑, α, β, ×)
+      expect(html).toContain("↑");
+      expect(html).toContain("α");
+      expect(html).toContain("β");
+      expect(html).toContain("×");
+    });
+
+    it("verifies renderPdfFormula correctly renders valid KaTeX, normalizes PUA, and gracefully falls back on error", () => {
+      // 1. Valid formula -> produces KaTeX output with zero katex-error
+      const validHtml = renderPdfFormula("P_0 = \\frac{D_1}{R - g}", true);
+      expect(validHtml).toContain("katex");
+      expect(validHtml).not.toContain("katex-error");
+      expect(validHtml).not.toContain("pdf-math-fallback");
+
+      // 2. PUA symbols -> mapped and rendered cleanly
+      const puaHtml = renderPdfFormula("\uF0E1 Rate = \uF0B4 5", true);
+      expect(puaHtml).toContain("katex");
+      expect(puaHtml).not.toContain("katex-error");
+      expect(puaHtml).toContain("↑");
+      expect(puaHtml).toContain("×");
+
+      // 3. Broken LaTeX syntax -> fallback with .pdf-math-fallback, zero .katex-error
+      const brokenHtml = renderPdfFormula("{unclosed brace only", true);
+      expect(brokenHtml).toContain("pdf-math-fallback");
+      expect(brokenHtml).toContain("unclosed brace only");
+      expect(brokenHtml).not.toContain("<span class=\"katex-error\"");
+      expect(brokenHtml).not.toContain("class=\"katex-error\"");
+
+      // 4. Inline mode (displayMode = false) produces span.pdf-math-fallback
+      const brokenInline = renderPdfFormula("k_e = \\broken{foo", false);
+      expect(brokenInline).toContain("<span class=\"pdf-math-fallback\">");
+      expect(brokenInline).not.toContain("<span class=\"katex-error\"");
+      expect(brokenInline).not.toContain("class=\"katex-error\"");
+
+      // 5. Empty or whitespace string returns empty string
+      expect(renderPdfFormula("")).toBe("");
+      expect(renderPdfFormula("   ")).toBe("");
+    });
+
+    it("verifies cleanLatexForFallback strips macros and formats math into human-readable text", () => {
+      expect(cleanLatexForFallback("\\text{WACC} = \\frac{E}{V} R_e + \\frac{D}{V} R_d (1 - T_c)"))
+        .toBe("WACC = (E / V) R_e + (D / V) R_d (1 - T_c)");
+
+      expect(cleanLatexForFallback("P_0 = {broken"))
+        .toBe("P_0 = broken");
+
+      expect(cleanLatexForFallback("\\alpha \\times \\beta \\div \\gamma"))
+        .toBe("α × β ÷ γ");
+
+      expect(cleanLatexForFallback("\uF0E1 Return = \uF0B1 5%"))
+        .toBe("↑ Return = ± 5%");
+    });
+
+    it("verifies renderUncapturedSectionHtml normalizes PUA in labels and reasons and handles edge-case latex", () => {
+      const items = [
+        {
+          id: "F_TEST",
+          slide: 12,
+          latex: "{broken syntax",
+          label: "PUA Label \uF0E1",
+          reason: "PUA Reason \uF0B4 with multiplier",
+        },
+      ];
+
+      const html = renderUncapturedSectionHtml(items);
+      expect(html).toContain("pdf-uncaptured-section");
+      expect(html).toContain("F_TEST");
+      expect(html).toContain("Slide 12");
+      expect(html).toContain("PUA Label ↑");
+      expect(html).toContain("PUA Reason × with multiplier");
+      expect(html).toContain("pdf-math-fallback");
+      expect(html).not.toContain("<span class=\"katex-error\"");
+      expect(html).not.toContain("class=\"katex-error\"");
     });
   });
 

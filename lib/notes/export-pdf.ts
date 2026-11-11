@@ -4,6 +4,7 @@ import {
   renderKatexSafe,
   tokenizeMath,
 } from "@/lib/math/latex";
+import { normalizePdfMathSymbols } from "@/lib/notes/pdf-symbol-normalizer";
 import { CLUTCH_ARENA_ICON_DATA_URL, CLUTCH_ARENA_BRAND_NAME } from "@/lib/notes/brand-assets";
 import type {
   ClutchNote,
@@ -57,6 +58,139 @@ export function formatSlideList(slides: number[]): string {
 }
 
 /**
+ * Transforms raw LaTeX commands and math syntax into clean, human-readable text
+ * for PDF fallback rendering when KaTeX fails to parse corrupted/broken expressions.
+ */
+export function cleanLatexForFallback(tex: string): string {
+  if (!tex || typeof tex !== "string") return "";
+  let s = tex.trim();
+
+  // Strip math delimiters if included
+  s = s.replace(/^\$\$([\s\S]*)\$\$$/, "$1").replace(/^\$([\s\S]*)\$$/, "$1").trim();
+
+  // Normalize PUA characters first
+  s = normalizePdfMathSymbols(s);
+
+  // Replace common Greek letters
+  const greekMap: Record<string, string> = {
+    "\\alpha": "α",
+    "\\beta": "β",
+    "\\gamma": "γ",
+    "\\delta": "δ",
+    "\\epsilon": "ε",
+    "\\zeta": "ζ",
+    "\\eta": "η",
+    "\\theta": "θ",
+    "\\iota": "ι",
+    "\\kappa": "κ",
+    "\\lambda": "λ",
+    "\\mu": "μ",
+    "\\nu": "ν",
+    "\\xi": "ξ",
+    "\\pi": "π",
+    "\\rho": "ρ",
+    "\\sigma": "σ",
+    "\\tau": "τ",
+    "\\upsilon": "υ",
+    "\\phi": "φ",
+    "\\chi": "χ",
+    "\\psi": "ψ",
+    "\\omega": "ω",
+    "\\Delta": "Δ",
+    "\\Sigma": "Σ",
+    "\\Omega": "Ω",
+    "\\Gamma": "Γ",
+    "\\Theta": "Θ",
+    "\\Lambda": "Λ",
+  };
+
+  for (const [cmd, sym] of Object.entries(greekMap)) {
+    s = s.replace(new RegExp(`${cmd.replace("\\", "\\\\")}\\b`, "g"), sym);
+  }
+
+  // Convert fractions \frac{num}{denom} or \dfrac / \tfrac
+  let prevFrac = "";
+  while (prevFrac !== s) {
+    prevFrac = s;
+    s = s.replace(/\\(?:frac|dfrac|tfrac)\{([^{}]+)\}\{([^{}]+)\}/g, "($1 / $2)");
+  }
+
+  // Unwrap \text{...}, \mathrm{...}, \mathbf{...}, \operatorname{...}
+  let prevText = "";
+  while (prevText !== s) {
+    prevText = s;
+    s = s.replace(/\\(?:text|textbf|textit|textrm|mathrm|mathbf|mathit|operatorname)\{([^{}]+)\}/g, "$1");
+  }
+
+  // Convert math operators & symbols
+  s = s.replace(/\\times\b/g, "×");
+  s = s.replace(/\\div\b/g, "÷");
+  s = s.replace(/\\pm\b/g, "±");
+  s = s.replace(/\\mp\b/g, "∓");
+  s = s.replace(/\\cdot\b/g, "·");
+  s = s.replace(/\\leq\b/g, "≤");
+  s = s.replace(/\\geq\b/g, "≥");
+  s = s.replace(/\\neq\b/g, "≠");
+  s = s.replace(/\\approx\b/g, "≈");
+  s = s.replace(/\\infty\b/g, "∞");
+  s = s.replace(/\\sum\b/g, "∑");
+  s = s.replace(/\\prod\b/g, "∏");
+  s = s.replace(/\\sqrt\{([^{}]+)\}/g, "√($1)");
+  s = s.replace(/\\sqrt\[([^{}]+)\]\{([^{}]+)\}/g, "$1√($2)");
+
+  // Arrows
+  s = s.replace(/\\(?:rightarrow|to)\b/g, "→");
+  s = s.replace(/\\leftarrow\b/g, "←");
+  s = s.replace(/\\uparrow\b/g, "↑");
+  s = s.replace(/\\downarrow\b/g, "↓");
+  s = s.replace(/\\implies\b/g, "⇒");
+  s = s.replace(/\\impliedby\b/g, "⇐");
+  s = s.replace(/\\iff\b/g, "⇔");
+
+  // Remove delimiter sizing commands \left, \right, \big, etc.
+  s = s.replace(/\\(?:left|right|big|Big|bigg|Bigg)[()\[\]|.]/g, (m) => m.slice(-1));
+
+  // Remove backslash before remaining alphanumeric command words
+  s = s.replace(/\\([a-zA-Z]+)/g, "$1");
+
+  // Remove unmatched or stray braces: { or }
+  s = s.replace(/[{}]/g, "");
+
+  // Normalize spacing
+  s = s.replace(/\s{2,}/g, " ").trim();
+
+  return s;
+}
+
+/**
+ * Safely renders LaTeX formulas for PDF export with:
+ * 1. PUA symbol normalization via normalizePdfMathSymbols
+ * 2. KaTeX rendering via renderKatexSafe
+ * 3. Fallback to clean, readable styled text when KaTeX emits a .katex-error or katex-fallback
+ *    to prevent leaking red parse-error markup or unescaped LaTeX dumps into exported PDFs.
+ */
+export function renderPdfFormula(rawLatex: string, displayMode: boolean = true): string {
+  if (!rawLatex || typeof rawLatex !== "string") return "";
+
+  const normalized = normalizePdfMathSymbols(rawLatex).trim();
+  if (!normalized) return "";
+
+  const rendered = renderKatexSafe(normalized, displayMode);
+
+  if (
+    rendered.includes("katex-error") ||
+    rendered.includes("#cc0000") ||
+    rendered.includes("katex-fallback")
+  ) {
+    const cleanFallback = cleanLatexForFallback(normalized);
+    const tag = displayMode ? "div" : "span";
+    return `<${tag} class="pdf-math-fallback">${escapeHtml(cleanFallback)}</${tag}>`;
+  }
+
+  return rendered;
+}
+
+/**
  * Formats inline or display text containing math delimiters ($...$ or $$...$$) into KaTeX HTML.
  * Normalizes math formulas first to ensure zero un-delimited LaTeX leaks into PDF exports.
  * Escapes plain text segments to prevent XSS while feeding unescaped LaTeX directly to KaTeX.
@@ -64,13 +198,13 @@ export function formatSlideList(slides: number[]): string {
 export function formatTextWithMath(text: string): string {
   if (!text) return "";
 
-  const normalized = normalizeMathFormulas(text);
+  const normalized = normalizeMathFormulas(normalizePdfMathSymbols(text));
   const tokens = tokenizeMath(normalized);
 
   return tokens
     .map((token) => {
       if (token.type === "display-math") {
-        return `<div class="pdf-display-math">${renderKatexSafe(token.value, true)}</div>`;
+        return `<div class="pdf-display-math">${renderPdfFormula(token.value, true)}</div>`;
       }
       if (token.type === "inline-math") {
         if (
@@ -80,9 +214,9 @@ export function formatTextWithMath(text: string): string {
         ) {
           return "→";
         }
-        return `<span class="pdf-inline-math">${renderKatexSafe(token.value, false)}</span>`;
+        return `<span class="pdf-inline-math">${renderPdfFormula(token.value, false)}</span>`;
       }
-      return escapeHtml(token.value);
+      return escapeHtml(normalizePdfMathSymbols(token.value));
     })
     .join("");
 }
@@ -142,13 +276,13 @@ export function renderDivergenceNoticeHtml(notice: TextbookDivergenceNotice): st
     const lecturerCol = notice.lecturerForm
       ? `<div class="pdf-form-col">
           <div class="pdf-form-col-title">Lecturer's Form</div>
-          <div class="pdf-form-math pdf-divergence-eq-box">${renderKatexSafe(notice.lecturerForm, true)}</div>
+          <div class="pdf-form-math pdf-divergence-eq-box">${renderPdfFormula(notice.lecturerForm, true)}</div>
         </div>`
       : "";
     const textbookCol = notice.textbookForm
       ? `<div class="pdf-form-col">
           <div class="pdf-form-col-title">Standard Textbook Form</div>
-          <div class="pdf-form-math pdf-divergence-eq-box">${renderKatexSafe(notice.textbookForm, true)}</div>
+          <div class="pdf-form-math pdf-divergence-eq-box">${renderPdfFormula(notice.textbookForm, true)}</div>
         </div>`
       : "";
 
@@ -174,7 +308,7 @@ export function renderDivergenceNoticeHtml(notice: TextbookDivergenceNotice): st
 }
 
 function renderFormulaHtml(formula: NoteFormula): string {
-  const mathHtml = renderKatexSafe(formula.latex, true);
+  const mathHtml = renderPdfFormula(formula.latex, true);
 
   const statusBadge = renderFormulaStatusBadge(formula);
   const slideChip = formula.slide
@@ -218,7 +352,7 @@ function renderFormulaHtml(formula: NoteFormula): string {
             ${formula.variables
               .map(
                 (v) =>
-                  `<li><span class="pdf-var-sym">${renderKatexSafe(v.symbol, false)}</span>: ${formatTextWithMath(v.definition)}</li>`,
+                  `<li><span class="pdf-var-sym">${renderPdfFormula(v.symbol, false)}</span>: ${formatTextWithMath(v.definition)}</li>`,
               )
               .join("")}
           </ul>
@@ -442,9 +576,9 @@ export function getUncapturedFormulas(note: ClutchNote): UncapturedFormulaItem[]
     items.push({
       id,
       slide: ledger?.slide,
-      latex: ledger?.latex,
-      label: ledger?.label,
-      reason,
+      latex: ledger?.latex ? normalizePdfMathSymbols(ledger.latex) : undefined,
+      label: ledger?.label ? normalizePdfMathSymbols(ledger.label) : undefined,
+      reason: normalizePdfMathSymbols(reason),
     });
   }
 
@@ -460,7 +594,7 @@ export function getUncapturedFormulas(note: ClutchNote): UncapturedFormulaItem[]
   return items;
 }
 
-function renderUncapturedSectionHtml(items: UncapturedFormulaItem[]): string {
+export function renderUncapturedSectionHtml(items: UncapturedFormulaItem[]): string {
   if (!items || items.length === 0) return "";
   const countLabel = `${items.length} ${
     items.length === 1 ? "Formula Omitted" : "Formulas Omitted"
@@ -472,10 +606,13 @@ function renderUncapturedSectionHtml(items: UncapturedFormulaItem[]): string {
         ? `<span class="pdf-slide-chip">Slide ${item.slide}</span>`
         : "";
       const labelHtml = item.label
-        ? `<span class="pdf-uncaptured-label">${escapeHtml(item.label)}</span>`
+        ? `<span class="pdf-uncaptured-label">${escapeHtml(normalizePdfMathSymbols(item.label))}</span>`
         : "";
       const mathHtml = item.latex
-        ? `<div class="pdf-uncaptured-math">${renderKatexSafe(item.latex, true)}</div>`
+        ? `<div class="pdf-uncaptured-math">${renderPdfFormula(item.latex, true)}</div>`
+        : "";
+      const reasonHtml = item.reason
+        ? escapeHtml(normalizePdfMathSymbols(item.reason))
         : "";
 
       return `
@@ -489,7 +626,7 @@ function renderUncapturedSectionHtml(items: UncapturedFormulaItem[]): string {
           </div>
           ${mathHtml}
           <div class="pdf-uncaptured-reason">
-            <strong>Reason:</strong> ${escapeHtml(item.reason)}
+            <strong>Reason:</strong> ${reasonHtml}
           </div>
         </div>
       `;
@@ -752,7 +889,7 @@ export function generateClutchNotePdfHtml(
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.19.0/dist/katex.min.css">
   <style>
     @page {
       size: A4;
@@ -1150,6 +1287,41 @@ export function generateClutchNotePdfHtml(
       white-space: normal !important;
       display: inline-block;
       max-width: 100%;
+    }
+    .pdf-math-fallback {
+      font-family: 'Lora', 'Be Vietnam Pro', Georgia, serif;
+      font-style: italic;
+      color: #111827;
+      display: inline-block;
+      max-width: 100%;
+      word-break: break-word;
+      overflow-wrap: break-word;
+    }
+    div.pdf-math-fallback {
+      display: block;
+      text-align: center;
+      margin: 4px auto;
+    }
+    .katex-fallback {
+      font-family: 'Lora', 'Be Vietnam Pro', Georgia, serif;
+      font-style: italic;
+      color: #111827;
+    }
+    .katex-error {
+      color: #111827 !important;
+      background: #f8fafc;
+      border: 1px dashed #cbd5e1;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'Lora', 'Be Vietnam Pro', Georgia, serif;
+      font-style: italic;
+    }
+    .pdf-formula-card .pdf-math-fallback,
+    .pdf-divergence-eq-box .pdf-math-fallback,
+    .pdf-uncaptured-math .pdf-math-fallback {
+      white-space: normal;
+      overflow-wrap: break-word;
+      word-break: break-word;
     }
     .pdf-formula-desc {
       font-size: 13.5px;

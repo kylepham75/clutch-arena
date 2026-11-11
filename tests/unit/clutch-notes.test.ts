@@ -36,6 +36,7 @@ import {
   mapSynthesisSection,
   generateClutchNote,
 } from "@/lib/ai/generate-notes";
+import { verifyFormulaCoverage } from "@/lib/notes/deterministic-verifiers";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "@/lib/ai/prompts-notes";
 
@@ -1831,6 +1832,7 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
           },
         ],
         modelOverride: {} as any,
+        maxRepairAttempts: 0,
       });
 
       // Verify generateObject was called twice (extraction then synthesis)
@@ -1866,6 +1868,235 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
       // Verify overall schema validity
       const schemaCheck = clutchNoteSchema.safeParse(note);
       expect(schemaCheck.success).toBe(true);
+    });
+  });
+
+  describe("Ledger Formula Injection Guard & Late-Slide Multi-Section Decks", () => {
+    it("injectLedgerFormulasById refuses to overwrite valid LLM LaTeX with T =, S ==, prose, or KaTeX-failing ledger entries", () => {
+      const sections: NoteSection[] = [
+        createTestSection({
+          id: "sec-a",
+          letter: "A",
+          titleVi: "A. QUAN HỆ SINH LỜI VÀ RỦI RO",
+          formulas: [
+            createTestFormula({
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              formulaRefs: ["F1"],
+              slide: 10,
+            }),
+            createTestFormula({
+              latex: "E(R_i) = R_f + \\beta_i (E(R_M) - R_f)",
+              formulaRefs: ["F2"],
+              slide: 20,
+            }),
+            createTestFormula({
+              latex: "WACC = \\frac{E}{V} R_E + \\frac{D}{V} R_D (1 - T_C)",
+              formulaRefs: ["F3"],
+              slide: 30,
+            }),
+            createTestFormula({
+              latex: "\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B)",
+              formulaRefs: ["F4"],
+              slide: 40,
+            }),
+          ],
+        }),
+      ];
+
+      const ledger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 10,
+          raw: "T =",
+          latex: "T =",
+          origin: "ocr",
+          variables: [],
+        },
+        {
+          id: "F2",
+          slide: 20,
+          raw: "S ==",
+          latex: "S ==",
+          origin: "ocr",
+          variables: [],
+        },
+        {
+          id: "F3",
+          slide: 30,
+          raw: "(Average of Independent, Identical Risks) =",
+          latex: "(Average of Independent, Identical Risks) =",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F4",
+          slide: 40,
+          raw: "\\frac{A}{",
+          latex: "\\frac{A}{",
+          origin: "ocr",
+          variables: [],
+        },
+      ];
+
+      const { sections: processed, placedIds } = injectLedgerFormulasById(sections, ledger);
+
+      // Verify that valid synthesized formulas were NOT overwritten with garbage ledger LaTeX
+      expect(processed[0].formulas[0].latex).toBe("P_0 = \\frac{D_1}{R - g}");
+      expect(processed[0].formulas[1].latex).toBe("E(R_i) = R_f + \\beta_i (E(R_M) - R_f)");
+      expect(processed[0].formulas[2].latex).toBe("WACC = \\frac{E}{V} R_E + \\frac{D}{V} R_D (1 - T_C)");
+      expect(processed[0].formulas[3].latex).toBe("\\sigma_p^2 = w_A^2 \\sigma_A^2 + w_B^2 \\sigma_B^2 + 2 w_A w_B \\text{Cov}(R_A, R_B)");
+
+      // Corrupted ledger formulas must NOT be stamped as placed
+      expect(placedIds.has("F1")).toBe(false);
+      expect(placedIds.has("F2")).toBe(false);
+      expect(placedIds.has("F3")).toBe(false);
+      expect(placedIds.has("F4")).toBe(false);
+    });
+
+    it("supports multi-section 100+ slide decks (8-10 sections) including late-slide CAPM formulas without dropping final sections", () => {
+      // 10 distinct sections spanning 105 slides
+      const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+      const titles = [
+        "A. TỔNG QUAN TỶ SUẤT SINH LỜI",
+        "B. LỊCH SỬ THỊ TRƯỜNG TÀI CHÍNH",
+        "C. TỶ SUẤT SINH LỜI KỲ VỌNG VÀ PHƯƠNG SAI",
+        "D. HIỆP PHƯƠNG SAI VÀ HỆ SỐ TƯƠNG QUAN",
+        "E. DANH MỤC ĐẦU TƯ HAI TÀI SẢN",
+        "F. ĐA DẠNG HÓA DANH MỤC ĐẦU TƯ",
+        "G. RỦI RO HỆ THỐNG VÀ PHI HỆ THỐNG",
+        "H. HỆ SỐ BETA VÀ ĐO LƯỜNG RỦI RO",
+        "I. ĐƯỜNG THỊ TRƯỜNG CHỨNG KHOÁN (SML) VÀ CAPM",
+        "J. ỨNG DỤNG CAPM VÀ CHI PHÍ VỐN THỰC TIỄN",
+      ];
+
+      const sections: NoteSection[] = letters.map((ltr, idx) => {
+        const slideBase = idx * 10 + 1;
+        const formulas: NoteFormula[] = [];
+
+        // In section I (Slides 95-98), include CAPM formulas F31, F32, F33
+        if (ltr === "I") {
+          formulas.push(
+            createTestFormula({
+              latex: "E(R_i) = R_f + \\beta_i [E(R_M) - R_f]",
+              formulaRefs: ["F31"],
+              slide: 95,
+            }),
+            createTestFormula({
+              latex: "\\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}",
+              formulaRefs: ["F32"],
+              slide: 96,
+            }),
+            createTestFormula({
+              latex: "\\text{Reward-to-Risk} = \\frac{E(R_i) - R_f}{\\beta_i}",
+              formulaRefs: ["F33"],
+              slide: 97,
+            }),
+          );
+        }
+
+        // In section J (Slides 99-105), include final CAPM cost of capital formula F37
+        if (ltr === "J") {
+          formulas.push(
+            createTestFormula({
+              latex: "R_E = R_f + \\beta_E [E(R_M) - R_f]",
+              formulaRefs: ["F37"],
+              slide: 101,
+            }),
+          );
+        }
+
+        return createTestSection({
+          id: `sec-${ltr.toLowerCase()}`,
+          letter: ltr,
+          titleVi: titles[idx],
+          sourceSlides: [slideBase, slideBase + 5],
+          overview: `Tổng quan về nội dung ${titles[idx]}.`,
+          bulletPoints: [`Khái niệm trọng tâm slide ${slideBase}.`],
+          groundedBullets: [
+            {
+              text: `Khái niệm trọng tâm slide ${slideBase}.`,
+              slide: slideBase,
+              evidence: `Khái niệm trọng tâm slide ${slideBase}.`,
+            },
+          ],
+          formulas,
+        });
+      });
+
+      // Verify that applyHallucinationShield does NOT collapse 10 sections into 5
+      const rawSlideText = "Portfolio Theory and Capital Asset Pricing Model (CAPM). Slides 1 to 105.";
+      const shielded = applyHallucinationShield(sections, rawSlideText);
+      expect(shielded.length).toBe(10);
+      expect(shielded[8].letter).toBe("I");
+      expect(shielded[8].titleVi).toContain("CAPM");
+      expect(shielded[9].letter).toBe("J");
+      expect(shielded[9].titleVi).toContain("ỨNG DỤNG CAPM");
+
+      // Verify late-slide formulas are intact in sections 8 and 9
+      expect(shielded[8].formulas.some((f) => f.formulaRefs?.includes("F31"))).toBe(true);
+      expect(shielded[8].formulas.some((f) => f.formulaRefs?.includes("F32"))).toBe(true);
+      expect(shielded[8].formulas.some((f) => f.formulaRefs?.includes("F33"))).toBe(true);
+      expect(shielded[9].formulas.some((f) => f.formulaRefs?.includes("F37"))).toBe(true);
+
+      // Verify clutchNoteSchema parses this 10-section note successfully
+      const fullNote = {
+        id: "note-capm-105-slides",
+        title: "CHAPTER 11: PORTFOLIO THEORY & CAPM",
+        subject: "Corporate Finance",
+        originalFileName: "Chapter_11_Risk_Return_CAPM.pptx",
+        originalSlideCount: 105,
+        estimatedDistilledPages: 8,
+        noiseReductionRate: 88,
+        executiveSummary: "Comprehensive study note covering risk, return, portfolio theory, and the CAPM model.",
+        sections: shielded,
+      };
+
+      const parseResult = clutchNoteSchema.safeParse(fullNote);
+      expect(parseResult.success).toBe(true);
+
+      // Verify formula coverage on ledger with F31, F32, F33, F37
+      const ledger: FormulaLedgerEntry[] = [
+        {
+          id: "F31",
+          slide: 95,
+          raw: "E(Ri) = Rf + Beta_i * (E(RM) - Rf)",
+          latex: "E(R_i) = R_f + \\beta_i [E(R_M) - R_f]",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F32",
+          slide: 96,
+          raw: "Beta_i = Cov(Ri, RM) / Var(RM)",
+          latex: "\\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F33",
+          slide: 97,
+          raw: "Reward to risk = (E(Ri) - Rf) / Beta_i",
+          latex: "\\text{Reward-to-Risk} = \\frac{E(R_i) - R_f}{\\beta_i}",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F37",
+          slide: 101,
+          raw: "RE = Rf + Beta_E * (RM - Rf)",
+          latex: "R_E = R_f + \\beta_E [E(R_M) - R_f]",
+          origin: "text",
+          variables: [],
+        },
+      ];
+
+      const coverage = verifyFormulaCoverage(shielded, ledger);
+      expect(coverage.placedIds).toContain("F31");
+      expect(coverage.placedIds).toContain("F32");
+      expect(coverage.placedIds).toContain("F33");
+      expect(coverage.placedIds).toContain("F37");
+      expect(coverage.uncapturedErrorIds.length).toBe(0);
+      expect(coverage.coverageRatio).toBe(1);
     });
   });
 });

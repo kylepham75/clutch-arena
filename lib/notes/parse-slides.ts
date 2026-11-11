@@ -1,7 +1,7 @@
 import "@/lib/polyfills/pdf-node-polyfills";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { MAX_FILE_BYTES, MAX_EXTRACTED_CHARACTERS } from "@/lib/ingestion/limits";
-import { parsePdf } from "@/lib/ingestion/parse-pdf";
+import { parsePdf, type ParsePdfOptions } from "@/lib/ingestion/parse-pdf";
 import {
   parsePptx,
   type OcrTranscribedEquation,
@@ -18,6 +18,59 @@ import {
   buildFormulaInventory,
   type FormulaInventoryItem,
 } from "./formula-inventory";
+
+/**
+ * Detects whether slide text exhibits corrupted or broken mathematical expressions,
+ * missing font glyph placeholders (e.g. □ or \uFFFD), unmapped PUA codepoints,
+ * or broken dangling equations where operators lack operands.
+ */
+export function isSlideMathCorrupted(text: string): boolean {
+  if (!text || text.trim().length === 0) return false;
+
+  // 1. Unmapped PUA codepoints or replacement glyphs (□, \uFFFD, etc.)
+  if (/[\uE000-\uF8FF\uFFFD\u25A0-\u25AF\u25FB-\u25FC]/.test(text)) {
+    return true;
+  }
+
+  // 2. Dangling equality / assignment without expression (e.g. "WACC = \n", "y = \n")
+  if (/(?:^|\n|\r)\s*[A-Za-z0-9_\(\)]+\s*=\s*(?:$|\n|\r)/m.test(text)) {
+    return true;
+  }
+
+  // 3. Lines ending with dangling binary math operators without right-hand side
+  if (/(?:^|\s)[A-Za-z0-9_\)]+\s*(?:[+*/=≤≥≠≈÷×]|−)\s*$/m.test(text)) {
+    return true;
+  }
+
+  // 4. Broken adjacent conflicting operator chains (e.g. "+ =", "= /", "= +", "× ÷")
+  if (/(?:[+\-*/=≤≥≠≈÷×]|−)\s*(?:[=*/≤≥≠≈÷×])/.test(text)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Returns an array of 1-based page numbers that exhibit corrupted or garbled math
+ * requiring controlled Vision OCR rescan.
+ */
+export function detectCorruptedMathPages(sources: SourceBlock[]): number[] {
+  const corrupted: number[] = [];
+  for (const src of sources) {
+    if (isSlideMathCorrupted(src.text)) {
+      const match = src.id.match(/\d+/);
+      const pageNum = match ? parseInt(match[0], 10) : null;
+      if (pageNum !== null && !corrupted.includes(pageNum)) {
+        corrupted.push(pageNum);
+      }
+    }
+  }
+  return corrupted;
+}
+
+export type ParseSlideDeckOptions =
+  | AbortSignal
+  | (ParsePptxOptions & ParsePdfOptions & { signal?: AbortSignal });
 
 export interface ParsedSlideDeck {
   fileName: string;
@@ -80,7 +133,7 @@ export function validateSlideFile(file: File): "pdf" | "pptx" {
 
 export async function parseSlideDeck(
   file: File,
-  signalOrOptions?: AbortSignal | ParsePptxOptions,
+  signalOrOptions?: ParseSlideDeckOptions,
 ): Promise<ParsedSlideDeck> {
   const format = validateSlideFile(file);
 
@@ -140,7 +193,38 @@ export async function parseSlideDeck(
     let parsed: Awaited<ReturnType<typeof parsePdf>>;
 
     if (isMockOrCustom) {
-      parsed = await parsePdf(bytes, abortSignal, signalOrOptions as any);
+      const customOptions = signalOrOptions as (ParsePdfOptions & { signal?: AbortSignal }) | undefined;
+      const hasExplicitBudget =
+        customOptions &&
+        typeof customOptions === "object" &&
+        "maxAutoOcrBudgetUsd" in customOptions;
+
+      if (!hasExplicitBudget) {
+        // Fast-path: try with maxAutoOcrBudgetUsd = 0 first
+        parsed = await parsePdf(bytes, abortSignal, {
+          ...(customOptions ?? {}),
+          maxAutoOcrBudgetUsd: 0,
+        });
+
+        const nativeCharCount = parsed.sources.reduce(
+          (sum, s) => sum + s.text.trim().length,
+          0,
+        );
+
+        const corruptedPages = detectCorruptedMathPages(parsed.sources);
+
+        if (nativeCharCount < 40) {
+          parsed = await parsePdf(bytes, abortSignal, customOptions as any);
+        } else if (corruptedPages.length > 0) {
+          // Allow controlled Vision OCR fallback on math-corrupted slide pages
+          parsed = await parsePdf(bytes, abortSignal, {
+            ...(customOptions ?? {}),
+            rescanPages: corruptedPages,
+          });
+        }
+      } else {
+        parsed = await parsePdf(bytes, abortSignal, signalOrOptions as any);
+      }
     } else {
       parsed = await parsePdf(bytes, abortSignal, {
         maxAutoOcrBudgetUsd: 0,
@@ -151,10 +235,17 @@ export async function parseSlideDeck(
         0,
       );
 
+      const corruptedPages = detectCorruptedMathPages(parsed.sources);
+
       // If native digital text is insufficient (< 40 characters across the deck),
       // this is a scanned PDF or image-only deck. Fall back to standard OCR extraction.
       if (nativeCharCount < 40) {
         parsed = await parsePdf(bytes, abortSignal);
+      } else if (corruptedPages.length > 0) {
+        // Controlled Vision OCR fallback on math-corrupted slide pages
+        parsed = await parsePdf(bytes, abortSignal, {
+          rescanPages: corruptedPages,
+        });
       }
     }
 
@@ -230,11 +321,7 @@ export async function parseSlideDeck(
     fileSha256,
     ...(imageHashes ? { imageHashes } : {}),
     ...(dedupedSlideCount > 0 ? { dedupedSlideCount } : {}),
-    ...(format === "pptx"
-      ? {
-          ocrEquations: ocrEquations ?? [],
-          ommlEquations: ommlEquations ?? [],
-        }
-      : {}),
+    ...(ocrEquations && ocrEquations.length > 0 ? { ocrEquations } : {}),
+    ...(ommlEquations && ommlEquations.length > 0 ? { ommlEquations } : {}),
   };
 }

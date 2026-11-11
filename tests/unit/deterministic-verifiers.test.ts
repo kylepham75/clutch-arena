@@ -24,6 +24,7 @@ import {
   extractNormalizedNumbers,
   isNumberGrounded,
   normalizeNumericToken,
+  OMITTED_BY_RULE_REASON_REGEX,
   resolveBulletNumericStep,
   runBulletNumericCascade,
   runDeterministicVerifiers,
@@ -945,6 +946,291 @@ describe("Deterministic Verifiers", () => {
       expect(uncapturedWarning).toBeDefined();
       expect(uncapturedWarning).toBe("Uncaptured formula IDs: F3");
       expect(uncapturedWarning).not.toContain("F2");
+    });
+  });
+
+  describe("Regression Tests: Task 1.4 — Vietnamese Omission / Redundancy Reasons (Unicode Word-Boundary Fix)", () => {
+    it("OMITTED_BY_RULE_REASON_REGEX matches Vietnamese omission phrases with Unicode diacritics", () => {
+      expect(
+        OMITTED_BY_RULE_REASON_REGEX.test(
+          "Ví dụ số cụ thể của BFI, không phải công thức tổng quát",
+        ),
+      ).toBe(true);
+      expect(
+        OMITTED_BY_RULE_REASON_REGEX.test(
+          "Thay số trực tiếp vào công thức phương sai",
+        ),
+      ).toBe(true);
+      expect(
+        OMITTED_BY_RULE_REASON_REGEX.test("Minh họa tính toán cụ thể"),
+      ).toBe(true);
+      expect(
+        OMITTED_BY_RULE_REASON_REGEX.test("Công thức trùng lặp đã có ở slide trước"),
+      ).toBe(true);
+    });
+
+    it("verifyFormulaCoverage classifies unplaced formulas with Vietnamese omission reasons as omitted_by_rule", () => {
+      const testLedger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 3,
+          raw: "P_0 = D_1 / (R - g)",
+          latex: "P_0 = \\frac{D_1}{R - g}",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F2",
+          slide: 7,
+          raw: "0.26 = 0.04 + 1.1 * (0.24 - 0.04)",
+          latex: "0.26 = 0.04 + 1.1 \\times (0.24 - 0.04)",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F3",
+          slide: 8,
+          raw: "Var = (0.2056)^2 = 0.04227",
+          latex: "\\text{Var} = (0.2056)^2 = 0.04227",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F4",
+          slide: 9,
+          raw: "S = 100 / 0.10",
+          latex: "S = \\frac{100}{0.10}",
+          origin: "text",
+          variables: [],
+        },
+      ];
+
+      const sections: NoteSection[] = [
+        createTestSection({
+          letter: "A",
+          titleVi: "ĐỊNH GIÁ",
+          formulas: [
+            createTestFormula({
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              formulaRefs: ["F1"],
+            }),
+          ],
+        }),
+      ];
+
+      const omitted = [
+        {
+          formulaId: "F2",
+          reason: "Ví dụ số cụ thể của BFI, không phải công thức tổng quát",
+        },
+        {
+          formulaId: "F3",
+          reason: "Thay số trực tiếp vào công thức phương sai",
+        },
+        {
+          formulaId: "F4",
+          reason: "Minh họa tính toán cụ thể",
+        },
+      ];
+
+      const res = verifyFormulaCoverage(sections, testLedger, omitted);
+      expect(res.placedIds).toEqual(["F1"]);
+      expect(res.omittedByRuleIds).toContain("F2");
+      expect(res.omittedByRuleIds).toContain("F3");
+      expect(res.omittedByRuleIds).toContain("F4");
+      expect(res.uncapturedErrorIds).toEqual([]);
+    });
+  });
+
+  describe("Regression Tests: Task 1.4 — Worked-Example Numeric Plug-Ins in verifyFormulaCoverage", () => {
+    it("automatically classifies worked-example numeric plug-in / scalar assignment entries as omitted_by_rule without manual omission reason", () => {
+      const testLedger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 3,
+          raw: "P_0 = D_1 / (R - g)",
+          latex: "P_0 = \\frac{D_1}{R - g}",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F_drill_1",
+          slide: 12,
+          raw: "100 / 0.10 = 1000",
+          latex: "\\frac{100}{0.10} = 1000",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F_drill_2",
+          slide: 12,
+          raw: "R = (0.21 - 0.05 + 0.14) / 3 = 0.10",
+          latex: "R = \\frac{0.21 - 0.05 + 0.14}{3} = 0.10",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F_drill_3",
+          slide: 13,
+          raw: "t = 1",
+          latex: "t = 1",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F_drill_4",
+          slide: 14,
+          raw: "0.26 = 0.04 + 1.1 * (0.24 - 0.04)",
+          latex: "0.26 = 0.04 + 1.1 \\times (0.24 - 0.04)",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F_error",
+          slide: 15,
+          raw: "WACC = (E/V)*Re + (D/V)*Rd*(1-Tc)",
+          latex: "\\text{WACC} = \\frac{E}{V} R_e + \\frac{D}{V} R_d (1 - T_c)",
+          origin: "text",
+          variables: [],
+        },
+      ];
+
+      const sections: NoteSection[] = [
+        createTestSection({
+          letter: "A",
+          titleVi: "ĐỊNH GIÁ",
+          formulas: [
+            createTestFormula({
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              formulaRefs: ["F1"],
+            }),
+          ],
+        }),
+      ];
+
+      // No omitted array provided!
+      const res = verifyFormulaCoverage(sections, testLedger);
+
+      expect(res.placedIds).toEqual(["F1"]);
+      expect(res.omittedByRuleIds).toContain("F_drill_1");
+      expect(res.omittedByRuleIds).toContain("F_drill_2");
+      expect(res.omittedByRuleIds).toContain("F_drill_3");
+      expect(res.omittedByRuleIds).toContain("F_drill_4");
+      expect(res.uncapturedErrorIds).toEqual(["F_error"]);
+      expect(res.uncapturedErrorIds).not.toContain("F_drill_1");
+      expect(res.uncapturedErrorIds).not.toContain("F_drill_2");
+      expect(res.uncapturedErrorIds).not.toContain("F_drill_3");
+      expect(res.uncapturedErrorIds).not.toContain("F_drill_4");
+    });
+  });
+
+  describe("Regression Tests: Task 1.4 — Split / Compound Subscript Symbol Grounding (Slide 24)", () => {
+    const slide24Sources: SourceBlock[] = [
+      {
+        id: "slide_24",
+        label: "Slide 24",
+        text: `
+          Rate of Return on a Stock:
+          Rt+1 = (Div t+1 + P t+1 - Pt) / Pt
+          where R t+1 is the expected return, Div_t+1 is dividend at t+1,
+          and P_t+1 is price at t+1.
+        `,
+      },
+    ];
+
+    it("extracts compound subscript symbols consistently from braced and unbraced formulas", () => {
+      const bracedSymbols = extractFormulaSymbols(
+        "R_{t+1} = \\frac{Div_{t+1} + P_{t+1} - P_t}{P_t}",
+      );
+      expect(bracedSymbols).toContain("R_t+1");
+      expect(bracedSymbols).toContain("Div_t+1");
+      expect(bracedSymbols).toContain("P_t+1");
+      expect(bracedSymbols).toContain("P_t");
+
+      const unbracedSymbols = extractFormulaSymbols(
+        "R_t+1 = \\frac{Div_t+1 + P_t+1 - P_t}{P_t}",
+      );
+      expect(unbracedSymbols).toContain("R_t+1");
+      expect(unbracedSymbols).toContain("Div_t+1");
+      expect(unbracedSymbols).toContain("P_t+1");
+      expect(unbracedSymbols).toContain("P_t");
+
+      const standaloneBraced = extractFormulaSymbols("R_{t+1}");
+      expect(standaloneBraced).toEqual(["R_t+1"]);
+
+      const standaloneUnbraced = extractFormulaSymbols("R_t+1");
+      expect(standaloneUnbraced).toEqual(["R_t+1"]);
+    });
+
+    it("passes verifyFormulaSymbolSet for braced R_{t+1} = \\frac{Div_{t+1} + P_{t+1} - P_t}{P_t} against slide with split/compact tokens", () => {
+      const formula = createTestFormula({
+        latex: "R_{t+1} = \\frac{Div_{t+1} + P_{t+1} - P_t}{P_t}",
+        slide: 24,
+      });
+
+      const res = verifyFormulaSymbolSet(formula, slide24Sources);
+      expect(res.passed).toBe(true);
+      expect(res.ungroundedSymbols).toEqual([]);
+      expect(res.extractedSymbols).toContain("R_t+1");
+      expect(res.extractedSymbols).toContain("Div_t+1");
+      expect(res.extractedSymbols).toContain("P_t+1");
+      expect(res.extractedSymbols).toContain("P_t");
+    });
+
+    it("passes verifyFormulaSymbolSet for unbraced R_t+1 = \\frac{Div_t+1 + P_t+1 - P_t}{P_t} against slide with split/compact tokens", () => {
+      const formula = createTestFormula({
+        latex: "R_t+1 = \\frac{Div_t+1 + P_t+1 - P_t}{P_t}",
+        slide: 24,
+      });
+
+      const res = verifyFormulaSymbolSet(formula, slide24Sources);
+      expect(res.passed).toBe(true);
+      expect(res.ungroundedSymbols).toEqual([]);
+    });
+
+    it("passes verifyFormulaSymbolSet for standalone R_t+1 against slide 24", () => {
+      const formula = createTestFormula({
+        latex: "R_t+1",
+        slide: 24,
+      });
+
+      const res = verifyFormulaSymbolSet(formula, slide24Sources);
+      expect(res.passed).toBe(true);
+      expect(res.ungroundedSymbols).toEqual([]);
+    });
+
+    it("grounds other compound subscripts like Base_{t-1} and Base_{i,t}", () => {
+      const sourcesWithOtherCompounds: SourceBlock[] = [
+        {
+          id: "slide_30",
+          label: "Slide 30",
+          text: "Lagged value X t-1 and panel variable Y i,t in equilibrium.",
+        },
+      ];
+
+      const formula = createTestFormula({
+        latex: "Z_t = X_{t-1} + Y_{i,t}",
+        slide: 30,
+      });
+
+      const res = verifyFormulaSymbolSet(formula, sourcesWithOtherCompounds);
+      expect(res.extractedSymbols).toContain("X_t-1");
+      expect(res.extractedSymbols).toContain("Y_i,t");
+      expect(res.ungroundedSymbols).not.toContain("X_t-1");
+      expect(res.ungroundedSymbols).not.toContain("Y_i,t");
+    });
+
+    it("still catches genuinely hallucinated base symbols in compound subscripts", () => {
+      const formulaWithHallucination = createTestFormula({
+        latex: "R_{t+1} = \\frac{Div_{t+1} + Q_{t+1} - P_t}{P_t}",
+        slide: 24,
+      });
+
+      const res = verifyFormulaSymbolSet(formulaWithHallucination, slide24Sources);
+      expect(res.passed).toBe(false);
+      expect(res.ungroundedSymbols).toContain("Q_t+1");
+      expect(res.ungroundedSymbols).not.toContain("R_t+1");
+      expect(res.ungroundedSymbols).not.toContain("Div_t+1");
     });
   });
 

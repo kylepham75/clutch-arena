@@ -1497,4 +1497,380 @@ describe("Stage 4.4 Verification Gate & Targeted Repair Loop", () => {
       });
     });
   });
+
+  describe("Deterministic Formula Validity & Targeted Repair Triggering", () => {
+    it("applyMarkPolicyAndGate refuses to stamp verified on corrupted or dangling formulas (T =, S ==, KaTeX error) even when formulaRefs is non-empty", async () => {
+      const sources: SourceBlock[] = [
+        {
+          id: "s1",
+          label: "Slide 1",
+          text: "Stock Valuation Principles. Time horizon T and state S.",
+        },
+      ];
+
+      const ledger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 1,
+          raw: "T =",
+          latex: "T =",
+          origin: "ocr",
+          variables: [],
+        },
+        {
+          id: "F2",
+          slide: 1,
+          raw: "S ==",
+          latex: "S ==",
+          origin: "ocr",
+          variables: [],
+        },
+        {
+          id: "F3",
+          slide: 1,
+          raw: "\\frac{A}{",
+          latex: "\\frac{A}{",
+          origin: "ocr",
+          variables: [],
+        },
+        {
+          id: "F4",
+          slide: 1,
+          raw: "P0 = D1 / (R - g)",
+          latex: "P_0 = \\frac{D_1}{R - g}",
+          origin: "text",
+          variables: [],
+        },
+      ];
+
+      const section = createSection({
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. CÔNG THỨC ĐỊNH GIÁ",
+        sourceSlides: [1],
+        formulas: [
+          createFormula({
+            latex: "T =",
+            formulaRefs: ["F1"],
+            slide: 1,
+          }),
+          createFormula({
+            latex: "S ==",
+            formulaRefs: ["F2"],
+            slide: 1,
+          }),
+          createFormula({
+            latex: "\\frac{A}{",
+            formulaRefs: ["F3"],
+            slide: 1,
+          }),
+          createFormula({
+            latex: "P_0 = \\frac{D_1}{R - g}",
+            formulaRefs: ["F4"],
+            slide: 1,
+          }),
+        ],
+      });
+
+      const pipelineReport = await executeVerificationPipeline({
+        sections: [section],
+        sources,
+        ledger,
+        options: { skipVerifierLlm: true },
+      });
+
+      const result = applyMarkPolicyAndGate({
+        sections: [section],
+        sources,
+        ledger,
+        pipelineReport,
+        repairAttempted: false,
+      });
+
+      const formulas = result.sections[0].formulas;
+      // Formula 1 ("T ="): must be needs_review, not verified!
+      expect(formulas[0].status).toBe("needs_review");
+      expect(formulas[0].reviewReason).toContain("deterministic validity");
+
+      // Formula 2 ("S =="): must be needs_review, not verified!
+      expect(formulas[1].status).toBe("needs_review");
+      expect(formulas[1].reviewReason).toContain("deterministic validity");
+
+      // Formula 3 ("\frac{A}{"): must be needs_review, not verified!
+      expect(formulas[2].status).toBe("needs_review");
+      expect(formulas[2].reviewReason).toContain("deterministic validity");
+
+      // Formula 4 ("P_0 = \frac{D_1}{R - g}"): valid, must be verified!
+      expect(formulas[3].status).toBe("verified");
+
+      // The 3 corrupted formulas incremented needsReviewCount
+      expect(result.needsReviewCount).toBeGreaterThanOrEqual(3);
+    });
+
+    it("runVerificationGate invokes repairFn when critical core formulas (uncaptured_error) occur", async () => {
+      const sources: SourceBlock[] = [
+        {
+          id: "s1",
+          label: "Slide 1",
+          text: "Risk and return fundamentals. CAPM equation: E(Ri) = Rf + Beta_i * (E(RM) - Rf).",
+        },
+      ];
+
+      const ledger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 1,
+          raw: "E(Ri) = Rf + Beta_i * (E(RM) - Rf)",
+          latex: "E(R_i) = R_f + \\beta_i [E(R_M) - R_f]",
+          origin: "text",
+          variables: [],
+        },
+        {
+          id: "F2",
+          slide: 1,
+          raw: "Beta_i = Cov(Ri, RM) / Var(RM)",
+          latex: "\\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}",
+          origin: "text",
+          variables: [],
+        },
+      ];
+
+      // Note initially only captures F1; F2 is completely missing and NOT in omitted list (uncaptured_error!)
+      const section = createSection({
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. MÔ HÌNH CAPM",
+        sourceSlides: [1],
+        formulas: [
+          createFormula({
+            latex: "E(R_i) = R_f + \\beta_i [E(R_M) - R_f]",
+            formulaRefs: ["F1"],
+            slide: 1,
+          }),
+        ],
+        bulletPoints: ["Khái niệm CAPM cơ bản."],
+        groundedBullets: [
+          { text: "Khái niệm CAPM cơ bản.", slide: 1, evidence: "Risk and return fundamentals" },
+        ],
+      });
+
+      let repairFnCalled = false;
+      let repairPromptReceived = "";
+
+      const repairFn = vi.fn(async (prompt: string) => {
+        repairFnCalled = true;
+        repairPromptReceived = prompt;
+
+        // Return repaired section that now includes missing formula F2
+        return [
+          createSection({
+            id: "sec-a",
+            letter: "A",
+            titleVi: "A. MÔ HÌNH CAPM",
+            sourceSlides: [1],
+            formulas: [
+              createFormula({
+                latex: "E(R_i) = R_f + \\beta_i [E(R_M) - R_f]",
+                formulaRefs: ["F1"],
+                slide: 1,
+              }),
+              createFormula({
+                latex: "\\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}",
+                formulaRefs: ["F2"],
+                slide: 1,
+              }),
+            ],
+            bulletPoints: ["Khái niệm CAPM cơ bản."],
+            groundedBullets: [
+              { text: "Khái niệm CAPM cơ bản.", slide: 1, evidence: "Risk and return fundamentals" },
+            ],
+          }),
+        ];
+      });
+
+      const result = await runVerificationGate({
+        sections: [section],
+        sources,
+        ledger,
+        options: {
+          repairFn,
+          maxRepairAttempts: 1,
+          skipVerifierLlm: true,
+        },
+      });
+
+      expect(repairFnCalled).toBe(true);
+      expect(repairPromptReceived).toContain("UNCAPTURED SOURCE FORMULAS");
+      expect(repairPromptReceived).toContain("F2");
+      expect(result.repairAttempted).toBe(true);
+      expect(result.verification.placedFormulaIds).toContain("F1");
+      expect(result.verification.placedFormulaIds).toContain("F2");
+      expect(result.verification.uncapturedFormulaIds.length).toBe(0);
+    });
+
+    it("runVerificationGate invokes repairFn when critical formula symbol errors occur", async () => {
+      const sources: SourceBlock[] = [
+        {
+          id: "s1",
+          label: "Slide 1",
+          text: "Discounted cash flow model using price P_0, dividend D_1, discount rate R and growth rate g.",
+        },
+      ];
+
+      const ledger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 1,
+          raw: "P0 = D1 / (R - g)",
+          latex: "P_0 = \\frac{D_1}{R - g}",
+          origin: "text",
+          variables: [],
+        },
+      ];
+
+      // Note has a formula with ungrounded hallucinated symbol \psi_{mystery} not present on the slide
+      const section = createSection({
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. ĐỊNH GIÁ",
+        sourceSlides: [1],
+        formulas: [
+          createFormula({
+            latex: "P_0 = \\frac{D_1}{R - g} + \\psi_{mystery}",
+            slide: 1,
+          }),
+        ],
+        bulletPoints: ["Định giá chiết khấu dòng tiền."],
+        groundedBullets: [
+          { text: "Định giá chiết khấu dòng tiền.", slide: 1, evidence: "Discounted cash flow model" },
+        ],
+      });
+
+      let repairFnCalled = false;
+      const repairFn = vi.fn(async (_prompt: string) => {
+        repairFnCalled = true;
+        // Repair fixes the ungrounded symbol back to clean P_0 = \frac{D_1}{R - g}
+        return [
+          createSection({
+            id: "sec-a",
+            letter: "A",
+            titleVi: "A. ĐỊNH GIÁ",
+            sourceSlides: [1],
+            formulas: [
+              createFormula({
+                latex: "P_0 = \\frac{D_1}{R - g}",
+                formulaRefs: ["F1"],
+                slide: 1,
+              }),
+            ],
+            bulletPoints: ["Định giá chiết khấu dòng tiền."],
+            groundedBullets: [
+              { text: "Định giá chiết khấu dòng tiền.", slide: 1, evidence: "Discounted cash flow model" },
+            ],
+          }),
+        ];
+      });
+
+      const result = await runVerificationGate({
+        sections: [section],
+        sources,
+        ledger,
+        options: {
+          repairFn,
+          maxRepairAttempts: 1,
+          skipVerifierLlm: true,
+        },
+      });
+
+      expect(repairFnCalled).toBe(true);
+      expect(result.repairAttempted).toBe(true);
+      expect(result.sections[0].formulas[0].latex).toBe("P_0 = \\frac{D_1}{R - g}");
+    });
+
+    it("runVerificationGate invokes repairModel when repairFn is omitted but repairModel is provided", async () => {
+      const sources: SourceBlock[] = [
+        {
+          id: "s1",
+          label: "Slide 1",
+          text: "CAPM model E(R) = Rf + Beta * (RM - Rf).",
+        },
+      ];
+
+      const ledger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 1,
+          raw: "E(R) = Rf + Beta * (RM - Rf)",
+          latex: "E(R) = R_f + \\beta (R_M - R_f)",
+          origin: "text",
+          variables: [],
+        },
+      ];
+
+      // Missing F1 entirely -> uncaptured_error
+      const section = createSection({
+        id: "sec-a",
+        letter: "A",
+        titleVi: "A. CAPM",
+        sourceSlides: [1],
+        formulas: [],
+        bulletPoints: ["Giới thiệu mô hình CAPM."],
+        groundedBullets: [
+          { text: "Giới thiệu mô hình CAPM.", slide: 1, evidence: "CAPM model" },
+        ],
+      });
+
+      // Mock generateObject return for the repairModel pass
+      vi.mocked(generateObject).mockResolvedValueOnce({
+        object: {
+          title: "CHAPTER 11: CAPM",
+          subject: "Corporate Finance",
+          estimatedDistilledPages: 2,
+          noiseReductionRate: 85,
+          executiveSummary: "Repaired CAPM handout.",
+          sections: [
+            {
+              titleVi: "A. CAPM",
+              overview: "Tổng quan mô hình.",
+              coreStatement: "Rủi ro hệ thống quyết định lợi suất.",
+              bullets: [
+                { text: "Giới thiệu mô hình CAPM.", slide: 1, evidence: "CAPM model" },
+              ],
+              formulas: [
+                {
+                  formulaRefs: ["F1"],
+                  derivedFrom: [],
+                  leadText: "Công thức CAPM:",
+                  latex: "E(R) = R_f + \\beta (R_M - R_f)",
+                  description: "",
+                  variables: [],
+                },
+              ],
+              subSections: [],
+              takeaways: [],
+              sourceSlides: [1],
+            },
+          ],
+          omitted: [],
+        },
+      } as any);
+
+      const mockModel = { modelId: "test-repair-model" } as any;
+
+      const result = await runVerificationGate({
+        sections: [section],
+        sources,
+        ledger,
+        options: {
+          repairModel: mockModel,
+          maxRepairAttempts: 1,
+          skipVerifierLlm: true,
+        },
+      });
+
+      expect(vi.mocked(generateObject)).toHaveBeenCalled();
+      expect(result.repairAttempted).toBe(true);
+      expect(result.verification.placedFormulaIds).toContain("F1");
+    });
+  });
 });

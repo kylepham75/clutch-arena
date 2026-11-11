@@ -361,10 +361,10 @@ export const synthesisSchema = z
   .object({
     title: z.string().min(1).describe("Concise uppercase chapter/topic heading"),
     subject: z.string().min(1).describe("Concise course or subject name"),
-    estimatedDistilledPages: z.number().int().min(1).max(6).describe("Estimated distilled page count (1-6)"),
+    estimatedDistilledPages: z.number().int().min(1).max(12).describe("Estimated distilled page count (1-12)"),
     noiseReductionRate: z.number().describe("Percentage of noise stripped (0-100)"),
     executiveSummary: z.string().min(1).describe("Executive summary sentence"),
-    sections: z.array(synthesisSectionSchema).min(1).max(6).describe("1 to 6 distilled sections"),
+    sections: z.array(synthesisSectionSchema).min(1).max(12).describe("1 to 12 distilled sections"),
     omitted: z.array(synthesisOmittedFormulaSchema).describe("Formulas omitted with justification"),
   })
   .strict();

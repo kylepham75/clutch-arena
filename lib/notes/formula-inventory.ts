@@ -10,6 +10,7 @@ import {
   isLikelyInlineMath,
   wrapBareEnglishInLatex,
 } from "@/lib/math/latex";
+import { normalizePdfMathSymbols } from "@/lib/notes/pdf-symbol-normalizer";
 import {
   extractionSchema,
   type ExtractedFormulaItem,
@@ -157,7 +158,7 @@ const UNICODE_MATH_SYMBOLS: Record<string, string> = {
  */
 export function convertUnicodeMath(text: string): string {
   if (!text) return "";
-  let s = text;
+  let s = normalizePdfMathSymbols(text);
 
   for (const [sub, repl] of Object.entries(UNICODE_SUBSCRIPTS)) {
     s = s.replaceAll(sub, repl);
@@ -266,14 +267,200 @@ export function normalizeInventoryFormulaKey(latex: string): string {
 }
 
 /**
+ * Checks if a string has a dangling relation operator or an empty side (LHS or RHS)
+ * around '=', '\approx', '≈', '\equiv', '≡', '\sim', '\le', '\ge', '\leq', '\geq', '\ne', '\neq'.
+ */
+export function isDanglingOrEmptySideEquation(str: string): boolean {
+  if (!str) return true;
+  const s = str.replace(/^\s*\$+|\$+\s*$/g, "").trim();
+  if (!s) return true;
+
+  // Single stray '=' or '==' or relation operator
+  if (
+    /^(?:={1,3}|\\approx|≈|\\equiv|≡|\\sim|\\le|\\ge|\\leq|\\geq|\\ne|\\neq|≤|≥|≠)$/.test(
+      s,
+    )
+  ) {
+    return true;
+  }
+
+  // Starts or ends with '='
+  if (s.startsWith("=") || s.endsWith("=")) return true;
+
+  // Consecutive '=' like '==' or '===' not part of <=> or <= / >=
+  if (/(?<![<>!])={2,}(?![=>])/.test(s)) return true;
+
+  // If contains relation operator, split and check LHS and RHS
+  const relationRegex =
+    /(?<![<>!])=(?![=>])|\\(?:approx|equiv|sim|le|ge|leq|geq|ne|neq)\b|[≈≡≤≥≠]/;
+  if (relationRegex.test(s)) {
+    const parts = s.split(relationRegex);
+    const lhs = parts[0].trim();
+    const rhs = parts.slice(1).join("=").trim();
+
+    if (!lhs || !rhs) return true;
+
+    // Reject if either side only has parentheses, brackets, or punctuation (e.g. "() =")
+    const lhsContent = lhs
+      .replace(/[()[\]{}\s.,;:!?"'“”‘’\-+*/=~^]/g, "")
+      .trim();
+    const rhsContent = rhs
+      .replace(/[()[\]{}\s.,;:!?"'“”‘’\-+*/=~^]/g, "")
+      .trim();
+    if (!lhsContent || !rhsContent) return true;
+  }
+
+  return false;
+}
+
+const NON_VARIABLE_TOKENS_REGEX =
+  /\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int|iint|iiint|oint|partial|times|div|cdot|pm|mp|ast|star|approx|equiv|sim|simeq|cong|le|ge|leq|geq|ne|neq|left|right|middle|big|Big|bigg|Bigg|ln|log|exp|sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|sinh|cosh|tanh|min|max|inf|sup|lim|det|dim|deg|gcd|mod|text|mathrm|mathbf|boldsymbol|textbf|mathit|operatorname|mathbb|mathcal|quad|qquad|enspace|space|bar|hat|tilde|vec|dot|ddot|overline|underline)\b/g;
+
+const CURRENCY_AND_UNIT_WORDS_REGEX =
+  /\b(?:USD|VND|EUR|GBP|JPY|AUD|CAD|CHF|CNY|cents?|dollars?|percent|bps)\b/gi;
+
+/**
+ * Checks whether an expression contains mathematical variables (Latin letters, Greek letters, or subscripted tokens).
+ */
+export function hasSymbolicVariables(str: string): boolean {
+  if (!str) return false;
+  let s = str;
+
+  // Strip known non-variable LaTeX command names
+  s = s.replace(NON_VARIABLE_TOKENS_REGEX, " ");
+
+  // Strip currency and unit words
+  s = s.replace(CURRENCY_AND_UNIT_WORDS_REGEX, " ");
+
+  // Check if any Latin letters [a-zA-Z] or Greek letters [\u0370-\u03FF] remain
+  return /[a-zA-Z\u0370-\u03FF]/.test(s);
+}
+
+const PROSE_STOP_WORDS_REGEX =
+  /\b(?:the|is|are|was|were|of|in|that|this|these|those|our|we|you|they|it|its|can|be|been|have|has|had|with|and|by|from|which|when|where|for|as|an|a|to|given|such|than|more|less|only|all|each|every|some|between|among|about|into|through|after|before|independent|identical|risks?|summary|relationship|holds|model|callout|table|note|definition|explanation|average|những|các|trong|khi|cho|với|được|bởi|từ|về|để|thì|mà|này|đó)\b/i;
+
+const RECOGNIZED_ACCOUNTING_TERMS = new Set([
+  "net working capital",
+  "current assets",
+  "current liabilities",
+  "fixed assets",
+  "operating cycle",
+  "cash cycle",
+  "inventory turnover",
+  "receivables turnover",
+  "payables turnover",
+  "inventory period",
+  "receivables period",
+  "payables period",
+  "ending cash",
+  "beginning cash",
+  "cash collections",
+  "cash disbursements",
+  "net cash flow",
+  "cumulative surplus",
+  "retention ratio",
+  "total debt",
+  "total assets",
+  "total equity",
+  "shareholders equity",
+  "net income",
+  "shares outstanding",
+  "operating income",
+  "cost of goods sold",
+  "market value",
+  "book value",
+  "sustainable growth rate",
+  "internal growth rate",
+  "capital spending",
+  "operating cash flow",
+  "free cash flow",
+]);
+
+function isRecognizedAccountingTerm(str: string): boolean {
+  const norm = str
+    .trim()
+    .toLowerCase()
+    .replace(/\\text\{([^{}]+)\}/g, "$1")
+    .replace(/['’]/g, "")
+    .replace(/\s+/g, " ");
+  return RECOGNIZED_ACCOUNTING_TERMS.has(norm);
+}
+
+/**
+ * Checks whether a side of an equation is purely a multi-word natural language prose phrase
+ * (3+ words of prose without mathematical variables, subscripts, fractions, summations, or symbolic operators).
+ */
+export function isPureProsePhrase(side: string): boolean {
+  if (!side) return false;
+  const s = side.trim();
+  if (!s) return false;
+
+  // If it's a recognized accounting metric name (e.g. "Net Working Capital"), it's not prose
+  if (isRecognizedAccountingTerm(s)) return false;
+
+  // Has symbolic math operators or structural commands: +, -, *, /, ^, ×, ÷, −, –, —, ·, ⋅, ±, ∓, √, \times, \div, \cdot, \pm, \sqrt, \frac, \sum, \prod, \int
+  if (
+    /[+\-*/^×÷−–—·⋅±∓√]/.test(s) ||
+    /\\(?:times|div|cdot|pm|mp|sqrt|frac|sum|prod|int)\b/.test(s)
+  ) {
+    return false;
+  }
+
+  // Has subscripts or superscripts
+  if (/[_^]/.test(s)) return false;
+
+  // Strip LaTeX formatting and wrappers
+  const unwrapped = s
+    .replace(
+      /\\(?:text|mathrm|mathbf|boldsymbol|textbf|mathit|operatorname)\{([^{}]*)\}/g,
+      "$1",
+    )
+    .replace(/\\(?:left|right)\b[()[\]{}|.]?/g, "");
+
+  // Strip parens, brackets, punctuation
+  const clean = unwrapped.replace(/[()[\]{}.,;:!?"'“”‘’]/g, " ").trim();
+  const words = clean.split(/\s+/).filter(Boolean);
+
+  // If 3 or more words
+  if (words.length >= 3) {
+    // If it contains prose stop words / narrative indicators
+    if (PROSE_STOP_WORDS_REGEX.test(clean)) {
+      return true;
+    }
+
+    // Or if none of the words look like single-letter math variables or Greek letters
+    const hasSingleLetterVariable = words.some(
+      (w) => w.length === 1 && /[a-zA-Z]/.test(w),
+    );
+    if (!hasSingleLetterVariable && !/[\\_^{}]/.test(s)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Formats and repairs raw mathematical / financial strings into clean LaTeX without surrounding $.
  */
 export function cleanLatexEquation(rawEq: string): string {
   if (!rawEq) return "";
-  let s = convertUnicodeMath(rawEq);
+  let s = normalizePdfMathSymbols(rawEq);
+
+  // Reject dangling = or empty-side equations right away
+  if (isDanglingOrEmptySideEquation(s)) {
+    return "";
+  }
+
+  s = convertUnicodeMath(s);
   s = repairCorruptedLatex(s);
   s = formatAccountingFormula(s);
   s = wrapBareEnglishInLatex(s);
+
+  // Check again after conversions
+  if (isDanglingOrEmptySideEquation(s)) {
+    return "";
+  }
 
   // Wrap common multi-word finance & accounting phrases in \text{...} if not already wrapped
   s = s.replace(
@@ -303,25 +490,32 @@ export function isNumericPluginOrScalarAssignment(eqStr: string): boolean {
   const s = eqStr.trim();
   if (!s) return true;
 
-  // 1. Starts with '=' (e.g. "= 2.50 / (0.10 - 0.05) = $50" or "= 100 / 0.10 = 1000")
-  if (s.startsWith("=")) return true;
+  // 1. Dangling = or empty sides (e.g. "T =", "S ==", "= 0.12", "= 0.15")
+  if (isDanglingOrEmptySideEquation(s)) {
+    return true;
+  }
 
-  const parts = s.split("=");
+  const parts = s.split(/(?<![<>!])=(?![=>])/);
   if (parts.length < 2) return false;
 
   const lhs = parts[0].trim();
   const rhs = parts.slice(1).join("=").trim();
 
-  // 2. LHS has no letters/variables at all (e.g. "100 / 0.10 = 1000")
-  const lhsStripped = lhs.replace(
-    /\\(?:text|mathrm|mathbf|boldsymbol|textbf|mathit)\b/g,
-    "",
-  );
-  if (!/[a-zA-Z\u0370-\u03FF]/.test(lhsStripped)) {
+  if (!lhs || !rhs) return true;
+
+  // 2. LHS has no variables at all
+  // e.g. "100 / 0.10 = 1000", "0.26 = 0.04 + 1.1 \times (0.24 - 0.04)", "\sqrt{(0.12 - 0.08)^2 + (0.05 - 0.08)^2} = 0.05"
+  if (!hasSymbolicVariables(lhs)) {
     return true;
   }
 
-  // 3. Trivial scalar assignment:
+  // 3. RHS has no variables at all AND contains numbers
+  // e.g. "R = (0.21 - 0.05 + 0.14) / 3 = 0.10", "Var = (0.2056)^2 = 0.04227", "\bar{R} = (0.10 + 0.12 - 0.04) / 3 = 0.06"
+  if (!hasSymbolicVariables(rhs) && /\d/.test(rhs)) {
+    return true;
+  }
+
+  // 4. Trivial scalar assignment:
   // LHS is a short variable (e.g. "t", "n", "r", "g", "k", "x", "y", "P", "P_0", "D_1", "t_0")
   // AND RHS is purely a scalar number, percentage, or currency (e.g. "1", "0.05", "10%", "$50", "$2.50", "-3")
   const isShortLhs = /^[a-zA-Z]{1,3}(?:_[a-zA-Z0-9]+)?$/.test(lhs);
@@ -340,12 +534,43 @@ export function isNontrivialFormula(latex: string): boolean {
   const s = latex.replace(/^\s*\$+|\$+\s*$/g, "").trim();
   if (!s) return false;
 
-  // Contains relation operator: =, \approx, \le, \ge, \ne, \neq, \sim
-  if (/=|\\approx|≈|\\le|\\ge|\\leq|\\geq|\\ne|\\neq|\\sim/.test(s)) {
+  // 1. Dangling relation operators or empty sides
+  if (isDanglingOrEmptySideEquation(s)) {
+    return false;
+  }
+
+  // 2. Contains relation operator: =, \approx, \le, \ge, \ne, \neq, \sim
+  if (
+    /=|\\approx|≈|\\equiv|≡|\\le|\\ge|\\leq|\\geq|\\ne|\\neq|\\sim/.test(s)
+  ) {
     if (isNumericPluginOrScalarAssignment(s)) {
       return false;
     }
+
+    // Check if either side is pure prose
+    const parts = s.split(
+      /(?<![<>!])=(?![=>])|\\(?:approx|equiv|sim|le|ge|leq|geq|ne|neq)\b|[≈≡≤≥≠]/,
+    );
+    if (parts.length >= 2) {
+      const lhs = parts[0].trim();
+      const rhs = parts.slice(1).join("=").trim();
+      if (isPureProsePhrase(lhs) || isPureProsePhrase(rhs)) {
+        return false;
+      }
+    }
+
     return true;
+  }
+
+  // 3. For expressions without relation operators:
+  // Reject pure numeric arithmetic without variables (e.g. "(0.21 - 0.05 + 0.14) / 3", "\sqrt{(0.12 - 0.08)^2}")
+  if (!hasSymbolicVariables(s)) {
+    return false;
+  }
+
+  // Check for pure prose fragment without relation operator
+  if (isPureProsePhrase(s)) {
+    return false;
   }
 
   // Contains major structural operator: \frac, \sum, \sqrt, \prod, \int, \partial
@@ -404,16 +629,20 @@ export function extractTextFormulas(
 ): Array<{ raw: string; latex: string }> {
   if (!text || !text.trim()) return [];
 
+  const normalizedText = normalizePdfMathSymbols(text);
   const results: Array<{ raw: string; latex: string }> = [];
   const seenKeys = new Set<string>();
 
   // 1. Explicit display math blocks: $$...$$
   const displayRegex = /\$\$([\s\S]+?)\$\$/g;
   let dMatch: RegExpExecArray | null;
-  while ((dMatch = displayRegex.exec(text)) !== null) {
+  while ((dMatch = displayRegex.exec(normalizedText)) !== null) {
     const rawContent = dMatch[1].trim();
     const cleanLatex = rawContent.replace(/^\s*\$+|\$+\s*$/g, "").trim();
-    if (isNontrivialFormula(cleanLatex)) {
+    if (
+      isNontrivialFormula(cleanLatex) &&
+      !isNumericPluginOrScalarAssignment(cleanLatex)
+    ) {
       const normKey = normalizeInventoryFormulaKey(cleanLatex);
       if (!seenKeys.has(normKey)) {
         seenKeys.add(normKey);
@@ -428,11 +657,14 @@ export function extractTextFormulas(
   // 2. Explicit inline math blocks: $...$
   const inlineRegex = /(?<!\$)\$(?!\$)([^\$\n]+?)\$(?!\$)/g;
   let iMatch: RegExpExecArray | null;
-  while ((iMatch = inlineRegex.exec(text)) !== null) {
+  while ((iMatch = inlineRegex.exec(normalizedText)) !== null) {
     const candidate = iMatch[1].trim();
     if (isLikelyInlineMath(candidate)) {
       const cleanLatex = candidate.replace(/^\s*\$+|\$+\s*$/g, "").trim();
-      if (isNontrivialFormula(cleanLatex)) {
+      if (
+        isNontrivialFormula(cleanLatex) &&
+        !isNumericPluginOrScalarAssignment(cleanLatex)
+      ) {
         const normKey = normalizeInventoryFormulaKey(cleanLatex);
         if (!seenKeys.has(normKey)) {
           seenKeys.add(normKey);
@@ -446,7 +678,7 @@ export function extractTextFormulas(
   }
 
   // 3. Plain-text lines and clauses
-  const lines = text.split(/\r?\n/);
+  const lines = normalizedText.split(/\r?\n/);
   for (const line of lines) {
     const trimmedLine = line.trim();
     if (!trimmedLine || trimmedLine.length > 1000) continue;
@@ -500,17 +732,23 @@ export function extractTextFormulas(
       if (eqParts.length > 2) {
         const p1 = eqParts[1].trim();
         const p2 = eqParts[2].trim();
-        if (
-          /[a-zA-Z\u0370-\u03FF]/.test(p1) &&
-          !/^[0-9.\s+\-*/()$]+$/.test(p1) &&
-          /^[0-9.\s+\-*/()$]+$/.test(p2)
-        ) {
+        if (hasSymbolicVariables(p1) && !hasSymbolicVariables(p2)) {
           rawRhs = p1;
         } else {
           rawRhs = eqParts.slice(1).join("=").trim();
         }
       } else {
         rawRhs = eqParts[1].trim();
+      }
+
+      // Early exit if either side is empty or dangling
+      if (!rawLhs || !rawRhs) continue;
+      if (
+        rawLhs.endsWith("=") ||
+        rawRhs.startsWith("=") ||
+        rawRhs.endsWith("=")
+      ) {
+        continue;
       }
 
       // Strip leading prose from LHS:
@@ -540,22 +778,48 @@ export function extractTextFormulas(
       // Strip trailing punctuation
       rawRhs = rawRhs.replace(/[.,;:]+$/, "").trim();
 
+      if (!rawLhs || !rawRhs) continue;
+
       const candidateRaw = `${rawLhs} = ${rawRhs}`;
 
-      if (!isNontrivialFormula(candidateRaw)) {
+      if (
+        isDanglingOrEmptySideEquation(candidateRaw) ||
+        !isNontrivialFormula(candidateRaw) ||
+        isNumericPluginOrScalarAssignment(candidateRaw)
+      ) {
         continue;
       }
 
       const cleanLatex = cleanLatexEquation(candidateRaw);
       if (!cleanLatex) continue;
+      if (
+        !isNontrivialFormula(cleanLatex) ||
+        isNumericPluginOrScalarAssignment(cleanLatex)
+      ) {
+        continue;
+      }
 
       const normKey = normalizeInventoryFormulaKey(cleanLatex);
       if (!seenKeys.has(normKey)) {
         seenKeys.add(normKey);
         // Original raw before Unicode conversion if present in clause
-        const originalLhs = clause.split("=")[0].trim().replace(PROSE_PREFIX_REGEX, "").trim();
-        const originalRhs = clause.split("=").slice(1).join("=").trim().replace(TRAILING_PROSE_REGEX, "").replace(/[.,;:]+$/, "").trim();
-        const displayRaw = originalLhs && originalRhs ? `${originalLhs} = ${originalRhs}` : candidateRaw;
+        const originalLhs = clause
+          .split("=")[0]
+          .trim()
+          .replace(PROSE_PREFIX_REGEX, "")
+          .trim();
+        const originalRhs = clause
+          .split("=")
+          .slice(1)
+          .join("=")
+          .trim()
+          .replace(TRAILING_PROSE_REGEX, "")
+          .replace(/[.,;:]+$/, "")
+          .trim();
+        const displayRaw =
+          originalLhs && originalRhs
+            ? `${originalLhs} = ${originalRhs}`
+            : candidateRaw;
 
         results.push({
           raw: displayRaw,
@@ -606,10 +870,16 @@ export function buildFormulaInventory(
     // 1. OMML equations for this slide (highest origin priority for pptx math)
     const slideOmmls = ommlEquations.filter((eq) => eq.slide === slide);
     for (const omml of slideOmmls) {
-      const cleanLatex = (omml.latex || "")
+      const cleanLatex = normalizePdfMathSymbols(omml.latex || "")
         .replace(/^\s*\$+|\$+\s*$/g, "")
         .trim();
-      if (!cleanLatex || !isNontrivialFormula(cleanLatex)) continue;
+      if (
+        !cleanLatex ||
+        !isNontrivialFormula(cleanLatex) ||
+        isNumericPluginOrScalarAssignment(cleanLatex)
+      ) {
+        continue;
+      }
 
       const normKey = normalizeInventoryFormulaKey(cleanLatex);
       if (slideSeenKeys.has(normKey)) continue;
@@ -617,7 +887,7 @@ export function buildFormulaInventory(
 
       inventory.push({
         slide,
-        raw: (omml.raw || cleanLatex).trim(),
+        raw: normalizePdfMathSymbols((omml.raw || cleanLatex).trim()),
         latex: cleanLatex,
         origin: "omml",
       });
@@ -626,10 +896,16 @@ export function buildFormulaInventory(
     // 2. OCR equations for this slide
     const slideOcrs = ocrEquations.filter((eq) => eq.slide === slide);
     for (const ocr of slideOcrs) {
-      const cleanLatex = (ocr.latex || "")
+      const cleanLatex = normalizePdfMathSymbols(ocr.latex || "")
         .replace(/^\s*\$+|\$+\s*$/g, "")
         .trim();
-      if (!cleanLatex) continue;
+      if (
+        !cleanLatex ||
+        !isNontrivialFormula(cleanLatex) ||
+        isNumericPluginOrScalarAssignment(cleanLatex)
+      ) {
+        continue;
+      }
 
       const normKey = normalizeInventoryFormulaKey(cleanLatex);
       if (slideSeenKeys.has(normKey)) continue;
@@ -637,7 +913,7 @@ export function buildFormulaInventory(
 
       inventory.push({
         slide,
-        raw: (ocr.raw || cleanLatex).trim(),
+        raw: normalizePdfMathSymbols((ocr.raw || cleanLatex).trim()),
         latex: cleanLatex,
         origin: "ocr",
         confidence:
@@ -719,7 +995,9 @@ CRITICAL EXTRACTION RULES:
    - 'label': Short name or title of the formula if mentioned on the slide (e.g. "Gordon Growth Model", "Net Working Capital"), or "" if unnamed.
    - 'variables': Array of variables defined on the slide ({ symbol, definition }), or [] if none explicitly defined.
    - 'isExerciseOnly': Set to true IF AND ONLY IF the formula appears exclusively inside an exercise, practice problem, numerical example, or worked solution on the slide. Otherwise false.
-   - DO NOT extract trivial numeric calculation steps or plug-in lines (e.g., "= 2.50 / (0.10 - 0.05) = $50", "P = 50", "r = 10%", "n = 5"). Only extract general, symbolic, or definitional equations.
+   - Incomplete or dangling '=' fragments are STRICTLY FORBIDDEN (e.g., 'T =', 'S ==', '= 0.12', '(Average of Independent, Identical Risks) ='). NEVER extract equations missing a left-hand or right-hand side.
+   - DO NOT extract trivial numeric calculation steps or plug-in lines (e.g., "= 2.50 / (0.10 - 0.05) = $50", "0.26 = 0.04 + 1.1 \\times (0.24 - 0.04)", "R = (0.21 - 0.05 + 0.14) / 3 = 0.10", "\\sqrt{(0.12 - 0.08)^2 + (0.05 - 0.08)^2} = 0.05", "Var = (0.2056)^2 = 0.04227", "P = 50", "r = 10%", "n = 5"). Only extract general, symbolic, or definitional equations.
+   - DO NOT extract pure prose definitions, slide callout text, or descriptive natural-language clauses with '=' lacking symbolic mathematical operators or variables.
 
 3. CLAIMS SPECIFICATIONS:
    - Extract key rules, takeaways, core assumptions, model boundaries, and definitions as claims.
@@ -738,7 +1016,7 @@ export function buildChunkExtractionPrompt(chunk: SlideWithNumber[]): string {
   const slideBlocks = chunk
     .map(({ slide, source }) => {
       const label = source.label ? ` [${source.label}]` : "";
-      const text = (source.text || "")
+      const text = normalizePdfMathSymbols(source.text || "")
         .replace(/[\t\v\f\r]+/g, " ")
         .replace(/[\x00-\x08\x0E-\x1F]/g, "")
         .trim();
@@ -755,7 +1033,7 @@ GROUNDING & EXTRACTION CONSTRAINTS:
 2. The 'slide' field MUST be one of the chunk slide numbers: [${slideNumbers}].
 3. For every formula and claim, provide the verbatim text segment in 'evidence'.
 4. 'latex' must be clean LaTeX math without outer dollar signs ($).
-5. DO NOT extract numeric calculation steps or plug-in lines (e.g. "= 2.50 / (0.10 - 0.05) = 50", "P = 50", "r = 10%", "n = 5"). Only extract general, symbolic, or definitional equations.
+5. DO NOT extract incomplete/dangling '=' fragments (e.g. 'T =', 'S ==', '= 0.15'), pure prose definitions, or worked-example numeric plug-in calculations (e.g. '= 2.50 / (0.10 - 0.05) = 50', '0.26 = 0.04 + 1.1 \\times (0.24 - 0.04)', 'R = (0.21 - 0.05 + 0.14) / 3 = 0.10', 'Var = (0.2056)^2 = 0.04227', 'P = 50', 'r = 10%'). Only extract general, symbolic, or definitional equations.
 6. Set 'isExerciseOnly: true' if and only if the formula appears solely inside an exercise, numerical example, or practice problem on the slide.
 7. Extract explicit variable definitions into 'variables' if defined on the slide, or [] if none.
 8. Extract formula name/label into 'label' if named on the slide, or "" if unnamed.
@@ -773,12 +1051,12 @@ export function isFormulaGroundedOnSlide(
 ): boolean {
   if (!slideText || !slideText.trim()) return false;
 
-  const convertedSlide = convertUnicodeMath(slideText);
+  const convertedSlide = convertUnicodeMath(normalizePdfMathSymbols(slideText));
   const normSlide = convertedSlide.toLowerCase().replace(/\s+/g, " ");
 
   // 1. Evidence quote check (case-insensitive substring)
   if (item.evidence && item.evidence.trim()) {
-    const normEv = item.evidence
+    const normEv = normalizePdfMathSymbols(item.evidence)
       .toLowerCase()
       .replace(/^["'“‘]+|["'”’.,;:]+$/g, "")
       .replace(/\s+/g, " ")
@@ -788,7 +1066,7 @@ export function isFormulaGroundedOnSlide(
 
   // 2. Raw formula string check (case-insensitive substring)
   if (item.raw && item.raw.trim()) {
-    const normRaw = convertUnicodeMath(item.raw)
+    const normRaw = convertUnicodeMath(normalizePdfMathSymbols(item.raw))
       .toLowerCase()
       .replace(/^["'“‘]+|["'”’.,;:]+$/g, "")
       .replace(/\s+/g, " ")
@@ -798,7 +1076,7 @@ export function isFormulaGroundedOnSlide(
 
   // 3. Clean LaTeX check (case-insensitive substring)
   if (item.latex && item.latex.trim()) {
-    const cleanLatex = (item.latex || "")
+    const cleanLatex = normalizePdfMathSymbols(item.latex || "")
       .replace(/^\s*\$+|\$+\s*$/g, "")
       .trim();
     const normLatex = convertUnicodeMath(cleanLatex)
@@ -910,7 +1188,8 @@ export async function extractChunkedSlideInventory(options: {
         for (const item of result.formulas) {
           if (!chunkSlideSet.has(item.slide)) continue;
 
-          const cleanLatex = (item.latex || "")
+          const normLatex = normalizePdfMathSymbols(item.latex || "");
+          const cleanLatex = normLatex
             .replace(/^\s*\$+|\$+\s*$/g, "")
             .trim();
           if (!cleanLatex) continue;
@@ -925,10 +1204,10 @@ export async function extractChunkedSlideInventory(options: {
           formulas.push({
             ...item,
             latex: cleanLatex,
-            raw: item.raw || cleanLatex,
+            raw: normalizePdfMathSymbols(item.raw || cleanLatex),
             label: item.label ?? "",
             variables: item.variables ?? [],
-            evidence: item.evidence ?? "",
+            evidence: item.evidence ? normalizePdfMathSymbols(item.evidence) : "",
             isExerciseOnly: Boolean(item.isExerciseOnly),
           });
         }
@@ -990,7 +1269,7 @@ export function mergeFormulaLedger(
     });
   }
 
-  // Working entries initialized with deterministic inventory
+  // Working entries initialized with deterministic inventory (filtered for validity and normalized)
   const workingEntries: Array<{
     slide: number;
     raw: string;
@@ -1001,24 +1280,49 @@ export function mergeFormulaLedger(
     variables: Array<{ symbol: string; definition: string }>;
     evidence?: string;
     isExerciseOnly?: boolean;
-  }> = deterministicInventory.map((item) => ({
-    slide: item.slide,
-    raw: item.raw,
-    latex: item.latex,
-    origin: item.origin,
-    confidence: item.confidence,
-    variables: [],
-  }));
+  }> = [];
+
+  for (const item of deterministicInventory) {
+    const normLatex = convertUnicodeMath(
+      normalizePdfMathSymbols(item.latex || ""),
+    );
+    const cleanLatex = normLatex.replace(/^\s*\$+|\$+\s*$/g, "").trim();
+    if (
+      !cleanLatex ||
+      !isNontrivialFormula(cleanLatex) ||
+      isNumericPluginOrScalarAssignment(cleanLatex)
+    ) {
+      continue;
+    }
+    workingEntries.push({
+      slide: item.slide,
+      raw: normalizePdfMathSymbols(item.raw || cleanLatex).trim(),
+      latex: cleanLatex,
+      origin: item.origin,
+      confidence: item.confidence,
+      variables: [],
+    });
+  }
 
   // Match or add LLM extracted formulas
   for (const item of extractedFormulas) {
-    const cleanLatex = (item.latex || "")
+    const normLatex = convertUnicodeMath(
+      normalizePdfMathSymbols(item.latex || ""),
+    );
+    const normRaw = normalizePdfMathSymbols(item.raw || "");
+    const cleanLatex = normLatex
       .replace(/^\s*\$+|\$+\s*$/g, "")
       .trim();
-    if (!cleanLatex) continue;
+    if (
+      !cleanLatex ||
+      !isNontrivialFormula(cleanLatex) ||
+      isNumericPluginOrScalarAssignment(cleanLatex)
+    ) {
+      continue;
+    }
 
     const extLatexKey = normalizeInventoryFormulaKey(cleanLatex);
-    const extRawKey = normalizeInventoryFormulaKey(item.raw);
+    const extRawKey = normalizeInventoryFormulaKey(normRaw);
 
     // Look for existing deterministic entry matching by normalized latex or raw
     const existing = workingEntries.find((entry) => {
@@ -1038,7 +1342,7 @@ export function mergeFormulaLedger(
         existing.label = item.label.trim();
       }
       if (item.evidence && item.evidence.trim() && !existing.evidence) {
-        existing.evidence = item.evidence.trim();
+        existing.evidence = normalizePdfMathSymbols(item.evidence.trim());
       }
       if (
         existing.isExerciseOnly === undefined &&
@@ -1065,13 +1369,6 @@ export function mergeFormulaLedger(
       }
     } else {
       // Novel LLM formula
-      if (
-        !isNontrivialFormula(cleanLatex) ||
-        isNumericPluginOrScalarAssignment(cleanLatex)
-      ) {
-        continue;
-      }
-
       // If input.sources is provided and has a matching slide, verify source grounding
       if (input.sources && slideSourcesMap.has(item.slide)) {
         const slideSource = slideSourcesMap.get(item.slide);
@@ -1084,7 +1381,7 @@ export function mergeFormulaLedger(
 
       workingEntries.push({
         slide: item.slide,
-        raw: item.raw || cleanLatex,
+        raw: normRaw || cleanLatex,
         latex: cleanLatex,
         origin: "llm",
         label: item.label && item.label.trim() ? item.label.trim() : undefined,
@@ -1094,7 +1391,7 @@ export function mergeFormulaLedger(
         })),
         evidence:
           item.evidence && item.evidence.trim()
-            ? item.evidence.trim()
+            ? normalizePdfMathSymbols(item.evidence.trim())
             : undefined,
         isExerciseOnly: item.isExerciseOnly,
       });

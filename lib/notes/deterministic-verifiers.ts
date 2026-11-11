@@ -9,6 +9,7 @@ import {
 } from "@/lib/schemas/notes";
 import {
   convertUnicodeMath,
+  isNumericPluginOrScalarAssignment,
   normalizeInventoryFormulaKey,
   parseSlideNumber,
 } from "@/lib/notes/formula-inventory";
@@ -142,10 +143,10 @@ export interface DeterministicVerificationReport {
 }
 
 export const DUPLICATE_REDUNDANT_REASON_REGEX =
-  /\b(duplicate|redundant|same as|already (?:covered|included|placed|captured)|identical|equivalent|trùng|tương đương)\b/i;
+  /(?<=^|[^\p{L}\p{N}_])(?:duplicate|redundant|same as|already (?:covered|included|placed|captured)|identical|equivalent|trùng(?: lặp)?|tương đương)(?=$|[^\p{L}\p{N}_])/iu;
 
 export const OMITTED_BY_RULE_REASON_REGEX =
-  /\b(duplicate|redundant|same as|already (?:covered|included|placed|captured)|identical|equivalent|trùng|tương đương|intermediate|derivation|rearrangement|rearranged|step|algebraic|simplified|expanded|derived|sub-step|biến đổi|trung gian|rút gọn|exercise|drill|example|numerical|plug-in|plugin|worked|practice|calculation|number|sample|illustration|bài tập|ví dụ|thay số)\b/i;
+  /(?<=^|[^\p{L}\p{N}_])(?:duplicate|redundant|same as|already (?:covered|included|placed|captured)|identical|equivalent|intermediate|derivation|rearrangement|rearranged|step|algebraic|simplified|expanded|derived|sub-step|exercise|drill|example|numerical|plug-in|plugin|worked|practice|calculation|number|sample|illustration|scalar|trùng(?: lặp)?|tương đương|biến đổi|trung gian|rút gọn|bài tập|ví dụ(?: số)?|thay số|tính cụ thể|minh họa|không phải công thức tổng quát)(?=$|[^\p{L}\p{N}_])/iu;
 
 function hasNumericPlugIns(entry: FormulaLedgerEntry): boolean {
   const text = `${entry.raw} ${entry.latex}`;
@@ -290,7 +291,7 @@ export function verifyFormulaCoverage(
   ): boolean => {
     const entryText = `${entry.label || ""} ${entry.evidence || ""} ${entry.raw || ""}`;
     if (
-      /\b(intermediate|derivation|rearrangement|rearranged|step|sub-step|biến đổi|trung gian|rút gọn)\b/i.test(
+      /(?<=^|[^\p{L}\p{N}_])(?:intermediate|derivation|rearrangement|rearranged|step|sub-step|biến đổi|trung gian|rút gọn)(?=$|[^\p{L}\p{N}_])/iu.test(
         entryText,
       )
     ) {
@@ -347,6 +348,11 @@ export function verifyFormulaCoverage(
       ((om as any).status === "omitted_by_rule" ||
         (om.reason && OMITTED_BY_RULE_REASON_REGEX.test(om.reason)));
 
+    const isNumericPluginOrScalar =
+      (Boolean(entry.latex) && isNumericPluginOrScalarAssignment(entry.latex)) ||
+      (Boolean(entry.raw) && isNumericPluginOrScalarAssignment(entry.raw)) ||
+      (Boolean((entry as any).rawText) && isNumericPluginOrScalarAssignment((entry as any).rawText));
+
     const isExerciseRule =
       Boolean(entry.isExerciseOnly) &&
       (hasNumericPlugIns(entry) || placedSlideNumbers.has(entry.slide));
@@ -355,6 +361,7 @@ export function verifyFormulaCoverage(
 
     if (
       isExplicitOmittedByRule ||
+      isNumericPluginOrScalar ||
       isExerciseRule ||
       isRearrangementRule
     ) {
@@ -1292,15 +1299,15 @@ export function extractFormulaSymbols(latex: string): string[] {
   }
   s = s.replace(textCommandRegex, " ");
 
-  // 3. Extract subscripted variables: P_0, D_1, R_E, T_C, CF_t, \sigma_i, \beta_i
+  // 3. Extract subscripted variables: P_0, D_1, R_E, T_C, CF_t, \sigma_i, \beta_i, R_{t+1}, R_t+1
   const subscriptedSymbols: string[] = [];
   const subscriptRegex =
-    /(\\[a-zA-Z]+|[a-zA-Z]{1,4})_(?:\{([^{}]+)\}|([a-zA-Z0-9]+))/g;
+    /(\\[a-zA-Z]+|[a-zA-Z]{1,6})_(?:\{([^{}]+)\}|([a-zA-Z](?:[+-][0-9a-zA-Z]+)?|[0-9]+|[a-zA-Z0-9]+(?:,[a-zA-Z0-9]+)+|[a-zA-Z0-9]+))/g;
   let subMatch: RegExpExecArray | null;
   while ((subMatch = subscriptRegex.exec(s)) !== null) {
     const base = subMatch[1];
     const sub = subMatch[2] || subMatch[3];
-    const cleanSub = sub ? sub.trim() : "";
+    const cleanSub = sub ? sub.replace(/\s+/g, "").trim() : "";
     const fullSym = `${base}_${cleanSub}`;
     subscriptedSymbols.push(fullSym);
   }
@@ -1418,6 +1425,8 @@ const SYMBOL_EQUIVALENCE_KEYWORDS: Record<string, string[]> = {
   ],
   "g": ["growth rate", "tốc độ tăng trưởng", "tăng trưởng"],
   "D": ["dividend", "cổ tức"],
+  "Div": ["dividend", "cổ tức"],
+  "div": ["dividend", "cổ tức"],
   "P": ["price", "stock price", "giá", "thị giá"],
   "T_C": ["tax", "corporate tax", "thuế", "thuế suất"],
   "t": ["tax", "tax rate", "period", "thời gian", "kỳ"],
@@ -1469,17 +1478,69 @@ function isSymbolGrounded(
     return true;
   }
 
-  // 3. For subscripted variables (e.g. P_0 -> match P0, P_0, or base P and index 0)
+  // 3. For subscripted variables (e.g. P_0 -> match P0, P_0, or base P and index 0; R_{t+1}, Div_t+1, etc.)
   if (symbol.includes("_")) {
-    const parts = symbol.split("_");
-    const base = parts[0].replace(/\\/g, "").toLowerCase();
-    const sub = parts[1].toLowerCase();
-    const compact = `${base}${sub}`;
+    const underscoreIdx = symbol.indexOf("_");
+    const baseRaw = symbol.slice(0, underscoreIdx).trim();
+    const subRaw = symbol.slice(underscoreIdx + 1).trim();
+    const base = baseRaw.replace(/\\/g, "").toLowerCase();
+    const cleanSub = subRaw.replace(/[{}]/g, "").replace(/\s+/g, "").toLowerCase();
+
+    // Normalized variants: compact (rt+1), space-separated (r t+1), underscore (r_t+1), braced (r_{t+1})
+    const compact = `${base}${cleanSub}`;
+    const spaceSep = `${base} ${cleanSub}`;
+    const underSep = `${base}_${cleanSub}`;
+    const braced = `${base}_{${cleanSub}}`;
+
+    const variants = [compact, spaceSep, underSep, braced, symbol.toLowerCase()];
+
+    // Add space-padded operator variants if subscript has +, -, or comma (e.g. "t + 1")
+    if (cleanSub.includes("+") || cleanSub.includes("-") || cleanSub.includes(",")) {
+      const subSpaced = cleanSub.replace(/([+\-,])/g, " $1 ");
+      variants.push(
+        `${base} ${subSpaced}`,
+        `${base}_${subSpaced}`,
+        `${base}_{${subSpaced}}`,
+        `${base}${subSpaced}`,
+      );
+    }
+
+    if (baseRaw.startsWith("\\")) {
+      const greekBase = baseRaw.toLowerCase();
+      variants.push(
+        `${greekBase}_${cleanSub}`,
+        `${greekBase}_{${cleanSub}}`,
+        `${greekBase} ${cleanSub}`,
+        `${greekBase}${cleanSub}`,
+      );
+    }
+
+    for (const v of variants) {
+      if (
+        normTarget.includes(v) ||
+        normLedger.includes(v) ||
+        normDeck.includes(v)
+      ) {
+        return true;
+      }
+    }
+
+    // Check adjacent occurrence of base identifier and subscript expression in target, ledger, or deck
+    const escapedBase = escapeRegExp(base);
+    const escapedSub = escapeRegExp(cleanSub).replace(/([+\-,])/g, "\\s*\\$1\\s*");
+    const basePattern = baseRaw.startsWith("\\")
+      ? `(?:${escapedBase}|${escapeRegExp(baseRaw.toLowerCase())})`
+      : escapedBase;
+
+    const adjacentRegex = new RegExp(
+      `(?<=^|[^\\p{L}\\p{N}_])${basePattern}[_\\s{()]*${escapedSub}(?=$|[^\\p{L}\\p{N}_])`,
+      "iu",
+    );
+
     if (
-      normTarget.includes(compact) ||
-      normLedger.includes(compact) ||
-      normDeck.includes(symbol.toLowerCase()) ||
-      normDeck.includes(compact)
+      adjacentRegex.test(convertedTarget) ||
+      adjacentRegex.test(normLedger) ||
+      adjacentRegex.test(convertedDeck)
     ) {
       return true;
     }
@@ -1499,7 +1560,9 @@ function isSymbolGrounded(
   // 5. Concept equivalence keywords (checked strictly on target slide or referenced ledger)
   const keywords =
     SYMBOL_EQUIVALENCE_KEYWORDS[symbol] ||
-    SYMBOL_EQUIVALENCE_KEYWORDS[symbol.replace(/_[a-zA-Z0-9]+$/, "")];
+    SYMBOL_EQUIVALENCE_KEYWORDS[
+      symbol.replace(/_[^{}]+$/, "").replace(/_\{[^{}]+\}$/, "")
+    ];
 
   if (keywords) {
     for (const kw of keywords) {

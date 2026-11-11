@@ -11,6 +11,11 @@ import {
   MAX_AUTO_OCR_BUDGET_USD,
 } from "@/lib/ingestion/parse-pdf";
 import type { MockPdfPage, ParsePdfOptions } from "@/lib/ingestion/parse-pdf";
+import {
+  parseSlideDeck,
+  isSlideMathCorrupted,
+  detectCorruptedMathPages,
+} from "@/lib/notes/parse-slides";
 
 const dummyPdfBytes = Buffer.from("%PDF-1.4\n%mock pdf\n%%EOF");
 const signal = () => new AbortController().signal;
@@ -508,6 +513,139 @@ describe("PDF Vision Triage & Multi-Signal Detection", () => {
       const entry0 = getPdfVisionCacheEntry("key-0");
       expect(entry0?.text).toBe("Updated 0");
       expect(entry0?.confidence).toBe(0.99);
+    });
+  });
+
+  describe("PUA & math symbol normalization in parsePdf", () => {
+    it("normalizes PUA math operators, delimiters, Greek letters, and arrows in native PDF text", async () => {
+      const mockPages: MockPdfPage[] = [
+        {
+          page: 1,
+          text: "Formula: \uF05B \uF0B4 \uF0B8 \uF0E5 \uF0D6 x \uF0B1 \uF02D \uF0A3 \uF0B3 \uF0BB \uF0E0 \uF0DF \uF0E1 \uF0E2 \uF0DC \uF05D",
+          width: 612,
+          height: 792,
+        },
+      ];
+
+      const result = await parsePdf(dummyPdfBytes, signal(), {
+        mockPages,
+      });
+
+      expect(result.sources).toHaveLength(1);
+      expect(result.sources[0].text).toBe(
+        "Formula: [ × ÷ ∑ √ x ± − ≤ ≥ ≈ → ← ↑ ↓ ⇒ ]",
+      );
+    });
+  });
+
+  describe("PUA & garbled math detection in parseSlideDeck triage", () => {
+    it("flags PUA and replacement glyphs (□, \uFFFD) as corrupted math", () => {
+      expect(isSlideMathCorrupted("Valuation formula: P0 = □ × D1")).toBe(true);
+      expect(isSlideMathCorrupted("Price = \uFFFD + \uFFFD")).toBe(true);
+      expect(isSlideMathCorrupted("Standard equation: E(R) = \uF028 Rf \uF029")).toBe(true);
+    });
+
+    it("flags dangling equations and lines ending with incomplete operators as corrupted math", () => {
+      expect(isSlideMathCorrupted("Corporate Finance:\nWACC = \n")).toBe(true);
+      expect(isSlideMathCorrupted("Model:\nPrice = Dividend / \n")).toBe(true);
+      expect(isSlideMathCorrupted("Formula: y = + = z")).toBe(true);
+    });
+
+    it("does not flag clean text or complete formulas as corrupted math", () => {
+      expect(
+        isSlideMathCorrupted(
+          "Corporate Finance: WACC = (E/V)*Re + (D/V)*Rd*(1-Tc) with taxes.",
+        ),
+      ).toBe(false);
+      expect(
+        isSlideMathCorrupted("Capital Asset Pricing Model: E(R) = Rf + beta*(E(Rm) - Rf)"),
+      ).toBe(false);
+    });
+
+    it("identifies corrupted math page numbers via detectCorruptedMathPages", () => {
+      const sources = [
+        { id: "slide-1", label: "Slide 1", text: "Clean lecture introduction slide with plenty of text." },
+        { id: "slide-2", label: "Slide 2", text: "Formula missing glyph: WACC = □ + Debt" },
+        { id: "slide-3", label: "Slide 3", text: "Capital Structure: Modigliani-Miller Theorem without taxes." },
+      ];
+      expect(detectCorruptedMathPages(sources)).toEqual([2]);
+    });
+
+    it("does not force-skip OCR via maxAutoOcrBudgetUsd: 0 when pages exhibit PUA/garbled math (>=40 native chars)", async () => {
+      const fakePdfFile = new File(
+        [Buffer.from("%PDF-1.4\n%dummy pdf content\n%%EOF")],
+        "garbled-math.pdf",
+        { type: "application/pdf" },
+      );
+
+      // Slide has >= 40 characters (65 chars), but has missing glyph □ and broken dangling equation
+      const mockPages: MockPdfPage[] = [
+        {
+          page: 1,
+          text: "Lecture 5 Corporate Finance: WACC equation = \n□ × □ + (D/V)*Rd",
+          width: 612,
+          height: 792,
+          images: [
+            {
+              data: new Uint8Array([10, 20, 30, 40]),
+              width: 250,
+              height: 200,
+              name: "wacc_crop",
+            },
+          ],
+        },
+      ];
+
+      const transcriber = vi.fn().mockResolvedValue({
+        text: "$$WACC = \\frac{E}{V}R_e + \\frac{D}{V}R_d(1 - T_c)$$",
+        confidence: 0.98,
+        costUsd: ESTIMATED_EQUATION_CROP_OCR_USD,
+      });
+
+      const result = await parseSlideDeck(fakePdfFile, {
+        mockPages,
+        visionTranscriber: transcriber,
+      });
+
+      // Transcriber must have been called for page 1 because corrupted math triggered fallback rescan
+      expect(transcriber).toHaveBeenCalledTimes(1);
+      expect(result.sources[0].text).toContain("$$WACC = \\frac{E}{V}R_e + \\frac{D}{V}R_d(1 - T_c)$$");
+    });
+
+    it("preserves maxAutoOcrBudgetUsd: 0 fast-path when slide text is clean without math corruption", async () => {
+      const fakePdfFile = new File(
+        [Buffer.from("%PDF-1.4\n%dummy pdf content\n%%EOF")],
+        "clean-math.pdf",
+        { type: "application/pdf" },
+      );
+
+      const mockPages: MockPdfPage[] = [
+        {
+          page: 1,
+          text: "Lecture 5 Corporate Finance: WACC = (E/V)*Re + (D/V)*Rd*(1-Tc) complete vector text.",
+          width: 612,
+          height: 792,
+          images: [
+            {
+              data: new Uint8Array([11, 22, 33, 44]),
+              width: 250,
+              height: 200,
+              name: "clean_img",
+            },
+          ],
+        },
+      ];
+
+      const transcriber = vi.fn();
+
+      const result = await parseSlideDeck(fakePdfFile, {
+        mockPages,
+        visionTranscriber: transcriber,
+      });
+
+      // Clean digital text: fast-path skips sequential OCR calls
+      expect(transcriber).not.toHaveBeenCalled();
+      expect(result.sources[0].text).toContain("WACC = (E/V)*Re + (D/V)*Rd*(1-Tc)");
     });
   });
 });
