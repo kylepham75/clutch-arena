@@ -9,7 +9,10 @@ import {
   type KeyTakeawaysItem,
   type VerifierOutput,
 } from "@/lib/schemas/notes";
-import { parseSlideNumber } from "@/lib/notes/formula-inventory";
+import {
+  parseSlideNumber,
+  getSafeOpenRouterReasoningEffort,
+} from "@/lib/notes/formula-inventory";
 
 export interface VerifiableNoteClaim {
   claimId: string; // Sequential "C1", "C2", "C3", ...
@@ -868,6 +871,13 @@ export async function verifyNoteClaimsWithLlm(options: {
     temperature: 0,
     abortSignal: options.signal,
     maxOutputTokens: 8_192,
+    providerOptions: {
+      openrouter: {
+        reasoning: {
+          effort: getSafeOpenRouterReasoningEffort(options.model),
+        },
+      },
+    },
   });
 
   const returnedVerdictsMap = new Map<string, ClaimVerificationItem>();

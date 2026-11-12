@@ -14,6 +14,8 @@ import { validateFile } from "./validate-file";
 import { REQUEST_TIMEOUT_MS } from "./limits";
 import { isAllowedOrigin } from "@/lib/utils";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { getAuthoritativeBillingRegion } from "@/lib/pricing/region";
+import type { BillingRegion } from "@/lib/pricing/tiers";
 import {
   checkRateLimit,
   getClientIp,
@@ -23,13 +25,16 @@ import {
   setSharedDeckCache,
   getCachedParsedDocument,
   sampleQuestionsFromCachedPool,
+  getRollingQuotaSnapshot,
   checkAndReserveDeckQuota,
   recordDeckGenerationCogs,
   rollbackDeckQuotaReservation,
+  toClientQuota,
+  type ClientQuotaSummary,
 } from "@/lib/rate-limit";
 import type { GenerationResult, ParsedDocument } from "@/lib/schemas/ingestion";
 
-export const SHARED_CACHE_PIPELINE_VERSION = "v1";
+export const SHARED_CACHE_PIPELINE_VERSION = "v2";
 
 function stripDistractorRationale<T extends Record<string, any>>(q: T): T {
   if (!q || typeof q !== "object") return q;
@@ -91,15 +96,15 @@ function isDegradedCachedDeck(cachedDeck: any, requestedCount: number): boolean 
 function getQuotaExceededMessage(reason?: string): string {
   switch (reason) {
     case "DAILY_BURST_EXCEEDED":
-      return "Daily deck generation burst limit reached. Please try again tomorrow or study from your unlocked decks.";
+      return "Rolling AI quota burst limit reached. Wait for your rolling window to refresh or study cached class decks (0% quota used).";
     case "DECK_CREDITS_EXCEEDED":
-      return "You have used all new deck credits for your current plan. Upgrade your plan to unlock more decks.";
     case "COGS_CEILING_EXCEEDED":
-      return "Subscription deck generation budget reached for this period. Cached class decks remain free and accessible.";
+    case "QUOTA_EXCEEDED":
+      return "Your rolling AI quota is at 0% remaining for this window. Shared cached decks remain available at 0% quota cost, or wait for your quota reset or upgrade your plan.";
     case "REGENERATION_LIMIT_EXCEEDED":
       return "Maximum free regenerations reached for this document.";
     default:
-      return "Deck generation quota exceeded. Please try again later or upgrade your plan.";
+      return "Your rolling AI quota is currently depleted (0% remaining). Shared cached decks remain available at 0% quota cost, or wait for your quota reset or upgrade your plan.";
   }
 }
 
@@ -142,7 +147,9 @@ export function createIngestionHandler(
     let reservedContentHash: string | null = null;
     let reservedCost = 0.02;
     let reservedIsRegeneration = false;
+    let reservedBillingRegion: BillingRegion = "VN";
     let useCheaperGenerator = false;
+    let clientQuota: ClientQuotaSummary | undefined;
     const json = (body: unknown, status = 200) =>
       Response.json(body, {
         status,
@@ -185,12 +192,22 @@ export function createIngestionHandler(
       const { file, options } = await readUpload(request, signal);
       validateFile(file);
       const clientIp = getClientIp(request);
+      const billingRegion = getAuthoritativeBillingRegion(request);
+      reservedBillingRegion = billingRegion;
       const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
       const isPaid =
         auth.tier === "cram_pass" ||
         auth.tier === "pro_monthly" ||
         auth.tier === "pro" ||
         auth.tier === "tutor";
+
+      const isQuotaTestBypass =
+        process.env.NODE_ENV === "test" &&
+        dependencies.quotaReservation === undefined &&
+        dependencies.getDeckCache === undefined &&
+        dependencies.setDeckCache === undefined &&
+        dependencies.recordCogs === undefined &&
+        dependencies.rollbackQuota === undefined;
 
       // Fail fast without parsing when rate limit is reached or generation cannot be configured.
       const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
@@ -203,9 +220,8 @@ export function createIngestionHandler(
               requestId,
               error: {
                 code: "RATE_LIMIT_EXCEEDED",
-                message: isPaid
-                  ? `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow.`
-                  : `Upload limit reached (max ${rateResult.limit} uploads per week on ${auth.tier === "guest" ? "Guest" : "Contender"} tier). Upgrade to Cram Pass or Pro for more uploads.`,
+                message:
+                  "Too many upload requests in a short burst. Please wait a moment and try again.",
               },
             },
             429,
@@ -262,20 +278,39 @@ export function createIngestionHandler(
             : {}),
         };
       } else {
-        document = await parseDoc(
-          file,
-          signal,
-          options.operation === "preview"
-            ? {
-                parsePdfOptions: {
-                  maxAutoOcrBudgetUsd: 0,
-                  visionTranscriber: async () => null,
-                },
+        let parseDocOptions: Parameters<typeof parseDoc>[2];
+        if (options.operation === "preview") {
+          parseDocOptions = {
+            parsePdfOptions: {
+              maxAutoOcrBudgetUsd: 0,
+              visionTranscriber: async () => null,
+            },
+          };
+        } else {
+          parseDocOptions = {
+            rescanPages: options.rescanPages,
+          };
+          if (options.operation === "generate" && !isQuotaTestBypass) {
+            try {
+              const preSnapshot = await getRollingQuotaSnapshot(
+                rateLimitKey,
+                auth.tier,
+                billingRegion,
+              );
+              if (preSnapshot && !preSnapshot.allowVisionOcr) {
+                parseDocOptions = {
+                  ...parseDocOptions,
+                  parsePdfOptions: {
+                    maxAutoOcrBudgetUsd: 0,
+                  },
+                };
               }
-            : {
-                rescanPages: options.rescanPages,
-              },
-        );
+            } catch {
+              // Ignore if rolling quota snapshot cannot be resolved in mocked tests
+            }
+          }
+        }
+        document = await parseDoc(file, signal, parseDocOptions);
       }
       if (options.operation === "preview")
         return json({ ok: true, requestId, operation: "preview", document });
@@ -309,14 +344,6 @@ export function createIngestionHandler(
         ? createHash("sha256").update(normalizedFocus).digest("hex").slice(0, 16)
         : "";
 
-      const isQuotaTestBypass =
-        process.env.NODE_ENV === "test" &&
-        dependencies.quotaReservation === undefined &&
-        dependencies.getDeckCache === undefined &&
-        dependencies.setDeckCache === undefined &&
-        dependencies.recordCogs === undefined &&
-        dependencies.rollbackQuota === undefined;
-
       const reservedCostUsd =
         auth.tier === "guest" || auth.tier === "contender" ? 0.02 : 0.035;
 
@@ -349,8 +376,11 @@ export function createIngestionHandler(
               ...cacheLookupKey,
               estimatedCostUsd: reservedCostUsd,
               allowHaikuOverflow: isPaid,
+              actionKind: "deck",
+              region: billingRegion,
             },
           );
+          clientQuota = quotaResult?.quota ? toClientQuota(quotaResult.quota) : undefined;
 
           if (!quotaResult.allowed) {
             return json(
@@ -361,6 +391,7 @@ export function createIngestionHandler(
                   code: quotaResult.reason ?? "QUOTA_EXCEEDED",
                   message: getQuotaExceededMessage(quotaResult.reason),
                 },
+                ...(clientQuota ? { quota: clientQuota } : {}),
               },
               429,
             );
@@ -375,9 +406,11 @@ export function createIngestionHandler(
             reservedActor = rateLimitKey;
             reservedTier = auth.tier;
             reservedContentHash = contentHash;
-            reservedCost = quotaResult.isHaikuOverflow
-              ? Math.min(reservedCostUsd, 0.028)
-              : reservedCostUsd;
+            reservedCost =
+              quotaResult.reservedCostUsd ??
+              (quotaResult.isHaikuOverflow
+                ? Math.min(reservedCostUsd, 0.028)
+                : reservedCostUsd);
             reservedIsRegeneration = Boolean(quotaResult.isRegeneration);
           }
 
@@ -489,6 +522,21 @@ export function createIngestionHandler(
             },
           };
 
+          if (!clientQuota && !isQuotaTestBypass) {
+            try {
+              const snapshot = await getRollingQuotaSnapshot(
+                rateLimitKey,
+                auth.tier,
+                billingRegion,
+              );
+              if (snapshot) {
+                clientQuota = toClientQuota(snapshot);
+              }
+            } catch {
+              // Safely ignore if quota snapshot is unavailable in partial mocks
+            }
+          }
+
           return json({
             ok: true,
             requestId,
@@ -498,6 +546,7 @@ export function createIngestionHandler(
             document,
             cached: true,
             ...(sanitizedStudyMetadata ? { studyMetadata: sanitizedStudyMetadata } : {}),
+            ...(clientQuota ? { quota: clientQuota } : {}),
             ...cachedResult,
           });
         }
@@ -532,7 +581,16 @@ export function createIngestionHandler(
               : reservedCost;
         const actualCostUsd = Number((tokenCostUsd + visionCostUsd).toFixed(6));
 
-        await recordCogs(rateLimitKey, auth.tier, actualCostUsd, reservedCost);
+        const cogsRecord = await recordCogs(
+          rateLimitKey,
+          auth.tier,
+          actualCostUsd,
+          reservedCost,
+          billingRegion,
+        );
+        if (cogsRecord?.quota) {
+          clientQuota = toClientQuota(cogsRecord.quota);
+        }
         quotaReserved = false;
 
         const questionsToStore = result.pack.questions.map((q) => {
@@ -583,6 +641,7 @@ export function createIngestionHandler(
         authenticated: auth.authenticated,
         tier: auth.tier,
         document,
+        ...(clientQuota ? { quota: clientQuota } : {}),
         ...result,
       });
     } catch (error) {
@@ -598,6 +657,7 @@ export function createIngestionHandler(
               reservedContentHash,
               reservedCost,
               reservedIsRegeneration,
+              reservedBillingRegion,
             );
           } else {
             await rollbackQuota(
@@ -605,6 +665,8 @@ export function createIngestionHandler(
               reservedTier,
               reservedContentHash,
               reservedCost,
+              undefined,
+              reservedBillingRegion,
             );
           }
         } catch (rollbackError) {

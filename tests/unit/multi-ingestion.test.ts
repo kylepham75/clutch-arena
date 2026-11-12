@@ -6,6 +6,14 @@ import {
   createMultiIngestionHandler,
   MULTI_SHARED_CACHE_PIPELINE_VERSION,
 } from "@/lib/ingestion/multi-handler";
+import {
+  resetQuotaLedgersForTests,
+  toClientQuota,
+  getUserQuotaLedger,
+  saveUserQuotaLedger,
+  type RollingQuotaSnapshot,
+} from "@/lib/rate-limit";
+import type { CogsBudgetStatus } from "@/lib/pricing/tiers";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
 import type { GenerationResult } from "@/lib/schemas/ingestion";
 import { studyText } from "../helpers/documents";
@@ -13,7 +21,52 @@ import { studyText } from "../helpers/documents";
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.useRealTimers();
+  resetQuotaLedgersForTests();
 });
+
+function makeQuotaSnapshot(
+  overrides: Partial<RollingQuotaSnapshot> = {},
+): RollingQuotaSnapshot {
+  const mode = overrides.mode ?? "full";
+  const degradationStatus: CogsBudgetStatus = {
+    mode,
+    spentUsd: 0.02,
+    reservedUsd: 0,
+    projectedUsd: 0.02,
+    ceilingUsd: 0.4,
+    utilizationRatio: 0.05,
+    targetQuestionCount: 25,
+    allowVisionOcr: mode === "full" || mode === "gentle",
+    allowBorderlineVision: mode === "full",
+    allowCrossFamilyVerifier: mode === "full" || mode === "gentle",
+    useCheaperGeneratorSlug: mode !== "full",
+    conciseExplanations: mode !== "full",
+    serveCachedPoolsOnly: mode === "halted",
+    bannerNotice: null,
+    ...(overrides.degradationStatus ?? {}),
+  };
+  return {
+    remainingPct: 95,
+    usedPct: 5,
+    resetsAt: "2026-11-13T00:00:00.000Z",
+    windowHours: 24,
+    bottleneckScope: "window",
+    mode,
+    windowBudgetUsd: 0.4,
+    windowRemainingUsd: 0.38,
+    guardBudgetUsd: 0.85,
+    guardRemainingUsd: 0.83,
+    cycleCeilingUsd: 3.8,
+    cycleRemainingUsd: 3.78,
+    effectiveRemainingUsd: 0.38,
+    allowVisionOcr: degradationStatus.allowVisionOcr,
+    allowBorderlineVision: degradationStatus.allowBorderlineVision,
+    useCheaperGeneratorSlug: degradationStatus.useCheaperGeneratorSlug,
+    serveCachedPoolsOnly: degradationStatus.serveCachedPoolsOnly,
+    ...overrides,
+    degradationStatus,
+  };
+}
 
 const mockResult: GenerationResult = {
   pack: mockMicroeconomics,
@@ -202,13 +255,34 @@ describe("multi ingestion HTTP handler", () => {
     expect(json.ok).toBe(true);
     expect(json.cached).toBe(true);
     expect(json.pack.questions.length).toBeLessThanOrEqual(5);
+    expect(json.quota).toBeDefined();
+    expect(json.quota).toMatchObject({
+      remainingPct: expect.any(Number),
+      usedPct: expect.any(Number),
+      windowHours: expect.any(Number),
+      bottleneckScope: expect.any(String),
+      mode: expect.any(String),
+    });
+    expect(json.quota.windowBudgetUsd).toBeUndefined();
+    expect(json.quota.cogsCeilingUsd).toBeUndefined();
     expect(getDeckCache).toHaveBeenCalledTimes(1);
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it("blocks multi-document generation with 429 and specific reason code when quota is exceeded", async () => {
+  it("blocks multi-document generation with 429, client quota payload, and specific reason code when quota is exceeded", async () => {
     const generate = vi.fn();
     const getDeckCache = vi.fn().mockResolvedValue(null);
+    const depletedSnapshot = makeQuotaSnapshot({
+      remainingPct: 0,
+      usedPct: 100,
+      mode: "halted",
+      bottleneckScope: "cycle",
+      resetsAt: null,
+      windowRemainingUsd: 0,
+      effectiveRemainingUsd: 0,
+      allowVisionOcr: false,
+      serveCachedPoolsOnly: true,
+    });
     const quotaReservation = vi.fn().mockResolvedValue({
       allowed: false,
       reason: "COGS_CEILING_EXCEEDED",
@@ -219,7 +293,8 @@ describe("multi ingestion HTTP handler", () => {
       creditsLimit: 60,
       dailyBurstUsed: 2,
       dailyBurstLimit: 6,
-      cogsStatus: {} as any,
+      cogsStatus: depletedSnapshot.degradationStatus,
+      quota: depletedSnapshot,
       ledger: {} as any,
     });
 
@@ -245,12 +320,18 @@ describe("multi ingestion HTTP handler", () => {
     expect(response.status).toBe(429);
     expect(json.ok).toBe(false);
     expect(json.error.code).toBe("COGS_CEILING_EXCEEDED");
+    expect(json.error.message).toContain("0% remaining");
+    expect(json.quota).toEqual(toClientQuota(depletedSnapshot));
+    expect(json.quota.windowBudgetUsd).toBeUndefined();
+    expect(json.quota.cogsCeilingUsd).toBeUndefined();
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it("records COGS and populates shared deck cache on multi-document cache miss", async () => {
+  it("records COGS with authoritative billingRegion and attaches client quota on multi-document cache miss", async () => {
     const generate = vi.fn().mockResolvedValue(mockResult);
     const getDeckCache = vi.fn().mockResolvedValue(null);
+    const reservedSnapshot = makeQuotaSnapshot({ remainingPct: 86, usedPct: 14 });
+    const settledSnapshot = makeQuotaSnapshot({ remainingPct: 82, usedPct: 18 });
     const quotaReservation = vi.fn().mockResolvedValue({
       allowed: true,
       cacheHit: false,
@@ -260,12 +341,14 @@ describe("multi ingestion HTTP handler", () => {
       creditsLimit: 60,
       dailyBurstUsed: 1,
       dailyBurstLimit: 6,
-      cogsStatus: {} as any,
+      cogsStatus: reservedSnapshot.degradationStatus,
+      quota: reservedSnapshot,
       ledger: {} as any,
     });
     const recordCogs = vi.fn().mockResolvedValue({
       ledger: {} as any,
-      cogsStatus: {} as any,
+      cogsStatus: settledSnapshot.degradationStatus,
+      quota: settledSnapshot,
     });
     const setDeckCache = vi.fn().mockResolvedValue({});
 
@@ -276,6 +359,7 @@ describe("multi ingestion HTTP handler", () => {
 
     const request = new Request("http://localhost:3000/api/ingest/multi", {
       method: "POST",
+      headers: { "x-vercel-ip-country": "VN" },
       body: form,
     });
 
@@ -292,13 +376,32 @@ describe("multi ingestion HTTP handler", () => {
 
     expect(response.status).toBe(200);
     expect(json.ok).toBe(true);
+    expect(json.quota).toEqual(toClientQuota(settledSnapshot));
+    expect(json.quota.windowBudgetUsd).toBeUndefined();
+    expect(json.quota.cogsCeilingUsd).toBeUndefined();
     expect(generate).toHaveBeenCalledTimes(1);
     expect(quotaReservation).toHaveBeenCalledTimes(1);
+    expect(quotaReservation).toHaveBeenCalledWith(
+      expect.stringContaining("ip:"),
+      "guest",
+      expect.any(String),
+      expect.objectContaining({
+        actionKind: "deck",
+        region: "VN",
+      }),
+    );
     expect(recordCogs).toHaveBeenCalledTimes(1);
+    expect(recordCogs).toHaveBeenCalledWith(
+      expect.stringContaining("ip:"),
+      "guest",
+      expect.any(Number),
+      expect.any(Number),
+      "VN",
+    );
     expect(setDeckCache).toHaveBeenCalledTimes(1);
     expect(setDeckCache).toHaveBeenCalledWith(
       expect.objectContaining({
-        pipelineVersion: "v1",
+        pipelineVersion: MULTI_SHARED_CACHE_PIPELINE_VERSION,
         questionPool: mockResult.pack.questions,
       }),
     );
@@ -353,6 +456,7 @@ describe("multi ingestion HTTP handler", () => {
       "guest",
       expect.any(String),
       0.02,
+      "ROW",
     );
   });
 
@@ -486,7 +590,7 @@ describe("multi ingestion HTTP handler", () => {
     expect(json.error.message).toContain("Multi-document synthesis requires Cram Pass or Season Pro");
   });
 
-  it("returns 429 when rateLimiter denies multi-ingest operation: preview", async () => {
+  it("returns 429 with burst-shield message when rateLimiter denies multi-ingest operation: preview", async () => {
     const verifyAuth = vi.fn().mockResolvedValue({
       authenticated: true,
       user: { id: "user-paid-1", email: "paid@example.com" },
@@ -515,6 +619,10 @@ describe("multi ingestion HTTP handler", () => {
     expect(response.status).toBe(429);
     expect(json.ok).toBe(false);
     expect(json.error.code).toBe("RATE_LIMIT_EXCEEDED");
+    expect(json.error.message).toContain("short burst");
+    expect(json.error.message).not.toContain("per week");
+    expect(json.error.message).not.toContain("Daily upload limit");
+    expect(response.headers.get("retry-after")).toBe("30");
     expect(rateLimiter).toHaveBeenCalledTimes(1);
     expect(rateLimiter).toHaveBeenCalledWith("user:user-paid-1", "ingest", "pro");
   });
@@ -550,5 +658,252 @@ describe("multi ingestion HTTP handler", () => {
     expect(json.operation).toBe("preview");
     expect(json.document).toBeDefined();
     expect(rateLimiter).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves ROW billingRegion from geo header and passes it with actionKind: deck into quotaReservation and recordCogs", async () => {
+    const generate = vi.fn().mockResolvedValue(mockResult);
+    const getDeckCache = vi.fn().mockResolvedValue(null);
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "user-row-1", email: "row@example.com" },
+      tier: "pro" as const,
+    });
+    const snap = makeQuotaSnapshot({ remainingPct: 75, usedPct: 25 });
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      reserved: true,
+      cacheHit: false,
+      creditConsumed: true,
+      isRegeneration: false,
+      creditsUsed: 1,
+      creditsLimit: 0,
+      dailyBurstUsed: 1,
+      dailyBurstLimit: 0,
+      cogsStatus: snap.degradationStatus,
+      quota: snap,
+      ledger: {} as any,
+    });
+    const recordCogs = vi.fn().mockResolvedValue({
+      ledger: {} as any,
+      cogsStatus: snap.degradationStatus,
+      quota: snap,
+    });
+
+    const form = new FormData();
+    form.append("files", new File([studyText], "notesA.txt", { type: "text/plain" }));
+    form.append("files", new File([studyText], "notesB.txt", { type: "text/plain" }));
+    form.set("options", JSON.stringify({ operation: "generate", questionCount: 5 }));
+
+    const request = new Request("http://localhost:3000/api/ingest/multi", {
+      method: "POST",
+      headers: { "x-vercel-ip-country": "US" },
+      body: form,
+    });
+
+    const handler = createMultiIngestionHandler({
+      generate,
+      verifyAuth,
+      checkConfiguration: () => {},
+      getDeckCache,
+      quotaReservation,
+      recordCogs,
+    });
+    const response = await handler(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(quotaReservation).toHaveBeenCalledWith(
+      "user:user-row-1",
+      "pro",
+      expect.any(String),
+      expect.objectContaining({
+        actionKind: "deck",
+        region: "ROW",
+      }),
+    );
+    expect(recordCogs).toHaveBeenCalledWith(
+      "user:user-row-1",
+      "pro",
+      expect.any(Number),
+      expect.any(Number),
+      "ROW",
+    );
+    expect(json.quota).toEqual(toClientQuota(snap));
+  });
+
+  it("returns rolling burst-limit 429 message and client quota on DAILY_BURST_EXCEEDED", async () => {
+    const generate = vi.fn();
+    const getDeckCache = vi.fn().mockResolvedValue(null);
+    const burstSnapshot = makeQuotaSnapshot({
+      remainingPct: 0,
+      usedPct: 100,
+      mode: "halted",
+      allowVisionOcr: false,
+      serveCachedPoolsOnly: true,
+    });
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: false,
+      reason: "DAILY_BURST_EXCEEDED",
+      cacheHit: false,
+      creditConsumed: false,
+      isRegeneration: false,
+      creditsUsed: 6,
+      creditsLimit: 0,
+      dailyBurstUsed: 6,
+      dailyBurstLimit: 0,
+      cogsStatus: burstSnapshot.degradationStatus,
+      quota: burstSnapshot,
+      ledger: {} as any,
+    });
+
+    const form = new FormData();
+    form.append("files", new File([studyText], "notesA.txt", { type: "text/plain" }));
+    form.append("files", new File([studyText], "notesB.txt", { type: "text/plain" }));
+    form.set("options", JSON.stringify({ operation: "generate", questionCount: 5 }));
+
+    const request = new Request("http://localhost:3000/api/ingest/multi", {
+      method: "POST",
+      body: form,
+    });
+
+    const handler = createMultiIngestionHandler({
+      generate,
+      checkConfiguration: () => {},
+      getDeckCache,
+      quotaReservation,
+    });
+    const response = await handler(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(json.error.code).toBe("DAILY_BURST_EXCEEDED");
+    expect(json.error.message).toContain("Rolling AI quota burst limit reached");
+    expect(json.error.message).not.toContain("max 2 uploads per week");
+    expect(json.error.message).not.toContain("Daily upload limit reached");
+    expect(json.quota).toEqual(toClientQuota(burstSnapshot));
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("passes { parsePdfOptions: { maxAutoOcrBudgetUsd: 0 } } to parseMultiDocs for operation: preview and for operation: generate when pre-snapshot allowVisionOcr is false", async () => {
+    const mockCompositeDoc = {
+      fileName: "composite.txt",
+      fileSha256: "abc123sha",
+      pageCount: 2,
+      characterCount: 200,
+      format: "txt",
+      warnings: [],
+      sources: [
+        { id: "doc1-1", label: "Doc 1 - Item 1", text: "Text 1" },
+        { id: "doc2-1", label: "Doc 2 - Item 1", text: "Text 2" },
+      ],
+    };
+
+    const parseMultiDocs = vi.fn().mockResolvedValue({
+      compositeDocument: mockCompositeDoc,
+      documents: [mockCompositeDoc],
+    });
+
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "user-multi-ocr-gated" },
+      tier: "cram_pass",
+      tierExpiresAt: null,
+    });
+
+    // 1. Operation: 'preview' must pass { parsePdfOptions: { maxAutoOcrBudgetUsd: 0 } }
+    const previewForm = new FormData();
+    previewForm.append("files", new File([studyText], "docA.txt", { type: "text/plain" }));
+    previewForm.append("files", new File([studyText], "docB.txt", { type: "text/plain" }));
+    previewForm.set("options", JSON.stringify({ operation: "preview" }));
+
+    const previewReq = new Request("http://localhost:3000/api/ingest/multi", {
+      method: "POST",
+      body: previewForm,
+    });
+
+    const previewHandler = createMultiIngestionHandler({
+      parseMultiDocs,
+      verifyAuth,
+      checkConfiguration: () => {},
+    });
+
+    const previewRes = await previewHandler(previewReq);
+    expect(previewRes.status).toBe(200);
+    expect(parseMultiDocs).toHaveBeenCalledTimes(1);
+    expect(parseMultiDocs).toHaveBeenLastCalledWith(
+      expect.any(Array),
+      expect.any(Object),
+      {
+        parsePdfOptions: {
+          maxAutoOcrBudgetUsd: 0,
+        },
+      },
+    );
+
+    parseMultiDocs.mockClear();
+
+    // 2. Operation: 'generate' with allowVisionOcr = false in preSnapshot
+    const userId = "user-multi-ocr-gated";
+    const actorKey = `user:${userId}`;
+    const ledger = await getUserQuotaLedger(actorKey, "cram_pass", "ROW");
+    // $0.58 spent out of $0.60 ROW budget (>90% utilization -> mode: 'hard', allowVisionOcr: false)
+    ledger.windowSpentUsd = 0.58;
+    ledger.weeklySpentUsd = 0.58;
+    ledger.cogsSpentUsd = 0.58;
+    await saveUserQuotaLedger(ledger);
+
+    const generate = vi.fn().mockResolvedValue(mockResult);
+    const getDeckCache = vi.fn().mockResolvedValue(null);
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      reserved: true,
+      cacheHit: false,
+      creditConsumed: true,
+      isRegeneration: false,
+      creditsUsed: 1,
+      creditsLimit: 10,
+      dailyBurstUsed: 1,
+      dailyBurstLimit: 10,
+      cogsStatus: {} as any,
+      ledger: {} as any,
+    });
+    const recordCogs = vi.fn().mockResolvedValue({
+      ledger: {} as any,
+      cogsStatus: {} as any,
+      quota: {} as any,
+    });
+
+    const generateForm = new FormData();
+    generateForm.append("files", new File([studyText], "docA.txt", { type: "text/plain" }));
+    generateForm.append("files", new File([studyText], "docB.txt", { type: "text/plain" }));
+    generateForm.set("options", JSON.stringify({ operation: "generate", questionCount: 10 }));
+
+    const generateReq = new Request("http://localhost:3000/api/ingest/multi", {
+      method: "POST",
+      body: generateForm,
+    });
+
+    const generateHandler = createMultiIngestionHandler({
+      parseMultiDocs,
+      generate,
+      verifyAuth,
+      checkConfiguration: () => {},
+      getDeckCache,
+      quotaReservation,
+      recordCogs,
+    });
+
+    const generateRes = await generateHandler(generateReq);
+    expect(generateRes.status).toBe(200);
+    expect(parseMultiDocs).toHaveBeenCalledTimes(1);
+    expect(parseMultiDocs).toHaveBeenLastCalledWith(
+      expect.any(Array),
+      expect.any(Object),
+      {
+        parsePdfOptions: {
+          maxAutoOcrBudgetUsd: 0,
+        },
+      },
+    );
   });
 });

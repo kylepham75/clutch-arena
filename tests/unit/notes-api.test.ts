@@ -15,7 +15,7 @@ import {
   setSharedDeckCache,
   computeFileSha256,
   computeContentHash,
-  rollbackDeckQuotaReservation,
+  toClientQuota,
 } from "@/lib/rate-limit";
 
 const NOTES_SHARED_CACHE_PIPELINE_VERSION = "notes-v1";
@@ -58,22 +58,90 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     resetQuotaLedgersForTests();
   });
 
-  it("rejects Free / Contender tier with 403 PRO_SUBSCRIPTION_REQUIRED", async () => {
+  it("rejects unauthenticated / guest requests with 401 UNAUTHENTICATED", async () => {
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: "Guest_Slides.pptx",
+        sources: [{ id: "slide-1", label: "Slide 1", text: "Test slide content" }],
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(401);
+
+    const data = await response.json();
+    expect(data.ok).toBe(false);
+    expect(data.error.code).toBe("UNAUTHENTICATED");
+
+    const guestHeaderReq = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "guest",
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: "Guest_Slides.pptx",
+        sources: [{ id: "slide-1", label: "Slide 1", text: "Test slide content" }],
+      }),
+    });
+
+    const guestRes = await POST(guestHeaderReq);
+    expect(guestRes.status).toBe(401);
+    const guestData = await guestRes.json();
+    expect(guestData.ok).toBe(false);
+    expect(guestData.error.code).toBe("UNAUTHENTICATED");
+  });
+
+  it("authorizes signed-in Free / Contender tier inside 3d rolling % quota and passes tier: 'contender' for 1-section concise notes", async () => {
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(mockNote);
+
     const request = new NextRequest("http://localhost:3000/api/notes/generate", {
       method: "POST",
       headers: {
         "x-test-tier": "contender",
+        "x-test-user-id": "contender-notes-user-1",
+        "x-enforce-quota": "true",
         origin: "http://localhost:3000",
+        "content-type": "application/json",
       },
+      body: JSON.stringify({
+        fileName: "Intro_Econ.pptx",
+        sources: [
+          {
+            id: "slide-1",
+            label: "Slide 1",
+            text: "Supply and Demand equilibrium occurs where quantity demanded equals quantity supplied.",
+          },
+        ],
+      }),
     });
 
     const response = await POST(request);
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
 
     const data = await response.json();
-    expect(data.ok).toBe(false);
-    expect(data.error.code).toBe("PRO_SUBSCRIPTION_REQUIRED");
-    expect(data.error.message).toContain("Pro Tier");
+    expect(data.ok).toBe(true);
+    expect(data.note).toEqual(mockNote);
+    expect(data.dailyLimit).toBeUndefined();
+    expect(data.dailyRemaining).toBeUndefined();
+    expect(data.quota).toBeDefined();
+    expect(data.quota.windowHours).toBe(72);
+    expect(data.quota.remainingPct).toBeLessThan(100);
+    expect(data.quota.usedPct).toBe(100 - data.quota.remainingPct);
+    expect(data.quota).not.toHaveProperty("windowRemainingUsd");
+    expect(data.quota).not.toHaveProperty("cogsSpentUsd");
+    expect(vi.mocked(generateClutchNote)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tier: "contender",
+        fileName: "Intro_Econ.pptx",
+      }),
+    );
   });
 
   it("authorizes Pro tier with valid slide content, synthesizes notes, and returns { ok: true, note, warnings }", async () => {
@@ -496,11 +564,18 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     expect(firstData.ok).toBe(true);
     expect(firstData.note).toEqual(mockNote);
     expect(firstData.cached).toBeUndefined();
+    expect(firstData.dailyLimit).toBeUndefined();
+    expect(firstData.dailyRemaining).toBeUndefined();
+    expect(firstData.quota).toBeDefined();
+    expect(firstData.quota.windowHours).toBe(24);
+    expect(firstData.quota.remainingPct).toBeLessThanOrEqual(100);
     expect(vi.mocked(generateClutchNote)).toHaveBeenCalledTimes(1);
 
-    const ledger = await getUserQuotaLedger("user-notes-quota-1", "pro");
-    expect(ledger.deckCreditsUsed).toBe(1);
+    const ledger = await getUserQuotaLedger("user-notes-quota-1", "pro", "ROW");
+    expect(ledger.deckCreditsUsed).toBe(0);
     expect(ledger.cogsSpentUsd).toBeGreaterThan(0);
+    expect(ledger.windowSpentUsd).toBeGreaterThan(0);
+    expect(ledger.cogsReservedUsd).toBe(0);
 
     const cachedEntry = await getSharedDeckCache({
       contentHash,
@@ -512,19 +587,22 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     });
     expect(cachedEntry?.clutchNote).toEqual(mockNote);
 
-    // 2. Second request: cache hit -> bypasses generateClutchNote and returns cached: true
+    // 2. Second request: cache hit -> bypasses generateClutchNote and returns cached: true with 0%-cost quota
     const secondRes = await POST(makeRequest());
     expect(secondRes.status).toBe(200);
     const secondData = await secondRes.json();
     expect(secondData.ok).toBe(true);
     expect(secondData.cached).toBe(true);
     expect(secondData.note).toEqual(mockNote);
+    expect(secondData.quota).toEqual(firstData.quota);
     expect(vi.mocked(generateClutchNote)).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks notes generation with 429 and specific reason code when user quota is exhausted", async () => {
-    const exhaustedLedger = await getUserQuotaLedger("user-notes-exhausted", "cram_pass");
-    exhaustedLedger.deckCreditsUsed = exhaustedLedger.deckCreditsLimit;
+  it("blocks notes generation with 429 and quota summary when user rolling % quota is exhausted", async () => {
+    const exhaustedLedger = await getUserQuotaLedger("user-notes-exhausted", "cram_pass", "ROW");
+    exhaustedLedger.windowSpentUsd = 0.6;
+    exhaustedLedger.weeklySpentUsd = 0.6;
+    exhaustedLedger.cogsSpentUsd = 0.6;
     await saveUserQuotaLedger(exhaustedLedger);
 
     const request = new NextRequest("http://localhost:3000/api/notes/generate", {
@@ -553,7 +631,22 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
 
     const data = await response.json();
     expect(data.ok).toBe(false);
-    expect(data.error.code).toBe("DECK_CREDITS_EXCEEDED");
+    expect(data.error.code).toBe("COGS_CEILING_EXCEEDED");
+    expect(data.quota).toEqual(
+      toClientQuota(
+        await rateLimitModule.getRollingQuotaSnapshot(
+          "user-notes-exhausted",
+          "cram_pass",
+          "ROW",
+        ),
+      ),
+    );
+    expect(data.quota.remainingPct).toBe(0);
+    expect(data.quota.usedPct).toBe(100);
+    expect(data.quota.mode).toBe("halted");
+    expect(data.quota).not.toHaveProperty("cogsSpentUsd");
+    expect(data.quota).not.toHaveProperty("windowBudgetUsd");
+    expect(data.quota).not.toHaveProperty("effectiveRemainingUsd");
     expect(vi.mocked(generateClutchNote)).not.toHaveBeenCalled();
   });
 
@@ -593,16 +686,21 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     expect(data.ok).toBe(false);
     expect(data.error.code).toBe("SYNTHESIS_FAILED");
     expect(rollbackSpy).toHaveBeenCalledTimes(1);
-    expect(rollbackSpy).toHaveBeenCalledWith(
-      "user-notes-rollback",
-      "pro",
-      expect.any(String),
-      0.02,
-    );
+    expect(rollbackSpy).toHaveBeenCalledWith({
+      userId: "user-notes-rollback",
+      tier: "pro",
+      contentHash: expect.any(String),
+      reservedCostUsd: 0.02,
+      isRegeneration: false,
+      actionKind: "notes",
+      region: "ROW",
+    });
 
-    // Verify user quota ledger was rolled back (0 credits consumed, 0 COGS reserved)
-    const ledger = await getUserQuotaLedger("user-notes-rollback", "pro");
+    // Verify user quota ledger was rolled back (0 reserved COGS across windows)
+    const ledger = await getUserQuotaLedger("user-notes-rollback", "pro", "ROW");
     expect(ledger.deckCreditsUsed).toBe(0);
+    expect(ledger.windowReservedUsd).toBe(0);
+    expect(ledger.weeklyReservedUsd).toBe(0);
     expect(ledger.cogsReservedUsd).toBe(0);
   });
 
@@ -896,5 +994,314 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
       "Lecture Notes:\n[ √ x ] CAPM: E(R) = Rf + beta*(E(Rm) - Rf)",
     );
     expect(callArgs.formulaInventory).toBeDefined();
+  });
+
+  it("enforces anti-spam burst shield (contender = 10/10m) with 429 RATE_LIMIT_EXCEEDED and zero dailyLimit/dailyRemaining or raw USD leaks", async () => {
+    const contenderUserId = `contender-burst-cap-${Date.now()}`;
+
+    for (let i = 1; i <= 10; i++) {
+      vi.mocked(generateClutchNote).mockResolvedValueOnce(mockNote);
+      // Isolate 10-minute burst shield from the 72h $0.08 rolling quota ceiling
+      const ledger = await getUserQuotaLedger(contenderUserId, "contender", "ROW");
+      ledger.windowSpentUsd = 0;
+      ledger.weeklySpentUsd = 0;
+      ledger.cogsSpentUsd = 0;
+      await saveUserQuotaLedger(ledger);
+
+      const req = new NextRequest("http://localhost:3000/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "contender",
+          "x-test-user-id": contenderUserId,
+          "x-enforce-rate-limit": "true",
+          origin: "http://localhost:3000",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          fileName: `Deck_${i}.pptx`,
+          sources: [
+            {
+              id: "slide-1",
+              label: "Slide 1",
+              text: `Unique study slide content number ${i} for burst shield verification.`,
+            },
+          ],
+        }),
+      });
+
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.dailyLimit).toBeUndefined();
+      expect(data.dailyRemaining).toBeUndefined();
+      expect(data.quota).toBeDefined();
+      expect(data.quota).not.toHaveProperty("cogsSpentUsd");
+      expect(data.quota).not.toHaveProperty("windowRemainingUsd");
+    }
+
+    const blockedReq = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "contender",
+        "x-test-user-id": contenderUserId,
+        "x-enforce-rate-limit": "true",
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: "Deck_11.pptx",
+        sources: [
+          {
+            id: "slide-1",
+            label: "Slide 1",
+            text: "Unique study slide content number 11 exceeding contender 10m burst shield.",
+          },
+        ],
+      }),
+    });
+
+    const blockedRes = await POST(blockedReq);
+    expect(blockedRes.status).toBe(429);
+    expect(blockedRes.headers.get("Retry-After")).toBeTruthy();
+    const blockedData = await blockedRes.json();
+    expect(blockedData.ok).toBe(false);
+    expect(blockedData.error.code).toBe("RATE_LIMIT_EXCEEDED");
+    expect(blockedData.dailyLimit).toBeUndefined();
+    expect(blockedData.dailyRemaining).toBeUndefined();
+  });
+
+  it("gates Vision OCR (maxAutoOcrBudgetUsd: 0) when rolling quota snapshot has allowVisionOcr = false, and reserves quota with actionKind: 'notes'", async () => {
+    const reserveSpy = vi.spyOn(rateLimitModule, "checkAndReserveDeckQuota");
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(mockNote);
+
+    const userId = `user-ocr-gated-${Date.now()}`;
+    const ledger = await getUserQuotaLedger(userId, "cram_pass", "ROW");
+    // 93.3% used of $0.60 ROW budget -> mode: "hard", allowVisionOcr: false, but $0.04 remains (>= $0.004 minHeadroom)
+    ledger.windowSpentUsd = 0.56;
+    ledger.weeklySpentUsd = 0.56;
+    ledger.cogsSpentUsd = 0.56;
+    await saveUserQuotaLedger(ledger);
+
+    const slideSources = [
+      {
+        id: "slide-1",
+        label: "Slide 1",
+        text: "Portfolio Variance and Efficient Frontier derivation.",
+      },
+    ];
+    const fileBytes = Buffer.from("dummy-deck-content-for-ocr-gating-test");
+    const fileSha256 = computeFileSha256(fileBytes);
+    const contentHash = computeContentHash({
+      normalizedText: slideSources[0].text,
+      pageCount: 1,
+    });
+
+    const parseSpy = vi.spyOn(parseSlidesModule, "parseSlideDeck").mockResolvedValueOnce({
+      fileName: "Efficient_Frontier.pptx",
+      slideCount: 1,
+      sources: slideSources,
+      warnings: [],
+      characterCount: slideSources[0].text.length,
+      formulaInventory: [],
+      contentHash,
+      fileSha256,
+      format: "pptx",
+    });
+
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new File([fileBytes], "Efficient_Frontier.pptx", {
+        type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      }),
+    );
+
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "cram_pass",
+        "x-test-user-id": userId,
+        "x-enforce-quota": "true",
+        origin: "http://localhost:3000",
+      },
+      body: formData,
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+
+    expect(parseSpy).toHaveBeenCalledWith(expect.any(File), { maxAutoOcrBudgetUsd: 0 });
+    expect(reserveSpy).toHaveBeenCalledWith(
+      userId,
+      "cram_pass",
+      contentHash,
+      expect.objectContaining({
+        actionKind: "notes",
+        region: "ROW",
+      }),
+    );
+
+    const data = await response.json();
+    expect(data.ok).toBe(true);
+    expect(data.quota).toBeDefined();
+    expect(data.quota.mode).toBe("hard");
+  });
+
+  it("serves 0%-cost shared cache hit with quota summary even when rolling quota is at 0%", async () => {
+    const userId = `user-zero-quota-cache-hit-${Date.now()}`;
+    const ledger = await getUserQuotaLedger(userId, "contender", "ROW");
+    ledger.windowSpentUsd = 0.08;
+    ledger.weeklySpentUsd = 0.08;
+    ledger.cogsSpentUsd = 0.08;
+    await saveUserQuotaLedger(ledger);
+
+    const fileBytes = Buffer.from("cached-deck-for-zero-quota-user");
+    const fileSha256 = computeFileSha256(fileBytes);
+    await setSharedDeckCache({
+      contentHash: "synthetic-zero-quota-cache-hash",
+      fileSha256,
+      language: "en",
+      mode: "notes",
+      focusHash: "",
+      pipelineVersion: "notes-free-v1",
+      questionPool: [],
+      clutchNote: mockNote,
+    });
+
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new File([fileBytes], "cached-zero-quota.pptx", {
+        type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      }),
+    );
+
+    const request = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "contender",
+        "x-test-user-id": userId,
+        "x-enforce-quota": "true",
+        origin: "http://localhost:3000",
+      },
+      body: formData,
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.ok).toBe(true);
+    expect(data.cached).toBe(true);
+    expect(data.note).toEqual(mockNote);
+    expect(data.quota).toMatchObject({
+      remainingPct: 0,
+      usedPct: 100,
+      mode: "halted",
+      windowHours: 72,
+    });
+    expect(vi.mocked(generateClutchNote)).not.toHaveBeenCalled();
+  });
+
+  it("enforces cache isolation between Free (notes-free-v1) and Paid (notes-v1) tiers", async () => {
+    const paidOnlyNote: ClutchNote = {
+      ...mockNote,
+      id: "note-paid-exclusive",
+      title: "PAID EXCLUSIVE NOTE",
+    };
+    const freeOnlyNote: ClutchNote = {
+      ...mockNote,
+      id: "note-free-exclusive",
+      title: "FREE CONCISE NOTE",
+    };
+
+    // 1. Seed Paid entry under notes-v1
+    const fileBytesPaid = Buffer.from("paid-deck-content-isolation-test");
+    const fileSha256Paid = computeFileSha256(fileBytesPaid);
+    await setSharedDeckCache({
+      contentHash: "synthetic-paid-isolation-hash",
+      fileSha256: fileSha256Paid,
+      language: "en",
+      mode: "notes",
+      focusHash: "",
+      pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION, // "notes-v1"
+      questionPool: [],
+      clutchNote: paidOnlyNote,
+    });
+
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(freeOnlyNote);
+
+    // Contender request for the Paid file must MISS cache (looks for notes-free-v1) and NOT receive the paid note
+    const contenderForm = new FormData();
+    contenderForm.append(
+      "file",
+      new File([fileBytesPaid], "paid-lecture.pptx", {
+        type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      }),
+    );
+    const contenderReq = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "contender",
+        "x-test-user-id": "contender-isolation-user",
+        origin: "http://localhost:3000",
+      },
+      body: contenderForm,
+    });
+
+    const contenderRes = await POST(contenderReq);
+    expect(contenderRes.status).toBe(200);
+    const contenderData = await contenderRes.json();
+    expect(contenderData.ok).toBe(true);
+    expect(contenderData.cached).toBeUndefined(); // missed cache!
+    expect(contenderData.note.id).not.toBe("note-paid-exclusive");
+    expect(vi.mocked(generateClutchNote)).toHaveBeenCalledWith(
+      expect.objectContaining({ tier: "contender" }),
+    );
+
+    vi.mocked(generateClutchNote).mockClear();
+
+    // 2. Seed Free entry under notes-free-v1
+    const fileBytesFree = Buffer.from("free-deck-content-isolation-test");
+    const fileSha256Free = computeFileSha256(fileBytesFree);
+    await setSharedDeckCache({
+      contentHash: "synthetic-free-isolation-hash",
+      fileSha256: fileSha256Free,
+      language: "en",
+      mode: "notes",
+      focusHash: "",
+      pipelineVersion: "notes-free-v1",
+      questionPool: [],
+      clutchNote: freeOnlyNote,
+    });
+
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(paidOnlyNote);
+
+    // Pro request for the Free file must MISS cache (looks for notes-v1) and NOT receive the free note
+    const proForm = new FormData();
+    proForm.append(
+      "file",
+      new File([fileBytesFree], "free-lecture.pptx", {
+        type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      }),
+    );
+    const proReq = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "pro",
+        "x-test-user-id": "pro-isolation-user",
+        origin: "http://localhost:3000",
+      },
+      body: proForm,
+    });
+
+    const proRes = await POST(proReq);
+    expect(proRes.status).toBe(200);
+    const proData = await proRes.json();
+    expect(proData.ok).toBe(true);
+    expect(proData.cached).toBeUndefined(); // missed cache!
+    expect(proData.note.id).not.toBe("note-free-exclusive");
+    expect(vi.mocked(generateClutchNote)).toHaveBeenCalledWith(
+      expect.objectContaining({ tier: "pro" }),
+    );
   });
 });

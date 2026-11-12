@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Target,
   ArrowRight,
+  Lock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MathText } from "@/components/ui/math-text";
@@ -61,11 +62,40 @@ export function useLanguage() {
   };
 }
 
-interface NoteRendererProps {
+let realUseUserTier:
+  | (() => { limits?: { canExportCheatSheet?: boolean } })
+  | null = null;
+
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const tierHook = require("@/hooks/use-user-tier");
+  if (tierHook && typeof tierHook.useUserTier === "function") {
+    realUseUserTier = tierHook.useUserTier;
+  }
+} catch {
+  // Graceful fallback in environments where hooks/use-user-tier cannot be resolved.
+}
+
+function useSafeUserTier() {
+  if (realUseUserTier) {
+    try {
+      return realUseUserTier();
+    } catch {
+      // Fallback if called outside provider
+    }
+  }
+  return {
+    limits: { canExportCheatSheet: false },
+  };
+}
+
+export interface NoteRendererProps {
   note: ClutchNote;
   onReset: () => void;
   onCreateQuiz?: (questionCount?: number) => void;
   isCreatingQuiz?: boolean;
+  canExportPdf?: boolean;
+  onUpgradeClick?: () => void;
 }
 
 interface UncapturedFormulaItem {
@@ -764,10 +794,19 @@ export function NoteRenderer({
   onReset,
   onCreateQuiz,
   isCreatingQuiz = false,
+  canExportPdf,
+  onUpgradeClick,
 }: NoteRendererProps) {
   const { language, t } = useLanguage();
+  const userTier = useSafeUserTier();
+  const canExportCheatSheet =
+    typeof canExportPdf === "boolean"
+      ? canExportPdf
+      : Boolean(userTier?.limits?.canExportCheatSheet);
+  const isVi = language === "vi";
   const [copied, setCopied] = useState(false);
   const [quizCount, setQuizCount] = useState<number>(15);
+  const [showPdfUpgradePrompt, setShowPdfUpgradePrompt] = useState(false);
 
   const displayNoiseRate =
     note.noiseReductionRate > 0 && note.noiseReductionRate <= 1
@@ -801,6 +840,14 @@ export function NoteRenderer({
   };
 
   const handleExportPdf = () => {
+    if (!canExportCheatSheet) {
+      if (onUpgradeClick) {
+        onUpgradeClick();
+      } else {
+        setShowPdfUpgradePrompt(true);
+      }
+      return;
+    }
     exportClutchNotePdf(note);
   };
 
@@ -861,14 +908,35 @@ export function NoteRenderer({
             <span>{copied ? t.notes.copiedBtn : t.notes.copyMarkdownBtn}</span>
           </Button>
 
-          <Button
-            size="sm"
-            onClick={handleExportPdf}
-            className="bg-[#e96b44] hover:bg-[#d95e37] text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
-          >
-            <Printer size={14} />
-            <span>{t.notes.exportPdfBtn}</span>
-          </Button>
+          {canExportCheatSheet ? (
+            <Button
+              size="sm"
+              onClick={handleExportPdf}
+              className="bg-[#e96b44] hover:bg-[#d95e37] text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+            >
+              <Printer size={14} />
+              <span>{t.notes.exportPdfBtn}</span>
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleExportPdf}
+              title={
+                isVi
+                  ? "Nâng cấp lên Vé Ôn Thi hoặc Pro để xuất PDF"
+                  : "Upgrade to Cram Pass or Pro to export PDF"
+              }
+              aria-label={`${t.notes.exportPdfBtn} (${isVi ? "Cần nâng cấp Pro" : "Pro Upgrade Required"})`}
+              className="border-[#fde68a] bg-[#fffbeb] hover:bg-[#fef3c7] text-[#92400e] text-xs font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer"
+            >
+              <Lock size={13} className="text-[#b45309]" />
+              <span>{t.notes.exportPdfBtn}</span>
+              <span className="px-1.5 py-0.5 rounded bg-[#fde68a]/80 text-[#92400e] text-[10px] font-black uppercase tracking-wider">
+                PRO
+              </span>
+            </Button>
+          )}
 
           {onCreateQuiz && (
             <Button
@@ -891,6 +959,29 @@ export function NoteRenderer({
           )}
         </div>
       </div>
+
+      {showPdfUpgradePrompt && !canExportCheatSheet && (
+        <div
+          role="status"
+          className="bg-[#fffbeb] border border-[#fde68a] rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs text-[#92400e] shadow-2xs"
+        >
+          <div className="flex items-center gap-2 font-medium">
+            <Lock size={14} className="text-[#b45309] shrink-0" />
+            <span>
+              {isVi
+                ? "Xuất PDF chuẩn A4 dành cho gói Vé Ôn Thi 7 Ngày, Pro và Giảng Viên."
+                : "PDF cheat sheet export is available on Cram Pass, Pro, and Tutor plans."}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowPdfUpgradePrompt(false)}
+            className="text-xs font-bold text-[#b45309] hover:text-[#78350f] cursor-pointer"
+          >
+            {isVi ? "Đóng" : "Dismiss"}
+          </button>
+        </div>
+      )}
 
       {/* Single Continuous Concise Study Handout Sheet */}
       <article className="bg-white border border-[#dcded6] rounded-xl px-6 py-8 sm:px-14 sm:py-12 shadow-sm relative overflow-hidden">

@@ -44,10 +44,10 @@ vi.mock("@/lib/supabase/server", () => ({
   })),
 }));
 
-import { verifyProAccess, isAuthorizedForNotes } from "@/lib/auth/notes-guard";
+import { verifyNotesAccess, verifyProAccess, isAuthorizedForNotes } from "@/lib/auth/notes-guard";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
 
-describe("Clutch Notes AI Pro-Tier Access Guard", () => {
+describe("Clutch Notes AI Access Guard (Unified Rolling % Quota)", () => {
   beforeEach(() => {
     mockUser = null;
     mockSubscription = null;
@@ -60,12 +60,26 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
       method: "POST",
     });
 
-    const result = await verifyProAccess(request);
+    const result = await verifyNotesAccess(request);
     expect(result.authorized).toBe(false);
     expect(result.reason).toBe("UNAUTHENTICATED");
   });
 
-  it("rejects free tier ('contender') users with PRO_REQUIRED reason", async () => {
+  it("rejects anonymous guest x-test-tier header with UNAUTHENTICATED reason", async () => {
+    const request = new Request("https://clutcharena.com/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "guest",
+      },
+    });
+
+    const result = await verifyNotesAccess(request);
+    expect(result.authorized).toBe(false);
+    expect(result.reason).toBe("UNAUTHENTICATED");
+    expect(result.message).toContain("Authentication required");
+  });
+
+  it("authorizes signed-in free tier ('contender' / 'free') users for 1-section concise notes inside 3d rolling % quota", async () => {
     const request = new Request("https://clutcharena.com/api/notes/generate", {
       method: "POST",
       headers: {
@@ -73,10 +87,20 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
       },
     });
 
-    const result = await verifyProAccess(request);
-    expect(result.authorized).toBe(false);
-    expect(result.reason).toBe("PRO_REQUIRED");
-    expect(result.message).toContain("Pro Tier members");
+    const result = await verifyNotesAccess(request);
+    expect(result.authorized).toBe(true);
+    expect(result.tier).toBe("contender");
+    expect(result.user?.id).toBe("test-user-contender-id");
+
+    const freeAliasRequest = new Request("https://clutcharena.com/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "free",
+      },
+    });
+    const freeAliasResult = await verifyProAccess(freeAliasRequest);
+    expect(freeAliasResult.authorized).toBe(true);
+    expect(freeAliasResult.tier).toBe("contender");
   });
 
   it("authorizes active subscribers across all paid tiers (cram_pass, pro, tutor)", async () => {
@@ -131,6 +155,17 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
     const resultTutor = await verifyProAccess(reqTutor);
     expect(resultTutor.authorized).toBe(true);
     expect(resultTutor.tier).toBe("tutor");
+
+    // Test 'pro_monthly' tier preservation
+    const reqProMonthly = new Request("https://clutcharena.com/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "pro_monthly",
+      },
+    });
+    const resultProMonthly = await verifyProAccess(reqProMonthly);
+    expect(resultProMonthly.authorized).toBe(true);
+    expect(resultProMonthly.tier).toBe("pro_monthly");
   });
 
   describe("Security: Production Paywall & Header Bypass Prevention", () => {
@@ -145,10 +180,20 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
         },
       });
 
-      const result = await verifyProAccess(req);
+      const result = await verifyNotesAccess(req);
       expect(result.authorized).toBe(false);
       expect(result.reason).toBe("UNAUTHENTICATED");
       expect(result.message).toContain("Authentication required");
+
+      const contenderReq = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "contender",
+        },
+      });
+      const contenderResult = await verifyNotesAccess(contenderReq);
+      expect(contenderResult.authorized).toBe(false);
+      expect(contenderResult.reason).toBe("UNAUTHENTICATED");
     });
 
     it("allows x-test-tier override in production ONLY when ALLOW_TEST_TIER_OVERRIDE is explicitly true", async () => {
@@ -162,23 +207,27 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
         },
       });
 
-      const result = await verifyProAccess(req);
+      const result = await verifyNotesAccess(req);
       expect(result.authorized).toBe(true);
       expect(result.tier).toBe("pro");
     });
   });
 
   describe("isAuthorizedForNotes tier validation", () => {
-    it("recognizes pro_monthly and pro-monthly as valid paid notes tiers alongside cram_pass, pro, tutor", () => {
+    it("authorizes all signed-in tiers (contender, free, cram_pass, pro_monthly, pro, tutor) and rejects guest/empty", () => {
+      expect(isAuthorizedForNotes("contender")).toBe(true);
+      expect(isAuthorizedForNotes("free")).toBe(true);
       expect(isAuthorizedForNotes("pro_monthly")).toBe(true);
       expect(isAuthorizedForNotes("pro-monthly")).toBe(true);
       expect(isAuthorizedForNotes("cram_pass")).toBe(true);
       expect(isAuthorizedForNotes("crampass")).toBe(true);
       expect(isAuthorizedForNotes("cram-pass")).toBe(true);
       expect(isAuthorizedForNotes("pro")).toBe(true);
+      expect(isAuthorizedForNotes("pro_semester")).toBe(true);
       expect(isAuthorizedForNotes("tutor")).toBe(true);
-      expect(isAuthorizedForNotes("contender")).toBe(false);
+      expect(isAuthorizedForNotes("tutor_guild")).toBe(true);
       expect(isAuthorizedForNotes("guest")).toBe(false);
+      expect(isAuthorizedForNotes("anonymous")).toBe(false);
       expect(isAuthorizedForNotes("")).toBe(false);
       expect(isAuthorizedForNotes(null)).toBe(false);
       expect(isAuthorizedForNotes(undefined)).toBe(false);
@@ -186,7 +235,7 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
   });
 
   describe("SA-02: Client-Writable user_metadata.tier Privilege Escalation Prevention", () => {
-    it("rejects a user with user_metadata.tier = 'pro' (profile = contender) in verifyAuthToken and verifyProAccess", async () => {
+    it("blocks escalation for user with user_metadata.tier = 'pro' (profile = contender) in verifyAuthToken and verifyNotesAccess", async () => {
       mockUser = {
         id: "attacker-user-id",
         email: "attacker@clutcharena.com",
@@ -209,14 +258,14 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
       if (!authResult.authenticated) throw new Error("Expected authenticated");
       expect(authResult.tier).toBe("contender");
 
-      // verifyProAccess must reject with 403 / PRO_REQUIRED
-      const proResult = await verifyProAccess(req);
-      expect(proResult.authorized).toBe(false);
-      expect(proResult.tier).toBe("contender");
-      expect(proResult.reason).toBe("PRO_REQUIRED");
+      // verifyNotesAccess authorizes signed-in contender inside 3d rolling quota, never elevated to 'pro'
+      const notesResult = await verifyNotesAccess(req);
+      expect(notesResult.authorized).toBe(true);
+      expect(notesResult.tier).toBe("contender");
+      expect(notesResult.user?.id).toBe("attacker-user-id");
     });
 
-    it("rejects a user with user_metadata.tier = 'tutor' (profile = contender) in verifyAuthToken and verifyProAccess", async () => {
+    it("blocks escalation for user with user_metadata.tier = 'tutor' (profile = null) in verifyAuthToken and verifyNotesAccess", async () => {
       mockUser = {
         id: "attacker-user-id-2",
         email: "attacker2@clutcharena.com",
@@ -238,15 +287,14 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
       if (!authResult.authenticated) throw new Error("Expected authenticated");
       expect(authResult.tier).toBe("contender");
 
-      const proResult = await verifyProAccess(req);
-      expect(proResult.authorized).toBe(false);
-      expect(proResult.tier).toBe("contender");
-      expect(proResult.reason).toBe("PRO_REQUIRED");
+      const notesResult = await verifyNotesAccess(req);
+      expect(notesResult.authorized).toBe(true);
+      expect(notesResult.tier).toBe("contender");
     });
   });
 
   describe("SA-02: Expired app_metadata Tier Downgrade Enforcement", () => {
-    it("rejects and downgrades a user with expired app_metadata (cram_pass expired in 2020) to contender", async () => {
+    it("downgrades a user with expired app_metadata (cram_pass expired in 2020) to contender", async () => {
       mockUser = {
         id: "expired-user-id",
         email: "expired@clutcharena.com",
@@ -272,10 +320,9 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
       expect(authResult.tier).toBe("contender");
       expect(authResult.tierExpiresAt).toBeNull();
 
-      const proResult = await verifyProAccess(req);
-      expect(proResult.authorized).toBe(false);
-      expect(proResult.tier).toBe("contender");
-      expect(proResult.reason).toBe("PRO_REQUIRED");
+      const notesResult = await verifyNotesAccess(req);
+      expect(notesResult.authorized).toBe(true);
+      expect(notesResult.tier).toBe("contender");
     });
 
     it("authorizes a user with active unexpired app_metadata tier", async () => {
@@ -341,7 +388,7 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
   });
 
   describe("SA2-07: Admin Downgrade & Stale app_metadata Fallback Prevention", () => {
-    it("rejects a user with a contender DB profile even if user has stale paid app_metadata (pro)", async () => {
+    it("overrides stale paid app_metadata (pro) with contender DB profile", async () => {
       mockUser = {
         id: "downgraded-pro-user-id",
         email: "downgraded@clutcharena.com",
@@ -365,13 +412,12 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
       if (!authResult.authenticated) throw new Error("Expected authenticated");
       expect(authResult.tier).toBe("contender");
 
-      const proResult = await verifyProAccess(req);
-      expect(proResult.authorized).toBe(false);
-      expect(proResult.tier).toBe("contender");
-      expect(proResult.reason).toBe("PRO_REQUIRED");
+      const notesResult = await verifyNotesAccess(req);
+      expect(notesResult.authorized).toBe(true);
+      expect(notesResult.tier).toBe("contender");
     });
 
-    it("rejects a user with a contender DB profile even if user has future cram_pass in stale app_metadata", async () => {
+    it("overrides future cram_pass in stale app_metadata with contender DB profile", async () => {
       const futureExpiry = new Date(Date.now() + 86400000 * 5).toISOString();
       mockUser = {
         id: "downgraded-cram-user-id",
@@ -397,10 +443,9 @@ describe("Clutch Notes AI Pro-Tier Access Guard", () => {
       if (!authResult.authenticated) throw new Error("Expected authenticated");
       expect(authResult.tier).toBe("contender");
 
-      const proResult = await verifyProAccess(req);
-      expect(proResult.authorized).toBe(false);
-      expect(proResult.tier).toBe("contender");
-      expect(proResult.reason).toBe("PRO_REQUIRED");
+      const notesResult = await verifyNotesAccess(req);
+      expect(notesResult.authorized).toBe(true);
+      expect(notesResult.tier).toBe("contender");
     });
   });
 });

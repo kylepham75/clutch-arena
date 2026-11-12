@@ -42,10 +42,6 @@ export interface AuthContextType {
   loading: boolean;
   isConfigured: boolean;
   tier: AccountTier;
-  guestUsageCount: number;
-  guestLimit: number;
-  canGenerate: boolean;
-  incrementGuestUsage: () => number;
   authModalOpen: boolean;
   authModalReason: string | null;
   openAuthModal: (reason?: string) => void;
@@ -56,16 +52,12 @@ export interface AuthContextType {
   signOut: () => Promise<void>;
 }
 
-const GUEST_USAGE_KEY = "clutch:guest_usage:v1";
-const GUEST_LIMIT = 2; // 2 free study pack generations for anonymous users
-
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
-  const [guestUsageCount, setGuestUsageCount] = useState<number>(0);
   const [syncedTier, setSyncedTier] = useState<UserTier>(() => getStoredUserTier());
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalReason, setAuthModalReason] = useState<string | null>(null);
@@ -82,18 +74,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const isConfigured = isSupabaseConfigured();
-
-  // Load guest usage from localStorage
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(GUEST_USAGE_KEY);
-      if (stored) {
-        setGuestUsageCount(Math.max(0, parseInt(stored, 10) || 0));
-      }
-    } catch {
-      // Storage unavailable
-    }
-  }, []);
 
   // Listen to Supabase Auth State and sync user library
   useEffect(() => {
@@ -205,17 +185,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [isConfigured]);
 
-  const incrementGuestUsage = useCallback(() => {
-    const next = guestUsageCount + 1;
-    setGuestUsageCount(next);
-    try {
-      localStorage.setItem(GUEST_USAGE_KEY, next.toString());
-    } catch {
-      // ignore
-    }
-    return next;
-  }, [guestUsageCount]);
-
   const openAuthModal = useCallback((reason?: string) => {
     setAuthModalReason(reason || null);
     setAuthModalOpen(true);
@@ -294,9 +263,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Determine user tier
   const tier: AccountTier = user ? (syncedTier === "contender" ? "free" : syncedTier) : "guest";
 
-  // Guest users can generate up to GUEST_LIMIT packs without signing in
-  const canGenerate = Boolean(user) || guestUsageCount < GUEST_LIMIT;
-
   return (
     <AuthContext.Provider
       value={{
@@ -305,10 +271,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         isConfigured,
         tier,
-        guestUsageCount,
-        guestLimit: GUEST_LIMIT,
-        canGenerate,
-        incrementGuestUsage,
         authModalOpen,
         authModalReason,
         openAuthModal,

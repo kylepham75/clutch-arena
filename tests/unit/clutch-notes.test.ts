@@ -36,6 +36,9 @@ import {
   mapSynthesisSection,
   generateClutchNote,
 } from "@/lib/ai/generate-notes";
+import {
+  getSafeOpenRouterReasoningEffort,
+} from "@/lib/notes/formula-inventory";
 import { verifyFormulaCoverage } from "@/lib/notes/deterministic-verifiers";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "@/lib/ai/prompts-notes";
@@ -2097,6 +2100,96 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
       expect(coverage.placedIds).toContain("F37");
       expect(coverage.uncapturedErrorIds.length).toBe(0);
       expect(coverage.coverageRatio).toBe(1);
+    });
+
+    it("blocks Sonnet in generateClutchNote and uses only Haiku 5.5 / DeepSeek V4.1 Flash / Gemini 2.5 Flash with reasoning effort 'none'", async () => {
+      expect(
+        getSafeOpenRouterReasoningEffort({ modelId: "anthropic/claude-sonnet-5.5" }),
+      ).toBe("low");
+      expect(
+        getSafeOpenRouterReasoningEffort({ modelId: "anthropic/claude-haiku-5.5" }),
+      ).toBe("none");
+      expect(
+        getSafeOpenRouterReasoningEffort({
+          modelId: "deepseek/deepseek-v4.1-flash-1017",
+        }),
+      ).toBe("none");
+      expect(
+        getSafeOpenRouterReasoningEffort({
+          modelId: "google/gemini-2.5-flash",
+        }),
+      ).toBe("none");
+
+      const prevOpenRouterKey = process.env.OPENROUTER_API_KEY;
+      process.env.OPENROUTER_API_KEY = "sk-or-v1-test-key";
+      try {
+        vi.mocked(generateObject).mockReset();
+        vi.mocked(generateObject).mockResolvedValueOnce({
+          object: {
+            title: "CHAPTER 11: OPTIMAL PORTFOLIO CHOICE",
+            subject: "Corporate Finance",
+            estimatedDistilledPages: 2,
+            noiseReductionRate: 85,
+            executiveSummary: "Portfolio optimization and CAPM summary.",
+            sections: [
+              {
+                letter: "A",
+                titleVi: "A. PORTFOLIO EXPECTED RETURN",
+                coreStatement: "Portfolio return is the weighted average of asset returns.",
+                overview: "Expected return weights sum to 1.",
+                bullets: [
+                  {
+                    text: "Portfolio weights sum to 1.00 or 100%",
+                    slide: 1,
+                    evidence: "The portfolio weights must add up to 1.00 or 100%",
+                  },
+                ],
+                formulas: [
+                  {
+                    formulaRefs: ["F1"],
+                    derivedFrom: [],
+                    leadText: "",
+                    latex: "E[R_P] = \\sum_i x_i E[R_i]",
+                    description: "",
+                    variables: [],
+                  },
+                ],
+                subSections: [],
+                takeaways: [],
+                sourceSlides: [1],
+              },
+            ],
+            omitted: [],
+          },
+        } as any);
+
+        await generateClutchNote({
+          fileName: "Chapter_11.pdf",
+          slideCount: 1,
+          sources: [
+            {
+              id: "slide-1",
+              label: "Slide 1",
+              text: "The portfolio weights must add up to 1.00 or 100%. E[R_P] = sum x_i E[R_i].",
+            },
+          ],
+          skipChunkExtraction: true,
+          skipVerifierLlm: true,
+          maxRepairAttempts: 0,
+          modelOverride: { modelId: "anthropic/claude-sonnet-5.5" } as any,
+        });
+
+        const synthCall = vi.mocked(generateObject).mock.calls[0]?.[0] as any;
+        expect(synthCall?.model?.modelId).toBe("anthropic/claude-haiku-5.5");
+        expect(synthCall?.providerOptions?.openrouter?.reasoning?.effort).toBe("none");
+        expect(synthCall?.maxOutputTokens).toBeGreaterThanOrEqual(32_768);
+      } finally {
+        if (prevOpenRouterKey === undefined) {
+          delete process.env.OPENROUTER_API_KEY;
+        } else {
+          process.env.OPENROUTER_API_KEY = prevOpenRouterKey;
+        }
+      }
     });
   });
 });

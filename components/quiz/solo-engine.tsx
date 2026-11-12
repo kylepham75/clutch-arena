@@ -118,6 +118,7 @@ export function SoloEngine({
   const [highlightedSourceId, setHighlightedSourceId] = useState<string | null>(null);
   const [highlightedExcerpt, setHighlightedExcerpt] = useState<string | null>(null);
   const [coachFocus, setCoachFocus] = useState<CoachFocus | null>(null);
+  const [coachDebriefRunId, setCoachDebriefRunId] = useState<string | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [showFlashcards, setShowFlashcards] = useState(false);
@@ -295,6 +296,7 @@ export function SoloEngine({
         void audio.unlock();
         audio.play("start");
         runId.current = crypto.randomUUID();
+        setCoachDebriefRunId(null);
         dispatch({ type: "START", mode: "exact", now: Date.now() });
         window.scrollTo(0, 0);
       }
@@ -318,6 +320,7 @@ export function SoloEngine({
     soundAttempt.current = 0;
     saved.current = false;
     runId.current = "";
+    setCoachDebriefRunId(null);
     window.scrollTo(0, 0);
   }, [dispatch]);
 
@@ -459,6 +462,7 @@ export function SoloEngine({
     void audio.unlock();
     audio.play("start");
     runId.current = crypto.randomUUID();
+    setCoachDebriefRunId(null);
     dispatch({ type: "START", mode, now: Date.now() });
     window.scrollTo(0, 0);
   };
@@ -495,8 +499,9 @@ export function SoloEngine({
 
   useGameKeyboard({ enabled: !panel && activeTab === "play", phase: state.phase, answer, next });
 
-  const handleAskCoach = useCallback((focus: CoachFocus) => {
+  const handleAskCoach = useCallback((focus: CoachFocus, debriefRunId?: string | null) => {
     setCoachFocus(focus);
+    setCoachDebriefRunId(debriefRunId ?? null);
     setActiveTab("coach");
   }, []);
 
@@ -565,16 +570,22 @@ export function SoloEngine({
       };
     });
 
-    handleAskCoach({
-      type: "debrief",
-      packTitle: pack.title,
-      score: state.score,
-      correct: correctCount,
-      total: state.attempts.length || pack.questions.length,
-      bestStreak: state.bestStreak,
-      livesLeft: state.lives,
-      concepts,
-    });
+    if (!runId.current) {
+      runId.current = crypto.randomUUID();
+    }
+    handleAskCoach(
+      {
+        type: "debrief",
+        packTitle: pack.title,
+        score: state.score,
+        correct: correctCount,
+        total: state.attempts.length || pack.questions.length,
+        bestStreak: state.bestStreak,
+        livesLeft: state.lives,
+        concepts,
+      },
+      runId.current,
+    );
   }, [state, pack, document, handleAskCoach]);
 
   const handleSelectPackFromLibrary = useCallback(
@@ -1047,7 +1058,7 @@ export function SoloEngine({
                 {activeTab === "arena" ? (
                   <ArenaManager
                     presetPack={pack}
-                    onDebriefCoach={(focus) => handleAskCoach(focus)}
+                    onDebriefCoach={(focus, matchRunId) => handleAskCoach(focus, matchRunId)}
                     onExitToSolo={() => setActiveTab("play")}
                   />
                 ) : activeTab === "ingest" ? (
@@ -1066,11 +1077,17 @@ export function SoloEngine({
                   />
                 ) : activeTab === "coach" ? (
                   <CoachPanel
+                    key={coachDebriefRunId || "coach-general"}
                     document={document}
                     activeFocus={coachFocus}
+                    debriefRunId={coachDebriefRunId}
                     onClearFocus={() => setCoachFocus(null)}
                     onSelectCitation={(sourceId) => handleCitationClick(sourceId)}
                     onOpenUpload={() => setActiveTab("ingest")}
+                    onOpenPricing={(reason) => {
+                      setPricingReason(reason || null);
+                      setPricingOpen(true);
+                    }}
                     onBackToQuiz={
                       inRun || pack
                         ? () => setActiveTab("play")

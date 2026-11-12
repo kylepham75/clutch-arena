@@ -3,6 +3,13 @@ vi.mock("server-only", () => ({}));
 import { createIngestionHandler, SHARED_CACHE_PIPELINE_VERSION } from "@/lib/ingestion/handler";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { REQUEST_TIMEOUT_MS } from "@/lib/ingestion/limits";
+import {
+  resetQuotaLedgersForTests,
+  saveUserQuotaLedger,
+  toClientQuota,
+  type RollingQuotaSnapshot,
+} from "@/lib/rate-limit";
+import type { CogsBudgetStatus } from "@/lib/pricing/tiers";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
 import type { GenerationResult } from "@/lib/schemas/ingestion";
 import { studyText } from "../helpers/documents";
@@ -14,9 +21,55 @@ const result: GenerationResult = {
   warnings: [],
   usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
 };
+
+function makeQuotaSnapshot(
+  overrides: Partial<RollingQuotaSnapshot> = {},
+): RollingQuotaSnapshot {
+  const mode = overrides.mode ?? "full";
+  const degradationStatus: CogsBudgetStatus = {
+    mode,
+    spentUsd: 0.02,
+    reservedUsd: 0,
+    projectedUsd: 0.02,
+    ceilingUsd: 0.4,
+    utilizationRatio: 0.05,
+    targetQuestionCount: 25,
+    allowVisionOcr: mode === "full" || mode === "gentle",
+    allowBorderlineVision: mode === "full",
+    allowCrossFamilyVerifier: mode === "full" || mode === "gentle",
+    useCheaperGeneratorSlug: mode !== "full",
+    conciseExplanations: mode !== "full",
+    serveCachedPoolsOnly: mode === "halted",
+    bannerNotice: null,
+    ...(overrides.degradationStatus ?? {}),
+  };
+  return {
+    remainingPct: 95,
+    usedPct: 5,
+    resetsAt: "2026-11-13T00:00:00.000Z",
+    windowHours: 24,
+    bottleneckScope: "window",
+    mode,
+    windowBudgetUsd: 0.4,
+    windowRemainingUsd: 0.38,
+    guardBudgetUsd: 0.85,
+    guardRemainingUsd: 0.83,
+    cycleCeilingUsd: 3.8,
+    cycleRemainingUsd: 3.78,
+    effectiveRemainingUsd: 0.38,
+    allowVisionOcr: degradationStatus.allowVisionOcr,
+    allowBorderlineVision: degradationStatus.allowBorderlineVision,
+    useCheaperGeneratorSlug: degradationStatus.useCheaperGeneratorSlug,
+    serveCachedPoolsOnly: degradationStatus.serveCachedPoolsOnly,
+    ...overrides,
+    degradationStatus,
+  };
+}
+
 function upload(
   options: unknown = { operation: "preview" },
   file = new File([studyText], "notes.txt"),
+  headers?: HeadersInit,
 ) {
   const form = new FormData();
   form.set("file", file);
@@ -24,11 +77,13 @@ function upload(
   return new Request("http://localhost:3000/api/ingest", {
     method: "POST",
     body: form,
+    ...(headers ? { headers } : {}),
   });
 }
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.useRealTimers();
+  resetQuotaLedgersForTests();
 });
 
 describe("ingestion HTTP handler", () => {
@@ -250,13 +305,32 @@ describe("ingestion HTTP handler", () => {
     expect(body.ok).toBe(true);
     expect(body.cached).toBe(true);
     expect(body.pack.questions.length).toBeLessThanOrEqual(5);
+    expect(body.quota).toBeDefined();
+    expect(body.quota).toMatchObject({
+      remainingPct: expect.any(Number),
+      usedPct: expect.any(Number),
+      windowHours: expect.any(Number),
+      bottleneckScope: expect.any(String),
+      mode: expect.any(String),
+    });
+    expect(body.quota.windowBudgetUsd).toBeUndefined();
+    expect(body.quota.cogsCeilingUsd).toBeUndefined();
     expect(getDeckCache).toHaveBeenCalledTimes(1);
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it("blocks generation with 429 and specific reason code when quotaReservation returns allowed: false", async () => {
+  it("blocks generation with 429, rolling quota payload, and specific reason code when quotaReservation returns allowed: false", async () => {
     const generate = vi.fn();
     const getDeckCache = vi.fn().mockResolvedValue(null);
+    const depletedSnapshot = makeQuotaSnapshot({
+      remainingPct: 0,
+      usedPct: 100,
+      mode: "halted",
+      windowRemainingUsd: 0,
+      effectiveRemainingUsd: 0,
+      allowVisionOcr: false,
+      serveCachedPoolsOnly: true,
+    });
     const quotaReservation = vi.fn().mockResolvedValue({
       allowed: false,
       reason: "DECK_CREDITS_EXCEEDED",
@@ -267,7 +341,8 @@ describe("ingestion HTTP handler", () => {
       creditsLimit: 2,
       dailyBurstUsed: 1,
       dailyBurstLimit: 2,
-      cogsStatus: {} as any,
+      cogsStatus: depletedSnapshot.degradationStatus,
+      quota: depletedSnapshot,
       ledger: {} as any,
     });
 
@@ -289,12 +364,18 @@ describe("ingestion HTTP handler", () => {
     expect(response.status).toBe(429);
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe("DECK_CREDITS_EXCEEDED");
+    expect(body.error.message).toContain("0% remaining");
+    expect(body.quota).toEqual(toClientQuota(depletedSnapshot));
+    expect(body.quota.windowBudgetUsd).toBeUndefined();
+    expect(body.quota.cogsCeilingUsd).toBeUndefined();
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it("records COGS and populates shared deck cache on cache miss after generation succeeds", async () => {
+  it("records COGS with authoritative billingRegion and attaches client quota on cache miss", async () => {
     const generate = vi.fn().mockResolvedValue(result);
     const getDeckCache = vi.fn().mockResolvedValue(null);
+    const reservedSnapshot = makeQuotaSnapshot({ remainingPct: 90, usedPct: 10 });
+    const settledSnapshot = makeQuotaSnapshot({ remainingPct: 88, usedPct: 12 });
     const quotaReservation = vi.fn().mockResolvedValue({
       allowed: true,
       cacheHit: false,
@@ -304,12 +385,14 @@ describe("ingestion HTTP handler", () => {
       creditsLimit: 2,
       dailyBurstUsed: 1,
       dailyBurstLimit: 2,
-      cogsStatus: {} as any,
+      cogsStatus: reservedSnapshot.degradationStatus,
+      quota: reservedSnapshot,
       ledger: {} as any,
     });
     const recordCogs = vi.fn().mockResolvedValue({
       ledger: {} as any,
-      cogsStatus: {} as any,
+      cogsStatus: settledSnapshot.degradationStatus,
+      quota: settledSnapshot,
     });
     const setDeckCache = vi.fn().mockResolvedValue({});
 
@@ -323,26 +406,49 @@ describe("ingestion HTTP handler", () => {
     });
 
     const response = await handler(
-      upload({
-        operation: "generate",
-        questionCount: 5,
-        focus: "Elasticity",
-        language: "en",
-      }),
+      upload(
+        {
+          operation: "generate",
+          questionCount: 5,
+          focus: "Elasticity",
+          language: "en",
+        },
+        new File([studyText], "notes.txt"),
+        { "x-vercel-ip-country": "VN" },
+      ),
     );
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body.ok).toBe(true);
+    expect(body.quota).toEqual(toClientQuota(settledSnapshot));
+    expect(body.quota.windowBudgetUsd).toBeUndefined();
+    expect(body.quota.cogsCeilingUsd).toBeUndefined();
     expect(generate).toHaveBeenCalledTimes(1);
     expect(quotaReservation).toHaveBeenCalledTimes(1);
+    expect(quotaReservation).toHaveBeenCalledWith(
+      expect.stringContaining("ip:"),
+      "guest",
+      expect.any(String),
+      expect.objectContaining({
+        actionKind: "deck",
+        region: "VN",
+      }),
+    );
     expect(recordCogs).toHaveBeenCalledTimes(1);
+    expect(recordCogs).toHaveBeenCalledWith(
+      expect.stringContaining("ip:"),
+      "guest",
+      expect.any(Number),
+      expect.any(Number),
+      "VN",
+    );
     expect(setDeckCache).toHaveBeenCalledTimes(1);
     expect(setDeckCache).toHaveBeenCalledWith(
       expect.objectContaining({
         language: "en",
         mode: "variants",
-        pipelineVersion: "v1",
+        pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
         questionPool: result.pack.questions,
       }),
     );
@@ -395,6 +501,8 @@ describe("ingestion HTTP handler", () => {
       "guest",
       expect.any(String),
       0.02,
+      undefined,
+      "ROW",
     );
   });
 
@@ -479,10 +587,10 @@ describe("ingestion HTTP handler", () => {
     );
   });
 
-  it("enforces rate limiting on operation: preview and returns 429 when exceeded", async () => {
+  it("enforces burst-shield rate limiting on operation: preview and returns 429 with burst message when exceeded", async () => {
     const rateLimiter = vi.fn().mockResolvedValue({
       allowed: false,
-      limit: 2,
+      limit: 15,
       remaining: 0,
       reset: Date.now() + 60000,
     });
@@ -493,6 +601,9 @@ describe("ingestion HTTP handler", () => {
     expect(response.status).toBe(429);
     expect(json.ok).toBe(false);
     expect(json.error.code).toBe("RATE_LIMIT_EXCEEDED");
+    expect(json.error.message).toContain("short burst");
+    expect(json.error.message).not.toContain("per week");
+    expect(json.error.message).not.toContain("Daily upload limit");
     expect(response.headers.get("retry-after")).toBe("30");
     expect(rateLimiter).toHaveBeenCalledTimes(1);
     expect(rateLimiter).toHaveBeenCalledWith(
@@ -915,5 +1026,273 @@ describe("ingestion HTTP handler", () => {
     expect(body.pack.metadata?.["q-pro-cached-1"]?.distractorRationale).toBe(
       "Option B is incorrect because monetary policy becomes ineffective.",
     );
+    expect(body.quota).toBeDefined();
+    expect(body.quota.windowBudgetUsd).toBeUndefined();
+    expect(body.quota.cogsCeilingUsd).toBeUndefined();
+  });
+
+  it("pre-checks getRollingQuotaSnapshot for non-cached generate and disables Vision OCR when !preSnapshot.allowVisionOcr", async () => {
+    const nowIso = new Date().toISOString();
+    // Pro VN primary window budget is $0.40; spending $0.38 (>90%) puts snapshot into hard mode (allowVisionOcr: false)
+    await saveUserQuotaLedger({
+      userId: "user:pro-ocr-gated",
+      tier: "pro",
+      cogsSpentUsd: 0.38,
+      cogsReservedUsd: 0,
+      cogsCeilingUsd: 3.8,
+      windowStartedAt: nowIso,
+      windowSpentUsd: 0.38,
+      windowReservedUsd: 0,
+      weeklyStartedAt: nowIso,
+      weeklySpentUsd: 0.38,
+      weeklyReservedUsd: 0,
+      deckCreditsUsed: 4,
+      deckCreditsLimit: 0,
+      dailyBurstUsed: 4,
+      dailyBurstDate: nowIso.slice(0, 10),
+      unlockedDecks: {},
+    });
+
+    const parseDoc = vi.fn().mockResolvedValue({
+      fileName: "slides.pdf",
+      format: "pdf",
+      sources: [{ id: "page-1", label: "Page 1", text: studyText }],
+      warnings: [],
+      pageCount: 1,
+      characterCount: studyText.length,
+      fileSha256: "sha256-ocr-gated",
+      contentHash: "hash-ocr-gated",
+    });
+    const generate = vi.fn().mockResolvedValue(result);
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "pro-ocr-gated" },
+      tier: "pro",
+    });
+    const snap = makeQuotaSnapshot({
+      remainingPct: 5,
+      usedPct: 95,
+      mode: "hard",
+      allowVisionOcr: false,
+    });
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      reserved: true,
+      cacheHit: false,
+      creditConsumed: true,
+      isRegeneration: false,
+      creditsUsed: 5,
+      creditsLimit: 0,
+      dailyBurstUsed: 5,
+      dailyBurstLimit: 0,
+      cogsStatus: snap.degradationStatus,
+      quota: snap,
+      ledger: {} as any,
+    });
+    const recordCogs = vi.fn().mockResolvedValue({
+      ledger: {} as any,
+      cogsStatus: snap.degradationStatus,
+      quota: snap,
+    });
+
+    const handler = createIngestionHandler({
+      parseDoc,
+      generate,
+      verifyAuth,
+      quotaReservation,
+      recordCogs,
+      checkConfiguration: () => {},
+    });
+
+    const response = await handler(
+      upload(
+        { operation: "generate", questionCount: 5, rescanPages: [1] },
+        new File([studyText], "slides.pdf", { type: "application/pdf" }),
+        { "x-vercel-ip-country": "VN" },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(parseDoc).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      {
+        rescanPages: [1],
+        parsePdfOptions: {
+          maxAutoOcrBudgetUsd: 0,
+        },
+      },
+    );
+    expect(quotaReservation).toHaveBeenCalledWith(
+      "user:pro-ocr-gated",
+      "pro",
+      expect.any(String),
+      expect.objectContaining({
+        actionKind: "deck",
+        region: "VN",
+      }),
+    );
+    expect(recordCogs).toHaveBeenCalledWith(
+      "user:pro-ocr-gated",
+      "pro",
+      expect.any(Number),
+      expect.any(Number),
+      "VN",
+    );
+  });
+
+  it("keeps Vision OCR enabled during generate pre-check when preSnapshot.allowVisionOcr is true and skips parseDoc when cachedParsedDoc exists", async () => {
+    const parseDoc = vi.fn().mockResolvedValue({
+      fileName: "fresh.pdf",
+      format: "pdf",
+      sources: [{ id: "page-1", label: "Page 1", text: studyText }],
+      warnings: [],
+      pageCount: 1,
+      characterCount: studyText.length,
+      fileSha256: "sha256-fresh",
+      contentHash: "hash-fresh",
+    });
+    const generate = vi.fn().mockResolvedValue(result);
+    const verifyAuth = vi.fn().mockResolvedValue({
+      authenticated: true,
+      user: { id: "pro-ocr-allowed" },
+      tier: "pro",
+    });
+    const snap = makeQuotaSnapshot({ remainingPct: 100, usedPct: 0, mode: "full", allowVisionOcr: true });
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: true,
+      reserved: true,
+      cacheHit: false,
+      creditConsumed: true,
+      isRegeneration: false,
+      creditsUsed: 1,
+      creditsLimit: 0,
+      dailyBurstUsed: 1,
+      dailyBurstLimit: 0,
+      cogsStatus: snap.degradationStatus,
+      quota: snap,
+      ledger: {} as any,
+    });
+    const recordCogs = vi.fn().mockResolvedValue({
+      ledger: {} as any,
+      cogsStatus: snap.degradationStatus,
+      quota: snap,
+    });
+
+    const handler = createIngestionHandler({
+      parseDoc,
+      generate,
+      verifyAuth,
+      quotaReservation,
+      recordCogs,
+      checkConfiguration: () => {},
+    });
+
+    const response1 = await handler(
+      upload(
+        { operation: "generate", questionCount: 5, rescanPages: [2] },
+        new File([studyText], "fresh.pdf", { type: "application/pdf" }),
+        { "x-vercel-ip-country": "US" },
+      ),
+    );
+    const body1 = await response1.json();
+    expect(response1.status).toBe(200);
+    expect(parseDoc).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { rescanPages: [2] },
+    );
+    expect(quotaReservation).toHaveBeenCalledWith(
+      "user:pro-ocr-allowed",
+      "pro",
+      expect.any(String),
+      expect.objectContaining({
+        actionKind: "deck",
+        region: "ROW",
+      }),
+    );
+    expect(recordCogs).toHaveBeenCalledWith(
+      "user:pro-ocr-allowed",
+      "pro",
+      expect.any(Number),
+      expect.any(Number),
+      "ROW",
+    );
+    expect(body1.quota).toEqual(toClientQuota(snap));
+
+    // When cachedParsedDoc hits (rescanPages omitted), parseDoc is skipped entirely
+    const parseDocCached = vi.fn();
+    const getCachedParsedDoc = vi.fn().mockResolvedValue({
+      fileName: "cached.pdf",
+      format: "pdf",
+      sources: [{ id: "page-1", label: "Page 1", text: studyText }],
+      pageCount: 1,
+      characterCount: studyText.length,
+      warnings: [],
+      fileSha256: "sha256-cached",
+      contentHash: "hash-cached",
+    });
+    const cachedHandler = createIngestionHandler({
+      parseDoc: parseDocCached,
+      getCachedParsedDoc,
+      generate,
+      verifyAuth,
+      quotaReservation,
+      recordCogs,
+      checkConfiguration: () => {},
+    });
+
+    const response2 = await cachedHandler(
+      upload(
+        { operation: "generate", questionCount: 5 },
+        new File([studyText], "cached.pdf", { type: "application/pdf" }),
+      ),
+    );
+    expect(response2.status).toBe(200);
+    expect(getCachedParsedDoc).toHaveBeenCalledTimes(1);
+    expect(parseDocCached).not.toHaveBeenCalled();
+  });
+
+  it("returns rolling burst-limit 429 message and client quota when quotaReservation fails with DAILY_BURST_EXCEEDED", async () => {
+    const generate = vi.fn();
+    const getDeckCache = vi.fn().mockResolvedValue(null);
+    const burstSnapshot = makeQuotaSnapshot({
+      remainingPct: 0,
+      usedPct: 100,
+      mode: "halted",
+      allowVisionOcr: false,
+      serveCachedPoolsOnly: true,
+    });
+    const quotaReservation = vi.fn().mockResolvedValue({
+      allowed: false,
+      reason: "DAILY_BURST_EXCEEDED",
+      cacheHit: false,
+      creditConsumed: false,
+      isRegeneration: false,
+      creditsUsed: 5,
+      creditsLimit: 0,
+      dailyBurstUsed: 5,
+      dailyBurstLimit: 0,
+      cogsStatus: burstSnapshot.degradationStatus,
+      quota: burstSnapshot,
+      ledger: {} as any,
+    });
+
+    const handler = createIngestionHandler({
+      generate,
+      checkConfiguration: () => {},
+      getDeckCache,
+      quotaReservation,
+    });
+
+    const response = await handler(upload({ operation: "generate", questionCount: 5 }));
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body.error.code).toBe("DAILY_BURST_EXCEEDED");
+    expect(body.error.message).toContain("Rolling AI quota burst limit reached");
+    expect(body.error.message).not.toContain("max 2 uploads per week");
+    expect(body.error.message).not.toContain("Daily upload limit reached");
+    expect(body.quota).toEqual(toClientQuota(burstSnapshot));
+    expect(generate).not.toHaveBeenCalled();
   });
 });

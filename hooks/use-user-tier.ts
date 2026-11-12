@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   type UserTier,
   type TierLimits,
   type ReferralState,
+  type CogsDegradationMode,
   TIER_LIMITS,
   getStoredUserTier,
   setStoredUserTier,
@@ -14,8 +15,32 @@ import {
   getStoredReferralState,
   awardReferralPass,
   consumeUnlockedRemixRun,
+  formatQuotaPercentBadge,
+  formatQuotaResetCountdown,
 } from "@/lib/pricing/tiers";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+
+export type QuotaBottleneckScope = "window" | "weekly" | "cycle";
+export type ClientQuotaMode =
+  | "normal"
+  | "caution"
+  | "haiku_overflow"
+  | "cached_only"
+  | CogsDegradationMode;
+export type QuotaStatusTone = "healthy" | "caution" | "critical";
+
+export const QUOTA_UPDATED_EVENT = "clutch:quota-updated";
+
+export interface ClientQuotaSummary {
+  remainingPct: number;
+  usedPct: number;
+  resetsAt: string | null;
+  windowHours: number;
+  bottleneckScope: QuotaBottleneckScope;
+  mode: ClientQuotaMode;
+}
+
+export type QuotaState = ClientQuotaSummary;
 
 export interface UserTierHook {
   tier: UserTier;
@@ -29,24 +54,69 @@ export interface UserTierHook {
   isTutor: boolean;
   referrals: ReferralState;
   unlockedRemixRuns: number;
+  quotaState: QuotaState | null;
+  isLoadingQuota: boolean;
   setTier: (tier: UserTier, expiresAt?: string | null) => void;
   awardReferral: (reason: "arena_4_player" | "pack_imports_3") => void;
   consumeRemixRun: () => boolean;
   refreshTier: () => Promise<UserTier>;
+  refreshQuota: () => Promise<ClientQuotaSummary | null>;
+  updateQuotaFromResponse: (quota: ClientQuotaSummary | null | undefined) => void;
 }
 
 export interface ProfileQuotaSummary {
+  remainingPct: number;
+  usedPct: number;
+  quotaLabel: string;
+  resetCountdown: string | null;
+  statusTone: QuotaStatusTone;
+  isDegraded: boolean;
   tierLabel: string;
-  deckCreditsTotal: number;
-  deckCreditsUsed: number;
-  deckCreditsRemaining: number;
-  deckQuotaLabel: string;
-  noteCreditsTotal: number;
-  noteCreditsRemaining: number;
-  noteQuotaLabel: string;
   showUpgradeToSemesterPro: boolean;
-  sonnetProDeckCredits?: number;
-  haikuOverflowDeckCredits?: number;
+}
+
+function isValidClientQuota(quota: unknown): quota is ClientQuotaSummary {
+  if (!quota || typeof quota !== "object") return false;
+  const candidate = quota as Partial<ClientQuotaSummary>;
+  return (
+    typeof candidate.remainingPct === "number" &&
+    Number.isFinite(candidate.remainingPct) &&
+    typeof candidate.usedPct === "number" &&
+    Number.isFinite(candidate.usedPct)
+  );
+}
+
+function isSameQuota(
+  a: ClientQuotaSummary | null,
+  b: ClientQuotaSummary | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.remainingPct === b.remainingPct &&
+    a.usedPct === b.usedPct &&
+    a.resetsAt === b.resetsAt &&
+    a.windowHours === b.windowHours &&
+    a.bottleneckScope === b.bottleneckScope &&
+    a.mode === b.mode
+  );
+}
+
+/**
+ * Broadcasts an updated rolling quota snapshot across mounted hook instances.
+ */
+export function broadcastQuotaUpdate(
+  quota: ClientQuotaSummary | null | undefined,
+): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
+    return;
+  }
+  if (!isValidClientQuota(quota)) {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent<ClientQuotaSummary>(QUOTA_UPDATED_EVENT, { detail: quota }),
+  );
 }
 
 /**
@@ -87,17 +157,15 @@ export function formatPassCountdown(
 }
 
 /**
- * Pure helper that computes user tier labels, deck quotas, Clutch Notes credits,
- * and whether the semester pro upgrade CTA should be displayed.
+ * Pure helper that computes Antigravity-style rolling percentage quota summary,
+ * tier labels, status tone, reset countdown, and upgrade CTA visibility.
  */
 export function computeProfileQuotaSummary(
   tier: UserTier,
-  usedDecksCount: number,
-  usedNotesTodayCount?: number,
+  quotaState?: ClientQuotaSummary | null,
   isVi: boolean = false,
+  nowMs?: number,
 ): ProfileQuotaSummary {
-  const limits = TIER_LIMITS[tier] || TIER_LIMITS.contender;
-
   const tierLabelsEn: Record<UserTier, string> = {
     contender: "Contender",
     cram_pass: "7-Day Cram Pass",
@@ -118,55 +186,47 @@ export function computeProfileQuotaSummary(
     ? tierLabelsVi[tier] || tierLabelsVi.contender
     : tierLabelsEn[tier] || tierLabelsEn.contender;
 
-  const deckCreditsTotal = limits.newDeckCredits;
-  const deckCreditsUsed = Math.min(deckCreditsTotal, Math.max(0, usedDecksCount));
-  const deckCreditsRemaining = Math.max(0, deckCreditsTotal - deckCreditsUsed);
+  const hasValidQuota =
+    quotaState !== null &&
+    quotaState !== undefined &&
+    typeof quotaState.remainingPct === "number" &&
+    Number.isFinite(quotaState.remainingPct);
 
-  const tierDeckDescriptorsEn: Record<UserTier, string> = {
-    contender: "Contender",
-    cram_pass: "Cram Pass",
-    pro_monthly: "Pro Monthly",
-    pro: "Semester Pro",
-    tutor: "Tutor & Guild",
-  };
+  const remainingPct = hasValidQuota
+    ? Math.max(0, Math.min(100, Math.round(quotaState.remainingPct)))
+    : 100;
 
-  const tierDeckDescriptorsVi: Record<UserTier, string> = {
-    contender: "Người Thách Đấu",
-    cram_pass: "Vé Ôn Thi Cấp Tốc",
-    pro_monthly: "Đấu Sĩ Pro (Hàng Tháng)",
-    pro: "Đấu Sĩ Pro (Học Kỳ)",
-    tutor: "Giảng Viên & Nhóm Học",
-  };
+  const usedPct =
+    hasValidQuota &&
+    typeof quotaState.usedPct === "number" &&
+    Number.isFinite(quotaState.usedPct)
+      ? Math.max(0, Math.min(100, Math.round(quotaState.usedPct)))
+      : 100 - remainingPct;
 
-  const deckDescriptorEn = tierDeckDescriptorsEn[tier] || "Contender";
-  const deckDescriptorVi = tierDeckDescriptorsVi[tier] || "Người Thách Đấu";
+  const quotaLabel = formatQuotaPercentBadge(remainingPct, isVi);
+  const shouldShowReset = Boolean(quotaState?.resetsAt) || usedPct > 0;
+  const resetCountdown = shouldShowReset
+    ? formatQuotaResetCountdown(quotaState?.resetsAt, isVi, nowMs)
+    : null;
 
-  const deckQuotaLabel = isVi
-    ? `Còn ${deckCreditsRemaining} trên ${deckCreditsTotal} bộ đề ${deckDescriptorVi}`
-    : `${deckCreditsRemaining} of ${deckCreditsTotal} ${deckDescriptorEn} decks remaining`;
+  const statusTone: QuotaStatusTone =
+    remainingPct > 30 ? "healthy" : remainingPct > 10 ? "caution" : "critical";
 
-  const noteCreditsTotal = limits.maxNotesPerDay;
-  const usedNotes = Math.max(0, usedNotesTodayCount ?? 0);
-  const noteCreditsRemaining = Math.max(0, noteCreditsTotal - usedNotes);
-
-  const noteQuotaLabel = isVi
-    ? `Còn ${noteCreditsRemaining} trên ${noteCreditsTotal} lượt ghi chú hàng ngày`
-    : `${noteCreditsRemaining} of ${noteCreditsTotal} daily note credits remaining`;
+  const isNormalMode =
+    !quotaState || quotaState.mode === "normal" || quotaState.mode === "full";
+  const isDegraded = !isNormalMode || remainingPct <= 30;
 
   const showUpgradeToSemesterPro = tier !== "pro" && tier !== "tutor";
 
   return {
+    remainingPct,
+    usedPct,
+    quotaLabel,
+    resetCountdown,
+    statusTone,
+    isDegraded,
     tierLabel,
-    deckCreditsTotal,
-    deckCreditsUsed,
-    deckCreditsRemaining,
-    deckQuotaLabel,
-    noteCreditsTotal,
-    noteCreditsRemaining,
-    noteQuotaLabel,
     showUpgradeToSemesterPro,
-    sonnetProDeckCredits: limits.sonnetProDeckCredits,
-    haikuOverflowDeckCredits: limits.haikuOverflowDeckCredits,
   };
 }
 
@@ -210,23 +270,95 @@ export function useUserTier(): UserTierHook {
   // Default to contender initially to ensure SSR and initial client hydration match identically
   const [tier, setTierState] = useState<UserTier>("contender");
   const [tierExpiresAt, setTierExpiresAt] = useState<string | null>(null);
+  const [quotaState, setQuotaState] = useState<QuotaState | null>(null);
+  const [isLoadingQuota, setIsLoadingQuota] = useState<boolean>(false);
   const [referrals, setReferralsState] = useState<ReferralState>({
     unlockedRemixRuns: 0,
     friendsInvited: 0,
     roomsHostedWith4Players: 0,
     packsImportedByClassmates: 0,
   });
+  const isMountedRef = useRef(true);
 
   // Sync state from authoritative cloud database
   const syncFromCloud = useCallback(async (): Promise<UserTier> => {
     const cloud = await fetchCloudUserTier();
-    setTierState(cloud.tier);
-    setTierExpiresAt(cloud.expiresAt);
+    if (isMountedRef.current) {
+      setTierState(cloud.tier);
+      setTierExpiresAt(cloud.expiresAt);
+    }
     return cloud.tier;
   }, []);
 
+  const refreshQuota = useCallback(async (): Promise<ClientQuotaSummary | null> => {
+    if (typeof window === "undefined" || typeof fetch !== "function") {
+      return null;
+    }
+
+    if (isMountedRef.current) {
+      setIsLoadingQuota(true);
+    }
+
+    try {
+      const headers: Record<string, string> = {};
+      const supabase = getSupabaseBrowserClient();
+      if (supabase) {
+        try {
+          const { data } = await supabase.auth.getSession();
+          const accessToken = data?.session?.access_token;
+          if (accessToken) {
+            headers.Authorization = `Bearer ${accessToken}`;
+          }
+        } catch {
+          // Proceed without bearer token when browser session lookup fails
+        }
+      }
+
+      const res = await fetch("/api/quota", {
+        method: "GET",
+        cache: "no-store",
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      });
+
+      if (!res.ok) {
+        return null;
+      }
+
+      const data = await res.json().catch(() => null);
+      if (!data?.ok || !isValidClientQuota(data.quota)) {
+        return null;
+      }
+
+      const nextQuota = data.quota;
+      if (isMountedRef.current) {
+        setQuotaState((prev) => (isSameQuota(prev, nextQuota) ? prev : nextQuota));
+      }
+      broadcastQuotaUpdate(nextQuota);
+      return nextQuota;
+    } catch {
+      return null;
+    } finally {
+      if (isMountedRef.current) {
+        setIsLoadingQuota(false);
+      }
+    }
+  }, []);
+
+  const updateQuotaFromResponse = useCallback(
+    (quota: ClientQuotaSummary | null | undefined): void => {
+      if (!isValidClientQuota(quota)) {
+        return;
+      }
+      if (isMountedRef.current) {
+        setQuotaState((prev) => (isSameQuota(prev, quota) ? prev : quota));
+      }
+      broadcastQuotaUpdate(quota);
+    },
+    [],
+  );
+
   useEffect(() => {
-    let isMounted = true;
+    isMountedRef.current = true;
     setReferralsState(getStoredReferralState());
 
     // Hydration check: prevent client tier spoofing when unauthenticated
@@ -235,7 +367,7 @@ export function useUserTier(): UserTierHook {
       const storedExpires = getStoredTierExpires();
 
       const verified = await verifyAndClampClientTier(storedTier, storedExpires);
-      if (!isMounted) return;
+      if (!isMountedRef.current) return;
 
       setTierState(verified.tier);
       setTierExpiresAt(verified.expiresAt);
@@ -245,6 +377,7 @@ export function useUserTier(): UserTierHook {
     };
 
     void initTier();
+    void refreshQuota();
 
     const handleTierUpdated = async (e: Event) => {
       const custom = e as CustomEvent<{ tier: UserTier; expiresAt?: string | null }>;
@@ -252,7 +385,7 @@ export function useUserTier(): UserTierHook {
       if (!incomingTier) return;
 
       const verified = await verifyAndClampClientTier(incomingTier, custom.detail.expiresAt);
-      if (!isMounted) return;
+      if (!isMountedRef.current) return;
 
       setTierState(verified.tier);
       setTierExpiresAt(verified.expiresAt);
@@ -260,15 +393,23 @@ export function useUserTier(): UserTierHook {
 
     const handleReferralsUpdated = (e: Event) => {
       const custom = e as CustomEvent<ReferralState>;
-      if (custom.detail) {
+      if (custom.detail && isMountedRef.current) {
         setReferralsState(custom.detail);
       }
+    };
+
+    const handleQuotaUpdated = (e: Event) => {
+      const custom = e as CustomEvent<ClientQuotaSummary>;
+      if (!isMountedRef.current || !isValidClientQuota(custom.detail)) return;
+      const incoming = custom.detail;
+      setQuotaState((prev) => (isSameQuota(prev, incoming) ? prev : incoming));
     };
 
     const hasWindow = typeof window !== "undefined";
     if (hasWindow && typeof window.addEventListener === "function") {
       window.addEventListener("clutch:tier_updated", handleTierUpdated);
       window.addEventListener("clutch:referrals_updated", handleReferralsUpdated);
+      window.addEventListener(QUOTA_UPDATED_EVENT, handleQuotaUpdated);
     }
 
     // Listen to Supabase auth events (e.g. mobile login after laptop purchase)
@@ -281,26 +422,29 @@ export function useUserTier(): UserTierHook {
       } = supabase.auth.onAuthStateChange(async (event, session) => {
         if (event === "SIGNED_IN" && session?.user) {
           await syncFromCloud();
+          void refreshQuota();
         } else if (event === "SIGNED_OUT" || !session?.user) {
           clearStoredUserTier();
-          if (isMounted) {
+          if (isMountedRef.current) {
             setTierState("contender");
             setTierExpiresAt(null);
           }
+          void refreshQuota();
         }
       });
       authUnsubscribe = () => subscription.unsubscribe();
     }
 
     return () => {
-      isMounted = false;
+      isMountedRef.current = false;
       if (hasWindow && typeof window.removeEventListener === "function") {
         window.removeEventListener("clutch:tier_updated", handleTierUpdated);
         window.removeEventListener("clutch:referrals_updated", handleReferralsUpdated);
+        window.removeEventListener(QUOTA_UPDATED_EVENT, handleQuotaUpdated);
       }
       if (authUnsubscribe) authUnsubscribe();
     };
-  }, [syncFromCloud]);
+  }, [syncFromCloud, refreshQuota]);
 
   const setTier = useCallback(async (newTier: UserTier, expiresAt?: string | null) => {
     const verified = await verifyAndClampClientTier(newTier, expiresAt);
@@ -348,9 +492,13 @@ export function useUserTier(): UserTierHook {
     isTutor,
     referrals,
     unlockedRemixRuns: referrals.unlockedRemixRuns,
+    quotaState,
+    isLoadingQuota,
     setTier,
     awardReferral,
     consumeRemixRun,
     refreshTier: syncFromCloud,
+    refreshQuota,
+    updateQuotaFromResponse,
   };
 }

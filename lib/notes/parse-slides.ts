@@ -86,6 +86,7 @@ export interface ParsedSlideDeck {
   fileSha256: string;
   imageHashes?: string[];
   dedupedSlideCount?: number;
+  pageVisionStatus?: Record<string, { costUsd?: number }>;
 }
 
 export function validateSlideFile(file: File): "pdf" | "pptx" {
@@ -161,6 +162,7 @@ export async function parseSlideDeck(
   let ocrEquations: OcrTranscribedEquation[] | undefined;
   let ommlEquations: OmmlTranscribedEquation[] | undefined;
   let imageHashes: string[] | undefined;
+  let pageVisionStatus: Record<string, { costUsd?: number }> | undefined;
 
   if (format === "pptx") {
     const parsed = await parsePptx(bytes, signalOrOptions);
@@ -266,6 +268,7 @@ export async function parseSlideDeck(
     slideCount = parsed.pageCount;
     warnings = parsed.warnings;
     ocrEquations = parsed.ocrEquations;
+    pageVisionStatus = (parsed as { pageVisionStatus?: Record<string, { costUsd?: number }> }).pageVisionStatus;
   }
 
   // Deduplicate progressive animation slides for both formats
@@ -323,5 +326,6 @@ export async function parseSlideDeck(
     ...(dedupedSlideCount > 0 ? { dedupedSlideCount } : {}),
     ...(ocrEquations && ocrEquations.length > 0 ? { ocrEquations } : {}),
     ...(ommlEquations && ommlEquations.length > 0 ? { ommlEquations } : {}),
+    ...(pageVisionStatus ? { pageVisionStatus } : {}),
   };
 }

@@ -9,6 +9,7 @@ import {
   isSupabaseServerConfigured,
 } from "@/lib/supabase/server";
 import { resolveTrustedPayosOrigin } from "@/lib/payments/payos";
+import { invalidateUserQuotaLedgerCache } from "@/lib/rate-limit";
 
 export type UsdPlanId =
   | "cram_pass"
@@ -548,19 +549,45 @@ export async function fulfillUsdOrder(
     }
 
     try {
-      await supabase.from("user_quota_ledgers").upsert(
+      const { error: quotaErr } = await supabase.from("user_quota_ledgers").upsert(
         {
           user_id: `user:${params.userId}`,
           tier: userTier,
           deck_credits_used: 0,
           cogs_spent_usd: 0,
+          cogs_reserved_usd: 0,
           daily_burst_used: 0,
+          window_started_at: now,
+          window_spent_usd: 0,
+          window_reserved_usd: 0,
+          weekly_started_at: now,
+          weekly_spent_usd: 0,
+          weekly_reserved_usd: 0,
           updated_at: now,
         },
         { onConflict: "user_id" },
       );
+      if (quotaErr) {
+        await supabase.from("user_quota_ledgers").upsert(
+          {
+            user_id: `user:${params.userId}`,
+            tier: userTier,
+            deck_credits_used: 0,
+            cogs_spent_usd: 0,
+            daily_burst_used: 0,
+            updated_at: now,
+          },
+          { onConflict: "user_id" },
+        );
+      }
+      await invalidateUserQuotaLedgerCache(params.userId);
     } catch {
       // Safe ignore quota ledger update error if table pending migration
+      try {
+        await invalidateUserQuotaLedgerCache(params.userId);
+      } catch {
+        // ignore
+      }
     }
 
     try {

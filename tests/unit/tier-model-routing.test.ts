@@ -12,6 +12,7 @@ import {
   getModelFamily,
   assertCrossFamilyVerifier,
   getOpenRouterGeneratorModel,
+  getGenerationModel,
   getNoteSummarizerModel,
   getDistillerModel,
   getVerifierModel,
@@ -34,7 +35,15 @@ import {
   MCQ_GENERATION_TEMPERATURE,
   capExplanationToTwoSentences,
 } from "@/lib/ai/generate-questions";
-import { TIER_LIMITS, PRICING_PLANS } from "@/lib/pricing/tiers";
+import {
+  TIER_LIMITS,
+  PRICING_PLANS,
+  getRegionalCogsCeiling,
+  getRegionalWindowBudget,
+  getRegionalGuardBudget,
+  isPaidTier,
+} from "@/lib/pricing/tiers";
+import { buildIngestionPrompt } from "@/lib/ai/prompts";
 import { stripAnswerKeyForBlindSolve } from "@/lib/ai/verify-questions";
 
 describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
@@ -53,27 +62,108 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
       expect(getModelFamily(PRIORITY_GENERATOR_SLUG)).toBe("anthropic");
     });
 
-    it("routes note summarizer to the same model as the tier's generator", () => {
+    it("routes pro_monthly as an active paid tier to Priority Sonnet 5.5 (or Haiku/Eco when degraded), resolves priority model in getGenerationModel, and activates distractorRationale in buildIngestionPrompt", () => {
+      vi.stubEnv("OPENROUTER_API_KEY", "sk-or-v1-mock-key");
+      delete process.env.OPENROUTER_PAID_GENERATOR_MODEL;
+      delete process.env.OPENROUTER_PRIORITY_MODEL;
+      delete process.env.OPENROUTER_FREE_GENERATOR_MODEL;
+      delete process.env.OPENROUTER_GENERATOR_MODEL;
+
+      expect(isPaidTier("pro_monthly")).toBe(true);
+      expect(isPaidTier("contender")).toBe(false);
+
+      // Non-degraded: Priority Sonnet 5.5
+      const normalModel = getOpenRouterGeneratorModel("pro_monthly");
+      expect(normalModel.modelId).toBe(PRIORITY_GENERATOR_SLUG);
+      expect(normalModel.modelId).toBe("anthropic/claude-sonnet-5.5");
+
+      // Degraded: Eco Haiku 5.5
+      const degradedModel = getOpenRouterGeneratorModel("pro_monthly", { degraded: true });
+      expect(degradedModel.modelId).toBe(DEFAULT_GENERATOR_SLUG);
+      expect(degradedModel.modelId).toBe("anthropic/claude-haiku-5.5");
+
+      // getGenerationModel resolves priority model for pro_monthly
+      const genModel = getGenerationModel("pro_monthly");
+      expect((genModel as any).modelId).toBe(PRIORITY_GENERATOR_SLUG);
+
+      // buildIngestionPrompt sets distractorRationale: true for pro_monthly
+      const doc = {
+        fileName: "test.pdf",
+        sources: [{ id: "s-1", label: "Slide 1", text: "Macroeconomics lecture on fiscal policy." }],
+      } as any;
+      const promptStr = buildIngestionPrompt(doc, {
+        operation: "generate",
+        mode: "variants",
+        questionCount: 10,
+        language: "en",
+        focus: "",
+        tier: "pro_monthly",
+      });
+      const parsedPrompt = JSON.parse(promptStr);
+      expect(parsedPrompt.settings.distractorRationale).toBe(true);
+      expect(parsedPrompt.settings.tier).toBe("pro_monthly");
+
+      // Verify contender turns distractorRationale off
+      const freePrompt = JSON.parse(
+        buildIngestionPrompt(doc, {
+          operation: "generate",
+          mode: "variants",
+          questionCount: 10,
+          language: "en",
+          focus: "",
+          tier: "contender",
+        }),
+      );
+      expect(freePrompt.settings.distractorRationale).toBe(false);
+    });
+
+    it("routes note summarizer exclusively to Haiku 5.5, DeepSeek V4.1 Flash, or Gemini 2.5 Flash (never Sonnet)", () => {
       // Mock OpenRouter key
       vi.stubEnv("OPENROUTER_API_KEY", "sk-or-v1-mock-key");
       delete process.env.OPENROUTER_GENERATOR_MODEL;
       delete process.env.OPENROUTER_PRIORITY_MODEL;
       delete process.env.OPENROUTER_PAID_GENERATOR_MODEL;
       delete process.env.OPENROUTER_FREE_GENERATOR_MODEL;
+      delete process.env.OPENROUTER_NOTES_MODEL;
+      delete process.env.OPENROUTER_NOTES_GENERATOR_MODEL;
+      delete process.env.OPENROUTER_NOTES_PAID_MODEL;
+      delete process.env.OPENROUTER_NOTES_FREE_MODEL;
 
-      // Free tier note summarizer: Haiku 5.5
-      const freeSummarizer = getNoteSummarizerModel("contender");
-      expect(freeSummarizer.modelId).toBe("anthropic/claude-haiku-5.5");
+      // Free and paid tiers default to Haiku 5.5 (never Sonnet)
+      expect(getNoteSummarizerModel("contender").modelId).toBe(
+        "anthropic/claude-haiku-5.5",
+      );
+      expect(getNoteSummarizerModel("pro").modelId).toBe(
+        "anthropic/claude-haiku-5.5",
+      );
+      expect(getNoteSummarizerModel("pro_monthly").modelId).toBe(
+        "anthropic/claude-haiku-5.5",
+      );
+      expect(getNoteSummarizerModel("cram_pass").modelId).toBe(
+        "anthropic/claude-haiku-5.5",
+      );
+      expect(getNoteSummarizerModel("tutor").modelId).toBe(
+        "anthropic/claude-haiku-5.5",
+      );
 
-      // Paid tier note summarizer: Sonnet 5.5
-      const paidSummarizer = getNoteSummarizerModel("pro");
-      expect(paidSummarizer.modelId).toBe("anthropic/claude-sonnet-5.5");
+      // Explicitly allowed Notes overrides
+      expect(
+        getNoteSummarizerModel("pro", {
+          modelOverride: "deepseek/deepseek-v4.1-flash-1017",
+        }).modelId,
+      ).toBe("deepseek/deepseek-v4.1-flash-1017");
+      expect(
+        getNoteSummarizerModel("pro", {
+          modelOverride: "google/gemini-2.5-flash",
+        }).modelId,
+      ).toBe("google/gemini-2.5-flash");
 
-      const cramSummarizer = getNoteSummarizerModel("cram_pass");
-      expect(cramSummarizer.modelId).toBe("anthropic/claude-sonnet-5.5");
-
-      const tutorSummarizer = getNoteSummarizerModel("tutor");
-      expect(tutorSummarizer.modelId).toBe("anthropic/claude-sonnet-5.5");
+      // Disallowed Sonnet override falls back to Haiku 5.5
+      expect(
+        getNoteSummarizerModel("pro", {
+          modelOverride: "anthropic/claude-sonnet-5.5",
+        }).modelId,
+      ).toBe("anthropic/claude-haiku-5.5");
     });
 
     it("routes verifier for both tiers to deepseek/deepseek-v4.1-flash-1017", () => {
@@ -207,43 +297,87 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
     });
   });
 
-  describe("3. Caps (Free vs Paid Tier Benefit)", () => {
-    it("configures free tier (contender) caps: 2 decks, 10 items, 1 regen, verification ON", () => {
+  describe("3. Caps (Free vs Paid Tier Benefit & Rolling Quota)", () => {
+    it("configures free tier (contender) caps: 72h/30d rolling quota, 10 items, 1 regen, notes enabled", () => {
       const free = TIER_LIMITS.contender;
-      expect(free.newDeckCredits).toBe(2);
       expect(free.maxQuestionsPerRun).toBe(10);
+      expect(free.maxFilesPerUpload).toBe(1);
       expect(free.freeRegenerationsPerDeck).toBe(1);
       expect(free.canUseClutchNotes).toBe(true);
-      expect(free.maxNotesPerDay).toBe(1); // 1 short summary note
+      expect(free.canUseConceptRemix).toBe(false);
+      expect(free.canDebriefWithCoach).toBe(true);
+      expect(free.rollingQuota.primaryWindowHours).toBe(72);
+      expect(free.rollingQuota.guardWindowHours).toBe(720);
+      expect(free.rollingQuota.cycleCeilingApplies).toBe(false);
+      expect(getRegionalWindowBudget("contender", "VN")).toBe(0.08);
+      expect(getRegionalGuardBudget("contender", "VN")).toBe(0.32);
     });
 
-    it("configures paid tier (cram_pass, pro) caps: 5/30 decks, 30 items, 3/5 regens, verification ON", () => {
+    it("configures paid tier (cram_pass, pro_monthly, pro, tutor) caps: 24h/7d rolling quota, 30 items, 3/5 regens", () => {
       const cram = TIER_LIMITS.cram_pass;
-      expect(cram.newDeckCredits).toBe(5);
-      expect(cram.sonnetProDeckCredits).toBe(5);
-      expect(cram.haikuOverflowDeckCredits).toBe(10);
       expect(cram.maxQuestionsPerRun).toBe(30);
+      expect(cram.maxFilesPerUpload).toBe(5);
       expect(cram.freeRegenerationsPerDeck).toBe(3);
+      expect(cram.rollingQuota.primaryWindowHours).toBe(24);
+      expect(cram.rollingQuota.guardWindowHours).toBe(168);
+      expect(cram.rollingQuota.cycleCeilingApplies).toBe(true);
+      expect(getRegionalWindowBudget("cram_pass", "VN")).toBe(0.35);
+      expect(getRegionalWindowBudget("cram_pass", "ROW")).toBe(0.60);
+      expect(getRegionalCogsCeiling("cram_pass", "VN")).toBe(0.85);
+      expect(getRegionalCogsCeiling("cram_pass", "ROW")).toBe(1.50);
+
+      const proMonthly = TIER_LIMITS.pro_monthly;
+      expect(proMonthly.maxQuestionsPerRun).toBe(30);
+      expect(proMonthly.freeRegenerationsPerDeck).toBe(5);
+      expect(proMonthly.rollingQuota.primaryWindowHours).toBe(24);
+      expect(proMonthly.rollingQuota.guardWindowHours).toBe(168);
+      expect(proMonthly.rollingQuota.cycleCeilingApplies).toBe(true);
+      expect(getRegionalWindowBudget("pro_monthly", "VN")).toBe(0.28);
+      expect(getRegionalGuardBudget("pro_monthly", "VN")).toBe(0.55);
 
       const pro = TIER_LIMITS.pro;
-      expect(pro.newDeckCredits).toBe(30);
-      expect(pro.sonnetProDeckCredits).toBe(30);
-      expect(pro.haikuOverflowDeckCredits).toBe(60);
       expect(pro.maxQuestionsPerRun).toBe(30);
+      expect(pro.maxFilesPerUpload).toBe(10);
       expect(pro.freeRegenerationsPerDeck).toBe(5);
+      expect(pro.rollingQuota.primaryWindowHours).toBe(24);
+      expect(pro.rollingQuota.guardWindowHours).toBe(168);
+      expect(pro.rollingQuota.cycleCeilingApplies).toBe(true);
+      expect(getRegionalWindowBudget("pro", "VN")).toBe(0.40);
+      expect(getRegionalWindowBudget("pro", "ROW")).toBe(0.85);
+      expect(getRegionalGuardBudget("pro", "VN")).toBe(0.85);
+      expect(getRegionalGuardBudget("pro", "ROW")).toBe(1.90);
+
+      const tutor = TIER_LIMITS.tutor;
+      expect(tutor.maxQuestionsPerRun).toBe(30);
+      expect(tutor.freeRegenerationsPerDeck).toBe(5);
+      expect(tutor.rollingQuota.primaryWindowHours).toBe(24);
+      expect(tutor.rollingQuota.guardWindowHours).toBe(168);
+      expect(tutor.rollingQuota.cycleCeilingApplies).toBe(true);
+      expect(getRegionalWindowBudget("tutor", "VN")).toBe(1.10);
+      expect(getRegionalWindowBudget("tutor", "ROW")).toBe(1.80);
     });
 
-    it("presents distinct tier benefits in PRICING_PLANS", () => {
+    it("presents distinct rolling quota tier benefits in PRICING_PLANS", () => {
       const contenderPlan = PRICING_PLANS.find((p) => p.id === "contender")!;
-      expect(contenderPlan.featuresEn.some((f) => f.includes("10 questions"))).toBe(true);
-      expect(contenderPlan.featuresEn.some((f) => f.includes("2 document deck credits"))).toBe(true);
+      expect(contenderPlan.featuresEn.some((f) => f.includes("10 questions/pack"))).toBe(true);
+      expect(contenderPlan.featuresEn.some((f) => f.includes("every 3 days; 0% on shared cache"))).toBe(true);
+      expect(contenderPlan.featuresEn.some((f) => f.includes("1-section Clutch Notes & AI Coach inside quota"))).toBe(true);
       expect(contenderPlan.featuresEn.some((f) => f.includes("no distractor rationale"))).toBe(true);
 
+      const cramPlan = PRICING_PLANS.find((p) => p.id === "cram_pass")!;
+      expect(cramPlan.featuresEn.some((f) => f.includes("24h rolling AI quota"))).toBe(true);
+      expect(cramPlan.featuresEn.some((f) => f.includes("Priority Sonnet & Eco mode"))).toBe(true);
+
       const proPlan = PRICING_PLANS.find((p) => p.id === "pro")!;
-      expect(proPlan.featuresEn.some((f) => f.includes("30 questions"))).toBe(true);
-      expect(proPlan.featuresEn.some((f) => f.includes("30 Sonnet Pro deck credits"))).toBe(true);
-      expect(proPlan.featuresEn.some((f) => f.includes("60 Fast-Track Haiku overflow decks"))).toBe(true);
+      expect(proPlan.featuresEn.some((f) => f.includes("30 questions/pack"))).toBe(true);
+      expect(proPlan.featuresEn.some((f) => f.includes("24h daily & 7d weekly rolling AI quota"))).toBe(true);
+      expect(proPlan.featuresEn.some((f) => f.includes("Priority Sonnet & Eco mode"))).toBe(true);
+      expect(proPlan.featuresEn.some((f) => f.includes("0% shared cache"))).toBe(true);
       expect(proPlan.featuresEn.some((f) => f.includes("Full distractor rationale"))).toBe(true);
+
+      const tutorPlan = PRICING_PLANS.find((p) => p.id === "tutor")!;
+      expect(tutorPlan.featuresEn.some((f) => f.includes("Maximum 24h & 7d rolling AI quota"))).toBe(true);
+      expect(tutorPlan.featuresEn.some((f) => f.includes("Priority Sonnet 5.5 + automatic Eco fallback"))).toBe(true);
     });
   });
 

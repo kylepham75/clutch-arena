@@ -14,28 +14,31 @@ export interface RegionalPrice {
   formatted: string;
 }
 
+export interface RollingQuotaConfig {
+  primaryWindowHours: number;
+  primaryBudgetUsd: number | { VN: number; ROW: number };
+  guardWindowHours: number;
+  guardBudgetUsd: number | { VN: number; ROW: number };
+  /** True for finite-cycle paid passes bounded by cycle COGS ceiling; false for renewable rolling free tier unless overridden by sandbox cap. */
+  cycleCeilingApplies: boolean;
+}
+
 export interface TierLimits {
   tier: TierKey;
-  maxUploadsPerWeek: number;
   maxFilesPerUpload: number;
   maxQuestionsPerRun: number;
   canUseConceptRemix: boolean;
   canDebriefWithCoach: boolean;
-  maxCoachDebriefRepliesPerRun?: number;
   canExportCheatSheet: boolean;
   canHostArenaRemix: boolean;
   maxArenaPlayers: number;
   hasCohortAnalytics: boolean;
   canUseClutchNotes: boolean;
-  maxNotesPerDay: number;
   canCustomWatermarkPdf?: boolean;
-  // Stage 1 Section 7 Quota & COGS fields
-  newDeckCredits: number;
-  sonnetProDeckCredits: number;
-  haikuOverflowDeckCredits: number;
-  dailyDeckBurstLimit: number;
+  // Rolling Antigravity-style % quota & anti-abuse protection
   freeRegenerationsPerDeck: number;
   cogsCeilingUsd: number | { VN: number; ROW: number };
+  rollingQuota: RollingQuotaConfig;
   verifiedPoolSize: number;
   servedSubsetSize: number;
 }
@@ -78,34 +81,58 @@ export function getRegionalCogsCeiling(
   );
 }
 
-export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number & RegionalCogsCeiling }> = {
+export function getRegionalWindowBudget(
+  tier: TierKey,
+  region: BillingRegion = "VN",
+): number {
+  const cfg = TIER_LIMITS[tier]?.rollingQuota ?? TIER_LIMITS.contender.rollingQuota;
+  return resolveRegionalCeiling(cfg.primaryBudgetUsd, region);
+}
+
+export function getRegionalGuardBudget(
+  tier: TierKey,
+  region: BillingRegion = "VN",
+): number {
+  const cfg = TIER_LIMITS[tier]?.rollingQuota ?? TIER_LIMITS.contender.rollingQuota;
+  return resolveRegionalCeiling(cfg.guardBudgetUsd, region);
+}
+
+export const TIER_LIMITS: Record<
+  TierKey,
+  TierLimits & {
+    cogsCeilingUsd: number & RegionalCogsCeiling;
+    rollingQuota: RollingQuotaConfig & {
+      primaryBudgetUsd: number & RegionalCogsCeiling;
+      guardBudgetUsd: number & RegionalCogsCeiling;
+    };
+  }
+> = {
   contender: {
     tier: "contender",
-    maxUploadsPerWeek: 2,
     maxFilesPerUpload: 1,
     maxQuestionsPerRun: 10,
     canUseConceptRemix: false,
     canDebriefWithCoach: true,
-    maxCoachDebriefRepliesPerRun: 2,
     canExportCheatSheet: false,
     canHostArenaRemix: false,
     maxArenaPlayers: 8,
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
-    maxNotesPerDay: 1,
     canCustomWatermarkPdf: false,
-    newDeckCredits: 2,
-    sonnetProDeckCredits: 0,
-    haikuOverflowDeckCredits: 0,
-    dailyDeckBurstLimit: 2,
     freeRegenerationsPerDeck: 1,
     cogsCeilingUsd: createRegionalCeiling(0.08, 0.08),
+    rollingQuota: {
+      primaryWindowHours: 72,
+      primaryBudgetUsd: createRegionalCeiling(0.08, 0.08),
+      guardWindowHours: 720,
+      guardBudgetUsd: createRegionalCeiling(0.32, 0.32),
+      cycleCeilingApplies: false,
+    },
     verifiedPoolSize: 15,
     servedSubsetSize: 15,
   },
   cram_pass: {
     tier: "cram_pass",
-    maxUploadsPerWeek: Infinity,
     maxFilesPerUpload: 5,
     maxQuestionsPerRun: 30,
     canUseConceptRemix: true,
@@ -115,20 +142,21 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     maxArenaPlayers: 15,
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
-    maxNotesPerDay: 5,
     canCustomWatermarkPdf: false,
-    newDeckCredits: 5,
-    sonnetProDeckCredits: 5,
-    haikuOverflowDeckCredits: 10,
-    dailyDeckBurstLimit: 4,
     freeRegenerationsPerDeck: 3,
     cogsCeilingUsd: createRegionalCeiling(0.85, 1.50),
+    rollingQuota: {
+      primaryWindowHours: 24,
+      primaryBudgetUsd: createRegionalCeiling(0.35, 0.60),
+      guardWindowHours: 168,
+      guardBudgetUsd: createRegionalCeiling(0.85, 1.50),
+      cycleCeilingApplies: true,
+    },
     verifiedPoolSize: 35,
     servedSubsetSize: 30,
   },
   pro_monthly: {
     tier: "pro_monthly",
-    maxUploadsPerWeek: Infinity,
     maxFilesPerUpload: 10,
     maxQuestionsPerRun: 30,
     canUseConceptRemix: true,
@@ -138,20 +166,21 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     maxArenaPlayers: 15,
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
-    maxNotesPerDay: 8,
     canCustomWatermarkPdf: false,
-    newDeckCredits: 12,
-    sonnetProDeckCredits: 12,
-    haikuOverflowDeckCredits: 20,
-    dailyDeckBurstLimit: 8,
     freeRegenerationsPerDeck: 5,
     cogsCeilingUsd: createRegionalCeiling(1.50, 3.20),
+    rollingQuota: {
+      primaryWindowHours: 24,
+      primaryBudgetUsd: createRegionalCeiling(0.28, 0.60),
+      guardWindowHours: 168,
+      guardBudgetUsd: createRegionalCeiling(0.55, 1.20),
+      cycleCeilingApplies: true,
+    },
     verifiedPoolSize: 35,
     servedSubsetSize: 30,
   },
   pro: {
     tier: "pro",
-    maxUploadsPerWeek: Infinity,
     maxFilesPerUpload: 10,
     maxQuestionsPerRun: 30,
     canUseConceptRemix: true,
@@ -161,20 +190,21 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     maxArenaPlayers: 15,
     hasCohortAnalytics: false,
     canUseClutchNotes: true,
-    maxNotesPerDay: 10,
     canCustomWatermarkPdf: false,
-    newDeckCredits: 30,
-    sonnetProDeckCredits: 30,
-    haikuOverflowDeckCredits: 60,
-    dailyDeckBurstLimit: 10,
     freeRegenerationsPerDeck: 5,
     cogsCeilingUsd: createRegionalCeiling(3.80, 8.50),
+    rollingQuota: {
+      primaryWindowHours: 24,
+      primaryBudgetUsd: createRegionalCeiling(0.40, 0.85),
+      guardWindowHours: 168,
+      guardBudgetUsd: createRegionalCeiling(0.85, 1.90),
+      cycleCeilingApplies: true,
+    },
     verifiedPoolSize: 35,
     servedSubsetSize: 30,
   },
   tutor: {
     tier: "tutor",
-    maxUploadsPerWeek: Infinity,
     maxFilesPerUpload: 10,
     maxQuestionsPerRun: 30,
     canUseConceptRemix: true,
@@ -184,14 +214,16 @@ export const TIER_LIMITS: Record<TierKey, TierLimits & { cogsCeilingUsd: number 
     maxArenaPlayers: 50,
     hasCohortAnalytics: true,
     canUseClutchNotes: true,
-    maxNotesPerDay: 25,
     canCustomWatermarkPdf: true,
-    newDeckCredits: 45,
-    sonnetProDeckCredits: 45,
-    haikuOverflowDeckCredits: 105,
-    dailyDeckBurstLimit: 25,
     freeRegenerationsPerDeck: 5,
     cogsCeilingUsd: createRegionalCeiling(6.50, 10.50),
+    rollingQuota: {
+      primaryWindowHours: 24,
+      primaryBudgetUsd: createRegionalCeiling(1.10, 1.80),
+      guardWindowHours: 168,
+      guardBudgetUsd: createRegionalCeiling(2.50, 4.20),
+      cycleCeilingApplies: true,
+    },
     verifiedPoolSize: 35,
     servedSubsetSize: 30,
   },
@@ -205,8 +237,50 @@ export function canUseCustomWatermarkPdf(tier: UserTier | TierKey): boolean {
   return tier === "tutor";
 }
 
-export function formatDeckCreditsCounter(used: number, limit: number): string {
-  return `${used} of ${limit} decks used`;
+export function formatQuotaPercentBadge(remainingPct: number, isVi: boolean = false): string {
+  const clamped = Math.max(0, Math.min(100, Math.round(remainingPct)));
+  return isVi ? `Còn ${clamped}% hạn mức AI` : `${clamped}% AI quota remaining`;
+}
+
+export function formatQuotaResetCountdown(
+  resetsAt: string | null | undefined,
+  isVi: boolean = false,
+  nowMs?: number,
+): string | null {
+  if (!resetsAt) return null;
+  const resetMs = new Date(resetsAt).getTime();
+  if (isNaN(resetMs)) return null;
+
+  const currentMs = typeof nowMs === "number" ? nowMs : Date.now();
+  const diffMs = resetMs - currentMs;
+  if (diffMs <= 0) {
+    return isVi ? "Đang làm mới ngay" : "Resetting now";
+  }
+
+  const totalMinutes = Math.ceil(diffMs / 60_000);
+  if (totalMinutes < 60) {
+    return isVi ? `Làm mới sau ${totalMinutes} phút` : `Resets in ${totalMinutes}m`;
+  }
+
+  const totalHours = Math.floor(diffMs / 3_600_000);
+  const remMinutes = Math.ceil((diffMs % 3_600_000) / 60_000) % 60;
+  if (totalHours < 24) {
+    if (remMinutes > 0) {
+      return isVi
+        ? `Làm mới sau ${totalHours} giờ ${remMinutes} phút`
+        : `Resets in ${totalHours}h ${remMinutes}m`;
+    }
+    return isVi ? `Làm mới sau ${totalHours} giờ` : `Resets in ${totalHours}h`;
+  }
+
+  const days = Math.floor(diffMs / 86_400_000);
+  const remHours = Math.floor((diffMs % 86_400_000) / 3_600_000);
+  if (remHours > 0) {
+    return isVi
+      ? `Làm mới sau ${days} ngày ${remHours} giờ`
+      : `Resets in ${days}d ${remHours}h`;
+  }
+  return isVi ? `Làm mới sau ${days} ngày` : `Resets in ${days}d`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -363,19 +437,17 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsd: 0,
     priceUsdFormatted: "$0",
     featuresEn: [
-      "2 document deck credits / month (10 questions per pack)",
-      "1 free regeneration per deck",
-      "1 short summary note preview / month",
-      "2 free AI Coach debrief replies per completed run",
+      "Unified starter AI quota (resets automatically every 3 days; 0% on shared cache)",
+      "Standard AI Decks (10 questions/pack), concise 1-section Clutch Notes & AI Coach inside quota",
+      "1 free regeneration per unlocked deck",
       "Cross-family blind AI verification ON",
       "Unlimited joining of friend /arena rooms (100% free)",
       "Basic document grounding & citations (no distractor rationale)",
     ],
     featuresVi: [
-      "2 lượt tạo bộ đề tài liệu / tháng (10 câu hỏi / bộ)",
-      "1 lần tạo lại miễn phí cho mỗi bộ đề",
-      "1 bản tóm tắt ngắn xem trước / tháng",
-      "2 tin nhắn gia sư AI phản hồi miễn phí sau mỗi lượt chơi",
+      "Hạn mức AI khởi đầu dùng chung (tự làm mới mỗi 3 ngày; 0% với kho đề chung)",
+      "Bộ đề AI chuẩn (10 câu/bộ), tóm tắt Clutch Notes 1 phần & Gia sư AI trong hạn mức",
+      "1 lần tạo lại miễn phí cho mỗi bộ đề đã mở",
       "Hệ thống kiểm định chéo AI độc lập bật 100%",
       "Tham gia phòng đấu /arena của bạn bè không giới hạn (100% miễn phí)",
       "Trích dẫn căn cứ gốc (không kèm giải thích bẫy đáp án nhiễu)",
@@ -401,23 +473,23 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsdFormatted: "$4.99",
     featuresEn: [
       "7 days full Pro access (one-time purchase)",
-      "5 Sonnet Pro deck credits + 10 Fast-Track Haiku overflow decks (up to 30 questions/pack + unlimited $0 shared syllabus cache plays)",
+      "High-capacity 24h rolling AI quota (resets daily) + Priority Sonnet & Eco mode (up to 30 questions/pack + 0% shared cache)",
       "Full distractor rationale ('why the others are wrong')",
-      "Full Clutch Notes revision notes generator (up to 5 full notesheets)",
+      "Full, sectioned Clutch Notes synthesis + 1-Click PDF Cheat Sheet",
       "3 free regenerations per deck",
       "Cross-family blind AI verification ON",
       "Multi-document synthesis up to 5 files (15MB)",
-      "Unlimited AI Coach deep debriefs",
+      "Full AI Coach deep debriefs inside rolling quota",
     ],
     featuresVi: [
       "7 ngày toàn quyền Pro (mua 1 lần, không trừ tiền tự động)",
-      "5 lượt bộ đề Sonnet Pro + 10 bộ đề Haiku tăng tốc (tối đa 30 câu/bộ + chơi bộ đề kho chung $0 không giới hạn)",
+      "Hạn mức AI 24h dung lượng lớn (tự làm mới mỗi ngày) + Sonnet ưu tiên & chế độ tiết kiệm (tối đa 30 câu/bộ + 0% kho đề chung)",
       "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
-      "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (tối đa 5 bộ)",
+      "Tạo Clutch Notes phân mục đầy đủ + xuất PDF Cheat Sheet 1 chạm",
       "3 lần tạo lại miễn phí cho mỗi bộ đề",
       "Hệ thống kiểm định chéo AI độc lập bật 100%",
       "Tổng hợp đa tài liệu cùng lúc (tối đa 5 tệp / 15MB)",
-      "Gia sư AI phản hồi và hướng dẫn chi tiết không giới hạn",
+      "Gia sư AI phản hồi & phân tích sâu không giới hạn lượt trong hạn mức",
     ],
   },
   {
@@ -437,9 +509,9 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsdFormatted: "$9.99",
     featuresEn: [
       "Full access for 1 month (auto-renews or cancel anytime)",
-      "12 Sonnet Pro deck credits + 20 Fast-Track Haiku overflow decks (up to 30 questions/pack + unlimited $0 shared syllabus cache plays)",
+      "Sustained 24h daily & 7d weekly rolling AI quota + Priority Sonnet & Eco mode (up to 30 questions/pack + 0% shared cache)",
       "Full distractor rationale ('why the others are wrong')",
-      "Full Clutch Notes revision notes generator (max 8/day)",
+      "Full, sectioned Clutch Notes synthesis across Decks, Notes, OCR & Coach",
       "5 free regenerations per deck",
       "Cross-family blind AI verification ON",
       "Host Privileges: host 30Q remix rooms (friends play free!)",
@@ -448,9 +520,9 @@ export const PRICING_PLANS: PlanPricing[] = [
     ],
     featuresVi: [
       "Toàn quyền truy cập trong 1 tháng",
-      "12 lượt bộ đề Sonnet Pro + 20 bộ đề Haiku tăng tốc (tối đa 30 câu/bộ + chơi bộ đề kho chung $0 không giới hạn)",
+      "Hạn mức AI xoay vòng 24h & 7 ngày ổn định + Sonnet ưu tiên & chế độ tiết kiệm (tối đa 30 câu/bộ + 0% kho đề chung)",
       "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
-      "Tạo tài liệu Clutch Notes đầy đủ (tối đa 8 bộ/ngày)",
+      "Tạo Clutch Notes đầy đủ, dùng chung linh hoạt cho Bộ đề, Ghi chú, OCR & Gia sư",
       "5 lần tạo lại miễn phí cho mỗi bộ đề",
       "Hệ thống kiểm định chéo AI độc lập bật 100%",
       "Đặc quyền Chủ phòng: mở phòng 30 câu Remix cho bạn bè chơi miễn phí",
@@ -478,9 +550,9 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsdFormatted: "$29",
     featuresEn: [
       "Full access for entire 4-month semester",
-      "30 Sonnet Pro deck credits + 60 Fast-Track Haiku overflow decks (up to 30 questions/pack + unlimited $0 shared syllabus cache plays)",
+      "Extra-large 24h daily & 7d weekly rolling AI quota + Priority Sonnet & Eco mode (up to 30 questions/pack + 0% shared cache)",
       "Full distractor rationale ('why the others are wrong')",
-      "Full, sectioned Clutch Notes revision notes generator (max 10/day)",
+      "Full, sectioned Clutch Notes synthesis across Decks, Notes, OCR & Coach",
       "5 free regenerations per deck",
       "Cross-family blind AI verification ON",
       "Host Privileges: host 30Q remix rooms (friends play free!)",
@@ -489,9 +561,9 @@ export const PRICING_PLANS: PlanPricing[] = [
     ],
     featuresVi: [
       "Toàn quyền suốt 4 tháng học kỳ (tương đương 74.750đ/tháng)",
-      "30 lượt bộ đề Sonnet Pro + 60 bộ đề Haiku tăng tốc (tối đa 30 câu/bộ + chơi bộ đề kho chung $0 không giới hạn)",
+      "Hạn mức AI xoay vòng 24h & 7 ngày dung lượng lớn + Sonnet ưu tiên & chế độ tiết kiệm (tối đa 30 câu/bộ + 0% kho đề chung)",
       "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
-      "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (tối đa 10 bộ/ngày)",
+      "Tạo Clutch Notes phân mục đầy đủ, dùng chung cho Bộ đề, Ghi chú, OCR & Gia sư",
       "5 lần tạo lại miễn phí cho mỗi bộ đề",
       "Hệ thống kiểm định chéo AI độc lập bật 100%",
       "Đặc quyền Chủ phòng: mở phòng 30 câu Remix cho bạn bè chơi miễn phí",
@@ -519,8 +591,8 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsd: 24.99,
     priceUsdFormatted: "$24.99",
     featuresEn: [
-      "45 Sonnet Pro deck credits + 105 Fast-Track Haiku overflow decks / month (150 total fresh decks + unlimited $0 shared syllabus cache plays)",
-      "Full Clutch Notes revision notes generator (max 25/day)",
+      "Maximum 24h & 7d rolling AI quota across Decks, Notes, Vision OCR & Coach (0% on shared cache)",
+      "Priority Sonnet 5.5 + automatic Eco fallback (up to 30 questions/pack & full sectioned Clutch Notes)",
       "50 player /arena lobbies for live classroom reviews",
       "Custom branded Base64 pack links (your name & logo)",
       "Cohort accuracy & missed-concept analytics",
@@ -528,8 +600,8 @@ export const PRICING_PLANS: PlanPricing[] = [
       "Priority API queue for high-concurrency match starts",
     ],
     featuresVi: [
-      "45 lượt bộ đề Sonnet Pro + 105 bộ đề Haiku tăng tốc / tháng (tổng 150 bộ đề mới + chơi kho chung $0 không giới hạn)",
-      "Tạo tài liệu Clutch Notes đầy đủ, phân mục chi tiết (tối đa 25 bộ/ngày)",
+      "Hạn mức AI xoay vòng 24h & 7 ngày tối đa cho Bộ đề, Clutch Notes, Vision OCR & Gia sư (0% với kho đề chung)",
+      "Sonnet 5.5 ưu tiên + tự động chuyển Eco khi gần cạn (tối đa 30 câu/bộ & Clutch Notes đầy đủ)",
       "Phòng đấu /arena lên đến 50 người cho lớp học trực tiếp",
       "Mã chia sẻ Base64 gắn thương hiệu & logo riêng của bạn",
       "Bảng phân tích độ chính xác & lỗ hổng kiến thức chung của lớp",
@@ -590,6 +662,16 @@ export function normalizeTier(raw: unknown): UserTier {
   if (t === "pro" || t === "pro_semester" || t === "pro-semester" || t === "semester") return "pro";
   if (t === "tutor" || t === "tutor_guild" || t === "tutor-guild") return "tutor";
   return "contender";
+}
+
+/**
+ * Returns true if the tier corresponds to any active paid tier, false otherwise.
+ * Normalizes trim and lowercase, recognizing all tier aliases (e.g. cram-pass, pro-monthly, tutor_guild).
+ */
+export function isPaidTier(tier: string | null | undefined): boolean {
+  if (!tier || typeof tier !== "string") return false;
+  const norm = normalizeTier(tier);
+  return norm === "cram_pass" || norm === "pro_monthly" || norm === "pro" || norm === "tutor";
 }
 
 /**

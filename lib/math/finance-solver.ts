@@ -19,6 +19,10 @@ export const distractorModeSchema = z.enum([
   "used_market_return_as_erp",
   "current_yield_only",
   "added_tax_shield",
+  "unweighted_average",
+  "highest_asset_return",
+  "lowest_asset_return",
+  "sum_of_returns",
 ]);
 
 export type DistractorMode = z.infer<typeof distractorModeSchema>;
@@ -34,6 +38,7 @@ export const financeSolverTypeSchema = z.enum([
   "irr",
   "wacc",
   "capm",
+  "portfolio_return",
 ]);
 
 export type FinanceSolverType = z.infer<typeof financeSolverTypeSchema>;
@@ -44,6 +49,67 @@ export const financeUnitSchema = z.union([
 ]);
 
 export type FinanceUnit = z.infer<typeof financeUnitSchema>;
+
+export const financeScalarParamKeySchema = z.enum([
+  "rate",
+  "nper",
+  "pmt",
+  "pv",
+  "fv",
+  "isDue",
+  "cashFlow",
+  "dividend",
+  "d0",
+  "d1",
+  "growth",
+  "isD0",
+  "faceValue",
+  "couponRate",
+  "frequency",
+  "price",
+  "initialInvestment",
+  "equityWeight",
+  "debtWeight",
+  "costOfEquity",
+  "costOfDebt",
+  "taxRate",
+  "equityValue",
+  "debtValue",
+  "riskFreeRate",
+  "beta",
+  "marketReturn",
+  "marketRiskPremium",
+]);
+
+export const financeArrayParamKeySchema = z.enum([
+  "cashFlows",
+  "weights",
+  "values",
+  "returns",
+]);
+
+export const structuredFinanceParamsSchema = z
+  .object({
+    scalars: z.array(
+      z
+        .object({
+          name: financeScalarParamKeySchema,
+          value: z.number(),
+        })
+        .strict(),
+    ),
+    arrays: z.array(
+      z
+        .object({
+          name: financeArrayParamKeySchema,
+          values: z.array(z.number()),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+export type StructuredFinanceParams = z.infer<typeof structuredFinanceParamsSchema>;
 
 export const financeParamsSchema = z
   .object({
@@ -78,6 +144,9 @@ export const financeParamsSchema = z
     beta: z.number().optional(),
     marketReturn: z.number().optional(),
     marketRiskPremium: z.number().optional(),
+    weights: z.array(z.number()).optional(),
+    values: z.array(z.number()).optional(),
+    returns: z.array(z.number()).optional(),
   })
   .catchall(
     z.union([
@@ -91,7 +160,50 @@ export const financeParamsSchema = z
 
 export type FinanceParams = z.infer<typeof financeParamsSchema>;
 
-export const financeCalculationSpecSchema = z.object({
+const BOOLEAN_PARAM_KEYS = new Set(["isDue", "isD0"]);
+
+export function normalizeFinanceParams(rawParams: unknown): Record<string, unknown> {
+  if (!rawParams || typeof rawParams !== "object" || Array.isArray(rawParams)) {
+    return {};
+  }
+  const obj = rawParams as Record<string, unknown>;
+  if (Array.isArray(obj.scalars) || Array.isArray(obj.arrays)) {
+    const flattened: Record<string, unknown> = {};
+    if (Array.isArray(obj.scalars)) {
+      for (const entry of obj.scalars) {
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof (entry as { name?: unknown }).name === "string" &&
+          typeof (entry as { value?: unknown }).value === "number" &&
+          Number.isFinite((entry as { value: number }).value)
+        ) {
+          const { name, value } = entry as { name: string; value: number };
+          flattened[name] = BOOLEAN_PARAM_KEYS.has(name) ? value !== 0 : value;
+        }
+      }
+    }
+    if (Array.isArray(obj.arrays)) {
+      for (const entry of obj.arrays) {
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof (entry as { name?: unknown }).name === "string" &&
+          Array.isArray((entry as { values?: unknown }).values)
+        ) {
+          const { name, values } = entry as { name: string; values: unknown[] };
+          flattened[name] = values.filter(
+            (v): v is number => typeof v === "number" && Number.isFinite(v),
+          );
+        }
+      }
+    }
+    return flattened;
+  }
+  return obj;
+}
+
+const baseFinanceCalculationSpecSchema = z.object({
   solver: financeSolverTypeSchema,
   target: z.string().optional(),
   params: financeParamsSchema,
@@ -101,7 +213,26 @@ export const financeCalculationSpecSchema = z.object({
   distractorModes: z.array(distractorModeSchema).optional(),
 });
 
-export type FinanceCalculationSpec = z.input<typeof financeCalculationSpecSchema>;
+export const financeCalculationSpecSchema = z.preprocess(
+  (input) => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      return input;
+    }
+    const specObj = input as Record<string, unknown>;
+    return {
+      ...specObj,
+      params: normalizeFinanceParams(specObj.params),
+    };
+  },
+  baseFinanceCalculationSpecSchema,
+);
+
+export type FinanceCalculationSpec = Omit<
+  z.input<typeof baseFinanceCalculationSpecSchema>,
+  "params"
+> & {
+  params: FinanceParams | StructuredFinanceParams;
+};
 
 export interface SolvedFinanceResult {
   correctValue: number;
@@ -210,6 +341,14 @@ export function solveTvm(
             : "rate")
   ).toLowerCase();
 
+  const hasRate = typeof params.rate === "number" && Number.isFinite(params.rate);
+  const hasNper = typeof params.nper === "number" && Number.isFinite(params.nper);
+  const hasPv = typeof params.pv === "number" && Number.isFinite(params.pv);
+  const hasFv = typeof params.fv === "number" && Number.isFinite(params.fv);
+  const hasPmt =
+    (typeof params.pmt === "number" && Number.isFinite(params.pmt)) ||
+    (typeof params.cashFlow === "number" && Number.isFinite(params.cashFlow));
+
   const r = params.rate ?? 0;
   const n = params.nper ?? 0;
   const pmt = params.pmt ?? params.cashFlow ?? 0;
@@ -217,6 +356,9 @@ export function solveTvm(
   const fv = params.fv ?? 0;
 
   if (target === "fv") {
+    if (!hasRate || !hasNper || (!hasPv && !hasPmt)) {
+      throw new Error("TVM solver (fv) requires rate, nper, and pv or pmt.");
+    }
     if (n < 0) throw new Error("nper must be non-negative.");
     const dueFactor = due ? 1 + r : 1;
     const growth = Math.pow(1 + r, n);
@@ -233,6 +375,9 @@ export function solveTvm(
   }
 
   if (target === "pv") {
+    if (!hasRate || !hasNper || (!hasFv && !hasPmt)) {
+      throw new Error("TVM solver (pv) requires rate, nper, and fv or pmt.");
+    }
     if (n < 0) throw new Error("nper must be non-negative.");
     const dueFactor = due ? 1 + r : 1;
     const discount = Math.pow(1 + r, -n);
@@ -251,6 +396,9 @@ export function solveTvm(
   }
 
   if (target === "pmt") {
+    if (!hasRate || !hasNper || (!hasPv && !hasFv)) {
+      throw new Error("TVM solver (pmt) requires rate, nper, and pv or fv.");
+    }
     if (n <= 0) throw new Error("nper must be positive to solve for pmt.");
     const dueFactor = due ? 1 + r : 1;
     const growth = Math.pow(1 + r, n);
@@ -270,6 +418,9 @@ export function solveTvm(
   }
 
   if (target === "nper") {
+    if (!hasRate || (!hasPv && !hasFv)) {
+      throw new Error("TVM solver (nper) requires rate and pv or fv.");
+    }
     if (Math.abs(pmt) < 1e-12) {
       if (pv === 0 || fv === 0) {
         throw new Error("Both pv and fv must be non-zero when pmt is 0.");
@@ -311,7 +462,10 @@ export function solveTvm(
   }
 
   if (target === "rate") {
-    if (n <= 0) throw new Error("nper must be positive to solve for rate.");
+    if (!hasNper || n <= 0) throw new Error("nper must be positive to solve for rate.");
+    if (!hasPv && !hasFv) {
+      throw new Error("TVM solver (rate) requires pv or fv.");
+    }
     if (Math.abs(pmt) < 1e-12) {
       if (pv === 0 || fv === 0) {
         throw new Error("Both pv and fv must be non-zero when pmt is 0.");
@@ -362,10 +516,21 @@ export function solveTvm(
 export function solveAnnuity(
   params: FinanceParams & { target?: string },
 ): number {
+  const rawPmt = params.pmt ?? params.cashFlow ?? params.dividend;
+  if (
+    typeof rawPmt !== "number" ||
+    !Number.isFinite(rawPmt) ||
+    typeof params.rate !== "number" ||
+    !Number.isFinite(params.rate) ||
+    typeof params.nper !== "number" ||
+    !Number.isFinite(params.nper)
+  ) {
+    throw new Error("Annuity solver requires pmt, rate, and nper.");
+  }
   const target = (params.target ?? "pv").toLowerCase();
-  const pmt = params.pmt ?? params.cashFlow ?? params.dividend ?? 0;
-  const r = params.rate ?? 0;
-  const n = params.nper ?? 0;
+  const pmt = rawPmt;
+  const r = params.rate;
+  const n = params.nper;
   const due = isAnnuityDue(params);
 
   if (n < 0) throw new Error("nper must be non-negative.");
@@ -384,8 +549,18 @@ export function solveAnnuity(
  * Computes Present Value of a level or growing perpetuity: PV = C / (r - g).
  */
 export function solvePerpetuity(params: FinanceParams): number {
-  const c = params.pmt ?? params.cashFlow ?? params.dividend ?? params.d1 ?? params.d0 ?? 0;
-  const r = params.rate ?? params.costOfEquity ?? 0;
+  const rawC = params.pmt ?? params.cashFlow ?? params.dividend ?? params.d1 ?? params.d0;
+  const rawR = params.rate ?? params.costOfEquity;
+  if (
+    typeof rawC !== "number" ||
+    !Number.isFinite(rawC) ||
+    typeof rawR !== "number" ||
+    !Number.isFinite(rawR)
+  ) {
+    throw new Error("Perpetuity solver requires payment/cashFlow and discount rate.");
+  }
+  const c = rawC;
+  const r = rawR;
   const g = params.growth ?? 0;
   const due = isAnnuityDue(params);
 
@@ -405,7 +580,7 @@ export function solvePerpetuity(params: FinanceParams): number {
 export function solveDdm(
   params: FinanceParams & { target?: string },
 ): number {
-  const r = params.rate ?? params.costOfEquity ?? 0;
+  const rawR = params.rate ?? params.costOfEquity;
   const g = params.growth ?? 0;
   const target = (params.target ?? "price").toLowerCase();
 
@@ -415,7 +590,10 @@ export function solveDdm(
   } else if (params.d0 !== undefined) {
     d1 = params.isD0 === false ? params.d0 : params.d0 * (1 + g);
   } else {
-    const div = params.dividend ?? params.pmt ?? params.cashFlow ?? 0;
+    const div = params.dividend ?? params.pmt ?? params.cashFlow;
+    if (typeof div !== "number" || !Number.isFinite(div)) {
+      throw new Error("DDM solver requires dividend (d0, d1, or dividend).");
+    }
     d1 = params.isD0 === true ? div * (1 + g) : div;
   }
 
@@ -424,6 +602,11 @@ export function solveDdm(
     if (price <= 0) throw new Error("Price must be positive to solve for DDM rate.");
     return d1 / price + g;
   }
+
+  if (typeof rawR !== "number" || !Number.isFinite(rawR)) {
+    throw new Error("DDM solver requires rate or costOfEquity.");
+  }
+  const r = rawR;
 
   if (target === "growth") {
     const price = params.price ?? params.pv ?? 0;
@@ -446,10 +629,19 @@ export function solveDdm(
  * Computes the price of a fixed-coupon bond.
  */
 export function solveBondPrice(params: FinanceParams): number {
+  if (
+    typeof params.rate !== "number" ||
+    !Number.isFinite(params.rate) ||
+    typeof params.nper !== "number" ||
+    !Number.isFinite(params.nper) ||
+    (params.couponRate === undefined && params.faceValue === undefined)
+  ) {
+    throw new Error("Bond price solver requires rate (YTM), nper (years), and couponRate or faceValue.");
+  }
   const faceValue = params.faceValue ?? 1000;
   const couponRate = params.couponRate ?? 0;
-  const ytm = params.rate ?? 0;
-  const years = params.nper ?? 0;
+  const ytm = params.rate;
+  const years = params.nper;
   const freq = params.frequency ?? 1;
 
   if (freq <= 0) throw new Error("Bond compounding frequency must be positive.");
@@ -522,7 +714,11 @@ function normalizeCashFlowStream(params: FinanceParams): number[] {
  * Computes Net Present Value (NPV) of a cash flow stream.
  */
 export function solveNpv(params: FinanceParams): number {
-  const r = params.rate ?? params.costOfEquity ?? 0;
+  const rawR = params.rate ?? params.costOfEquity;
+  if (typeof rawR !== "number" || !Number.isFinite(rawR)) {
+    throw new Error("NPV solver requires discount rate.");
+  }
+  const r = rawR;
   const cfs = normalizeCashFlowStream(params);
   if (cfs.length === 0) {
     throw new Error("cashFlows cannot be empty for NPV calculation.");
@@ -577,6 +773,9 @@ function resolveWeights(params: FinanceParams): { we: number; wd: number } {
       wd: params.debtValue / total,
     };
   }
+  if (params.equityWeight === undefined && params.debtWeight === undefined) {
+    throw new Error("WACC solver requires equity/debt weights or market values.");
+  }
   const we =
     params.equityWeight ??
     (params.debtWeight !== undefined ? 1 - params.debtWeight : 0.5);
@@ -590,9 +789,17 @@ function resolveWeights(params: FinanceParams): { we: number; wd: number } {
  * Computes Weighted Average Cost of Capital: WACC = (E/V)*Re + (D/V)*Rd*(1 - T).
  */
 export function solveWacc(params: FinanceParams): number {
+  if (
+    typeof params.costOfEquity !== "number" ||
+    !Number.isFinite(params.costOfEquity) ||
+    typeof params.costOfDebt !== "number" ||
+    !Number.isFinite(params.costOfDebt)
+  ) {
+    throw new Error("WACC solver requires costOfEquity and costOfDebt.");
+  }
   const { we, wd } = resolveWeights(params);
-  const re = params.costOfEquity ?? 0;
-  const rd = params.costOfDebt ?? 0;
+  const re = params.costOfEquity;
+  const rd = params.costOfDebt;
   const tax = params.taxRate ?? 0;
   return we * re + wd * rd * (1 - tax);
 }
@@ -601,8 +808,22 @@ export function solveWacc(params: FinanceParams): number {
  * Computes Capital Asset Pricing Model expected return: E[Ri] = Rf + beta * (E[Rm] - Rf).
  */
 export function solveCapm(params: FinanceParams & { target?: string }): number {
-  const rf = params.riskFreeRate ?? 0;
-  const beta = params.beta ?? 1;
+  if (
+    typeof params.riskFreeRate !== "number" ||
+    !Number.isFinite(params.riskFreeRate) ||
+    typeof params.beta !== "number" ||
+    !Number.isFinite(params.beta) ||
+    ((typeof params.marketRiskPremium !== "number" ||
+      !Number.isFinite(params.marketRiskPremium)) &&
+      (typeof params.marketReturn !== "number" ||
+        !Number.isFinite(params.marketReturn)))
+  ) {
+    throw new Error(
+      "CAPM solver requires riskFreeRate, beta, and either marketReturn or marketRiskPremium.",
+    );
+  }
+  const rf = params.riskFreeRate;
+  const beta = params.beta;
   const mrp =
     params.marketRiskPremium !== undefined
       ? params.marketRiskPremium
@@ -611,11 +832,72 @@ export function solveCapm(params: FinanceParams & { target?: string }): number {
   return rf + beta * mrp;
 }
 
+function resolvePortfolioWeightsAndReturns(params: FinanceParams): {
+  weights: number[];
+  returns: number[];
+} {
+  const returns = params.returns;
+  if (
+    !Array.isArray(returns) ||
+    returns.length < 2 ||
+    !returns.every((r) => typeof r === "number" && Number.isFinite(r))
+  ) {
+    throw new Error("Portfolio return solver requires at least 2 finite returns.");
+  }
+
+  if (
+    Array.isArray(params.values) &&
+    params.values.length === returns.length &&
+    params.values.every((v) => typeof v === "number" && Number.isFinite(v))
+  ) {
+    const total = params.values.reduce((acc, v) => acc + v, 0);
+    if (Math.abs(total) < 1e-12) {
+      throw new Error("Portfolio holding values must sum to a non-zero total.");
+    }
+    return {
+      weights: params.values.map((v) => v / total),
+      returns,
+    };
+  }
+
+  if (
+    Array.isArray(params.weights) &&
+    params.weights.length === returns.length &&
+    params.weights.every((w) => typeof w === "number" && Number.isFinite(w))
+  ) {
+    const weightSum = params.weights.reduce((acc, w) => acc + w, 0);
+    if (Math.abs(weightSum - 1) <= 0.02) {
+      return { weights: params.weights, returns };
+    }
+    if (Math.abs(weightSum - 100) <= 0.5) {
+      return { weights: params.weights.map((w) => w / 100), returns };
+    }
+    throw new Error("Portfolio weights must sum to 1 (or 100%).");
+  }
+
+  throw new Error(
+    "Portfolio return solver requires values or weights matching the length of returns.",
+  );
+}
+
+/**
+ * Computes Portfolio Expected Return: E[Rp] = sum(w_i * E[R_i]).
+ */
+export function solvePortfolioReturn(params: FinanceParams): number {
+  const { weights, returns } = resolvePortfolioWeightsAndReturns(params);
+  let total = 0;
+  for (let i = 0; i < weights.length; i++) {
+    total += weights[i] * returns[i];
+  }
+  return total;
+}
+
 /**
  * Evaluates the exact numeric value for a FinanceCalculationSpec.
  */
 export function evaluateFinanceSpecValue(spec: FinanceCalculationSpec): number {
-  const p = { ...spec.params, target: spec.target };
+  const normalizedParams = normalizeFinanceParams(spec.params) as FinanceParams;
+  const p = { ...normalizedParams, target: spec.target };
   switch (spec.solver) {
     case "tvm":
       return solveTvm(p);
@@ -637,6 +919,8 @@ export function evaluateFinanceSpecValue(spec: FinanceCalculationSpec): number {
       return solveWacc(p);
     case "capm":
       return solveCapm(p);
+    case "portfolio_return":
+      return solvePortfolioReturn(p);
   }
 }
 
@@ -646,6 +930,7 @@ function inferDefaultUnit(spec: FinanceCalculationSpec): FinanceUnit {
   if (
     spec.solver === "wacc" ||
     spec.solver === "capm" ||
+    spec.solver === "portfolio_return" ||
     spec.solver === "ytm" ||
     spec.solver === "irr" ||
     target === "rate" ||
@@ -711,7 +996,7 @@ function computeMistakeCandidate(
   mode: DistractorMode,
   correctValue: number,
 ): number | null {
-  const p = spec.params;
+  const p = normalizeFinanceParams(spec.params) as FinanceParams;
   const solver = spec.solver;
   const target = (spec.target ?? "").toLowerCase();
 
@@ -844,6 +1129,47 @@ function computeMistakeCandidate(
           }
           // When weights are 50/50, swapping applies the tax shield to equity instead of debt
           return we * re * (1 - tax) + wd * rd;
+        }
+        if (solver === "portfolio_return") {
+          const { weights, returns } = resolvePortfolioWeightsAndReturns(p);
+          const reversed = [...weights].reverse();
+          let swapped = 0;
+          for (let i = 0; i < reversed.length; i++) {
+            swapped += reversed[i] * returns[i];
+          }
+          return swapped;
+        }
+        return null;
+      }
+
+      case "unweighted_average": {
+        if (solver === "portfolio_return") {
+          const { returns } = resolvePortfolioWeightsAndReturns(p);
+          return returns.reduce((acc, r) => acc + r, 0) / returns.length;
+        }
+        return null;
+      }
+
+      case "highest_asset_return": {
+        if (solver === "portfolio_return") {
+          const { returns } = resolvePortfolioWeightsAndReturns(p);
+          return Math.max(...returns);
+        }
+        return null;
+      }
+
+      case "lowest_asset_return": {
+        if (solver === "portfolio_return") {
+          const { returns } = resolvePortfolioWeightsAndReturns(p);
+          return Math.min(...returns);
+        }
+        return null;
+      }
+
+      case "sum_of_returns": {
+        if (solver === "portfolio_return") {
+          const { returns } = resolvePortfolioWeightsAndReturns(p);
+          return returns.reduce((acc, r) => acc + r, 0);
         }
         return null;
       }
@@ -1023,12 +1349,20 @@ function computeMistakeCandidate(
             return solveIrr({ cashFlows: extended });
           }
         }
-        const n = p.nper ?? 5;
-        const altN = n > 1 ? n - 1 : n + 1;
-        return evaluateFinanceSpecValue({
-          ...spec,
-          params: { ...p, nper: altN },
-        });
+        if (
+          solver === "tvm" ||
+          solver === "annuity" ||
+          solver === "bond_price" ||
+          solver === "ytm"
+        ) {
+          const n = p.nper ?? 5;
+          const altN = n > 1 ? n - 1 : n + 1;
+          return evaluateFinanceSpecValue({
+            ...spec,
+            params: { ...p, nper: altN },
+          });
+        }
+        return null;
       }
 
       case "current_yield_only": {
@@ -1111,10 +1445,18 @@ function getDefaultModesForSolver(solver: FinanceSolverType): DistractorMode[] {
         "omitted_rf",
         "used_market_return_as_erp",
       ];
+    case "portfolio_return":
+      return [
+        "unweighted_average",
+        "swapped_weights",
+        "highest_asset_return",
+        "lowest_asset_return",
+      ];
   }
 }
 
 export function buildFormulaLatex(spec: FinanceCalculationSpec): string {
+  const p = normalizeFinanceParams(spec.params) as FinanceParams;
   switch (spec.solver) {
     case "tvm": {
       const target = (spec.target ?? "fv").toLowerCase();
@@ -1133,7 +1475,7 @@ export function buildFormulaLatex(spec: FinanceCalculationSpec): string {
       return "FV = PV(1 + r)^n + PMT \\times \\frac{(1 + r)^n - 1}{r}";
     }
     case "annuity": {
-      const due = isAnnuityDue(spec.params);
+      const due = isAnnuityDue(p);
       const target = (spec.target ?? "pv").toLowerCase();
       if (target === "fv") {
         return due
@@ -1145,11 +1487,11 @@ export function buildFormulaLatex(spec: FinanceCalculationSpec): string {
         : "PV = PMT \\times \\frac{1 - (1 + r)^{-n}}{r}";
     }
     case "perpetuity": {
-      const hasGrowth = (spec.params.growth ?? 0) !== 0;
+      const hasGrowth = (p.growth ?? 0) !== 0;
       return hasGrowth ? "PV = \\frac{C}{r - g}" : "PV = \\frac{C}{r}";
     }
     case "ddm": {
-      return spec.params.isD0 || spec.params.d0 !== undefined
+      return p.isD0 || p.d0 !== undefined
         ? "P_0 = \\frac{D_0(1 + g)}{r - g}"
         : "P_0 = \\frac{D_1}{r - g}";
     }
@@ -1165,13 +1507,15 @@ export function buildFormulaLatex(spec: FinanceCalculationSpec): string {
       return "WACC = \\left(\\frac{E}{V}\\right) R_e + \\left(\\frac{D}{V}\\right) R_d (1 - T)";
     case "capm":
       return "E[R_i] = R_f + \\beta (E[R_m] - R_f)";
+    case "portfolio_return":
+      return "E[R_P] = \\sum_{i=1}^{n} w_i E[R_i]";
   }
 }
 
 /**
  * Computes the exact answer and 3 misconception-driven distractors for a FinanceCalculationSpec.
  * Enforces the rounding tolerance invariant: all 4 numeric values differ pairwise by strictly
- * more than max(10^-decimals, 10^-4) and all 4 formatted option strings are 100% distinct.
+ * more than max(10^-decimals, 10^-4) (scaled by 10^-2 for percentage decimals) and all 4 formatted option strings are 100% distinct.
  */
 export function solveFinanceSpec(
   rawSpec: FinanceCalculationSpec,
@@ -1179,7 +1523,10 @@ export function solveFinanceSpec(
   const spec = financeCalculationSpecSchema.parse(rawSpec);
   const decimals = spec.decimals ?? 2;
   const unit = inferDefaultUnit(spec);
-  const tolerance = Math.max(Math.pow(10, -decimals), 1e-4);
+  const tolerance =
+    unit === "%"
+      ? Math.max(Math.pow(10, -(decimals + 2)), 1e-6)
+      : Math.max(Math.pow(10, -decimals), 1e-4);
 
   const correctValue = evaluateFinanceSpecValue(spec);
   if (!Number.isFinite(correctValue)) {
@@ -1190,15 +1537,17 @@ export function solveFinanceSpec(
   const selectedValues: number[] = [correctValue];
   const selectedOptions: string[] = [correctOption];
 
+  const allowsNegativeCandidates =
+    spec.solver === "npv" ||
+    spec.solver === "irr" ||
+    spec.solver === "tvm" ||
+    (spec.solver === "portfolio_return" &&
+      Array.isArray(spec.params.returns) &&
+      spec.params.returns.some((r) => r < 0));
+
   const isAcceptableCandidate = (val: number | null): val is number => {
     if (val === null || !Number.isFinite(val)) return false;
-    if (
-      correctValue > 0 &&
-      val <= 0 &&
-      spec.solver !== "npv" &&
-      spec.solver !== "irr" &&
-      spec.solver !== "tvm"
-    ) {
+    if (correctValue > 0 && val <= 0 && !allowsNegativeCandidates) {
       return false;
     }
     for (const existing of selectedValues) {
@@ -1248,8 +1597,10 @@ export function solveFinanceSpec(
 
   // Final guaranteed safety loop
   let safetyStep = 1;
+  const minSafetyStep =
+    unit === "%" ? Math.max(tolerance * 5, 0.005) : Math.max(tolerance * 5, 0.05);
   while (selectedValues.length < 4) {
-    const candidate = correctValue + safetyStep * Math.max(tolerance * 5, 0.05);
+    const candidate = correctValue + safetyStep * minSafetyStep;
     safetyStep += 1;
     if (isAcceptableCandidate(candidate)) {
       selectedValues.push(candidate);

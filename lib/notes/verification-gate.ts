@@ -45,6 +45,7 @@ import { renderKatexSafe } from "@/lib/math/latex";
 import {
   isDanglingOrEmptySideEquation,
   isNontrivialFormula,
+  getSafeOpenRouterReasoningEffort,
 } from "@/lib/notes/formula-inventory";
 import {
   CLUTCH_NOTES_SYSTEM_PROMPT,
@@ -1220,6 +1221,19 @@ export async function runVerificationGate(
           prompt: repairPrompt,
           temperature: 0,
           abortSignal: options.signal,
+          maxOutputTokens: 32_768,
+          providerOptions: {
+            google: {
+              thinkingConfig: {
+                thinkingLevel: "low",
+              },
+            },
+            openrouter: {
+              reasoning: {
+                effort: getSafeOpenRouterReasoningEffort(options.repairModel),
+              },
+            },
+          },
         });
 
         if (repairRes?.object && Array.isArray(repairRes.object.sections)) {

@@ -17,6 +17,9 @@ import {
   getSharedDeckCache,
   getUserQuotaLedger,
   saveUserQuotaLedger,
+  invalidateUserQuotaLedgerCache,
+  getRollingQuotaSnapshot,
+  toClientQuota,
   checkAndReserveDeckQuota,
   rollbackDeckQuotaReservation,
   recordDeckGenerationCogs,
@@ -24,7 +27,11 @@ import {
   resolveActorKey,
   getClientIp,
 } from "@/lib/rate-limit";
-import { getRegionalCogsCeiling } from "@/lib/pricing/tiers";
+import {
+  getRegionalCogsCeiling,
+  getRegionalWindowBudget,
+  getRegionalGuardBudget,
+} from "@/lib/pricing/tiers";
 import { createIngestionHandler } from "@/lib/ingestion/handler";
 import { createMultiIngestionHandler } from "@/lib/ingestion/multi-handler";
 import { createCoachHandler } from "@/lib/coach/handler";
@@ -43,31 +50,40 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
     resetQuotaLedgersForTests();
   });
 
-  it("enforces tier-aware sliding window limits (2/week for guest/contender, 50/day for paid)", async () => {
+  it("enforces tier-aware anti-spam burst sliding window limits (15/10m for guest/contender ingest, 50/day for paid)", async () => {
     const guestId = `test-guest-${Date.now()}`;
 
-    // Limit is 2 per week for guest / contender
-    const res1 = await checkRateLimit(guestId, "ingest", "guest");
-    expect(res1.allowed).toBe(true);
-    expect(res1.limit).toBe(2);
-    expect(res1.remaining).toBe(1);
+    // Anti-spam burst limit is 15 per 10 minutes for guest / contender ingest
+    for (let i = 1; i <= 15; i++) {
+      const res = await checkRateLimit(guestId, "ingest", "guest");
+      expect(res.allowed).toBe(true);
+      expect(res.limit).toBe(15);
+      expect(res.remaining).toBe(15 - i);
+    }
 
-    const res2 = await checkRateLimit(guestId, "ingest", "guest");
-    expect(res2.allowed).toBe(true);
-    expect(res2.remaining).toBe(0);
+    // 16th burst request must be blocked
+    const blocked = await checkRateLimit(guestId, "ingest", "guest");
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.remaining).toBe(0);
+    expect(blocked.retryAfter).toBeGreaterThan(0);
 
-    // 3rd request must be blocked
-    const res3 = await checkRateLimit(guestId, "ingest", "guest");
-    expect(res3.allowed).toBe(false);
-    expect(res3.remaining).toBe(0);
-    expect(res3.retryAfter).toBeGreaterThan(0);
-
-    // Paid tier (cram_pass) gets 50 per day
+    // Paid tier (cram_pass) gets 50 per day ingest burst guard
     const paidId = `test-paid-${Date.now()}`;
     const paidRes = await checkRateLimit(paidId, "ingest", "cram_pass");
     expect(paidRes.allowed).toBe(true);
     expect(paidRes.limit).toBe(50);
     expect(paidRes.remaining).toBe(49);
+
+    // Notes and coach burst guards remain tier-aware
+    const guestNotes = await checkRateLimit(guestId, "notes", "guest");
+    expect(guestNotes.limit).toBe(10);
+    const paidNotes = await checkRateLimit(paidId, "notes", "pro");
+    expect(paidNotes.limit).toBe(30);
+
+    const guestCoach = await checkRateLimit(guestId, "coach", "guest");
+    expect(guestCoach.limit).toBe(20);
+    const paidCoach = await checkRateLimit(paidId, "coach", "pro");
+    expect(paidCoach.limit).toBe(60);
   });
 
   it("blocks >10 questions on /api/ingest for guest and contender tiers (403 TIER_UPGRADE_REQUIRED)", async () => {
@@ -216,12 +232,13 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
 
       expect(allowed.length).toBe(3);
       expect(blocked.length).toBe(3);
-      expect(blocked.every((b) => b.reason === "DECK_CREDITS_EXCEEDED" || b.reason === "DAILY_BURST_EXCEEDED")).toBe(true);
+      expect(blocked.every((b) => b.reason === "COGS_CEILING_EXCEEDED")).toBe(true);
 
-      // Check final ledger state: strictly 3 consumed
+      // Check final ledger state: strictly 3 consumed and $0.08 window budget fully reserved
       const finalLedger = await getUserQuotaLedger(userId, "contender");
       expect(finalLedger.deckCreditsUsed).toBe(3);
       expect(finalLedger.decksGeneratedCount).toBe(3);
+      expect(finalLedger.windowReservedUsd).toBe(0.08);
 
       // Check mutex memory cleanup: lock map has drained completely
       expect(getActorLockMapSize()).toBe(0);
@@ -363,70 +380,84 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
   });
 
   describe("SA-07: Preserve pro_monthly Tier in toUserTier & Quota Limits", () => {
-    it("preserves pro_monthly as a distinct tier and receives pro_monthly deck/COGS limits", async () => {
+    it("preserves pro_monthly as a distinct tier and receives pro_monthly rolling/COGS limits", async () => {
       // 1. toUserTier preservation
       expect(toUserTier("pro_monthly")).toBe("pro_monthly");
       expect(toUserTier("pro-monthly")).toBe("pro_monthly");
       expect(toUserTier("monthly")).toBe("pro_monthly");
       expect(toUserTier("PRO_MONTHLY")).toBe("pro_monthly");
 
-      // 2. Quota ledger limit verification (12 decks, not 2 from contender)
+      // 2. Rolling quota ledger & snapshot verification (distinct from contender)
       const userId = `user-promonthly-${Date.now()}`;
-      const ledger = await getUserQuotaLedger(userId, "pro_monthly");
+      const ledger = await getUserQuotaLedger(userId, "pro_monthly", "VN");
       expect(ledger.tier).toBe("pro_monthly");
-      expect(ledger.deckCreditsLimit).toBe(12);
+      expect(ledger.cogsCeilingUsd).toBe(1.50);
 
-      // 3. Regional COGS ceiling verification (1.50 VN, 3.20 ROW)
-      const vnCeiling = getRegionalCogsCeiling("pro_monthly", "VN");
-      const rowCeiling = getRegionalCogsCeiling("pro_monthly", "ROW");
-      expect(vnCeiling).toBe(1.50);
-      expect(rowCeiling).toBe(3.20);
+      const snapshot = await getRollingQuotaSnapshot(userId, "pro_monthly", "VN");
+      expect(snapshot.windowHours).toBe(24);
+      expect(snapshot.windowBudgetUsd).toBe(0.28);
+      expect(snapshot.guardBudgetUsd).toBe(0.55);
+      expect(snapshot.cycleCeilingUsd).toBe(1.50);
+      expect(snapshot.remainingPct).toBe(100);
+      expect(toClientQuota(snapshot)).toEqual(
+        expect.objectContaining({
+          remainingPct: 100,
+          usedPct: 0,
+          windowHours: 24,
+          bottleneckScope: "window",
+        }),
+      );
+
+      // 3. Regional window/guard/COGS ceiling verification
+      expect(getRegionalWindowBudget("pro_monthly", "VN")).toBe(0.28);
+      expect(getRegionalWindowBudget("pro_monthly", "ROW")).toBe(0.60);
+      expect(getRegionalGuardBudget("pro_monthly", "VN")).toBe(0.55);
+      expect(getRegionalGuardBudget("pro_monthly", "ROW")).toBe(1.20);
+      expect(getRegionalCogsCeiling("pro_monthly", "VN")).toBe(1.50);
+      expect(getRegionalCogsCeiling("pro_monthly", "ROW")).toBe(3.20);
 
       // 4. Rate limiter recognizes pro_monthly as paid
       const rateRes = await checkRateLimit(userId, "ingest", "pro_monthly");
-      expect(rateRes.limit).toBe(50); // Paid ingest limit is 50/day, not 2/week
+      expect(rateRes.limit).toBe(50);
       expect(rateRes.allowed).toBe(true);
     });
   });
 
-  describe("Haiku Overflow Step-Down & DECK_CREDITS_EXCEEDED Boundary Enforcement", () => {
-    it("steps down from Sonnet Pro to Haiku overflow when sonnetProDeckCredits are exhausted and blocks on total exhaustion", async () => {
-      const userId = `user-haiku-overflow-${Date.now()}`;
-      const ledger = await getUserQuotaLedger(userId, "cram_pass");
-      // Cram pass: 5 sonnetProDeckCredits, 10 haikuOverflowDeckCredits
-      ledger.deckCreditsUsed = 5;
-      ledger.dailyBurstUsed = 0;
+  describe("Eco-Mode (<=30% Remaining) Step-Down & COGS_CEILING_EXCEEDED Boundary Enforcement", () => {
+    it("steps down from Priority Sonnet to Eco Haiku when <=30% remains and blocks on window exhaustion", async () => {
+      const userId = `user-eco-stepdown-${Date.now()}`;
+      const ledger = await getUserQuotaLedger(userId, "cram_pass", "VN");
+      // cram_pass VN 24h window budget = $0.35; spend $0.25 -> $0.10 remaining (~29% <= 30% Eco mode)
+      ledger.windowSpentUsd = 0.25;
+      ledger.weeklySpentUsd = 0.25;
+      ledger.cogsSpentUsd = 0.25;
       await saveUserQuotaLedger(ledger);
 
-      // Without allowHaikuOverflow: true -> immediately blocked
-      const noOverflowRes = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-no-overflow", {
-        allowHaikuOverflow: false,
+      const ecoRes = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-eco-1", {
+        region: "VN",
       });
-      expect(noOverflowRes.allowed).toBe(false);
-      expect(noOverflowRes.reason).toBe("DECK_CREDITS_EXCEEDED");
+      expect(ecoRes.allowed).toBe(true);
+      expect(ecoRes.isHaikuOverflow).toBe(true);
+      expect(ecoRes.cogsStatus.useCheaperGeneratorSlug).toBe(true);
+      expect(ecoRes.reservedCostUsd).toBe(0.028);
 
-      // With allowHaikuOverflow: true -> step down to Haiku
-      const overflowRes = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-haiku-1", {
-        allowHaikuOverflow: true,
-        burstLimit: 20,
-      });
-      expect(overflowRes.allowed).toBe(true);
-      expect(overflowRes.isHaikuOverflow).toBe(true);
-      expect(overflowRes.cogsStatus.useCheaperGeneratorSlug).toBe(true);
-      expect(overflowRes.creditsUsed).toBe(6);
-
-      // When sonnetProDeckCredits + haikuOverflowDeckCredits (5 + 10 = 15) are exhausted:
-      const exhaustedLedger = await getUserQuotaLedger(userId, "cram_pass");
-      exhaustedLedger.deckCreditsUsed = 15;
-      exhaustedLedger.dailyBurstUsed = 0;
+      // Exhaust full $0.35 24h window
+      const exhaustedLedger = await getUserQuotaLedger(userId, "cram_pass", "VN");
+      exhaustedLedger.windowSpentUsd = 0.35;
+      exhaustedLedger.windowReservedUsd = 0;
+      exhaustedLedger.weeklySpentUsd = 0.35;
+      exhaustedLedger.weeklyReservedUsd = 0;
+      exhaustedLedger.cogsSpentUsd = 0.35;
+      exhaustedLedger.cogsReservedUsd = 0;
       await saveUserQuotaLedger(exhaustedLedger);
 
-      const blockedRes = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-haiku-exceeded", {
-        allowHaikuOverflow: true,
-        burstLimit: 20,
+      const blockedRes = await checkAndReserveDeckQuota(userId, "cram_pass", "deck-eco-exhausted", {
+        region: "VN",
       });
       expect(blockedRes.allowed).toBe(false);
-      expect(blockedRes.reason).toBe("DECK_CREDITS_EXCEEDED");
+      expect(blockedRes.reason).toBe("COGS_CEILING_EXCEEDED");
+      expect(blockedRes.quota.remainingPct).toBe(0);
+      expect(blockedRes.cogsStatus.serveCachedPoolsOnly).toBe(true);
     });
   });
 
@@ -694,6 +725,7 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
 
         // Verify with saveUserQuotaLedger that updating refreshes LRU:
         resetQuotaLedgersForTests();
+        const nowIso = new Date().toISOString();
         for (let i = 0; i < 1000; i++) {
           await saveUserQuotaLedger({
             userId: `u-${i}`,
@@ -701,6 +733,12 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
             cogsSpentUsd: i * 0.001,
             cogsReservedUsd: 0,
             cogsCeilingUsd: 0.05,
+            windowStartedAt: nowIso,
+            windowSpentUsd: i * 0.001,
+            windowReservedUsd: 0,
+            weeklyStartedAt: nowIso,
+            weeklySpentUsd: i * 0.001,
+            weeklyReservedUsd: 0,
             deckCreditsUsed: 1,
             deckCreditsLimit: 2,
             dailyBurstUsed: 1,
@@ -722,6 +760,12 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
           cogsSpentUsd: 0,
           cogsReservedUsd: 0,
           cogsCeilingUsd: 0.05,
+          windowStartedAt: nowIso,
+          windowSpentUsd: 0,
+          windowReservedUsd: 0,
+          weeklyStartedAt: nowIso,
+          weeklySpentUsd: 0,
+          weeklyReservedUsd: 0,
           deckCreditsUsed: 0,
           deckCreditsLimit: 2,
           dailyBurstUsed: 0,
@@ -1083,6 +1127,64 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
         } finally {
           serverSpy.mockRestore();
         }
+      });
+    });
+
+    describe("Stage 5 Ledger Cache Invalidation & Regeneration Limit Upgrades", () => {
+      it("invalidateUserQuotaLedgerCache clears cached in-memory quota ledger entries", async () => {
+        const userId = "test-cache-inv-user";
+        const ledger = await getUserQuotaLedger(userId, "contender");
+        ledger.windowSpentUsd = 0.05;
+        ledger.weeklySpentUsd = 0.05;
+        await saveUserQuotaLedger(ledger);
+
+        // Verify ledger is in memory
+        const cached = await getUserQuotaLedger(userId, "contender");
+        expect(cached.windowSpentUsd).toBe(0.05);
+
+        // Invalidate cache
+        await invalidateUserQuotaLedgerCache(userId);
+
+        // Fresh lookup begins with 0 spend
+        const fresh = await getUserQuotaLedger(userId, "contender");
+        expect(fresh.windowSpentUsd).toBe(0);
+      });
+
+      it("upgrading a deck unlocked under contender (freeRegenerationsPerDeck: 1) allows additional free regenerations up to pro (freeRegenerationsPerDeck: 5) without REGENERATION_LIMIT_EXCEEDED", async () => {
+        const userId = "test-upgrade-deck-user";
+        const contentHash = "deck-hash-regen-upgrade-test";
+
+        // 1. Initial generation / unlock under contender
+        const initialRes = await checkAndReserveDeckQuota(userId, "contender", contentHash);
+        expect(initialRes.allowed).toBe(true);
+        expect(initialRes.isRegeneration).toBe(false);
+        expect(initialRes.ledger.unlockedDecks[contentHash].regenerationsUsed).toBe(0);
+        expect(initialRes.ledger.unlockedDecks[contentHash].maxRegenerations).toBe(1);
+
+        // 2. First regeneration under contender (uses the 1 allowed free regeneration)
+        const firstRegen = await checkAndReserveDeckQuota(userId, "contender", contentHash);
+        expect(firstRegen.allowed).toBe(true);
+        expect(firstRegen.isRegeneration).toBe(true);
+        expect(firstRegen.ledger.unlockedDecks[contentHash].regenerationsUsed).toBe(1);
+
+        // 3. Second regeneration under contender must be blocked (limit reached: 1 of 1)
+        const secondRegenBlocked = await checkAndReserveDeckQuota(userId, "contender", contentHash);
+        expect(secondRegenBlocked.allowed).toBe(false);
+        expect(secondRegenBlocked.reason).toBe("REGENERATION_LIMIT_EXCEEDED");
+        expect(secondRegenBlocked.isRegeneration).toBe(true);
+
+        // 4. User upgrades to 'pro' (where freeRegenerationsPerDeck is 5)
+        const upgradedRegen = await checkAndReserveDeckQuota(userId, "pro", contentHash);
+        expect(upgradedRegen.allowed).toBe(true);
+        expect(upgradedRegen.isRegeneration).toBe(true);
+        expect(upgradedRegen.reason).toBeUndefined();
+        expect(upgradedRegen.ledger.unlockedDecks[contentHash].maxRegenerations).toBe(5);
+        expect(upgradedRegen.ledger.unlockedDecks[contentHash].regenerationsUsed).toBe(2);
+
+        // Can continue regenerating up to 5 total under pro
+        const thirdRegen = await checkAndReserveDeckQuota(userId, "pro", contentHash);
+        expect(thirdRegen.allowed).toBe(true);
+        expect(thirdRegen.ledger.unlockedDecks[contentHash].regenerationsUsed).toBe(3);
       });
     });
   });

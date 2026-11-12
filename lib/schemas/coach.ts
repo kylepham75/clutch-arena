@@ -85,6 +85,7 @@ export const coachRequestSchema = z
       sources: z.array(coachSourceSchema).min(1).max(20_000),
     }),
     language: z.enum(["en", "vi"]).default("en"),
+    runId: z.string().trim().min(1).max(120).optional(),
   })
   .refine(
     (body) =>

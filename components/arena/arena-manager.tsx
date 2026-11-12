@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ArenaEntrance } from "./arena-entrance";
 import { ArenaLobby } from "./arena-lobby";
 import { ArenaGame } from "./arena-game";
@@ -19,7 +19,7 @@ export function ArenaManager({
   presetPack = null,
 }: {
   initialRoomCode?: string | null;
-  onDebriefCoach?: (focus: any) => void;
+  onDebriefCoach?: (focus: any, runId?: string) => void;
   onExitToSolo?: () => void;
   presetPack?: StudyPack | null;
 }) {
@@ -30,6 +30,8 @@ export function ArenaManager({
   const [player, setPlayer] = useState<ArenaPlayer | null>(null);
   const [playerToken, setPlayerToken] = useState<string | null>(null);
   const [openRooms, setOpenRooms] = useState<ArenaRoomState[]>([]);
+  const matchRunIdRef = useRef<string>("");
+  const prevRoomStatusRef = useRef<string | null>(null);
 
   // Fetch open rooms for lobby browser
   useEffect(() => {
@@ -55,6 +57,16 @@ export function ArenaManager({
     removeBot,
     rematch,
   } = useArenaRoom(roomCode, player, playerToken);
+
+  useEffect(() => {
+    const status = room?.status ?? null;
+    if (status === "lobby" || status === "countdown") {
+      matchRunIdRef.current = "";
+    } else if (status === "podium" && prevRoomStatusRef.current !== "podium") {
+      matchRunIdRef.current = `arena-${room?.code || "room"}-${crypto.randomUUID()}`;
+    }
+    prevRoomStatusRef.current = status;
+  }, [room?.status, room?.code]);
 
   const handleCreateRoom = useCallback(
     async (params: {
@@ -125,17 +137,23 @@ export function ArenaManager({
   const handleDebrief = () => {
     if (!room || !player || !onDebriefCoach) return;
     const myPlayer = room.players[player.id];
+    if (!matchRunIdRef.current) {
+      matchRunIdRef.current = `arena-${room.code}-${crypto.randomUUID()}`;
+    }
 
-    onDebriefCoach({
-      type: "debrief",
-      packTitle: room.title,
-      score: myPlayer?.score || 0,
-      correct: 0,
-      total: room.totalQuestions,
-      bestStreak: myPlayer?.bestStreak || 0,
-      livesLeft: myPlayer?.lives || 0,
-      concepts: [],
-    });
+    onDebriefCoach(
+      {
+        type: "debrief",
+        packTitle: room.title,
+        score: myPlayer?.score || 0,
+        correct: 0,
+        total: room.totalQuestions,
+        bestStreak: myPlayer?.bestStreak || 0,
+        livesLeft: myPlayer?.lives || 0,
+        concepts: [],
+      },
+      matchRunIdRef.current,
+    );
   };
 
   // If in no room, show entrance

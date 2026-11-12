@@ -1,7 +1,9 @@
 import "@/lib/polyfills/pdf-node-polyfills";
 import { NextRequest } from "next/server";
 import { createHash, randomUUID } from "node:crypto";
-import { verifyProAccess } from "@/lib/auth/notes-guard";
+import { verifyNotesAccess } from "@/lib/auth/notes-guard";
+import { getAuthoritativeBillingRegion } from "@/lib/pricing/region";
+import { isPaidTier } from "@/lib/pricing/tiers";
 import {
   checkRateLimit,
   getClientIp,
@@ -10,9 +12,13 @@ import {
   getSharedDeckCache,
   setSharedDeckCache,
   getCachedParsedDocument,
+  getRollingQuotaSnapshot,
+  toClientQuota,
   checkAndReserveDeckQuota,
   recordDeckGenerationCogs,
   rollbackDeckQuotaReservation,
+  type ClientQuotaSummary,
+  type RateLimitResult,
 } from "@/lib/rate-limit";
 import { parseSlideDeck } from "@/lib/notes/parse-slides";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
@@ -35,26 +41,54 @@ const NOTES_SHARED_CACHE_PIPELINE_VERSION = "notes-v1";
 function getQuotaExceededMessage(reason?: string): string {
   switch (reason) {
     case "DAILY_BURST_EXCEEDED":
-      return "Daily deck generation burst limit reached. Please try again tomorrow or study from your unlocked decks.";
+      return "Too many note generation requests in a short window. Please wait a moment and try again.";
     case "DECK_CREDITS_EXCEEDED":
-      return "You have used all new deck credits for your current plan. Upgrade your plan to unlock more decks.";
     case "COGS_CEILING_EXCEEDED":
-      return "Subscription deck generation budget reached for this period. Cached class decks remain free and accessible.";
+    case "QUOTA_EXCEEDED":
+      return "AI quota reached for this rolling window. Shared cached notes remain 0% quota and accessible.";
     case "REGENERATION_LIMIT_EXCEEDED":
       return "Maximum free regenerations reached for this document.";
     default:
-      return "Deck generation quota exceeded. Please try again later or upgrade your plan.";
+      return "AI quota reached. Please wait for your rolling window to reset or upgrade your plan.";
   }
+}
+
+function createNotesRateLimitResponse(
+  requestId: string,
+  rateResult: RateLimitResult,
+): Response {
+  const retryAfter = rateResult.retryAfter ?? 30;
+  return Response.json(
+    {
+      ok: false,
+      error: {
+        code: "RATE_LIMIT_EXCEEDED",
+        message: "Too many note requests in a short burst. Please wait a moment and try again.",
+        reset: rateResult.reset,
+        retryAfter,
+      },
+    },
+    {
+      status: 429,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Request-ID": requestId,
+        "Retry-After": retryAfter.toString(),
+      },
+    },
+  );
 }
 
 export async function POST(request: NextRequest) {
   const requestId = randomUUID();
+  const billingRegion = getAuthoritativeBillingRegion(request);
   let quotaReserved = false;
   let reservedActor: string | null = null;
   let reservedTier: any = null;
   let reservedContentHash: string | null = null;
   let reservedCost = 0.02;
   let reservedIsRegeneration = false;
+  let latestQuotaSummary: ClientQuotaSummary | undefined;
   const jsonResponse = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
     Response.json(body, {
       status,
@@ -81,32 +115,38 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Paid tier subscription gate (Cram Pass, Pro, Tutor)
-    const proAuth = await verifyProAccess(request);
+    // 2. Signed-in access gate (Contender inside 3d rolling % quota + Cram Pass, Pro, Tutor)
+    const proAuth = await verifyNotesAccess(request);
     if (!proAuth.authorized) {
+      const isUnauthenticated = proAuth.reason === "UNAUTHENTICATED";
       return jsonResponse(
         {
           ok: false,
           error: {
-            code: "PRO_SUBSCRIPTION_REQUIRED",
+            code: isUnauthenticated ? "UNAUTHENTICATED" : "PRO_SUBSCRIPTION_REQUIRED",
             message:
               proAuth.message ||
-              "Clutch Notes AI is available on 7-Day Cram Pass, Pro Tier, and Tutor plans. Upgrade to convert lecture slides into exam-ready revision notes.",
+              "Authentication required. Please sign in to access Clutch Notes AI.",
             reason: proAuth.reason,
             userTier: proAuth.tier || "free",
           },
         },
-        403,
+        isUnauthenticated ? 401 : 403,
       );
     }
 
-    // 3. User rate limit: 30 conversions per day
+    // 3. User identity & burst rate-limit config
     const userIdentifier =
       (process.env.NODE_ENV === "test" && request.headers.get("x-test-user-id")) ||
       proAuth.user?.id ||
       `ip:${getClientIp(request)}`;
     const isTest = process.env.NODE_ENV === "test" && !request.headers.get("x-enforce-rate-limit");
     const effectiveTier = (proAuth.tier as any) || "pro";
+    const notesPipelineVersion = isPaidTier(effectiveTier)
+      ? NOTES_SHARED_CACHE_PIPELINE_VERSION
+      : "notes-free-v1";
+    const enforceQuota =
+      !isTest || Boolean(request.headers.get("x-enforce-quota"));
 
     // 4. Content-length pre-check & parse incoming payload (multipart file or JSON)
     const rawContentLength = request.headers.get("content-length");
@@ -136,20 +176,7 @@ export async function POST(request: NextRequest) {
         effectiveTier,
       );
       if (!rateResult.allowed) {
-        return jsonResponse(
-          {
-            ok: false,
-            error: {
-              code: "RATE_LIMIT_EXCEEDED",
-              message:
-                "Daily limit reached: up to 30 lecture slide conversions per day. Your quota will reset in 24 hours.",
-              reset: rateResult.reset,
-              retryAfter: rateResult.retryAfter,
-            },
-          },
-          429,
-          { "Retry-After": rateResult.retryAfter.toString() },
-        );
+        return createNotesRateLimitResponse(requestId, rateResult);
       }
     }
 
@@ -197,27 +224,14 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // a. Pre-check rate limit / quota eligibility before expensive slide parsing
+      // a. Pre-check rate limit / burst eligibility before expensive slide parsing
       const rateResult = await checkRateLimit(
         userIdentifier,
         "notes",
         effectiveTier,
       );
       if (!rateResult.allowed) {
-        return jsonResponse(
-          {
-            ok: false,
-            error: {
-              code: "RATE_LIMIT_EXCEEDED",
-              message:
-                "Daily limit reached: up to 30 lecture slide conversions per day. Your quota will reset in 24 hours.",
-              reset: rateResult.reset,
-              retryAfter: rateResult.retryAfter,
-            },
-          },
-          429,
-          { "Retry-After": (rateResult.retryAfter ?? 30).toString() },
-        );
+        return createNotesRateLimitResponse(requestId, rateResult);
       }
 
       // b. Pre-check shared deck cache using fileSha256 before parsing slides
@@ -234,11 +248,16 @@ export async function POST(request: NextRequest) {
         language: "en",
         mode: "notes",
         focusHash,
-        pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
+        pipelineVersion: notesPipelineVersion,
         fileSha256,
       });
 
       if (cachedFromStore?.clutchNote) {
+        if (enforceQuota) {
+          latestQuotaSummary = toClientQuota(
+            await getRollingQuotaSnapshot(userIdentifier, effectiveTier, billingRegion),
+          );
+        }
         return jsonResponse({
           ok: true,
           note: cachedFromStore.clutchNote,
@@ -247,6 +266,7 @@ export async function POST(request: NextRequest) {
           contentHash: cachedFromStore.contentHash || "",
           fileSha256: cachedFromStore.fileSha256 || fileSha256,
           sources: cachedFromStore.studyMetadata?.sources || [],
+          ...(latestQuotaSummary ? { quota: latestQuotaSummary } : {}),
         });
       }
 
@@ -259,7 +279,18 @@ export async function POST(request: NextRequest) {
         cachedImageHashes = cachedParsedDoc.imageHashes;
         cachedFormulaInventory = cachedParsedDoc.formulaInventory;
       } else {
-        parsedDeck = await parseSlideDeck(file);
+        if (enforceQuota) {
+          const preSnapshot = await getRollingQuotaSnapshot(
+            userIdentifier,
+            effectiveTier,
+            billingRegion,
+          );
+          parsedDeck = !preSnapshot.allowVisionOcr
+            ? await parseSlideDeck(file, { maxAutoOcrBudgetUsd: 0 })
+            : await parseSlideDeck(file);
+        } else {
+          parsedDeck = await parseSlideDeck(file);
+        }
         fileName = parsedDeck.fileName;
         slideCount = parsedDeck.slideCount;
         sources = parsedDeck.sources;
@@ -469,9 +500,8 @@ export async function POST(request: NextRequest) {
     const focusHash = normalizedFocus
       ? createHash("sha256").update(normalizedFocus).digest("hex").slice(0, 16)
       : "";
-    const enforceQuota =
-      !isTest || Boolean(request.headers.get("x-enforce-quota"));
-    const reservedCostUsd = 0.02;
+    const reservedCostUsd =
+      effectiveTier === "contender" || effectiveTier === "free" ? 0.015 : 0.02;
 
     if (enforceQuota) {
       const cacheLookupKey = {
@@ -479,12 +509,15 @@ export async function POST(request: NextRequest) {
         language: "en",
         mode: "notes",
         focusHash,
-        pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
+        pipelineVersion: notesPipelineVersion,
         fileSha256: parsedDeck?.fileSha256 ?? clientProvidedFileSha256 ?? null,
       };
 
       const cachedFromStore = await getSharedDeckCache(cacheLookupKey);
       if (cachedFromStore?.clutchNote) {
+        latestQuotaSummary = toClientQuota(
+          await getRollingQuotaSnapshot(userIdentifier, effectiveTier, billingRegion),
+        );
         return jsonResponse({
           ok: true,
           note: cachedFromStore.clutchNote,
@@ -493,6 +526,7 @@ export async function POST(request: NextRequest) {
           contentHash: cachedFromStore.contentHash || contentHash,
           fileSha256: cachedFromStore.fileSha256 || cacheLookupKey.fileSha256,
           sources: cachedFromStore.studyMetadata?.sources || sources,
+          quota: latestQuotaSummary,
         });
       }
 
@@ -503,10 +537,16 @@ export async function POST(request: NextRequest) {
         {
           ...cacheLookupKey,
           estimatedCostUsd: reservedCostUsd,
+          actionKind: "notes",
+          region: billingRegion,
         },
       );
 
       if (quotaResult.cachedDeck?.clutchNote) {
+        latestQuotaSummary = toClientQuota(
+          quotaResult.quota ??
+            (await getRollingQuotaSnapshot(userIdentifier, effectiveTier, billingRegion)),
+        );
         return jsonResponse({
           ok: true,
           note: quotaResult.cachedDeck.clutchNote,
@@ -515,6 +555,7 @@ export async function POST(request: NextRequest) {
           contentHash: quotaResult.cachedDeck.contentHash || contentHash,
           fileSha256: quotaResult.cachedDeck.fileSha256 || cacheLookupKey.fileSha256,
           sources: quotaResult.cachedDeck.studyMetadata?.sources || sources,
+          quota: latestQuotaSummary,
         });
       }
 
@@ -526,6 +567,7 @@ export async function POST(request: NextRequest) {
               code: quotaResult.reason || "QUOTA_EXCEEDED",
               message: getQuotaExceededMessage(quotaResult.reason),
             },
+            ...(quotaResult.quota ? { quota: toClientQuota(quotaResult.quota) } : {}),
           },
           429,
           { "Retry-After": "30" },
@@ -537,7 +579,7 @@ export async function POST(request: NextRequest) {
         reservedActor = userIdentifier;
         reservedTier = effectiveTier;
         reservedContentHash = contentHash;
-        reservedCost = reservedCostUsd;
+        reservedCost = quotaResult.reservedCostUsd ?? reservedCostUsd;
         reservedIsRegeneration = Boolean(quotaResult.isRegeneration);
       }
     }
@@ -548,12 +590,17 @@ export async function POST(request: NextRequest) {
         ? buildFormulaInventory({ sources })
         : undefined;
 
+    let telemetryCostUsd = 0;
     const note = await generateClutchNote({
       fileName,
       slideCount,
       sources,
       focus,
+      tier: effectiveTier,
       throwOnContradictedFormula: false,
+      onTelemetry: (t) => {
+        telemetryCostUsd = t.costUsd;
+      },
       ...(parsedDeck
         ? {
             ommlEquations: parsedDeck.ommlEquations,
@@ -571,19 +618,30 @@ export async function POST(request: NextRequest) {
             : {}),
     });
 
+    const visionCostUsd = Object.values(parsedDeck?.pageVisionStatus ?? {}).reduce(
+      (sum, entry) =>
+        sum + (typeof entry?.costUsd === "number" && Number.isFinite(entry.costUsd) ? entry.costUsd : 0),
+      0,
+    );
+    const actualCostUsd = Number(
+      ((telemetryCostUsd > 0 ? telemetryCostUsd : reservedCost) + visionCostUsd).toFixed(6),
+    );
+
     const validFileSha256 =
       typeof parsedDeck?.fileSha256 === "string" && parsedDeck.fileSha256.trim().length > 0
         ? parsedDeck.fileSha256.trim()
         : clientProvidedFileSha256;
 
     if (enforceQuota) {
-      await recordDeckGenerationCogs(
+      const cogsRecord = await recordDeckGenerationCogs(
         userIdentifier,
         effectiveTier,
-        reservedCostUsd,
-        reservedCostUsd,
+        actualCostUsd,
+        reservedCost,
+        billingRegion,
       );
       quotaReserved = false;
+      latestQuotaSummary = toClientQuota(cogsRecord.quota);
 
       if (validFileSha256) {
         await setSharedDeckCache({
@@ -592,7 +650,7 @@ export async function POST(request: NextRequest) {
           language: "en",
           mode: "notes",
           focusHash,
-          pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
+          pipelineVersion: notesPipelineVersion,
           questionPool: [],
           clutchNote: note,
           studyMetadata: {
@@ -615,26 +673,20 @@ export async function POST(request: NextRequest) {
       contentHash,
       fileSha256: validFileSha256,
       sources,
+      ...(latestQuotaSummary ? { quota: latestQuotaSummary } : {}),
     });
   } catch (error) {
     if (quotaReserved && reservedActor && reservedContentHash) {
       try {
-        if (reservedIsRegeneration) {
-          await rollbackDeckQuotaReservation(
-            reservedActor,
-            reservedTier,
-            reservedContentHash,
-            reservedCost,
-            reservedIsRegeneration,
-          );
-        } else {
-          await rollbackDeckQuotaReservation(
-            reservedActor,
-            reservedTier,
-            reservedContentHash,
-            reservedCost,
-          );
-        }
+        await rollbackDeckQuotaReservation({
+          userId: reservedActor,
+          tier: reservedTier,
+          contentHash: reservedContentHash,
+          reservedCostUsd: reservedCost,
+          isRegeneration: reservedIsRegeneration,
+          actionKind: "notes",
+          region: billingRegion,
+        });
       } catch (rollbackError) {
         console.error(
           "[ClutchNotesAPI] Failed to rollback deck quota reservation:",

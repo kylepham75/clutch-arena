@@ -1,5 +1,6 @@
 import type { ParsedDocument, SourceBlock } from "@/lib/schemas/ingestion";
 import { parseDocument } from "./parse-document";
+import type { ParsePdfOptions } from "./parse-pdf";
 import { IngestionError } from "./errors";
 import { MAX_EXTRACTED_CHARACTERS } from "./limits";
 import { computeDocumentContentHash } from "./content-hash";
@@ -7,6 +8,7 @@ import { computeDocumentContentHash } from "./content-hash";
 export async function parseMultiDocuments(
   files: File[],
   signal: AbortSignal,
+  options?: { parsePdfOptions?: ParsePdfOptions },
 ): Promise<{
   compositeDocument: ParsedDocument;
   documents: ParsedDocument[];
@@ -26,7 +28,11 @@ export async function parseMultiDocuments(
   const documents: ParsedDocument[] = [];
   for (const file of files) {
     signal.throwIfAborted();
-    const doc = await parseDocument(file, signal);
+    const doc = await parseDocument(
+      file,
+      signal,
+      options?.parsePdfOptions ? { parsePdfOptions: options.parsePdfOptions } : undefined,
+    );
     documents.push(doc);
   }
 

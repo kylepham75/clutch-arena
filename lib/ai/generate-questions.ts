@@ -28,6 +28,7 @@ import {
   getOpenRouterApiKey,
   getOpenRouterGeneratorModel,
   HAIKU_TOKEN_CLIFF_THRESHOLD,
+  isPinnedOpenRouterSlug,
   SONNET_MAX_INPUT_TOKENS,
 } from "./provider";
 import {
@@ -35,12 +36,15 @@ import {
   ingestionSystemPrompt,
 } from "./prompts";
 import { budgetSourceBlocks, cleanSlideBoilerplate } from "./budget-sources";
+import { isPaidTier } from "@/lib/pricing/tiers";
 import { repairCorruptedLatex } from "@/lib/math/latex";
 import {
   applyFinanceSolverToItem,
   distractorModeSchema,
+  financeParamsSchema,
   financeSolverTypeSchema,
   financeUnitSchema,
+  structuredFinanceParamsSchema,
 } from "@/lib/math/finance-solver";
 import {
   verifyQuestionsBlindly,
@@ -69,16 +73,10 @@ export function computeOverGeneratedCount(requestedCount: number): number {
   return Math.ceil(safeCount * 1.2);
 }
 
-const jsonSafeFinanceParamsSchema = z
-  .object({})
-  .catchall(
-    z.union([
-      z.number(),
-      z.boolean(),
-      z.string(),
-      z.array(z.number()),
-    ]),
-  );
+const jsonSafeFinanceParamsSchema = z.union([
+  structuredFinanceParamsSchema,
+  financeParamsSchema,
+]);
 
 export const jsonSafeFinanceSpecSchema = z.object({
   solver: financeSolverTypeSchema,
@@ -89,50 +87,77 @@ export const jsonSafeFinanceSpecSchema = z.object({
   distractorModes: z.array(distractorModeSchema).optional(),
 });
 
-// Providers accept homogeneous JSON arrays. Convert to the strict tuple contract
-// only after generation, without weakening the game's QuestionItem schema.
-const fields = {
+// Strict, Anthropic-safe (<24 optional parameters, zero catchall/anyOf inside params) schema for LLM structured generation.
+export const llmFinanceSpecSchema = z
+  .object({
+    solver: financeSolverTypeSchema,
+    target: z.string().optional(),
+    params: structuredFinanceParamsSchema,
+    unit: z.enum(["$", "%", "x", "years", "periods", "none"]),
+    decimals: z.number().int().min(0).max(6),
+    distractorModes: z.array(distractorModeSchema).optional(),
+  })
+  .strict();
+
+const baseQuestionFields = {
   question: z.string().min(1).max(2000),
   options: z.array(z.string().min(1).max(500)).length(4),
   correctIndex: z.number().int().min(0).max(3),
   explanation: z.string().min(1).max(2000),
-  financeSpec: jsonSafeFinanceSpecSchema.optional(),
   distractorRationale: z.string().max(1000).optional(),
 };
 
-export const generatedStudySchema = z
-  .object({
-    title: z.string().min(1).max(120),
-    sourceKind: z.enum(["testbank", "lecture", "mixed"]),
-    questions: z
-      .array(
-        z
-          .object({
-            id: z.string().min(1).max(80),
-            ...fields,
-            conceptVariant: z.object(fields).strict(),
-          })
-          .strict(),
-      )
-      .max(45),
-    annotations: z
-      .array(
-        z
-          .object({
-            questionId: z.string().min(1).max(80),
-            sourceId: z.string().min(1).max(100),
-            excerpt: z.string().min(12).max(1000),
-            topic: z.string().min(1).max(120),
-            chapter: z.string().max(120),
-            rule: z.string().min(1).max(500),
-            distractorRationale: z.string().max(1000).optional(),
-          })
-          .strict(),
-      )
-      .max(45),
-    warnings: z.array(z.string().min(1).max(500)).max(10),
-  })
-  .strict();
+const llmFields = {
+  ...baseQuestionFields,
+  financeSpec: llmFinanceSpecSchema.optional(),
+};
+
+function buildStudySchema<TFields extends z.ZodRawShape>(questionFields: TFields) {
+  return z
+    .object({
+      title: z.string().min(1).max(120),
+      sourceKind: z.enum(["testbank", "lecture", "mixed"]),
+      questions: z
+        .array(
+          z
+            .object({
+              id: z.string().min(1).max(80),
+              ...questionFields,
+              conceptVariant: z.object(questionFields).strict(),
+            })
+            .strict(),
+        )
+        .max(45),
+      annotations: z
+        .array(
+          z
+            .object({
+              questionId: z.string().min(1).max(80),
+              sourceId: z.string().min(1).max(100),
+              excerpt: z.string().min(12).max(1000),
+              topic: z.string().min(1).max(120),
+              chapter: z.string().max(120),
+              rule: z.string().min(1).max(500),
+              distractorRationale: z.string().max(1000).optional(),
+            })
+            .strict(),
+        )
+        .max(45),
+      warnings: z.array(z.string().min(1).max(500)).max(10),
+    })
+    .strict();
+}
+
+export const llmStudyOutputSchema = buildStudySchema(llmFields);
+
+// Providers accept homogeneous JSON arrays. Convert to the strict tuple contract
+// only after generation, without weakening the game's QuestionItem schema.
+const fields = {
+  ...baseQuestionFields,
+  financeSpec: jsonSafeFinanceSpecSchema.optional(),
+};
+
+export const generatedStudySchema = buildStudySchema(fields);
 
 
 function normalize(text: string) {
@@ -766,10 +791,7 @@ export function validateGeneratedStudy(
       seenQuestions.add(normBaseQuestion);
     }
 
-    const isPaid =
-      options.tier === "cram_pass" ||
-      options.tier === "pro" ||
-      options.tier === "tutor";
+    const isPaid = isPaidTier(options.tier);
 
     const rawDistractorRationale =
       annotation.distractorRationale ??
@@ -1657,10 +1679,7 @@ export async function generateQuestions(
 
     // Assertion: warn if any prompt exceeds 90K tokens (Haiku 5.5 price cliff at 100K)
     // Free tier users cannot proceed past 90K tokens to protect COGS and encourage upgrading to Cram Pass or Pro
-    const isPaidGeneration =
-      options.tier === "cram_pass" ||
-      options.tier === "pro" ||
-      options.tier === "tutor";
+    const isPaidGeneration = isPaidTier(options.tier);
     assertPromptTokenCliff(batchPrompt, (resolvedModel as any)?.modelId, {
       tier: options.tier,
       throwOnExceeded: !isPaidGeneration,
@@ -1677,10 +1696,7 @@ export async function generateQuestions(
     // Fallback 1: OpenRouter generator (if primary was not OpenRouter)
     if (getOpenRouterApiKey()) {
       try {
-        const isPaid =
-          options.tier === "cram_pass" ||
-          options.tier === "pro" ||
-          options.tier === "tutor";
+        const isPaid = isPaidTier(options.tier);
         const openRouterModel = isPaid
           ? getOpenRouterGeneratorModel(options.tier, { degraded: true })
           : getOpenRouterGeneratorModel(options.tier);
@@ -1756,7 +1772,7 @@ export async function generateQuestions(
 
         return await generateObject({
           model: candidate,
-          schema: generatedStudySchema,
+          schema: llmStudyOutputSchema,
           system: ingestionSystemPrompt,
           prompt,
           temperature: MCQ_GENERATION_TEMPERATURE,
@@ -1826,7 +1842,7 @@ export async function generateQuestions(
     }
 
     const overGenTarget = computeOverGeneratedCount(options.questionCount);
-    let rawObject =
+    let rawObject: GeneratedStudyObject =
       batchResults.length === 1
         ? batchResults[0].object
         : mergeAndDeduplicateBatches(
@@ -1954,15 +1970,25 @@ export async function generateQuestions(
         !isLanguageModelInstance(verificationConfig) &&
         verificationConfig?.skipSolverComputed !== undefined
           ? verificationConfig.skipSolverComputed
-          : true;
+          : false;
+
+      const actualGeneratorSlug =
+        batchProvenances.find((p) => p.servedModel)?.servedModel ||
+        (typeof (resolvedModel as any)?.modelId === "string"
+          ? (resolvedModel as any).modelId
+          : undefined);
 
       const verifyRes = await verifyQuestionsBlindly(verifiableItems, {
+        ...(actualGeneratorSlug && isPinnedOpenRouterSlug(actualGeneratorSlug)
+          ? { generatorSlug: actualGeneratorSlug }
+          : {}),
         verifierModel: isLanguageModelInstance(explicitVerifier)
           ? explicitVerifier
           : undefined,
         sourcesById,
         skipSolverComputed,
         allowUnconfiguredSkip: true,
+        allowFallbacks: !isLanguageModelInstance(explicitVerifier),
       });
 
       if (verifyRes) {

@@ -3,12 +3,8 @@
 import React, { useState, useCallback } from "react";
 import { useDropzone } from "react-dropzone";
 import {
-  FileText,
   UploadCloud,
   Zap,
-  ShieldCheck,
-  Printer,
-  Layers,
   AlertCircle,
   FileSpreadsheet,
   Lock,
@@ -16,9 +12,14 @@ import {
   RefreshCw,
   Clock,
   BookOpen,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useUserTier } from "@/hooks/use-user-tier";
+import {
+  useUserTier,
+  computeProfileQuotaSummary,
+} from "@/hooks/use-user-tier";
+import { formatQuotaResetCountdown } from "@/lib/pricing/tiers";
 import { useAuth } from "@/lib/auth/context";
 import { useLanguage } from "@/lib/i18n/context";
 import { BeforeAfterModal } from "./before-after-modal";
@@ -81,9 +82,18 @@ export function ClutchNotesPanel({
   onPackGenerated,
   onSwitchToTab,
 }: ClutchNotesPanelProps = {}) {
-  const { user, session } = useAuth();
-  const { tier, isPaidTier, isCramPassOrAbove, isProOrAbove, setTier } = useUserTier();
+  const { user, session, openAuthModal } = useAuth();
+  const {
+    tier,
+    limits,
+    isPaidTier,
+    quotaState,
+    refreshQuota,
+    updateQuotaFromResponse,
+  } = useUserTier();
   const { t, language } = useLanguage();
+  const isVi = language === "vi";
+  const quotaSummary = computeProfileQuotaSummary(tier, quotaState, isVi);
 
   const [note, setNote] = useState<ClutchNote | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -95,37 +105,35 @@ export function ClutchNotesPanel({
   const [isCreatingQuiz, setIsCreatingQuiz] = useState(false);
   const [quizError, setQuizError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [quotaExhausted, setQuotaExhausted] = useState<{
+    resetsAt: string | null;
+  } | null>(null);
   const [progressStep, setProgressStep] = useState<string | null>(null);
-  const [dailyUsage, setDailyUsage] = useState<number>(0);
 
   // Modals
   const [beforeAfterOpen, setBeforeAfterOpen] = useState(false);
   const [pricingOpen, setPricingOpen] = useState(false);
 
-  // Normalize paid tier check (available to 7-Day Cram Pass, Pro Semester, and Tutor tiers)
-  const userAppTier = (user?.app_metadata?.tier as string)?.toUpperCase();
-
-  const hasNotesAccess =
-    isPaidTier ||
-    isCramPassOrAbove ||
-    isProOrAbove ||
-    tier === "cram_pass" ||
-    tier === "pro" ||
-    tier === "tutor" ||
-    userAppTier === "PRO" ||
-    userAppTier === "CRAM_PASS" ||
-    userAppTier === "TUTOR";
-
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
       setError(null);
+      setQuotaExhausted(null);
       setWarnings([]);
       setQuizError(null);
       if (!acceptedFiles || acceptedFiles.length === 0) return;
 
-      // Free Tier Gate: trigger Before/After modal if not on a paid tier
-      if (!hasNotesAccess) {
-        setBeforeAfterOpen(true);
+      // Guests must sign in first; signed-in Free (Contender) users can synthesize inside rolling % quota
+      if (!user) {
+        openAuthModal(
+          isVi
+            ? "Đăng nhập miễn phí để tổng hợp Clutch Notes AI"
+            : "Sign in free to synthesize Clutch Notes AI",
+        );
+        return;
+      }
+
+      if (!limits.canUseClutchNotes) {
+        setPricingOpen(true);
         return;
       }
 
@@ -146,7 +154,7 @@ export function ClutchNotesPanel({
 
       setSelectedFile(file);
     },
-    [hasNotesAccess, t.notes],
+    [user, openAuthModal, isVi, limits.canUseClutchNotes, t.notes],
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -162,13 +170,23 @@ export function ClutchNotesPanel({
   const handleGenerate = async () => {
     if (!selectedFile) return;
 
-    if (!hasNotesAccess) {
-      setBeforeAfterOpen(true);
+    if (!user) {
+      openAuthModal(
+        isVi
+          ? "Đăng nhập miễn phí để tổng hợp Clutch Notes AI"
+          : "Sign in free to synthesize Clutch Notes AI",
+      );
+      return;
+    }
+
+    if (!limits.canUseClutchNotes) {
+      setPricingOpen(true);
       return;
     }
 
     setLoading(true);
     setError(null);
+    setQuotaExhausted(null);
     setQuizError(null);
     setWarnings([]);
     setProgressStep(t.notes.step1);
@@ -309,6 +327,12 @@ export function ClutchNotesPanel({
         // Response is not JSON (e.g. Vercel 504 / 413 proxy page)
       }
 
+      if (data?.quota) {
+        updateQuotaFromResponse(data.quota);
+      } else if (res.ok || res.status === 429) {
+        void refreshQuota();
+      }
+
       if (!res.ok || !data || !data.ok) {
         if (res.status === 413) {
           throw new Error(t.notes.errPayloadTooLarge);
@@ -316,15 +340,42 @@ export function ClutchNotesPanel({
         if (res.status === 504) {
           throw new Error(t.notes.errGatewayTimeout);
         }
+        if (res.status === 401) {
+          openAuthModal(
+            isVi
+              ? "Vui lòng đăng nhập để sử dụng Clutch Notes AI"
+              : "Please sign in to access Clutch Notes AI",
+          );
+          throw new Error(
+            data?.error?.message ||
+              (isVi
+                ? "Vui lòng đăng nhập để sử dụng Clutch Notes AI."
+                : "Please sign in to access Clutch Notes AI."),
+          );
+        }
         if (res.status === 403) {
-          setBeforeAfterOpen(true);
+          setPricingOpen(true);
           throw new Error(
             data?.error?.message || t.notes.errSubscriptionRequired,
           );
         }
         if (res.status === 429) {
+          const retryAfterSeconds =
+            typeof data?.error?.retryAfter === "number" &&
+            data.error.retryAfter > 0
+              ? data.error.retryAfter
+              : null;
+          const fallbackResetsAt = retryAfterSeconds
+            ? new Date(Date.now() + retryAfterSeconds * 1000).toISOString()
+            : null;
+          const resetsAt =
+            data?.quota?.resetsAt ?? quotaState?.resetsAt ?? fallbackResetsAt;
+          setQuotaExhausted({ resetsAt });
           throw new Error(
-            data?.error?.message || t.notes.errDailyQuotaReached,
+            data?.error?.message ||
+              (isVi
+                ? "Hạn mức AI trong chu kỳ luân phiên đã tạm hết. Vui lòng chờ đặt lại hoặc nâng cấp gói."
+                : "AI quota reached for this rolling window. Please wait for reset or upgrade your plan."),
           );
         }
         const serverMsg =
@@ -348,7 +399,6 @@ export function ClutchNotesPanel({
       } else {
         setWarnings([]);
       }
-      setDailyUsage((prev) => prev + 1);
       setSelectedFile(null);
     } catch (err: any) {
       if (err.name === "AbortError") {
@@ -456,6 +506,12 @@ export function ClutchNotesPanel({
         // non-JSON response
       }
 
+      if (data?.quota) {
+        updateQuotaFromResponse(data.quota);
+      } else if (res.ok || res.status === 429) {
+        void refreshQuota();
+      }
+
       if (!res.ok || !data || !data.ok) {
         if (res.status === 413) {
           throw new Error(t.notes.errPayloadTooLarge);
@@ -491,6 +547,7 @@ export function ClutchNotesPanel({
     setCurrentSourceFile(null);
     setNoteSources([]);
     setError(null);
+    setQuotaExhausted(null);
     setQuizError(null);
     setWarnings([]);
   };
@@ -498,6 +555,13 @@ export function ClutchNotesPanel({
   const handleUpgradeFromModal = () => {
     setPricingOpen(true);
   };
+
+  const quotaToneClasses =
+    quotaSummary.statusTone === "healthy"
+      ? "bg-[#edf5e8] border-[#cde0c3] text-[#2e6320]"
+      : quotaSummary.statusTone === "caution"
+        ? "bg-[#fffbeb] border-[#fde68a] text-[#b45309]"
+        : "bg-[#fef2f2] border-red-200 text-red-700";
 
   // If a note has been generated, render the high-retention note view
   if (note) {
@@ -540,10 +604,18 @@ export function ClutchNotesPanel({
             setCurrentSourceFile(null);
             setNoteSources([]);
             setWarnings([]);
+            setQuotaExhausted(null);
             setQuizError(null);
           }}
           onCreateQuiz={handleCreateQuizDeck}
           isCreatingQuiz={isCreatingQuiz}
+          canExportPdf={limits.canExportCheatSheet}
+          onUpgradeClick={() => setPricingOpen(true)}
+        />
+        <PricingModal
+          open={pricingOpen}
+          onClose={() => setPricingOpen(false)}
+          initialReason={t.notes.pricingInitialReason}
         />
       </div>
     );
@@ -553,14 +625,48 @@ export function ClutchNotesPanel({
     <div className="w-full max-w-4xl mx-auto space-y-6 animate-in fade-in duration-300 pb-16">
       {/* Header Introduction Card */}
       <div className="bg-white border border-[#e2e6db] rounded-2xl p-6 sm:p-7 shadow-sm relative overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-4 mb-3">
-          <span className="badge-pro">PRO</span>
-
-          <div className="flex items-center gap-2 text-xs font-medium text-[#5a6452]">
-            <Clock size={14} className="text-[#b83811]" />
-            <span>
-              {t.notes.dailyQuota} <strong className="text-[#1f261c]">{30 - dailyUsage}</strong>/30 {t.notes.remaining}
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          {isPaidTier ? (
+            <span className="badge-pro">{quotaSummary.tierLabel}</span>
+          ) : (
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-[#f3f5ee] border border-[#dce1d5] text-[#424c3a] text-[11px] font-bold uppercase tracking-wider">
+              {quotaSummary.tierLabel}
             </span>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-bold ${quotaToneClasses}`}
+              title={quotaSummary.quotaLabel}
+            >
+              <Zap size={13} />
+              <span>
+                {quotaSummary.remainingPct}% {isVi ? "hạn mức AI" : "AI quota"}
+              </span>
+            </div>
+
+            {quotaSummary.resetCountdown && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#f7f8f4] border border-[#e2e6db] text-[11px] font-medium text-[#5a6452]">
+                <Clock size={12} className="text-[#b83811]" />
+                <span>{quotaSummary.resetCountdown}</span>
+              </span>
+            )}
+
+            {quotaSummary.isDegraded && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#fffbeb] border border-[#fde68a] text-[11px] font-bold text-[#b45309]">
+                <Sparkles size={12} />
+                <span>
+                  {quotaState?.mode === "cached_only" ||
+                  quotaState?.mode === "halted"
+                    ? isVi
+                      ? "Chỉ bộ nhớ đệm"
+                      : "Cached Only"
+                    : isVi
+                      ? "Chế độ Eco"
+                      : "Eco Mode"}
+                </span>
+              </span>
+            )}
           </div>
         </div>
 
@@ -570,6 +676,24 @@ export function ClutchNotesPanel({
         <p className="text-xs sm:text-sm text-[#67705f] max-w-2xl leading-relaxed">
           {t.notes.subtitle}
         </p>
+
+        {user && !isPaidTier && (
+          <div className="mt-4 pt-3.5 border-t border-[#ebeee5] flex flex-wrap items-center justify-between gap-3 text-xs">
+            <span className="text-[#5a6452]">
+              {isVi
+                ? "Gói Miễn phí: tổng hợp ghi chú tóm tắt 1 phần cô đọng trong hạn mức AI luân phiên. Nâng cấp để mở khóa đầy đủ nhiều phần & xuất PDF."
+                : "Free Contender: synthesize a concise 1-section study note inside your rolling AI quota. Upgrade for full multi-section notes & PDF export."}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPricingOpen(true)}
+              className="inline-flex items-center gap-1 font-bold text-[#b83811] hover:text-[#9e2e0a] cursor-pointer shrink-0"
+            >
+              <span>{isVi ? "Nâng cấp Pro" : "Upgrade to Pro"}</span>
+              <ArrowRight size={13} />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Upload Dropzone Container */}
@@ -584,7 +708,7 @@ export function ClutchNotesPanel({
           <span className="text-xs text-[#7e8777] font-medium">{t.notes.fileLimitNote}</span>
         </div>
 
-        {/* Dropzone with PRO badge */}
+        {/* Dropzone */}
         <div
           {...getRootProps()}
           className={`relative border-2 border-dashed rounded-2xl p-8 sm:p-10 text-center transition-all cursor-pointer select-none ${
@@ -597,10 +721,20 @@ export function ClutchNotesPanel({
         >
           <input {...getInputProps()} />
 
-          {/* Premium Tier Badge on Dropzone */}
+          {/* Tier / Access Badge on Dropzone */}
           <div className="absolute top-3.5 right-3.5 flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#fef3c7] border border-[#fde68a] text-[#b45309] text-[11px] font-black tracking-wider uppercase">
             <Zap size={12} className="text-[#b45309]" />
-            <span>{t.notes.paidTiersBadge}</span>
+            <span>
+              {!user
+                ? isVi
+                  ? "ĐĂNG NHẬP MIỄN PHÍ"
+                  : "FREE SIGN-IN"
+                : !isPaidTier
+                  ? isVi
+                    ? "MIỄN PHÍ · 1 PHẦN"
+                    : "FREE · 1-SECTION"
+                  : quotaSummary.tierLabel}
+            </span>
           </div>
 
           <div className="w-14 h-14 mx-auto rounded-xl bg-[#fbede5] text-[#e46d47] flex items-center justify-center mb-3.5 shadow-xs">
@@ -625,10 +759,14 @@ export function ClutchNotesPanel({
             </div>
           )}
 
-          {!hasNotesAccess && (
+          {!user && (
             <div className="mt-4 pt-3.5 border-t border-[#ebeee5] flex items-center justify-center gap-1.5 text-xs text-[#b45309] font-medium">
               <Lock size={13} className="text-[#b45309]" />
-              <span>{t.notes.lockedNotice}</span>
+              <span>
+                {isVi
+                  ? "Đăng nhập miễn phí để tổng hợp Clutch Notes AI trong hạn mức luân phiên"
+                  : "Sign in free to synthesize Clutch Notes AI inside your rolling quota"}
+              </span>
             </div>
           )}
         </div>
@@ -647,11 +785,42 @@ export function ClutchNotesPanel({
           />
         </div>
 
-        {/* Error notice */}
+        {/* Error / Quota Exhaustion notice */}
         {error && (
-          <div className="bg-[#fef2f2] border border-red-200 rounded-xl p-3.5 flex items-start gap-3 text-red-800 text-xs">
-            <AlertCircle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
-            <div className="flex-1 leading-relaxed">{error}</div>
+          <div
+            role="alert"
+            className="bg-[#fef2f2] border border-red-200 rounded-xl p-3.5 space-y-2.5 text-red-800 text-xs"
+          >
+            <div className="flex items-start gap-3">
+              <AlertCircle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 leading-relaxed">{error}</div>
+            </div>
+            {quotaExhausted && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-red-200/80 pl-7">
+                <div className="inline-flex items-center gap-1.5 font-semibold text-red-700">
+                  <Clock size={13} />
+                  <span>
+                    {formatQuotaResetCountdown(
+                      quotaExhausted.resetsAt ?? quotaState?.resetsAt,
+                      isVi,
+                    ) ||
+                      quotaSummary.resetCountdown ||
+                      (isVi
+                        ? "Đang chờ làm mới chu kỳ"
+                        : "Rolling window reset pending")}
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setPricingOpen(true)}
+                  className="bg-[#b83811] hover:bg-[#9e2e0a] text-white text-xs font-bold rounded-lg px-3 py-1.5 h-auto cursor-pointer"
+                >
+                  <Zap size={12} className="mr-1" />
+                  <span>{isVi ? "Nâng cấp gói" : "Upgrade Plan"}</span>
+                </Button>
+              </div>
+            )}
           </div>
         )}
 

@@ -3,6 +3,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { IngestionError } from "@/lib/ingestion/errors";
+import { isPaidTier } from "@/lib/pricing/tiers";
 
 // ============================================================================
 // Pinned OpenRouter Slugs & Privacy Config
@@ -14,6 +15,30 @@ export const PRIORITY_GENERATOR_SLUG = "anthropic/claude-sonnet-5.5";
 export const DEFAULT_VERIFIER_SLUG = "deepseek/deepseek-v4.1-flash-1017";
 export const FALLBACK_VERIFIER_SLUG = "openai/gpt-4o-mini";
 export const DEFAULT_VISION_SLUG = "google/gemini-2.5-flash-lite";
+
+export const DEFAULT_NOTES_GENERATOR_SLUG = DEFAULT_GENERATOR_SLUG;
+export const NOTES_GEMINI_FLASH_SLUG = "google/gemini-2.5-flash";
+export const ALLOWED_NOTES_SLUGS = [
+  DEFAULT_NOTES_GENERATOR_SLUG,
+  DEFAULT_VERIFIER_SLUG,
+  NOTES_GEMINI_FLASH_SLUG,
+] as const;
+
+export function resolveAllowedNotesSlug(candidateSlug?: string | null): string {
+  const trimmed = candidateSlug?.trim();
+  if (!trimmed) {
+    return DEFAULT_NOTES_GENERATOR_SLUG;
+  }
+  const normalized = trimmed.toLowerCase();
+  const matched = ALLOWED_NOTES_SLUGS.find((slug) => slug.toLowerCase() === normalized);
+  if (matched) {
+    return matched;
+  }
+  console.warn(
+    `[Notes Routing] Model "${trimmed}" is not permitted for Clutch Notes AI (allowed: ${ALLOWED_NOTES_SLUGS.join(", ")}). Defaulting to "${DEFAULT_NOTES_GENERATOR_SLUG}".`,
+  );
+  return DEFAULT_NOTES_GENERATOR_SLUG;
+}
 
 export const OPENROUTER_PRIVACY_PROVIDER_CONFIG = {
   require_parameters: true,
@@ -428,7 +453,7 @@ export function getOpenRouterGeneratorModel(
     reasoningEffort?: "low" | "medium" | "high" | "none";
   },
 ) {
-  const isPaid = tier === "cram_pass" || tier === "pro" || tier === "tutor";
+  const isPaid = isPaidTier(tier);
   let slug: string;
 
   if (options?.modelOverride?.trim()) {
@@ -458,8 +483,8 @@ export function getNoteSummarizerModel(
   tier: string = "contender",
   options?: { degraded?: boolean; modelOverride?: string },
 ) {
-  const isPaid = tier === "cram_pass" || tier === "pro" || tier === "tutor";
-  const notesModel =
+  const isPaid = isPaidTier(tier);
+  const configuredNotesModel =
     options?.modelOverride?.trim() ||
     process.env.OPENROUTER_NOTES_MODEL?.trim() ||
     process.env.OPENROUTER_NOTES_GENERATOR_MODEL?.trim() ||
@@ -467,13 +492,24 @@ export function getNoteSummarizerModel(
       ? process.env.OPENROUTER_NOTES_PAID_MODEL?.trim()
       : process.env.OPENROUTER_NOTES_FREE_MODEL?.trim());
 
-  if (notesModel) {
-    assertPinnedOpenRouterSlug(notesModel);
-    return getOpenRouterModel(notesModel);
-  }
+  // Clutch Notes AI is strictly restricted to Haiku 5.5, DeepSeek V4.1 Flash, or Gemini 2.5 Flash (never Sonnet)
+  const slug = resolveAllowedNotesSlug(configuredNotesModel);
+  assertPinnedOpenRouterSlug(slug);
+  return getOpenRouterModel(slug, { reasoningEffort: "none" });
+}
 
-  // NOTE SUMMARIZER: same model as the tier's generator (one prompt template, one schema, one eval set per tier)
-  return getOpenRouterGeneratorModel(tier, options);
+export function getNotesFallbackModels(primarySlug?: string | null): ReturnType<typeof getOpenRouterModel>[] {
+  if (!getOpenRouterApiKey()) return [];
+  const normalizedPrimary = (primarySlug || "").trim().toLowerCase();
+  const orderedFallbacks = [
+    NOTES_GEMINI_FLASH_SLUG,
+    DEFAULT_VERIFIER_SLUG,
+    DEFAULT_NOTES_GENERATOR_SLUG,
+  ].filter((slug) => slug.toLowerCase() !== normalizedPrimary);
+
+  return orderedFallbacks.map((slug) =>
+    getOpenRouterModel(slug, { reasoningEffort: "none" }),
+  );
 }
 
 export function getDistillerModel(options?: {
@@ -558,10 +594,18 @@ export function getVerifierModel(options?: {
     process.env.OPENROUTER_GENERATOR_MODEL?.trim() ||
     DEFAULT_GENERATOR_SLUG;
 
+  const notesModelEnv = process.env.OPENROUTER_NOTES_MODEL?.trim();
+  const safeSameFamilyNotesModel =
+    options?.allowSameFamily &&
+    notesModelEnv &&
+    getModelFamily(notesModelEnv) !== "anthropic"
+      ? notesModelEnv
+      : undefined;
+
   const verifierSlug =
     options?.modelOverride?.trim() ||
     process.env.OPENROUTER_NOTES_VERIFIER_MODEL?.trim() ||
-    (options?.allowSameFamily ? process.env.OPENROUTER_NOTES_MODEL?.trim() : undefined) ||
+    safeSameFamilyNotesModel ||
     process.env.OPENROUTER_VERIFIER_MODEL?.trim() ||
     DEFAULT_VERIFIER_SLUG;
 
@@ -689,7 +733,7 @@ export function getGenerationModel(
   },
 ) {
   const provider = process.env.AI_PROVIDER?.trim().toLowerCase();
-  const isPriority = tier === "cram_pass" || tier === "pro" || tier === "tutor";
+  const isPriority = isPaidTier(tier);
   const openRouterKey = getOpenRouterApiKey();
   const geminiKey = getGeminiApiKey();
 
@@ -716,11 +760,9 @@ export function getGenerationModel(
 
   // 2. High-retention synthesis routing for Clutch Notes
   if (tier === "notes") {
-    const noteModel = process.env.NOTES_AI_MODEL?.trim() || "gemini-3.6-flash";
+    const noteModel = process.env.NOTES_AI_MODEL?.trim() || "gemini-2.5-flash";
     const gemini = getGeminiModel(noteModel);
     if (gemini) return gemini;
-    const groq = getGroqModel();
-    if (groq) return groq;
   }
 
   if (provider === "gemini") {

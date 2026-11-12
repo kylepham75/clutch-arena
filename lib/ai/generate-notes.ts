@@ -32,15 +32,19 @@ import {
   buildFormulaInventory,
   buildMergedFormulaLedger,
   mergeFormulaLedger,
+  getSafeOpenRouterReasoningEffort,
   type FormulaInventoryItem,
 } from "@/lib/notes/formula-inventory";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { OMITTED_BY_RULE_REASON_REGEX } from "@/lib/notes/deterministic-verifiers";
 import {
+  ALLOWED_NOTES_SLUGS,
   assertPromptTokenCliff,
+  extractOpenRouterProvenance,
   getGenerationModel,
-  getGroqModel,
   getNoteSummarizerModel,
+  getNotesFallbackModels,
+  getOpenRouterApiKey,
   getVerifierModel,
 } from "./provider";
 import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
@@ -266,6 +270,11 @@ export interface GenerateClutchNoteOptions {
   skipVerifierLlm?: boolean;
   maxRepairAttempts?: number;
   throwOnContradictedFormula?: boolean;
+  onTelemetry?: (telemetry: {
+    totalTokens: number;
+    costUsd: number;
+    servedModel?: string | null;
+  }) => void;
 }
 
 export function sanitizeUniversalText(str: string): string {
@@ -2023,9 +2032,25 @@ export async function generateClutchNote(
     summarizerTier === "free";
 
   try {
-    model =
-      options.modelOverride ??
-      getNoteSummarizerModel(isFreeTier ? "contender" : "pro");
+    const overrideModelId = String(
+      (options.modelOverride as any)?.modelId ??
+        (options.modelOverride as any)?.id ??
+        "",
+    ).toLowerCase();
+    const isDisallowedOverride =
+      Boolean(overrideModelId) &&
+      !ALLOWED_NOTES_SLUGS.some((slug) => slug.toLowerCase() === overrideModelId);
+
+    if (isDisallowedOverride) {
+      console.warn(
+        `[generateClutchNote] Model "${overrideModelId}" is not permitted for Clutch Notes AI. Routing to allowed Notes model instead.`,
+      );
+      model = getNoteSummarizerModel(isFreeTier ? "contender" : "pro");
+    } else {
+      model =
+        options.modelOverride ??
+        getNoteSummarizerModel(isFreeTier ? "contender" : "pro");
+    }
     if (!model) {
       throw new IngestionError(
         "AI_NOT_CONFIGURED",
@@ -2093,12 +2118,12 @@ export async function generateClutchNote(
     isShortNote,
   });
 
-  const isGroqPrimary = Boolean(
-    process.env.GROQ_API_KEY && process.env.AI_PROVIDER?.trim().toLowerCase() === "groq",
-  );
-  const primaryMaxTokens = isGroqPrimary ? 4_096 : 16_384;
+  const primaryMaxTokens = 32_768;
 
   let lastMeta: any = null;
+  let accumulatedTokens = 0;
+  let accumulatedCostUsd = 0;
+  let lastServedModel: string | null = null;
 
   const synthesizeWithModel = async (
     targetModel: LanguageModel,
@@ -2108,11 +2133,12 @@ export async function generateClutchNote(
     // Check prompt token cliff warning for Haiku 5.5
     // Free tier users cannot proceed past 90K tokens and must upgrade to Cram Pass or Pro
     const isPaidNotes =
-      options.tier === "cram_pass" ||
-      options.tier === "pro" ||
-      options.tier === "tutor";
+      summarizerTier === "cram_pass" ||
+      summarizerTier === "pro_monthly" ||
+      summarizerTier === "pro" ||
+      summarizerTier === "tutor";
     assertPromptTokenCliff(prompt, (targetModel as any)?.modelId, {
-      tier: options.tier,
+      tier: summarizerTier,
       throwOnExceeded: !isPaidNotes,
     });
 
@@ -2151,12 +2177,31 @@ export async function generateClutchNote(
           },
           openrouter: {
             reasoning: {
-              effort: "none",
+              effort: getSafeOpenRouterReasoningEffort(targetModel),
             },
           },
         },
       });
       resObject = res.object;
+      const provenance = extractOpenRouterProvenance(res);
+      const usageTokens =
+        (res as any)?.usage?.totalTokens ??
+        (((res as any)?.usage?.inputTokens ?? 0) + ((res as any)?.usage?.outputTokens ?? 0));
+      if (typeof usageTokens === "number" && usageTokens > 0) {
+        accumulatedTokens += usageTokens;
+      }
+      const attemptCostUsd =
+        provenance.costUsd > 0
+          ? provenance.costUsd
+          : typeof usageTokens === "number" && usageTokens > 0
+            ? Math.max(0.000001, Number(((usageTokens / 1_000_000) * 0.5).toFixed(6)))
+            : 0;
+      accumulatedCostUsd = Number((accumulatedCostUsd + attemptCostUsd).toFixed(6));
+      if (provenance.servedModel) {
+        lastServedModel = provenance.servedModel;
+      } else if ((targetModel as any)?.modelId) {
+        lastServedModel = String((targetModel as any).modelId);
+      }
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -2193,8 +2238,14 @@ export async function generateClutchNote(
   };
 
   let populatedSections: NoteSection[];
-  const fallback = !options.modelOverride ? getGroqModel() : null;
-  const hasDistinctFallback = Boolean(fallback && fallback !== model);
+  const primaryModelId = String(
+    (model as any)?.modelId ?? (model as any)?.id ?? "",
+  ).toLowerCase();
+  const allowedFallbacks =
+    !options.modelOverride && Boolean(getOpenRouterApiKey())
+      ? getNotesFallbackModels(primaryModelId)
+      : [];
+  const hasDistinctFallback = allowedFallbacks.length > 0;
 
   try {
     populatedSections = await synthesizeWithModel(
@@ -2203,18 +2254,31 @@ export async function generateClutchNote(
       hasDistinctFallback ? 180_000 : 240_000,
     );
   } catch (primaryErr) {
-    const promptTokenEstimate = Math.ceil(prompt.length / 3.5);
-    const canUseGroq =
-      hasDistinctFallback && fallback && promptTokenEstimate < 6_000;
-    if (canUseGroq && fallback) {
+    let lastErr: unknown = primaryErr;
+    let recoveredSections: NoteSection[] | null = null;
+
+    for (const fallbackModel of allowedFallbacks) {
+      const fbId = String((fallbackModel as any)?.modelId ?? "fallback");
       console.warn(
-        "[generateClutchNote] Primary model failed or returned empty sections; failing over to Groq...",
-        primaryErr,
+        `[generateClutchNote] Primary model (${primaryModelId || "unknown"}) failed; failing over to allowed Notes model (${fbId})...`,
+        lastErr,
       );
-      populatedSections = await synthesizeWithModel(fallback, 4_096, 60_000);
-    } else {
-      throw primaryErr;
+      try {
+        recoveredSections = await synthesizeWithModel(
+          fallbackModel,
+          32_768,
+          180_000,
+        );
+        break;
+      } catch (fbErr) {
+        lastErr = fbErr;
+      }
     }
+
+    if (!recoveredSections) {
+      throw lastErr;
+    }
+    populatedSections = recoveredSections;
   }
 
   const meta = lastMeta!;
@@ -2363,6 +2427,14 @@ export async function generateClutchNote(
   };
 
   finalNote.rawMarkdown = buildMarkdownNote(finalNote);
+
+  if (options.onTelemetry) {
+    options.onTelemetry({
+      totalTokens: accumulatedTokens,
+      costUsd: accumulatedCostUsd,
+      servedModel: lastServedModel,
+    });
+  }
 
   return finalNote;
 }

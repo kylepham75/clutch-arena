@@ -8,6 +8,7 @@ import {
   getSupabaseServerClient,
   isSupabaseServerConfigured,
 } from "@/lib/supabase/server";
+import { invalidateUserQuotaLedgerCache } from "@/lib/rate-limit";
 
 export type PayosPlanId =
   | "trial_24h"
@@ -1057,18 +1058,48 @@ export async function fulfillPayosOrder(
           tier: profileTier,
           deck_credits_used: 0,
           cogs_spent_usd: 0,
+          cogs_reserved_usd: 0,
           daily_burst_used: 0,
+          window_started_at: now,
+          window_spent_usd: 0,
+          window_reserved_usd: 0,
+          weekly_started_at: now,
+          weekly_spent_usd: 0,
+          weekly_reserved_usd: 0,
           updated_at: now,
         };
         if (isSandbox) {
           quotaPayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
         }
-        await supabase.from("user_quota_ledgers").upsert(
+        const { error: quotaErr } = await supabase.from("user_quota_ledgers").upsert(
           quotaPayload,
           { onConflict: "user_id" },
         );
+        if (quotaErr) {
+          const fallbackPayload: Record<string, unknown> = {
+            user_id: `user:${resolvedUserId}`,
+            tier: profileTier,
+            deck_credits_used: 0,
+            cogs_spent_usd: 0,
+            daily_burst_used: 0,
+            updated_at: now,
+          };
+          if (isSandbox) {
+            fallbackPayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
+          }
+          await supabase.from("user_quota_ledgers").upsert(
+            fallbackPayload,
+            { onConflict: "user_id" },
+          );
+        }
+        await invalidateUserQuotaLedgerCache(resolvedUserId);
       } catch {
         // Safe fallback if user_quota_ledgers table is pending migration
+        try {
+          await invalidateUserQuotaLedgerCache(resolvedUserId);
+        } catch {
+          // ignore
+        }
       }
 
       try {

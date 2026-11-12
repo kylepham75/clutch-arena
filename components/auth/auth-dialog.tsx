@@ -5,40 +5,56 @@ import {
   Sparkles,
   Lock,
   Mail,
-  User,
   LogOut,
   AlertCircle,
   CheckCircle2,
   Zap,
-  ShieldCheck,
   ArrowRight,
   Trash2,
   AlertTriangle,
   Loader2,
   Clock,
-  BookOpen,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth/context";
 import {
   useUserTier,
   formatPassCountdown,
   computeProfileQuotaSummary,
+  type ProfileQuotaSummary,
 } from "@/hooks/use-user-tier";
 import { useLanguage } from "@/lib/i18n/context";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { clearSessionLibrary, readLibrary, LIBRARY_UPDATED_EVENT } from "@/lib/game/library";
+import { clearSessionLibrary } from "@/lib/game/library";
 import { clearSessionHistory } from "@/lib/game/history";
 import { clearSessionMastery } from "@/lib/game/concept-mastery";
-import { clearStoredUserTier } from "@/lib/pricing/tiers";
+import { clearStoredUserTier, type BillingRegion } from "@/lib/pricing/tiers";
+import { getBillingRegionClient, getPlanRegionalPrice } from "@/lib/pricing/region";
 import { PricingModal } from "@/components/pricing/pricing-modal";
+
+function getQuotaToneStyle(tone: ProfileQuotaSummary["statusTone"]) {
+  if (tone === "critical") {
+    return {
+      textColor: "#b91c1c",
+      barGradient: "linear-gradient(90deg, #dc2626, #ef4444)",
+    };
+  }
+  if (tone === "caution") {
+    return {
+      textColor: "#b45309",
+      barGradient: "linear-gradient(90deg, #d97706, #f59e0b)",
+    };
+  }
+  return {
+    textColor: "#15803d",
+    barGradient: "linear-gradient(90deg, #16a34a, #22c55e)",
+  };
+}
 
 export function AuthDialog() {
   const {
     user,
     session,
-    guestUsageCount,
-    guestLimit,
     authModalOpen,
     authModalReason,
     closeAuthModal,
@@ -48,9 +64,17 @@ export function AuthDialog() {
     signInWithOAuth,
     signOut,
   } = useAuth();
-  const { tier: userTier, tierExpiresAt, daysRemaining, hoursRemaining, refreshTier } = useUserTier();
+  const { tier: userTier, tierExpiresAt, quotaState, refreshTier, refreshQuota } = useUserTier();
   const { t, language } = useLanguage();
   const isVi = language === "vi";
+
+  const [region, setRegion] = useState<BillingRegion>(() => getBillingRegionClient());
+
+  useEffect(() => {
+    setRegion(getBillingRegionClient());
+  }, []);
+
+  const proPrice = getPlanRegionalPrice("pro", region);
 
   const [tab, setTab] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
@@ -63,30 +87,16 @@ export function AuthDialog() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [pricingModalOpen, setPricingModalOpen] = useState(false);
 
-  const [libraryCount, setLibraryCount] = useState<number>(() => {
-    if (typeof window === "undefined") return 0;
-    return readLibrary().length;
-  });
-
-  useEffect(() => {
-    const update = () => {
-      setLibraryCount(readLibrary().length);
-    };
-    update();
-    window.addEventListener(LIBRARY_UPDATED_EVENT, update);
-    return () => {
-      window.removeEventListener(LIBRARY_UPDATED_EVENT, update);
-    };
-  }, []);
-
   useEffect(() => {
     if (authModalOpen) {
-      setLibraryCount(readLibrary().length);
       void refreshTier();
+      void refreshQuota();
     }
-  }, [authModalOpen, refreshTier]);
+  }, [authModalOpen, refreshTier, refreshQuota]);
 
-  const quotaSummary = computeProfileQuotaSummary(userTier, libraryCount, 0, isVi);
+  const quotaSummary = computeProfileQuotaSummary(userTier, quotaState, isVi);
+  const quotaTone = getQuotaToneStyle(quotaSummary.statusTone);
+  const remainingPct = Math.max(0, Math.min(100, quotaSummary.remainingPct));
   const countdownText = formatPassCountdown(tierExpiresAt, isVi);
   const formattedExpDate = tierExpiresAt
     ? new Date(tierExpiresAt).toLocaleDateString(isVi ? "vi-VN" : "en-US", {
@@ -222,7 +232,7 @@ export function AuthDialog() {
             <Zap size={18} style={{ color: "var(--primary, #e96943)", flexShrink: 0, marginTop: "2px" }} />
             <div>
               <strong style={{ display: "block", color: "var(--foreground, #292c28)", marginBottom: "0.15rem" }}>
-                {t.auth.guestLimitTitle} ({guestUsageCount}/{guestLimit})
+                {t.auth.guestLimitTitle}
               </strong>
               <span style={{ color: "var(--foreground, #292c28)", opacity: 0.85 }}>
                 {t.auth.guestLimitDesc}
@@ -393,95 +403,96 @@ export function AuthDialog() {
               </div>
             )}
 
-            {/* Visual Quota Meters */}
+            {/* Antigravity-style Rolling AI Quota Meter */}
             <div
               style={{
                 display: "flex",
                 flexDirection: "column",
-                gap: "0.875rem",
+                gap: "0.625rem",
                 padding: "0.875rem 1rem",
                 borderRadius: "0.75rem",
                 background: "var(--muted, #eef0e9)",
                 border: "1px solid var(--border, #e2e5dc)",
               }}
             >
-              {/* Deck Quota Bar */}
-              <div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "0.5rem",
+                  fontSize: "0.75rem",
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem" }}>
+                  <span style={{ fontWeight: 700, color: "var(--foreground, #292c28)" }}>
+                    {isVi ? "Hạn mức AI" : "AI Quota"}
+                  </span>
+                  {quotaSummary.isDegraded && (
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "0.2rem",
+                        fontSize: "0.6875rem",
+                        fontWeight: 600,
+                        padding: "0.1rem 0.45rem",
+                        borderRadius: "9999px",
+                        background: "rgba(217, 119, 6, 0.14)",
+                        color: "#b45309",
+                      }}
+                    >
+                      <Zap size={11} />
+                      {isVi ? "Chế độ Tiết kiệm" : "Eco Mode"}
+                    </span>
+                  )}
+                </div>
+                <span
+                  style={{ fontWeight: 700, color: quotaTone.textColor }}
+                  title={quotaSummary.quotaLabel}
+                >
+                  {isVi ? `Còn ${remainingPct}%` : `${remainingPct}% remaining`}
+                </span>
+              </div>
+              <div
+                role="progressbar"
+                aria-label={quotaSummary.quotaLabel}
+                aria-valuenow={remainingPct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                style={{
+                  width: "100%",
+                  height: "8px",
+                  borderRadius: "9999px",
+                  background: "rgba(0, 0, 0, 0.08)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${remainingPct}%`,
+                    height: "100%",
+                    background: quotaTone.barGradient,
+                    borderRadius: "9999px",
+                    transition: "width 0.3s ease",
+                  }}
+                />
+              </div>
+              {quotaSummary.resetCountdown && (
                 <div
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    justifyContent: "space-between",
+                    gap: "0.35rem",
                     fontSize: "0.75rem",
-                    marginBottom: "0.35rem",
+                    color: "var(--muted-foreground, #666)",
                   }}
                 >
-                  <span style={{ fontWeight: 600, color: "var(--foreground, #292c28)" }}>
-                    {quotaSummary.deckQuotaLabel}
-                  </span>
-                  <span style={{ fontWeight: 700, color: "var(--primary, #e96943)" }}>
-                    {quotaSummary.deckCreditsRemaining} / {quotaSummary.deckCreditsTotal}
-                  </span>
+                  <Clock size={12} style={{ flexShrink: 0 }} />
+                  <span>{quotaSummary.resetCountdown}</span>
                 </div>
-                <div
-                  style={{
-                    width: "100%",
-                    height: "7px",
-                    borderRadius: "9999px",
-                    background: "rgba(0, 0, 0, 0.08)",
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${Math.min(100, Math.round((quotaSummary.deckCreditsRemaining / quotaSummary.deckCreditsTotal) * 100))}%`,
-                      height: "100%",
-                      background: "linear-gradient(90deg, #e96943, #f59e0b)",
-                      borderRadius: "9999px",
-                      transition: "width 0.3s ease",
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Clutch Notes Quota Bar */}
-              <div>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    fontSize: "0.75rem",
-                    marginBottom: "0.35rem",
-                  }}
-                >
-                  <span style={{ fontWeight: 600, color: "var(--foreground, #292c28)" }}>
-                    {quotaSummary.noteQuotaLabel}
-                  </span>
-                  <span style={{ fontWeight: 700, color: "#16a34a" }}>
-                    {quotaSummary.noteCreditsRemaining} / {quotaSummary.noteCreditsTotal}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    width: "100%",
-                    height: "7px",
-                    borderRadius: "9999px",
-                    background: "rgba(0, 0, 0, 0.08)",
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${Math.min(100, Math.round((quotaSummary.noteCreditsRemaining / quotaSummary.noteCreditsTotal) * 100))}%`,
-                      height: "100%",
-                      background: "linear-gradient(90deg, #16a34a, #4ade80)",
-                      borderRadius: "9999px",
-                      transition: "width 0.3s ease",
-                    }}
-                  />
-                </div>
-              </div>
+              )}
             </div>
 
             {/* 1-Click Upgrade to Semester Pro CTA Button */}
@@ -511,8 +522,8 @@ export function AuthDialog() {
                 <Sparkles size={16} />
                 <span>
                   {isVi
-                    ? "Nâng cấp lên Đấu Sĩ Pro Học Kỳ (299.000đ)"
-                    : "Upgrade to Semester Pro (299,000đ)"}
+                    ? `Nâng cấp lên Đấu Sĩ Pro Học Kỳ (${proPrice.formatted})`
+                    : `Upgrade to Semester Pro (${proPrice.formatted})`}
                 </span>
                 <ArrowRight size={16} />
               </Button>

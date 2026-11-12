@@ -7,7 +7,6 @@ import {
   Sparkles,
   Send,
   BookOpen,
-  HelpCircle,
   RotateCcw,
   AlertCircle,
   Lightbulb,
@@ -15,6 +14,7 @@ import {
   User,
   Bot,
   ArrowLeft,
+  Clock,
 } from "lucide-react";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
 import type { CoachFocus } from "@/lib/schemas/coach";
@@ -22,45 +22,85 @@ import { Button } from "@/components/ui/button";
 import { MathText } from "@/components/ui/math-text";
 import { splitMathBlocks, cleanCoachMathArtifacts } from "@/lib/math/latex";
 import { useLanguage } from "@/lib/i18n/context";
+import { useAuth } from "@/lib/auth/context";
+import { useUserTier, type ClientQuotaSummary } from "@/hooks/use-user-tier";
+import { formatQuotaPercentBadge, formatQuotaResetCountdown } from "@/lib/pricing/tiers";
+
+const QUOTA_EXHAUSTION_CODES = new Set([
+  "COGS_CEILING_EXCEEDED",
+  "WINDOW_QUOTA_EXCEEDED",
+  "QUOTA_EXCEEDED",
+  "DAILY_BURST_EXCEEDED",
+  "DECK_CREDITS_EXCEEDED",
+]);
 
 export function CoachPanel({
   document,
   activeFocus,
+  debriefRunId,
   onClearFocus,
   onSelectCitation,
   onOpenUpload,
+  onOpenPricing,
   onBackToQuiz,
   backToQuizLabel,
 }: {
   document: ParsedDocument | null;
   activeFocus?: CoachFocus | null;
+  debriefRunId?: string | null;
   onClearFocus?: () => void;
   onSelectCitation?: (sourceId: string) => void;
   onOpenUpload?: () => void;
+  onOpenPricing?: (reason?: string) => void;
   onBackToQuiz?: () => void;
   backToQuizLabel?: string;
 }) {
   const { language, t } = useLanguage();
+  const { session } = useAuth();
+  const { tier, quotaState, refreshQuota, updateQuotaFromResponse } = useUserTier();
+  const isVi = language === "vi";
   const returnLabel = backToQuizLabel || t.coach.backToQuiz;
   const [inputVal, setInputVal] = useState("");
+
   const documentRef = useRef(document);
   documentRef.current = document;
   const languageRef = useRef(language);
   languageRef.current = language;
+  const debriefRunIdRef = useRef(debriefRunId);
+  debriefRunIdRef.current = debriefRunId;
+  const sessionTokenRef = useRef(session?.access_token);
+  sessionTokenRef.current = session?.access_token;
+  const tierRef = useRef(tier);
+  tierRef.current = tier;
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/coach",
-        prepareSendMessagesRequest: ({ messages, body }) => ({
-          body: {
-            messages,
-            document: documentRef.current,
-            language: languageRef.current,
-            ...body,
-          },
-        }),
+        prepareSendMessagesRequest: ({ messages, body }) => {
+          const headers: Record<string, string> = {};
+          if (sessionTokenRef.current) {
+            headers["Authorization"] = `Bearer ${sessionTokenRef.current}`;
+          }
+          if (
+            process.env.NODE_ENV !== "production" &&
+            tierRef.current &&
+            tierRef.current !== "contender"
+          ) {
+            headers["x-test-tier"] = tierRef.current;
+          }
+          return {
+            headers,
+            body: {
+              messages,
+              document: documentRef.current,
+              language: languageRef.current,
+              ...(debriefRunIdRef.current ? { runId: debriefRunIdRef.current } : {}),
+              ...body,
+            },
+          };
+        },
       }),
     [],
   );
@@ -70,6 +110,64 @@ export function CoachPanel({
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  const prevStatusRef = useRef(status);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = status;
+    if ((prev === "streaming" || prev === "submitted") && status === "ready") {
+      void refreshQuota();
+    }
+  }, [status, refreshQuota]);
+
+  const parsedError = useMemo(() => {
+    if (!error) return null;
+    try {
+      const parsed = JSON.parse(error.message) as {
+        error?: { code?: string; message?: string; upgradeRequired?: boolean };
+        quota?: ClientQuotaSummary | null;
+      };
+      return {
+        code: parsed?.error?.code,
+        message: parsed?.error?.message || error.message,
+        upgradeRequired: Boolean(parsed?.error?.upgradeRequired),
+        quota: parsed?.quota ?? null,
+      };
+    } catch {
+      const fallbackMessage =
+        error.message === "An error occurred."
+          ? t.coach.connectionError
+          : error.message || t.coach.genericCoachError;
+      return {
+        code: undefined,
+        message: fallbackMessage,
+        upgradeRequired: false,
+        quota: null,
+      };
+    }
+  }, [error, t.coach.connectionError, t.coach.genericCoachError]);
+
+  useEffect(() => {
+    if (!parsedError) return;
+    if (parsedError.quota) {
+      updateQuotaFromResponse(parsedError.quota);
+    } else if (parsedError.code && QUOTA_EXHAUSTION_CODES.has(parsedError.code)) {
+      void refreshQuota();
+    }
+  }, [parsedError, updateQuotaFromResponse, refreshQuota]);
+
+  const isQuotaExhaustedError = Boolean(
+    parsedError &&
+      ((parsedError.code && QUOTA_EXHAUSTION_CODES.has(parsedError.code)) ||
+        parsedError.upgradeRequired ||
+        parsedError.quota?.mode === "cached_only" ||
+        parsedError.quota?.mode === "halted" ||
+        parsedError.quota?.remainingPct === 0),
+  );
+  const activeErrorQuota = parsedError?.quota ?? quotaState;
+  const errorResetCountdown = isQuotaExhaustedError
+    ? formatQuotaResetCountdown(activeErrorQuota?.resetsAt, isVi)
+    : null;
 
   // Auto scroll to latest message
   useEffect(() => {
@@ -91,6 +189,7 @@ export function CoachPanel({
         body: {
           document,
           language: languageRef.current || language,
+          ...(debriefRunId ? { runId: debriefRunId } : {}),
         },
       },
     );
@@ -151,18 +250,34 @@ export function CoachPanel({
             </div>
           </div>
 
-          {onBackToQuiz && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={onBackToQuiz}
-              className="coach-return-btn inline-flex items-center gap-1.5 font-semibold text-orange-700 bg-orange-50 border-orange-200 hover:bg-orange-100 hover:text-orange-800 transition-colors shadow-xs"
-            >
-              <ArrowLeft size={15} />
-              <span>{returnLabel}</span>
-            </Button>
-          )}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {quotaState && (
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
+                  quotaState.remainingPct <= 10
+                    ? "bg-red-50 border-red-200 text-red-700"
+                    : quotaState.remainingPct <= 30
+                      ? "bg-amber-50 border-amber-200 text-amber-800"
+                      : "bg-emerald-50 border-emerald-200 text-emerald-800"
+                }`}
+              >
+                <Sparkles size={12} />
+                <span>{formatQuotaPercentBadge(quotaState.remainingPct, isVi)}</span>
+              </span>
+            )}
+            {onBackToQuiz && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onBackToQuiz}
+                className="coach-return-btn inline-flex items-center gap-1.5 font-semibold text-orange-700 bg-orange-50 border-orange-200 hover:bg-orange-100 hover:text-orange-800 transition-colors shadow-xs"
+              >
+                <ArrowLeft size={15} />
+                <span>{returnLabel}</span>
+              </Button>
+            )}
+          </div>
         </div>
 
         {activeFocus && (
@@ -302,22 +417,32 @@ export function CoachPanel({
           </div>
         )}
 
-        {error && (
+        {parsedError && (
           <div className="upload-error-box mt-3" role="alert">
-            <AlertCircle size={16} />
-            <span>
-              {(() => {
-                try {
-                  const parsed = JSON.parse(error.message);
-                  return parsed.error?.message || error.message;
-                } catch {
-                  if (error.message === "An error occurred.") {
-                    return t.coach.connectionError;
-                  }
-                  return error.message || t.coach.genericCoachError;
-                }
-              })()}
-            </span>
+            <AlertCircle size={16} className="shrink-0 mt-0.5" />
+            <div className="flex-1 space-y-2">
+              <p>{parsedError.message}</p>
+              {isQuotaExhaustedError && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {errorResetCountdown && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-100/90 border border-amber-200 text-amber-900 text-xs font-medium">
+                      <Clock size={12} />
+                      <span>{errorResetCountdown}</span>
+                    </span>
+                  )}
+                  {onOpenPricing && (
+                    <Button
+                      size="sm"
+                      className="btn-primary text-xs"
+                      onClick={() => onOpenPricing(parsedError.message)}
+                    >
+                      <Sparkles size={13} />
+                      <span>{isVi ? "Nâng cấp gói" : "Upgrade Plan"}</span>
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

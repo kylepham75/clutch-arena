@@ -12,6 +12,7 @@ import { readMultiUpload } from "./read-multi-upload";
 import { REQUEST_TIMEOUT_MS } from "./limits";
 import { isAllowedOrigin } from "@/lib/utils";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { getAuthoritativeBillingRegion } from "@/lib/pricing/region";
 import {
   checkRateLimit,
   getClientIp,
@@ -19,13 +20,17 @@ import {
   getSharedDeckCache,
   setSharedDeckCache,
   sampleQuestionsFromCachedPool,
+  getRollingQuotaSnapshot,
   checkAndReserveDeckQuota,
   recordDeckGenerationCogs,
   rollbackDeckQuotaReservation,
+  toClientQuota,
+  type ClientQuotaSummary,
 } from "@/lib/rate-limit";
+import type { BillingRegion } from "@/lib/pricing/tiers";
 import type { GenerationResult } from "@/lib/schemas/ingestion";
 
-export const MULTI_SHARED_CACHE_PIPELINE_VERSION = "v1";
+export const MULTI_SHARED_CACHE_PIPELINE_VERSION = "v2";
 export const SHARED_CACHE_PIPELINE_VERSION = MULTI_SHARED_CACHE_PIPELINE_VERSION;
 
 function stripDistractorRationale<T extends Record<string, any>>(q: T): T {
@@ -88,15 +93,15 @@ function isDegradedCachedDeck(cachedDeck: any, requestedCount: number): boolean 
 function getQuotaExceededMessage(reason?: string): string {
   switch (reason) {
     case "DAILY_BURST_EXCEEDED":
-      return "Daily deck generation burst limit reached. Please try again tomorrow or study from your unlocked decks.";
+      return "Rolling AI quota burst limit reached. Wait for your rolling window to refresh or study cached class decks (0% quota used).";
     case "DECK_CREDITS_EXCEEDED":
-      return "You have used all new deck credits for your current plan. Upgrade your plan to unlock more decks.";
     case "COGS_CEILING_EXCEEDED":
-      return "Subscription deck generation budget reached for this period. Cached class decks remain free and accessible.";
+    case "QUOTA_EXCEEDED":
+      return "Your rolling AI quota is at 0% remaining for this window. Shared cached decks remain available at 0% quota cost, or wait for your quota reset or upgrade your plan.";
     case "REGENERATION_LIMIT_EXCEEDED":
       return "Maximum free regenerations reached for this document.";
     default:
-      return "Deck generation quota exceeded. Please try again later or upgrade your plan.";
+      return "Your rolling AI quota is currently depleted (0% remaining). Shared cached decks remain available at 0% quota cost, or wait for your quota reset or upgrade your plan.";
   }
 }
 
@@ -111,6 +116,7 @@ export function createMultiIngestionHandler(
     getDeckCache?: typeof getSharedDeckCache;
     setDeckCache?: typeof setSharedDeckCache;
     rollbackQuota?: typeof rollbackDeckQuotaReservation;
+    parseMultiDocs?: typeof parseMultiDocuments;
   } = {},
 ) {
   const generate = dependencies.generate ?? generateQuestions;
@@ -126,6 +132,7 @@ export function createMultiIngestionHandler(
   const getDeckCache = dependencies.getDeckCache ?? getSharedDeckCache;
   const setDeckCache = dependencies.setDeckCache ?? setSharedDeckCache;
   const rollbackQuota = dependencies.rollbackQuota ?? rollbackDeckQuotaReservation;
+  const parseMultiDocs = dependencies.parseMultiDocs ?? parseMultiDocuments;
   let active = 0;
 
   return async function POST(request: Request) {
@@ -136,7 +143,9 @@ export function createMultiIngestionHandler(
     let reservedContentHash: string | null = null;
     let reservedCost = 0.02;
     let reservedIsRegeneration = false;
+    let reservedBillingRegion: BillingRegion = "VN";
     let useCheaperGenerator = false;
+    let clientQuota: ClientQuotaSummary | undefined;
     const json = (body: unknown, status = 200) =>
       Response.json(body, {
         status,
@@ -183,12 +192,22 @@ export function createMultiIngestionHandler(
       const auth = await verifyAuth(request);
       const { files, options } = await readMultiUpload(request, signal);
       const clientIp = getClientIp(request);
+      const billingRegion = getAuthoritativeBillingRegion(request);
+      reservedBillingRegion = billingRegion;
       const rateLimitKey = auth.authenticated ? `user:${auth.user.id}` : `ip:${clientIp}`;
       const isPaid =
         auth.tier === "cram_pass" ||
         auth.tier === "pro_monthly" ||
         auth.tier === "pro" ||
         auth.tier === "tutor";
+
+      const isQuotaTestBypass =
+        process.env.NODE_ENV === "test" &&
+        dependencies.quotaReservation === undefined &&
+        dependencies.getDeckCache === undefined &&
+        dependencies.setDeckCache === undefined &&
+        dependencies.recordCogs === undefined &&
+        dependencies.rollbackQuota === undefined;
 
       const enforceTier = !(
         process.env.NODE_ENV === "test" && dependencies.verifyAuth === undefined
@@ -219,7 +238,8 @@ export function createMultiIngestionHandler(
               requestId,
               error: {
                 code: "RATE_LIMIT_EXCEEDED",
-                message: `Daily upload limit reached (max ${rateResult.limit} per day). Try again tomorrow.`,
+                message:
+                  "Too many upload requests in a short burst. Please wait a moment and try again.",
               },
             },
             429,
@@ -231,7 +251,37 @@ export function createMultiIngestionHandler(
         checkConfiguration();
       }
 
-      const { compositeDocument, documents } = await parseMultiDocuments(files, signal);
+      let parseMultiDocOptions: Parameters<typeof parseMultiDocs>[2];
+      if (options.operation === "preview") {
+        parseMultiDocOptions = {
+          parsePdfOptions: {
+            maxAutoOcrBudgetUsd: 0,
+          },
+        };
+      } else if (options.operation === "generate" && !isQuotaTestBypass) {
+        try {
+          const preSnapshot = await getRollingQuotaSnapshot(
+            rateLimitKey,
+            auth.tier,
+            billingRegion,
+          );
+          if (preSnapshot && !preSnapshot.allowVisionOcr) {
+            parseMultiDocOptions = {
+              parsePdfOptions: {
+                maxAutoOcrBudgetUsd: 0,
+              },
+            };
+          }
+        } catch {
+          // Ignore if rolling quota snapshot cannot be resolved in mocked tests
+        }
+      }
+
+      const { compositeDocument, documents } = await parseMultiDocs(
+        files,
+        signal,
+        parseMultiDocOptions,
+      );
 
       if (options.operation === "preview") {
         return json({
@@ -272,14 +322,6 @@ export function createMultiIngestionHandler(
         ? createHash("sha256").update(normalizedFocus).digest("hex").slice(0, 16)
         : "";
 
-      const isQuotaTestBypass =
-        process.env.NODE_ENV === "test" &&
-        dependencies.quotaReservation === undefined &&
-        dependencies.getDeckCache === undefined &&
-        dependencies.setDeckCache === undefined &&
-        dependencies.recordCogs === undefined &&
-        dependencies.rollbackQuota === undefined;
-
       const reservedCostUsd =
         auth.tier === "guest" || auth.tier === "contender" ? 0.02 : 0.035;
 
@@ -312,8 +354,11 @@ export function createMultiIngestionHandler(
               ...cacheLookupKey,
               estimatedCostUsd: reservedCostUsd,
               allowHaikuOverflow: isPaid,
+              actionKind: "deck",
+              region: billingRegion,
             },
           );
+          clientQuota = quotaResult?.quota ? toClientQuota(quotaResult.quota) : undefined;
 
           if (!quotaResult.allowed) {
             return json(
@@ -324,6 +369,7 @@ export function createMultiIngestionHandler(
                   code: quotaResult.reason ?? "QUOTA_EXCEEDED",
                   message: getQuotaExceededMessage(quotaResult.reason),
                 },
+                ...(clientQuota ? { quota: clientQuota } : {}),
               },
               429,
             );
@@ -338,10 +384,13 @@ export function createMultiIngestionHandler(
             reservedActor = rateLimitKey;
             reservedTier = auth.tier;
             reservedContentHash = contentHash;
-            reservedCost = quotaResult.isHaikuOverflow
-              ? Math.min(reservedCostUsd, 0.028)
-              : reservedCostUsd;
+            reservedCost =
+              quotaResult.reservedCostUsd ??
+              (quotaResult.isHaikuOverflow
+                ? Math.min(reservedCostUsd, 0.028)
+                : reservedCostUsd);
             reservedIsRegeneration = Boolean(quotaResult.isRegeneration);
+            reservedBillingRegion = billingRegion;
           }
 
           if (!cachedDeck && quotaResult.cachedDeck) {
@@ -452,6 +501,21 @@ export function createMultiIngestionHandler(
             },
           };
 
+          if (!clientQuota && !isQuotaTestBypass) {
+            try {
+              const snapshot = await getRollingQuotaSnapshot(
+                rateLimitKey,
+                auth.tier,
+                billingRegion,
+              );
+              if (snapshot) {
+                clientQuota = toClientQuota(snapshot);
+              }
+            } catch {
+              // Safely ignore if quota snapshot is unavailable in partial mocks
+            }
+          }
+
           return json({
             ok: true,
             requestId,
@@ -462,6 +526,7 @@ export function createMultiIngestionHandler(
             documents,
             cached: true,
             ...(sanitizedStudyMetadata ? { studyMetadata: sanitizedStudyMetadata } : {}),
+            ...(clientQuota ? { quota: clientQuota } : {}),
             ...cachedResult,
           });
         }
@@ -501,7 +566,16 @@ export function createMultiIngestionHandler(
               : reservedCost;
         const actualCostUsd = Number((tokenCostUsd + visionCostUsd).toFixed(6));
 
-        await recordCogs(rateLimitKey, auth.tier, actualCostUsd, reservedCost);
+        const cogsRecord = await recordCogs(
+          rateLimitKey,
+          auth.tier,
+          actualCostUsd,
+          reservedCost,
+          billingRegion,
+        );
+        if (cogsRecord?.quota) {
+          clientQuota = toClientQuota(cogsRecord.quota);
+        }
         quotaReserved = false;
 
         const questionsToStore = result.pack.questions.map((q) => {
@@ -546,6 +620,7 @@ export function createMultiIngestionHandler(
         tier: auth.tier,
         document: compositeDocument,
         documents,
+        ...(clientQuota ? { quota: clientQuota } : {}),
         ...result,
       });
     } catch (error) {
@@ -557,6 +632,7 @@ export function createMultiIngestionHandler(
               reservedTier,
               reservedContentHash,
               reservedCost,
+              reservedBillingRegion,
               reservedIsRegeneration,
             );
           } else {
@@ -565,6 +641,7 @@ export function createMultiIngestionHandler(
               reservedTier,
               reservedContentHash,
               reservedCost,
+              reservedBillingRegion,
             );
           }
         } catch (rollbackError) {

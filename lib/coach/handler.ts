@@ -1,7 +1,7 @@
 import "server-only";
 import { Buffer } from "node:buffer";
 import { streamText, APICallError } from "ai";
-import { getCoachModel } from "@/lib/ai/provider";
+import { extractOpenRouterProvenance, getCoachModel } from "@/lib/ai/provider";
 import {
   coachRequestSchema,
   MAX_COACH_BODY_BYTES,
@@ -19,11 +19,15 @@ import { IngestionError } from "@/lib/ingestion/errors";
 import { isAllowedOrigin } from "@/lib/utils";
 import { budgetSourceBlocks } from "@/lib/ai/budget-sources";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { getAuthoritativeBillingRegion } from "@/lib/pricing/region";
 import {
+  checkAndReserveDeckQuota,
   checkRateLimit,
   getClientIp,
-  getUserQuotaLedger,
   recordDeckGenerationCogs,
+  rollbackDeckQuotaReservation,
+  toClientQuota,
+  type getUserQuotaLedger,
 } from "@/lib/rate-limit";
 
 const COACH_STOP_WORDS = new Set([
@@ -356,19 +360,43 @@ export async function readBoundedJson(
   }
 }
 
+export function countPriorDebriefAssistantReplies(
+  messages: CoachRequest["messages"],
+): number | null {
+  const firstDebriefIdx = messages.findIndex(
+    (m) => m.metadata?.focus?.type === "debrief",
+  );
+  if (firstDebriefIdx === -1) {
+    return null;
+  }
+  let assistantReplies = 0;
+  for (let i = firstDebriefIdx; i < messages.length; i++) {
+    if (messages[i].role === "assistant") {
+      assistantReplies++;
+    }
+  }
+  return assistantReplies;
+}
+
+export type CoachHandlerDeps = {
+  getModel?: (tier?: string) => ReturnType<typeof getCoachModel>;
+  rateLimiter?: typeof checkRateLimit;
+  verifyAuth?: typeof verifyAuthToken;
+  quotaReservation?: typeof checkAndReserveDeckQuota;
+  rollbackQuota?: typeof rollbackDeckQuotaReservation;
+  recordCogs?: typeof recordDeckGenerationCogs;
+  /** @deprecated Legacy cycle-ceiling check dependency; kept for caller compatibility. */
+  getUserLedger?: typeof getUserQuotaLedger;
+};
+
 export function createCoachHandler(
-  dependencies: {
-    getModel?: (tier?: string) => ReturnType<typeof getCoachModel>;
-    rateLimiter?: typeof checkRateLimit;
-    verifyAuth?: typeof verifyAuthToken;
-    getUserLedger?: typeof getUserQuotaLedger;
-    recordCogs?: typeof recordDeckGenerationCogs;
-  } = {},
+  dependencies: CoachHandlerDeps = {},
 ) {
   const getModel = dependencies.getModel ?? getCoachModel;
   const rateLimiter = dependencies.rateLimiter ?? checkRateLimit;
   const verifyAuth = dependencies.verifyAuth ?? verifyAuthToken;
-  const getUserLedger = dependencies.getUserLedger ?? getUserQuotaLedger;
+  const quotaReservation = dependencies.quotaReservation ?? checkAndReserveDeckQuota;
+  const rollbackQuota = dependencies.rollbackQuota ?? rollbackDeckQuotaReservation;
   const recordCogs = dependencies.recordCogs ?? recordDeckGenerationCogs;
 
   return async function POST(request: Request) {
@@ -433,25 +461,8 @@ export function createCoachHandler(
       );
     }
 
-    const isLedgerBypass = process.env.NODE_ENV === "test" && dependencies.getUserLedger === undefined;
-    if (!isLedgerBypass) {
-      const ledger = await getUserLedger(rateLimitKey, auth.tier);
-      if (ledger.cogsSpentUsd + ledger.cogsReservedUsd >= ledger.cogsCeilingUsd) {
-        return Response.json(
-          {
-            ok: false,
-            error: {
-              code: "COGS_CEILING_EXCEEDED",
-              message:
-                "Monthly AI budget reached for your plan. Please upgrade or wait for the next billing cycle.",
-            },
-          },
-          { status: 429, headers: { "Cache-Control": "no-store" } },
-        );
-      }
-    }
-
-    const { messages, document, language } = parsed.data;
+    const billingRegion = getAuthoritativeBillingRegion(request);
+    const { messages, document, language, runId } = parsed.data;
 
     let model;
     try {
@@ -478,6 +489,64 @@ export function createCoachHandler(
         { status: 503, headers: { "Cache-Control": "no-store" } },
       );
     }
+
+    const isQuotaBypass =
+      process.env.NODE_ENV === "test" &&
+      dependencies.quotaReservation === undefined &&
+      dependencies.getUserLedger === undefined;
+    let reservedCostUsd = 0.004;
+    let quotaReserved = false;
+    let quotaSettled = false;
+    let quotaRolledBack = false;
+
+    if (!isQuotaBypass) {
+      const quotaResult = await quotaReservation(
+        rateLimitKey,
+        auth.tier,
+        `coach:${runId || "chat"}`,
+        {
+          actionKind: "coach",
+          estimatedCostUsd: reservedCostUsd,
+          region: billingRegion,
+        },
+      );
+      if (!quotaResult.allowed) {
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: quotaResult.reason ?? "COGS_CEILING_EXCEEDED",
+              message:
+                "AI quota depleted for this window. Cached decks remain free (0% quota) until your quota resets.",
+              upgradeRequired: true,
+            },
+            ...(quotaResult.quota ? { quota: toClientQuota(quotaResult.quota) } : {}),
+          },
+          { status: 429, headers: { "Cache-Control": "no-store" } },
+        );
+      }
+      quotaReserved = Boolean(quotaResult.reserved ?? true);
+      if (typeof quotaResult.reservedCostUsd === "number") {
+        reservedCostUsd = quotaResult.reservedCostUsd;
+      }
+    }
+
+    const rollbackReservedQuota = async () => {
+      if (quotaReserved && !quotaSettled && !quotaRolledBack) {
+        quotaRolledBack = true;
+        try {
+          await rollbackQuota({
+            userId: rateLimitKey,
+            tier: auth.tier,
+            actionKind: "coach",
+            reservedCostUsd,
+            region: billingRegion,
+          });
+        } catch (rollbackErr) {
+          console.error("[Coach] Failed to rollback quota reservation:", rollbackErr);
+        }
+      }
+    };
 
     try {
       const recentMessages = messages.slice(-MAX_COACH_HISTORY);
@@ -523,17 +592,32 @@ export function createCoachHandler(
             "[Coach Stream Error]",
             event.error instanceof Error ? event.error.message : event.error,
           );
+          void rollbackReservedQuota();
         },
         onFinish: async (event) => {
+          if (isQuotaBypass && dependencies.recordCogs === undefined) {
+            return;
+          }
+          const provenance = extractOpenRouterProvenance(event);
           const totalTokens =
             event.usage?.totalTokens ??
             ((event.usage?.inputTokens ?? 0) + (event.usage?.outputTokens ?? 0));
-          const costUsd = Math.max(
-            0.000001,
-            Number(((totalTokens / 1_000_000) * 0.5).toFixed(6)),
-          );
+          const costUsd =
+            provenance.costUsd > 0
+              ? provenance.costUsd
+              : Math.max(
+                  0.000001,
+                  Number(((totalTokens / 1_000_000) * 0.5).toFixed(6)),
+                );
           try {
-            await recordCogs(rateLimitKey, auth.tier, costUsd, 0);
+            await recordCogs(
+              rateLimitKey,
+              auth.tier,
+              costUsd,
+              quotaReserved ? reservedCostUsd : 0,
+              billingRegion,
+            );
+            quotaSettled = true;
           } catch (cogsErr) {
             console.error("[Coach] Failed to record COGS:", cogsErr);
           }
@@ -547,6 +631,7 @@ export function createCoachHandler(
         onError: (err: unknown) => sanitizeCoachStreamError(err),
       });
     } catch (error) {
+      await rollbackReservedQuota();
       if (request.signal.aborted) {
         return Response.json(
           {

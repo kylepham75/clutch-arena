@@ -1,5 +1,6 @@
 import "server-only";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
+import { normalizeTier } from "@/lib/pricing/tiers";
 import type { User } from "@supabase/supabase-js";
 
 export interface ProVerificationResult {
@@ -12,19 +13,28 @@ export interface ProVerificationResult {
 
 /**
  * Checks if a given tier identifier is eligible for Clutch Notes AI.
- * Authorized tiers: Cram Pass ("cram_pass"), Pro ("pro", "pro_monthly"), Tutor ("tutor").
+ * Under the unified Antigravity-style rolling quota, all signed-in tiers
+ * (Free Contender inside 3d rolling % quota + Paid Cram Pass / Pro / Tutor) are authorized.
+ * Anonymous "guest" actors remain blocked until signed in.
  */
 export function isAuthorizedForNotes(tierString?: string | null): boolean {
   if (!tierString) return false;
   const t = tierString.toLowerCase().trim();
   return (
+    t === "contender" ||
+    t === "free" ||
     t === "cram_pass" ||
     t === "crampass" ||
     t === "cram-pass" ||
     t === "pro" ||
     t === "pro_monthly" ||
     t === "pro-monthly" ||
-    t === "tutor"
+    t === "pro_semester" ||
+    t === "pro-semester" ||
+    t === "semester" ||
+    t === "tutor" ||
+    t === "tutor_guild" ||
+    t === "tutor-guild"
   );
 }
 
@@ -42,33 +52,27 @@ export function isTestTierAllowed(): boolean {
 }
 
 /**
- * Validates that an incoming request is from an authenticated user
- * with an active paid subscription (Cram Pass, Pro, or Tutor).
+ * Validates that an incoming request is from an authenticated user (Contender or Paid tier)
+ * permitted to run Clutch Notes synthesis inside their unified rolling % quota.
  */
-export async function verifyProAccess(request: Request): Promise<ProVerificationResult> {
+export async function verifyNotesAccess(request: Request): Promise<ProVerificationResult> {
   const testTierAllowed = isTestTierAllowed();
   const testTierHeader = testTierAllowed ? request.headers.get("x-test-tier") : null;
 
-  // 1. If explicit client/test tier header is passed (early-access testing & client tier state in dev/test)
+  // 1. If explicit client/test tier header is passed (dev/test identity)
   if (testTierHeader) {
     const isAuthTier = isAuthorizedForNotes(testTierHeader);
     if (!isAuthTier) {
       return {
         authorized: false,
         tier: testTierHeader,
-        reason: "PRO_REQUIRED",
-        message:
-          "Clutch Notes AI is exclusively for 7-Day Cram Pass, Pro Tier members, and Tutors. Upgrade to unlock slide deck conversions.",
+        reason: "UNAUTHENTICATED",
+        message: "Authentication required. Please sign in to access Clutch Notes AI.",
       };
     }
 
-    const normalizedTier = testTierHeader.toLowerCase().includes("cram")
-      ? "cram_pass"
-      : testTierHeader.toLowerCase() === "tutor"
-        ? "tutor"
-        : "pro";
+    const normalizedTier = normalizeTier(testTierHeader);
 
-    // Attach real user if authenticated, or early-access test identity
     const auth = await verifyAuthToken(request);
     const user = auth.authenticated
       ? auth.user
@@ -102,9 +106,8 @@ export async function verifyProAccess(request: Request): Promise<ProVerification
       authorized: false,
       user: auth.user,
       tier,
-      reason: "PRO_REQUIRED",
-      message:
-        "Clutch Notes AI is exclusively for 7-Day Cram Pass, Pro Tier members, and Tutors. Upgrade to unlock slide deck conversions.",
+      reason: "UNAUTHENTICATED",
+      message: "Authentication required. Please sign in to access Clutch Notes AI.",
     };
   }
 
@@ -114,3 +117,5 @@ export async function verifyProAccess(request: Request): Promise<ProVerification
     tier,
   };
 }
+
+export const verifyProAccess = verifyNotesAccess;

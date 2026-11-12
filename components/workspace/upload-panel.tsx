@@ -15,6 +15,8 @@ import {
   Users,
   Zap,
   Layers,
+  Clock,
+  Sparkles,
 } from "lucide-react";
 import type {
   IngestionOptions,
@@ -26,10 +28,19 @@ import type { StudyPack } from "@/lib/schemas/question";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/lib/i18n/context";
 import { useAuth } from "@/lib/auth/context";
-import { useUserTier } from "@/hooks/use-user-tier";
+import { useUserTier, type ClientQuotaSummary } from "@/hooks/use-user-tier";
+import { formatQuotaPercentBadge, formatQuotaResetCountdown } from "@/lib/pricing/tiers";
 import { PricingModal } from "@/components/pricing/pricing-modal";
 import { formatRejectionError } from "@/lib/utils/format-upload-error";
 import { optimizeUploadFileIfNeeded } from "@/lib/ingestion/client-compress";
+
+const QUOTA_EXHAUSTION_CODES = new Set([
+  "COGS_CEILING_EXCEEDED",
+  "WINDOW_QUOTA_EXCEEDED",
+  "QUOTA_EXCEEDED",
+  "DAILY_BURST_EXCEEDED",
+  "DECK_CREDITS_EXCEEDED",
+]);
 
 export interface CoverageSummary {
   chapters: Array<{ label: string; count: number }>;
@@ -175,8 +186,9 @@ export function UploadPanel({
   onSourceFileChanged?: (file: File | null) => void;
 }) {
   const { language: siteLang, t } = useLanguage();
-  const { session, user, canGenerate, openAuthModal, incrementGuestUsage } = useAuth();
-  const { tier, limits } = useUserTier();
+  const { session, user, openAuthModal } = useAuth();
+  const { tier, limits, quotaState, refreshQuota, updateQuotaFromResponse } = useUserTier();
+  const isVi = siteLang === "vi";
   const [pricingOpen, setPricingOpen] = useState(false);
   const [pricingReason, setPricingReason] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
@@ -201,7 +213,11 @@ export function UploadPanel({
   const [focus, setFocus] = useState("");
   const [loading, setLoading] = useState(false);
   const [progressMsg, setProgressMsg] = useState("");
-  const [error, setError] = useState<{ code: string; message: string } | null>(null);
+  const [error, setError] = useState<{
+    code: string;
+    message: string;
+    quota?: ClientQuotaSummary | null;
+  } | null>(null);
   const [previewResult, setPreviewResult] = useState<ParsedDocument | null>(null);
   const [generatedResult, setGeneratedResult] = useState<GenerationResult | null>(null);
   const coverage = useMemo(() => {
@@ -300,11 +316,12 @@ export function UploadPanel({
 
     const op = overrideOperation || operation;
 
-    if (op === "generate" && !canGenerate) {
+    if (!user && op === "generate" && quotaState?.remainingPct === 0) {
       openAuthModal("guest_limit_reached");
       setError({
         code: "AUTH_REQUIRED",
         message: t.upload.guestLimitError,
+        quota: quotaState,
       });
       return;
     }
@@ -420,7 +437,26 @@ export function UploadPanel({
         // Non-JSON response (e.g. Vercel 413 or 504 proxy page)
       }
 
+      if (data?.quota) {
+        updateQuotaFromResponse(data.quota as ClientQuotaSummary);
+      } else if (op === "generate" && (res.ok || res.status === 429)) {
+        void refreshQuota();
+      }
+
       if (!res.ok || !data || !data.ok) {
+        if (!user && op === "generate" && res.status === 429) {
+          if (data?.quota) {
+            updateQuotaFromResponse(data.quota as ClientQuotaSummary);
+          }
+          openAuthModal("guest_limit_reached");
+          setError({
+            code: "AUTH_REQUIRED",
+            message: data?.error?.message || t.upload.guestLimitError,
+            quota: (data?.quota as ClientQuotaSummary | undefined) ?? null,
+          });
+          return;
+        }
+
         if (res.status === 413) {
           throw new Error(
             siteLang === "vi"
@@ -437,6 +473,7 @@ export function UploadPanel({
         }
         const customErr: any = new Error(data?.error?.message || t.upload.genericIngestError);
         customErr.code = data?.error?.code;
+        customErr.quota = (data?.quota as ClientQuotaSummary | undefined) ?? null;
         throw customErr;
       }
 
@@ -444,9 +481,6 @@ export function UploadPanel({
         setPreviewResult(data.document);
         onDocumentPreviewed(data.document);
       } else {
-        if (!user) {
-          incrementGuestUsage();
-        }
         setGeneratedResult(data);
         onPackGenerated(data.pack, data.document, data.references);
       }
@@ -464,6 +498,7 @@ export function UploadPanel({
         setError({
           code: err.code || "INGEST_ERROR",
           message: err.message || t.upload.genericIngestError,
+          quota: err.quota ?? null,
         });
       }
     } finally {
@@ -492,9 +527,21 @@ export function UploadPanel({
             setPricingReason(null);
             setPricingOpen(true);
           }}
-          className="text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-700 flex items-center gap-1 cursor-pointer"
+          className={`text-xs font-semibold px-2.5 py-1 rounded-full border flex items-center gap-1.5 cursor-pointer ${
+            quotaState && quotaState.remainingPct <= 10
+              ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300 border-red-300 dark:border-red-700"
+              : quotaState && quotaState.remainingPct <= 30
+                ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-amber-300 dark:border-amber-700"
+                : "bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700"
+          }`}
         >
-          <span>{tier === "contender" ? t.upload.contenderBadge : `${tier.toUpperCase()}: ${t.upload.paidBadgeSuffix}`}</span>
+          <span>
+            {quotaState
+              ? `${tier === "contender" ? "Contender" : tier.toUpperCase()} · ${formatQuotaPercentBadge(quotaState.remainingPct, isVi)} (${limits.maxFilesPerUpload} ${isVi ? "tệp" : limits.maxFilesPerUpload === 1 ? "file" : "files"})`
+              : tier === "contender"
+                ? t.upload.contenderBadge
+                : `${tier.toUpperCase()}: ${t.upload.paidBadgeSuffix}`}
+          </span>
         </button>
       </div>
 
@@ -698,49 +745,86 @@ export function UploadPanel({
         )}
       </div>
 
-      {error && (
-        <div className="upload-error-box" role="alert">
-          <AlertCircle size={18} />
-          <div>
-            <strong>{t.upload.errorPrefix} ({error.code}):</strong>
-            <p>{error.message}</p>
-            {error.code === "TIER_UPGRADE_REQUIRED" && (
-              <Button
-                size="sm"
-                variant="default"
-                className="mt-2 text-xs"
-                onClick={() => {
-                  setPricingReason(error.message);
-                  setPricingOpen(true);
-                }}
-              >
-                {siteLang === "vi" ? "Mua Vé Cram Pass / Nâng Cấp Pro" : "Get Cram Pass or Upgrade to Pro"}
-              </Button>
-            )}
-            {error.code === "NO_SUPPORTED_QUESTIONS" && mode === "exact" && (
-              <Button
-                size="sm"
-                variant="default"
-                className="mt-2 text-xs"
-                onClick={() => {
-                  setMode("variants");
-                  setError(null);
-                  void handleSubmit("generate");
-                }}
-              >
-                {siteLang === "vi"
-                  ? "Chuyển sang 'Biến thể khái niệm' & Thử lại ngay"
-                  : "Switch to 'Concept variants' & Retry now"}
-              </Button>
-            )}
-            {error.code === "AI_NOT_CONFIGURED" && (
-              <small className="block mt-1 text-xs">
-                {t.upload.apiTip}
-              </small>
-            )}
+      {error && (() => {
+        const isQuotaExhausted =
+          error.code !== "REGENERATION_LIMIT_EXCEEDED" &&
+          (QUOTA_EXHAUSTION_CODES.has(error.code) ||
+            error.quota?.mode === "cached_only" ||
+            error.quota?.mode === "halted" ||
+            error.quota?.remainingPct === 0);
+        const activeErrorQuota = error.quota ?? quotaState;
+        const resetCountdown = isQuotaExhausted
+          ? formatQuotaResetCountdown(activeErrorQuota?.resetsAt, isVi)
+          : null;
+
+        return (
+          <div className="upload-error-box" role="alert">
+            <AlertCircle size={18} />
+            <div>
+              <strong>{t.upload.errorPrefix} ({error.code}):</strong>
+              <p>{error.message}</p>
+              {isQuotaExhausted && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {resetCountdown && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200 border border-amber-300 dark:border-amber-700 text-xs font-medium">
+                      <Clock size={12} />
+                      <span>{resetCountdown}</span>
+                    </span>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="default"
+                    className="text-xs"
+                    onClick={() => {
+                      setPricingReason(error.message);
+                      setPricingOpen(true);
+                    }}
+                  >
+                    <Sparkles size={12} />
+                    <span>
+                      {isVi ? "Mua Vé Cram Pass / Nâng Cấp Pro" : "Get Cram Pass or Upgrade to Pro"}
+                    </span>
+                  </Button>
+                </div>
+              )}
+              {error.code === "TIER_UPGRADE_REQUIRED" && (
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="mt-2 text-xs"
+                  onClick={() => {
+                    setPricingReason(error.message);
+                    setPricingOpen(true);
+                  }}
+                >
+                  {isVi ? "Mua Vé Cram Pass / Nâng Cấp Pro" : "Get Cram Pass or Upgrade to Pro"}
+                </Button>
+              )}
+              {error.code === "NO_SUPPORTED_QUESTIONS" && mode === "exact" && (
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="mt-2 text-xs"
+                  onClick={() => {
+                    setMode("variants");
+                    setError(null);
+                    void handleSubmit("generate");
+                  }}
+                >
+                  {isVi
+                    ? "Chuyển sang 'Biến thể khái niệm' & Thử lại ngay"
+                    : "Switch to 'Concept variants' & Retry now"}
+                </Button>
+              )}
+              {error.code === "AI_NOT_CONFIGURED" && (
+                <small className="block mt-1 text-xs">
+                  {t.upload.apiTip}
+                </small>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Actions */}
       <div className="upload-actions">

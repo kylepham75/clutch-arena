@@ -949,6 +949,21 @@ export function buildFormulaInventory(
 
 export const DEFAULT_EXTRACTION_CHUNK_SIZE = 8;
 
+/**
+ * Returns the lowest valid OpenRouter reasoning effort for a model.
+ * Mandatory-reasoning models (e.g. `anthropic/claude-sonnet-5.5`, `claude-opus`, `o1`/`o3`/`o4`)
+ * reject `"none"` with HTTP 400 and require `"low"`, while other models support `"none"`.
+ */
+export function getSafeOpenRouterReasoningEffort(model: unknown): "low" | "none" {
+  const modelId = String(
+    (model as any)?.modelId ?? (model as any)?.id ?? "",
+  ).toLowerCase();
+  if (/claude-sonnet|claude-opus|\bo[134](?:-|$)/.test(modelId)) {
+    return "low";
+  }
+  return "none";
+}
+
 export interface SlideWithNumber {
   slide: number;
   source: SourceBlock;
@@ -1174,7 +1189,7 @@ export async function extractChunkedSlideInventory(options: {
           },
           openrouter: {
             reasoning: {
-              effort: "none",
+              effort: getSafeOpenRouterReasoningEffort(options.model),
             },
           },
         },

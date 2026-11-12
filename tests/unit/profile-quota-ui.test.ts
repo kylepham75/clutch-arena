@@ -2,10 +2,26 @@ import { describe, it, expect } from "vitest";
 import {
   formatPassCountdown,
   computeProfileQuotaSummary,
+  type ClientQuotaSummary,
 } from "@/hooks/use-user-tier";
-import type { UserTier } from "@/lib/pricing/tiers";
+import {
+  formatQuotaPercentBadge,
+  formatQuotaResetCountdown,
+} from "@/lib/pricing/tiers";
 
-describe("Profile Quota & Pass Expiry UI (Stage 3.1)", () => {
+function makeQuota(overrides: Partial<ClientQuotaSummary> = {}): ClientQuotaSummary {
+  return {
+    remainingPct: 100,
+    usedPct: 0,
+    resetsAt: null,
+    windowHours: 24,
+    bottleneckScope: "window",
+    mode: "normal",
+    ...overrides,
+  };
+}
+
+describe("Profile Quota & Pass Expiry UI (Stage 4.1 Rolling % Quota)", () => {
   const BASE_NOW = 1775000000000; // Fixed timestamp for deterministic time calculations
 
   describe("formatPassCountdown", () => {
@@ -27,182 +43,330 @@ describe("Profile Quota & Pass Expiry UI (Stage 3.1)", () => {
     });
 
     it("formats remaining hours when remaining duration is under 24 hours", () => {
-      // 18 hours remaining
       const future18h = new Date(BASE_NOW + 18 * 60 * 60 * 1000).toISOString();
       expect(formatPassCountdown(future18h, false, BASE_NOW)).toBe("18h remaining");
       expect(formatPassCountdown(future18h, true, BASE_NOW)).toBe("Còn 18 giờ");
 
-      // 1 hour remaining
       const future1h = new Date(BASE_NOW + 1 * 60 * 60 * 1000).toISOString();
       expect(formatPassCountdown(future1h, false, BASE_NOW)).toBe("1h remaining");
       expect(formatPassCountdown(future1h, true, BASE_NOW)).toBe("Còn 1 giờ");
     });
 
     it("formats days and hours when duration is 24+ hours with non-zero hours", () => {
-      // 5 days and 14 hours
       const future5d14h = new Date(BASE_NOW + (5 * 24 + 14) * 60 * 60 * 1000).toISOString();
       expect(formatPassCountdown(future5d14h, false, BASE_NOW)).toBe("5d 14h remaining");
       expect(formatPassCountdown(future5d14h, true, BASE_NOW)).toBe("Còn 5 ngày 14 giờ");
     });
 
     it("formats days cleanly when duration is an exact multiple of 24 hours", () => {
-      // Exactly 7 days
       const future7d = new Date(BASE_NOW + 7 * 24 * 60 * 60 * 1000).toISOString();
       expect(formatPassCountdown(future7d, false, BASE_NOW)).toBe("7d remaining");
       expect(formatPassCountdown(future7d, true, BASE_NOW)).toBe("Còn 7 ngày");
 
-      // Exactly 120 days (Semester Pro)
       const future120d = new Date(BASE_NOW + 120 * 24 * 60 * 60 * 1000).toISOString();
       expect(formatPassCountdown(future120d, false, BASE_NOW)).toBe("120d remaining");
       expect(formatPassCountdown(future120d, true, BASE_NOW)).toBe("Còn 120 ngày");
     });
   });
 
-  describe("computeProfileQuotaSummary across all 5 tiers", () => {
-    it("computes correct quota summary for contender (free) tier", () => {
-      const summaryEn = computeProfileQuotaSummary("contender", 0, 0, false);
-      expect(summaryEn.tierLabel).toBe("Contender");
-      expect(summaryEn.deckCreditsTotal).toBe(2);
-      expect(summaryEn.deckCreditsUsed).toBe(0);
-      expect(summaryEn.deckCreditsRemaining).toBe(2);
-      expect(summaryEn.deckQuotaLabel).toBe("2 of 2 Contender decks remaining");
-      expect(summaryEn.noteCreditsTotal).toBe(1);
-      expect(summaryEn.noteCreditsRemaining).toBe(1);
-      expect(summaryEn.noteQuotaLabel).toBe("1 of 1 daily note credits remaining");
-      expect(summaryEn.showUpgradeToSemesterPro).toBe(true);
-      expect(summaryEn.sonnetProDeckCredits).toBe(0);
-      expect(summaryEn.haikuOverflowDeckCredits).toBe(0);
+  describe("formatQuotaPercentBadge & formatQuotaResetCountdown", () => {
+    it("formats clamped 0-100% badges in EN and VI without exposing USD or integer deck counts", () => {
+      expect(formatQuotaPercentBadge(100, false)).toBe("100% AI quota remaining");
+      expect(formatQuotaPercentBadge(100, true)).toBe("Còn 100% hạn mức AI");
 
-      const summaryVi = computeProfileQuotaSummary("contender", 1, 1, true);
-      expect(summaryVi.tierLabel).toBe("Người Thách Đấu");
-      expect(summaryVi.deckCreditsTotal).toBe(2);
-      expect(summaryVi.deckCreditsUsed).toBe(1);
-      expect(summaryVi.deckCreditsRemaining).toBe(1);
-      expect(summaryVi.deckQuotaLabel).toBe("Còn 1 trên 2 bộ đề Người Thách Đấu");
-      expect(summaryVi.noteCreditsTotal).toBe(1);
-      expect(summaryVi.noteCreditsRemaining).toBe(0);
-      expect(summaryVi.noteQuotaLabel).toBe("Còn 0 trên 1 lượt ghi chú hàng ngày");
-      expect(summaryVi.showUpgradeToSemesterPro).toBe(true);
-      expect(summaryVi.sonnetProDeckCredits).toBe(0);
-      expect(summaryVi.haikuOverflowDeckCredits).toBe(0);
+      expect(formatQuotaPercentBadge(72.6, false)).toBe("73% AI quota remaining");
+      expect(formatQuotaPercentBadge(72.6, true)).toBe("Còn 73% hạn mức AI");
+
+      expect(formatQuotaPercentBadge(-15, false)).toBe("0% AI quota remaining");
+      expect(formatQuotaPercentBadge(145, true)).toBe("Còn 100% hạn mức AI");
     });
 
-    it("computes correct quota summary for 7-Day Cram Pass tier", () => {
-      // 2 used out of 5
-      const summaryEn = computeProfileQuotaSummary("cram_pass", 2, 0, false);
-      expect(summaryEn.tierLabel).toBe("7-Day Cram Pass");
-      expect(summaryEn.deckCreditsTotal).toBe(5);
-      expect(summaryEn.deckCreditsUsed).toBe(2);
-      expect(summaryEn.deckCreditsRemaining).toBe(3);
-      expect(summaryEn.deckQuotaLabel).toBe("3 of 5 Cram Pass decks remaining");
-      expect(summaryEn.noteCreditsTotal).toBe(5);
-      expect(summaryEn.noteCreditsRemaining).toBe(5);
-      expect(summaryEn.noteQuotaLabel).toBe("5 of 5 daily note credits remaining");
-      expect(summaryEn.showUpgradeToSemesterPro).toBe(true);
-      expect(summaryEn.sonnetProDeckCredits).toBe(5);
-      expect(summaryEn.haikuOverflowDeckCredits).toBe(10);
+    it("formats reset countdown across minutes, hours, days, and elapsed resets in EN and VI", () => {
+      expect(formatQuotaResetCountdown(null, false, BASE_NOW)).toBeNull();
+      expect(formatQuotaResetCountdown("", true, BASE_NOW)).toBeNull();
+      expect(formatQuotaResetCountdown("not-a-date", false, BASE_NOW)).toBeNull();
 
-      const summaryVi = computeProfileQuotaSummary("cram_pass", 2, 0, true);
-      expect(summaryVi.tierLabel).toBe("Vé Ôn Thi Cấp Tốc (7 Ngày)");
-      expect(summaryVi.deckQuotaLabel).toBe("Còn 3 trên 5 bộ đề Vé Ôn Thi Cấp Tốc");
-      expect(summaryVi.showUpgradeToSemesterPro).toBe(true);
-      expect(summaryVi.sonnetProDeckCredits).toBe(5);
-      expect(summaryVi.haikuOverflowDeckCredits).toBe(10);
-    });
+      const elapsedIso = new Date(BASE_NOW - 1000).toISOString();
+      expect(formatQuotaResetCountdown(elapsedIso, false, BASE_NOW)).toBe("Resetting now");
+      expect(formatQuotaResetCountdown(elapsedIso, true, BASE_NOW)).toBe("Đang làm mới ngay");
 
-    it("computes correct quota summary for Clutch Pro Monthly tier", () => {
-      // 3 used out of 12
-      const summaryEn = computeProfileQuotaSummary("pro_monthly", 3, 2, false);
-      expect(summaryEn.tierLabel).toBe("Clutch Pro (Monthly)");
-      expect(summaryEn.deckCreditsTotal).toBe(12);
-      expect(summaryEn.deckCreditsUsed).toBe(3);
-      expect(summaryEn.deckCreditsRemaining).toBe(9);
-      expect(summaryEn.deckQuotaLabel).toBe("9 of 12 Pro Monthly decks remaining");
-      expect(summaryEn.noteCreditsTotal).toBe(8);
-      expect(summaryEn.noteCreditsRemaining).toBe(6);
-      expect(summaryEn.noteQuotaLabel).toBe("6 of 8 daily note credits remaining");
-      expect(summaryEn.showUpgradeToSemesterPro).toBe(true);
-      expect(summaryEn.sonnetProDeckCredits).toBe(12);
-      expect(summaryEn.haikuOverflowDeckCredits).toBe(20);
+      const in45m = new Date(BASE_NOW + 45 * 60_000).toISOString();
+      expect(formatQuotaResetCountdown(in45m, false, BASE_NOW)).toBe("Resets in 45m");
+      expect(formatQuotaResetCountdown(in45m, true, BASE_NOW)).toBe("Làm mới sau 45 phút");
 
-      const summaryVi = computeProfileQuotaSummary("pro_monthly", 3, 2, true);
-      expect(summaryVi.tierLabel).toBe("Đấu Sĩ Pro (Hàng Tháng)");
-      expect(summaryVi.deckQuotaLabel).toBe("Còn 9 trên 12 bộ đề Đấu Sĩ Pro (Hàng Tháng)");
-      expect(summaryVi.noteQuotaLabel).toBe("Còn 6 trên 8 lượt ghi chú hàng ngày");
-      expect(summaryVi.showUpgradeToSemesterPro).toBe(true);
-      expect(summaryVi.sonnetProDeckCredits).toBe(12);
-      expect(summaryVi.haikuOverflowDeckCredits).toBe(20);
-    });
+      const in5h30m = new Date(BASE_NOW + (5 * 60 + 30) * 60_000).toISOString();
+      expect(formatQuotaResetCountdown(in5h30m, false, BASE_NOW)).toBe("Resets in 5h 30m");
+      expect(formatQuotaResetCountdown(in5h30m, true, BASE_NOW)).toBe("Làm mới sau 5 giờ 30 phút");
 
-    it("computes correct quota summary for Clutch Pro Semester (pro) tier", () => {
-      // 2 used out of 30
-      const summaryEn = computeProfileQuotaSummary("pro", 2, 0, false);
-      expect(summaryEn.tierLabel).toBe("Clutch Pro (Semester)");
-      expect(summaryEn.deckCreditsTotal).toBe(30);
-      expect(summaryEn.deckCreditsUsed).toBe(2);
-      expect(summaryEn.deckCreditsRemaining).toBe(28);
-      expect(summaryEn.deckQuotaLabel).toBe("28 of 30 Semester Pro decks remaining");
-      expect(summaryEn.noteCreditsTotal).toBe(10);
-      expect(summaryEn.noteCreditsRemaining).toBe(10);
-      expect(summaryEn.noteQuotaLabel).toBe("10 of 10 daily note credits remaining");
-      // Already on semester pro: CTA should be hidden
-      expect(summaryEn.showUpgradeToSemesterPro).toBe(false);
-      expect(summaryEn.sonnetProDeckCredits).toBe(30);
-      expect(summaryEn.haikuOverflowDeckCredits).toBe(60);
+      const in4hExact = new Date(BASE_NOW + 4 * 3_600_000).toISOString();
+      expect(formatQuotaResetCountdown(in4hExact, false, BASE_NOW)).toBe("Resets in 4h");
+      expect(formatQuotaResetCountdown(in4hExact, true, BASE_NOW)).toBe("Làm mới sau 4 giờ");
 
-      const summaryVi = computeProfileQuotaSummary("pro", 2, 0, true);
-      expect(summaryVi.tierLabel).toBe("Đấu Sĩ Pro (Học Kỳ)");
-      expect(summaryVi.deckQuotaLabel).toBe("Còn 28 trên 30 bộ đề Đấu Sĩ Pro (Học Kỳ)");
-      expect(summaryVi.showUpgradeToSemesterPro).toBe(false);
-      expect(summaryVi.sonnetProDeckCredits).toBe(30);
-      expect(summaryVi.haikuOverflowDeckCredits).toBe(60);
-    });
+      const in2d6h = new Date(BASE_NOW + (2 * 24 + 6) * 3_600_000).toISOString();
+      expect(formatQuotaResetCountdown(in2d6h, false, BASE_NOW)).toBe("Resets in 2d 6h");
+      expect(formatQuotaResetCountdown(in2d6h, true, BASE_NOW)).toBe("Làm mới sau 2 ngày 6 giờ");
 
-    it("computes correct quota summary for Tutor & Guild tier", () => {
-      // 10 used out of 45
-      const summaryEn = computeProfileQuotaSummary("tutor", 10, 5, false);
-      expect(summaryEn.tierLabel).toBe("Tutor & Guild");
-      expect(summaryEn.deckCreditsTotal).toBe(45);
-      expect(summaryEn.deckCreditsUsed).toBe(10);
-      expect(summaryEn.deckCreditsRemaining).toBe(35);
-      expect(summaryEn.deckQuotaLabel).toBe("35 of 45 Tutor & Guild decks remaining");
-      expect(summaryEn.noteCreditsTotal).toBe(25);
-      expect(summaryEn.noteCreditsRemaining).toBe(20);
-      expect(summaryEn.noteQuotaLabel).toBe("20 of 25 daily note credits remaining");
-      // Higher tier than semester pro: CTA should be hidden
-      expect(summaryEn.showUpgradeToSemesterPro).toBe(false);
-      expect(summaryEn.sonnetProDeckCredits).toBe(45);
-      expect(summaryEn.haikuOverflowDeckCredits).toBe(105);
-
-      const summaryVi = computeProfileQuotaSummary("tutor", 10, 5, true);
-      expect(summaryVi.tierLabel).toBe("Giảng Viên & Nhóm Học");
-      expect(summaryVi.deckQuotaLabel).toBe("Còn 35 trên 45 bộ đề Giảng Viên & Nhóm Học");
-      expect(summaryVi.showUpgradeToSemesterPro).toBe(false);
-      expect(summaryVi.sonnetProDeckCredits).toBe(45);
-      expect(summaryVi.haikuOverflowDeckCredits).toBe(105);
+      const in3dExact = new Date(BASE_NOW + 3 * 86_400_000).toISOString();
+      expect(formatQuotaResetCountdown(in3dExact, false, BASE_NOW)).toBe("Resets in 3d");
+      expect(formatQuotaResetCountdown(in3dExact, true, BASE_NOW)).toBe("Làm mới sau 3 ngày");
     });
   });
 
-  describe("Quota clamping and boundary handling", () => {
-    it("clamps deckCreditsUsed to deckCreditsTotal when library count exceeds the credit limit", () => {
-      const summary = computeProfileQuotaSummary("contender", 999, 0, false);
-      expect(summary.deckCreditsTotal).toBe(2);
-      expect(summary.deckCreditsUsed).toBe(2);
-      expect(summary.deckCreditsRemaining).toBe(0);
-      expect(summary.deckQuotaLabel).toBe("0 of 2 Contender decks remaining");
+  describe("computeProfileQuotaSummary across all 5 tiers", () => {
+    it("computes rolling % quota summary for contender (free, 72h window) tier", () => {
+      const resetIn2d12h = new Date(BASE_NOW + (2 * 24 + 12) * 3_600_000).toISOString();
+      const quota = makeQuota({
+        remainingPct: 65,
+        usedPct: 35,
+        resetsAt: resetIn2d12h,
+        windowHours: 72,
+        bottleneckScope: "window",
+        mode: "normal",
+      });
+
+      const summaryEn = computeProfileQuotaSummary("contender", quota, false, BASE_NOW);
+      expect(summaryEn).toEqual({
+        remainingPct: 65,
+        usedPct: 35,
+        quotaLabel: "65% AI quota remaining",
+        resetCountdown: "Resets in 2d 12h",
+        statusTone: "healthy",
+        isDegraded: false,
+        tierLabel: "Contender",
+        showUpgradeToSemesterPro: true,
+      });
+
+      const summaryVi = computeProfileQuotaSummary("contender", quota, true, BASE_NOW);
+      expect(summaryVi).toEqual({
+        remainingPct: 65,
+        usedPct: 35,
+        quotaLabel: "Còn 65% hạn mức AI",
+        resetCountdown: "Làm mới sau 2 ngày 12 giờ",
+        statusTone: "healthy",
+        isDegraded: false,
+        tierLabel: "Người Thách Đấu",
+        showUpgradeToSemesterPro: true,
+      });
     });
 
-    it("handles negative used counts gracefully by clamping to 0", () => {
-      const summary = computeProfileQuotaSummary("cram_pass", -5, -3, false);
-      expect(summary.deckCreditsUsed).toBe(0);
-      expect(summary.deckCreditsRemaining).toBe(5);
-      expect(summary.noteCreditsRemaining).toBe(5);
+    it("computes rolling % quota summary for 7-Day Cram Pass tier", () => {
+      const resetIn18h = new Date(BASE_NOW + 18 * 3_600_000).toISOString();
+      const quota = makeQuota({
+        remainingPct: 28,
+        usedPct: 72,
+        resetsAt: resetIn18h,
+        windowHours: 24,
+        bottleneckScope: "window",
+        mode: "gentle",
+      });
+
+      const summaryEn = computeProfileQuotaSummary("cram_pass", quota, false, BASE_NOW);
+      expect(summaryEn.tierLabel).toBe("7-Day Cram Pass");
+      expect(summaryEn.remainingPct).toBe(28);
+      expect(summaryEn.usedPct).toBe(72);
+      expect(summaryEn.quotaLabel).toBe("28% AI quota remaining");
+      expect(summaryEn.resetCountdown).toBe("Resets in 18h");
+      expect(summaryEn.statusTone).toBe("caution");
+      expect(summaryEn.isDegraded).toBe(true);
+      expect(summaryEn.showUpgradeToSemesterPro).toBe(true);
+
+      const summaryVi = computeProfileQuotaSummary("cram_pass", quota, true, BASE_NOW);
+      expect(summaryVi.tierLabel).toBe("Vé Ôn Thi Cấp Tốc (7 Ngày)");
+      expect(summaryVi.quotaLabel).toBe("Còn 28% hạn mức AI");
+      expect(summaryVi.resetCountdown).toBe("Làm mới sau 18 giờ");
+      expect(summaryVi.statusTone).toBe("caution");
+      expect(summaryVi.isDegraded).toBe(true);
     });
 
-    it("handles omitted usedNotesTodayCount parameter by defaulting to 0 used", () => {
-      const summary = computeProfileQuotaSummary("pro", 0);
-      expect(summary.noteCreditsTotal).toBe(10);
-      expect(summary.noteCreditsRemaining).toBe(10);
+    it("computes rolling % quota summary for Clutch Pro Monthly tier", () => {
+      const resetIn6h = new Date(BASE_NOW + 6 * 3_600_000).toISOString();
+      const quota = makeQuota({
+        remainingPct: 80,
+        usedPct: 20,
+        resetsAt: resetIn6h,
+        windowHours: 24,
+        bottleneckScope: "window",
+        mode: "normal",
+      });
+
+      const summaryEn = computeProfileQuotaSummary("pro_monthly", quota, false, BASE_NOW);
+      expect(summaryEn.tierLabel).toBe("Clutch Pro (Monthly)");
+      expect(summaryEn.remainingPct).toBe(80);
+      expect(summaryEn.usedPct).toBe(20);
+      expect(summaryEn.quotaLabel).toBe("80% AI quota remaining");
+      expect(summaryEn.statusTone).toBe("healthy");
+      expect(summaryEn.isDegraded).toBe(false);
+      expect(summaryEn.showUpgradeToSemesterPro).toBe(true);
+
+      const summaryVi = computeProfileQuotaSummary("pro_monthly", quota, true, BASE_NOW);
+      expect(summaryVi.tierLabel).toBe("Đấu Sĩ Pro (Hàng Tháng)");
+      expect(summaryVi.quotaLabel).toBe("Còn 80% hạn mức AI");
+      expect(summaryVi.resetCountdown).toBe("Làm mới sau 6 giờ");
+    });
+
+    it("computes rolling % quota summary for Clutch Pro Semester (pro) tier", () => {
+      const resetIn4d = new Date(BASE_NOW + 4 * 86_400_000).toISOString();
+      const quota = makeQuota({
+        remainingPct: 8,
+        usedPct: 92,
+        resetsAt: resetIn4d,
+        windowHours: 168,
+        bottleneckScope: "weekly",
+        mode: "hard",
+      });
+
+      const summaryEn = computeProfileQuotaSummary("pro", quota, false, BASE_NOW);
+      expect(summaryEn.tierLabel).toBe("Clutch Pro (Semester)");
+      expect(summaryEn.remainingPct).toBe(8);
+      expect(summaryEn.usedPct).toBe(92);
+      expect(summaryEn.statusTone).toBe("critical");
+      expect(summaryEn.isDegraded).toBe(true);
+      expect(summaryEn.showUpgradeToSemesterPro).toBe(false);
+
+      const summaryVi = computeProfileQuotaSummary("pro", quota, true, BASE_NOW);
+      expect(summaryVi.tierLabel).toBe("Đấu Sĩ Pro (Học Kỳ)");
+      expect(summaryVi.resetCountdown).toBe("Làm mới sau 4 ngày");
+      expect(summaryVi.showUpgradeToSemesterPro).toBe(false);
+    });
+
+    it("computes rolling % quota summary for Tutor & Guild tier and hides upgrade CTA", () => {
+      const quota = makeQuota({
+        remainingPct: 94,
+        usedPct: 6,
+        resetsAt: new Date(BASE_NOW + 12 * 3_600_000).toISOString(),
+        windowHours: 24,
+        mode: "full",
+      });
+
+      const summaryEn = computeProfileQuotaSummary("tutor", quota, false, BASE_NOW);
+      expect(summaryEn.tierLabel).toBe("Tutor & Guild");
+      expect(summaryEn.remainingPct).toBe(94);
+      expect(summaryEn.usedPct).toBe(6);
+      expect(summaryEn.statusTone).toBe("healthy");
+      expect(summaryEn.isDegraded).toBe(false);
+      expect(summaryEn.showUpgradeToSemesterPro).toBe(false);
+
+      const summaryVi = computeProfileQuotaSummary("tutor", quota, true, BASE_NOW);
+      expect(summaryVi.tierLabel).toBe("Giảng Viên & Nhóm Học");
+      expect(summaryVi.showUpgradeToSemesterPro).toBe(false);
+    });
+
+    it("exposes zero raw USD amounts or legacy integer deck/note counts on ProfileQuotaSummary", () => {
+      const summary = computeProfileQuotaSummary(
+        "pro",
+        makeQuota({
+          remainingPct: 45,
+          usedPct: 55,
+          resetsAt: new Date(BASE_NOW + 3_600_000).toISOString(),
+        }),
+        false,
+        BASE_NOW,
+      );
+      const serialized = JSON.stringify(summary);
+      expect(serialized).not.toMatch(/\$|usd|cogs/i);
+      expect(summary).not.toHaveProperty("deckCreditsTotal");
+      expect(summary).not.toHaveProperty("deckCreditsUsed");
+      expect(summary).not.toHaveProperty("deckCreditsRemaining");
+      expect(summary).not.toHaveProperty("noteCreditsTotal");
+      expect(summary).not.toHaveProperty("noteCreditsRemaining");
+    });
+  });
+
+  describe("Eco-mode (<=30%), statusTone thresholds, and clamping", () => {
+    it("transitions statusTone and Eco-mode degradation accurately at 31%, 30%, 11%, 10%, and 0%", () => {
+      const healthy = computeProfileQuotaSummary(
+        "cram_pass",
+        makeQuota({ remainingPct: 31, usedPct: 69, mode: "normal" }),
+        false,
+        BASE_NOW,
+      );
+      expect(healthy.statusTone).toBe("healthy");
+      expect(healthy.isDegraded).toBe(false);
+
+      const ecoBoundary = computeProfileQuotaSummary(
+        "cram_pass",
+        makeQuota({ remainingPct: 30, usedPct: 70, mode: "normal" }),
+        false,
+        BASE_NOW,
+      );
+      expect(ecoBoundary.statusTone).toBe("caution");
+      expect(ecoBoundary.isDegraded).toBe(true);
+
+      const cautionLow = computeProfileQuotaSummary(
+        "cram_pass",
+        makeQuota({ remainingPct: 11, usedPct: 89, mode: "gentle" }),
+        false,
+        BASE_NOW,
+      );
+      expect(cautionLow.statusTone).toBe("caution");
+      expect(cautionLow.isDegraded).toBe(true);
+
+      const criticalBoundary = computeProfileQuotaSummary(
+        "cram_pass",
+        makeQuota({ remainingPct: 10, usedPct: 90, mode: "hard" }),
+        false,
+        BASE_NOW,
+      );
+      expect(criticalBoundary.statusTone).toBe("critical");
+      expect(criticalBoundary.isDegraded).toBe(true);
+
+      const exhausted = computeProfileQuotaSummary(
+        "cram_pass",
+        makeQuota({ remainingPct: 0, usedPct: 100, mode: "halted" }),
+        false,
+        BASE_NOW,
+      );
+      expect(exhausted.statusTone).toBe("critical");
+      expect(exhausted.isDegraded).toBe(true);
+      expect(exhausted.quotaLabel).toBe("0% AI quota remaining");
+    });
+
+    it("marks isDegraded when mode is haiku_overflow or cached_only even above 30%", () => {
+      const overflow = computeProfileQuotaSummary(
+        "pro",
+        makeQuota({ remainingPct: 50, usedPct: 50, mode: "haiku_overflow" }),
+        false,
+        BASE_NOW,
+      );
+      expect(overflow.statusTone).toBe("healthy");
+      expect(overflow.isDegraded).toBe(true);
+
+      const cachedOnly = computeProfileQuotaSummary(
+        "pro",
+        makeQuota({ remainingPct: 40, usedPct: 60, mode: "cached_only" }),
+        false,
+        BASE_NOW,
+      );
+      expect(cachedOnly.isDegraded).toBe(true);
+    });
+
+    it("defaults cleanly when quotaState is null or undefined and clamps out-of-range percentages", () => {
+      const defaultSummary = computeProfileQuotaSummary("contender", null, false, BASE_NOW);
+      expect(defaultSummary.remainingPct).toBe(100);
+      expect(defaultSummary.usedPct).toBe(0);
+      expect(defaultSummary.resetCountdown).toBeNull();
+      expect(defaultSummary.statusTone).toBe("healthy");
+      expect(defaultSummary.isDegraded).toBe(false);
+
+      const clampedHigh = computeProfileQuotaSummary(
+        "pro",
+        makeQuota({ remainingPct: 150, usedPct: -20 }),
+        false,
+        BASE_NOW,
+      );
+      expect(clampedHigh.remainingPct).toBe(100);
+      expect(clampedHigh.usedPct).toBe(0);
+
+      const clampedLow = computeProfileQuotaSummary(
+        "pro",
+        makeQuota({ remainingPct: -12, usedPct: 135 }),
+        false,
+        BASE_NOW,
+      );
+      expect(clampedLow.remainingPct).toBe(0);
+      expect(clampedLow.usedPct).toBe(100);
+      expect(clampedLow.statusTone).toBe("critical");
+      expect(clampedLow.isDegraded).toBe(true);
     });
   });
 });

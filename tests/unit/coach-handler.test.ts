@@ -1,10 +1,21 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import {
   createCoachHandler,
   selectCoachContextSources,
   sanitizeCoachStreamError,
+  countPriorDebriefAssistantReplies,
 } from "@/lib/coach/handler";
+import {
+  checkAndReserveDeckQuota,
+  getRollingQuotaSnapshot,
+  getUserQuotaLedger,
+  recordDeckGenerationCogs,
+  resetQuotaLedgersForTests,
+  rollbackDeckQuotaReservation,
+  saveUserQuotaLedger,
+  toClientQuota,
+} from "@/lib/rate-limit";
 import { buildCoachMessages } from "@/lib/ai/coach-prompt";
 import {
   MAX_COACH_BODY_BYTES,
@@ -34,8 +45,13 @@ function coachRequest(body: unknown) {
   });
 }
 
+beforeEach(() => {
+  resetQuotaLedgersForTests();
+});
+
 afterEach(() => {
   vi.unstubAllEnvs();
+  resetQuotaLedgersForTests();
 });
 
 describe("coach HTTP handler", () => {
@@ -347,22 +363,31 @@ describe("coach HTTP handler", () => {
     expect(json.error.code).toBe("REQUEST_TOO_LARGE");
   });
 
-  it("returns 429 COGS_CEILING_EXCEEDED when user's COGS ceiling is exceeded", async () => {
-    const getUserLedgerMock = vi.fn(async () => ({
-      userId: "user:test",
-      tier: "contender" as const,
-      cogsSpentUsd: 0.95,
-      cogsReservedUsd: 0.06,
-      cogsCeilingUsd: 1.0,
-      deckCreditsUsed: 5,
-      deckCreditsLimit: 5,
-      dailyBurstUsed: 0,
-      dailyBurstDate: "2026-11-05",
-      unlockedDecks: {},
-    }));
+  it("returns 429 COGS_CEILING_EXCEEDED with sanitized ClientQuotaSummary when rolling % quota is exhausted", async () => {
+    const mockModel: any = {
+      specificationVersion: "v2",
+      provider: "mock",
+      modelId: "mock-model",
+      supportedUrls: {},
+      doStream: vi.fn(),
+    };
+
+    const userId = "coach-exhausted-user";
+    const ledger = await getUserQuotaLedger(`user:${userId}`, "contender", "ROW");
+    ledger.windowSpentUsd = 0.08;
+    ledger.weeklySpentUsd = 0.08;
+    ledger.cogsSpentUsd = 0.08;
+    await saveUserQuotaLedger(ledger);
 
     const handler = createCoachHandler({
-      getUserLedger: getUserLedgerMock,
+      getModel: () => mockModel,
+      verifyAuth: vi.fn(async () => ({
+        authenticated: true as const,
+        user: { id: userId, email: "exhausted@example.com" } as any,
+        tier: "contender" as const,
+        tierExpiresAt: null,
+      })),
+      quotaReservation: checkAndReserveDeckQuota,
     });
 
     const res = await handler(
@@ -374,11 +399,22 @@ describe("coach HTTP handler", () => {
 
     expect(res.status).toBe(429);
     const json = await res.json();
+    expect(json.ok).toBe(false);
     expect(json.error.code).toBe("COGS_CEILING_EXCEEDED");
-    expect(json.error.message).toBe(
-      "Monthly AI budget reached for your plan. Please upgrade or wait for the next billing cycle.",
+    expect(json.error.upgradeRequired).toBe(true);
+    expect(json.error.message).toContain("AI quota depleted");
+    expect(json.quota).toEqual(
+      toClientQuota(await getRollingQuotaSnapshot(`user:${userId}`, "contender", "ROW")),
     );
-    expect(getUserLedgerMock).toHaveBeenCalledTimes(1);
+    expect(json.quota).toMatchObject({
+      remainingPct: 0,
+      usedPct: 100,
+      windowHours: 72,
+      mode: "halted",
+    });
+    expect(json.quota).not.toHaveProperty("cogsSpentUsd");
+    expect(json.quota).not.toHaveProperty("windowRemainingUsd");
+    expect(mockModel.doStream).not.toHaveBeenCalled();
   });
 
   it("records COGS via recordCogs when streaming finishes", async () => {
@@ -416,7 +452,8 @@ describe("coach HTTP handler", () => {
 
     const recordCogsMock = vi.fn(async (..._args: any[]) => ({
       ledger: {} as any,
-      cogsStatus: { mode: "normal", remainingBudgetUsd: 1 } as any,
+      cogsStatus: { mode: "full", remainingBudgetUsd: 1 } as any,
+      quota: {} as any,
     }));
 
     const verifyAuthMock = vi.fn(async () => ({
@@ -516,5 +553,340 @@ describe("coach HTTP handler", () => {
     expect(text).not.toContain("/var/task");
     expect(text).not.toContain("@google/genai");
     expect(text).toContain("AI Coach encountered an error. Please try again.");
+  });
+
+  describe("Unified Rolling % Quota for AI Coach (Follow-Ups, Cost Settlement & Error Rollback)", () => {
+    function createMockCoachStreamModel() {
+      return {
+        specificationVersion: "v2",
+        provider: "mock",
+        modelId: "mock-model",
+        supportedUrls: {},
+        doStream: vi.fn(async () => ({
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: "text-start", id: "d1" });
+              controller.enqueue({ type: "text-delta", id: "d1", delta: "Debrief reply." });
+              controller.enqueue({ type: "text-end", id: "d1" });
+              controller.enqueue({
+                type: "finish",
+                finishReason: "stop",
+                usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+              });
+              controller.close();
+            },
+          }),
+        })),
+      } as any;
+    }
+
+    const debriefFocus = {
+      type: "debrief" as const,
+      packTitle: "Microeconomics",
+      score: 400,
+      correct: 4,
+      total: 10,
+      bestStreak: 2,
+      livesLeft: 0,
+      concepts: [
+        {
+          topic: "Elasticity",
+          rule: "PED = %ΔQ / %ΔP",
+          status: "needs-review" as const,
+          sourceId: "lines-1-10",
+        },
+      ],
+    };
+
+    it("counts prior debrief assistant replies from message history cleanly", () => {
+      expect(
+        countPriorDebriefAssistantReplies([
+          { id: "u1", role: "user", parts: [{ type: "text", text: "Pre-debrief Q" }] },
+          { id: "a1", role: "assistant", parts: [{ type: "text", text: "Pre-debrief A" }] },
+          {
+            id: "u2",
+            role: "user",
+            metadata: { focus: debriefFocus },
+            parts: [{ type: "text", text: "Debrief me" }],
+          },
+          { id: "a2", role: "assistant", parts: [{ type: "text", text: "Reply 1" }] },
+          { id: "u3", role: "user", parts: [{ type: "text", text: "Follow up" }] },
+          { id: "a3", role: "assistant", parts: [{ type: "text", text: "Reply 2" }] },
+          { id: "u4", role: "user", parts: [{ type: "text", text: "One more" }] },
+        ]),
+      ).toBe(2);
+
+      expect(
+        countPriorDebriefAssistantReplies([
+          { id: "u1", role: "user", parts: [{ type: "text", text: "General question" }] },
+        ]),
+      ).toBeNull();
+    });
+
+    it("allows unlimited AI Coach follow-ups for contender inside 3d rolling % quota, returning 429 with quota once exhausted", async () => {
+      const mockModel = createMockCoachStreamModel();
+      const userId = "contender-unlimited-coach-1";
+      const handler = createCoachHandler({
+        getModel: () => mockModel,
+        verifyAuth: vi.fn(async () => ({
+          authenticated: true as const,
+          user: { id: userId, email: "free@example.com" } as any,
+          tier: "contender" as const,
+          tierExpiresAt: null,
+        })),
+        quotaReservation: checkAndReserveDeckQuota,
+        recordCogs: recordDeckGenerationCogs,
+        rollbackQuota: rollbackDeckQuotaReservation,
+      });
+
+      // 4 consecutive follow-ups on the same runId all succeed inside 3d rolling quota
+      for (let i = 1; i <= 4; i++) {
+        const res = await handler(
+          coachRequest({
+            runId: "run-A",
+            messages: [
+              {
+                id: String(i),
+                role: "user",
+                metadata: i === 1 ? { focus: debriefFocus } : undefined,
+                parts: [{ type: "text", text: `Follow-up ${i}` }],
+              },
+            ],
+            document: { fileName: doc.fileName, sources: doc.sources },
+          }),
+        );
+        expect(res.status).toBe(200);
+        await res.text();
+      }
+
+      const midLedger = await getUserQuotaLedger(`user:${userId}`, "contender", "ROW");
+      expect(midLedger.cogsSpentUsd).toBeGreaterThan(0);
+      expect(midLedger.cogsReservedUsd).toBe(0);
+
+      // Once rolling % quota is depleted, next coach request is rejected with 429 + quota summary
+      midLedger.windowSpentUsd = 0.08;
+      midLedger.weeklySpentUsd = 0.08;
+      midLedger.cogsSpentUsd = 0.08;
+      await saveUserQuotaLedger(midLedger);
+
+      const blockedRes = await handler(
+        coachRequest({
+          runId: "run-A",
+          messages: [{ id: "5", role: "user", parts: [{ type: "text", text: "One more follow-up" }] }],
+          document: { fileName: doc.fileName, sources: doc.sources },
+        }),
+      );
+      expect(blockedRes.status).toBe(429);
+      const blockedJson = await blockedRes.json();
+      expect(blockedJson.ok).toBe(false);
+      expect(blockedJson.error.code).toBe("COGS_CEILING_EXCEEDED");
+      expect(blockedJson.quota).toEqual(
+        toClientQuota(await getRollingQuotaSnapshot(`user:${userId}`, "contender", "ROW")),
+      );
+      expect(blockedJson.quota.remainingPct).toBe(0);
+      expect(blockedJson.quota.usedPct).toBe(100);
+    });
+
+    it("allows follow-ups with 2+ prior assistant replies in history even when runId is omitted", async () => {
+      const mockModel = createMockCoachStreamModel();
+      const handler = createCoachHandler({
+        getModel: () => mockModel,
+        verifyAuth: vi.fn(async () => ({
+          authenticated: true as const,
+          user: { id: "contender-user-2", email: "free2@example.com" } as any,
+          tier: "contender" as const,
+          tierExpiresAt: null,
+        })),
+        quotaReservation: checkAndReserveDeckQuota,
+        recordCogs: recordDeckGenerationCogs,
+      });
+
+      const res = await handler(
+        coachRequest({
+          messages: [
+            {
+              id: "u1",
+              role: "user",
+              metadata: { focus: debriefFocus },
+              parts: [{ type: "text", text: "Debrief my run" }],
+            },
+            { id: "a1", role: "assistant", parts: [{ type: "text", text: "Reply 1" }] },
+            { id: "u2", role: "user", parts: [{ type: "text", text: "Follow up" }] },
+            { id: "a2", role: "assistant", parts: [{ type: "text", text: "Reply 2" }] },
+            { id: "u3", role: "user", parts: [{ type: "text", text: "Third question" }] },
+          ],
+          document: { fileName: doc.fileName, sources: doc.sources },
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      await res.text();
+    });
+
+    it("settles actual COGS and releases reserved hold in onFinish when quotaReservation is active", async () => {
+      const mockModel = createMockCoachStreamModel();
+      const recordSpy = vi.fn(recordDeckGenerationCogs);
+      const userId = "coach-settle-user-1";
+
+      const handler = createCoachHandler({
+        getModel: () => mockModel,
+        verifyAuth: vi.fn(async () => ({
+          authenticated: true as const,
+          user: { id: userId, email: "settle@example.com" } as any,
+          tier: "contender" as const,
+          tierExpiresAt: null,
+        })),
+        quotaReservation: checkAndReserveDeckQuota,
+        recordCogs: recordSpy,
+      });
+
+      const res = await handler(
+        coachRequest({
+          runId: "settle-run-1",
+          messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Explain elasticity" }] }],
+          document: { fileName: doc.fileName, sources: doc.sources },
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      await res.text();
+
+      expect(recordSpy).toHaveBeenCalledTimes(1);
+      expect(recordSpy).toHaveBeenCalledWith(
+        `user:${userId}`,
+        "contender",
+        0.000075,
+        0.004,
+        "ROW",
+      );
+
+      const ledger = await getUserQuotaLedger(`user:${userId}`, "contender", "ROW");
+      expect(ledger.windowReservedUsd).toBe(0);
+      expect(ledger.weeklyReservedUsd).toBe(0);
+      expect(ledger.cogsReservedUsd).toBe(0);
+      expect(ledger.cogsSpentUsd).toBe(0.000075);
+    });
+
+    it("rolls back reserved coach quota in onError when the model stream emits an error", async () => {
+      const errorModel: any = {
+        specificationVersion: "v2",
+        provider: "mock",
+        modelId: "mock-model",
+        supportedUrls: {},
+        doStream: vi.fn(async () => ({
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({
+                type: "error",
+                error: new Error("Upstream stream aborted"),
+              });
+              controller.close();
+            },
+          }),
+        })),
+      };
+
+      const rollbackSpy = vi.fn(rollbackDeckQuotaReservation);
+      const userId = "coach-rollback-1";
+
+      const handler = createCoachHandler({
+        getModel: () => errorModel,
+        verifyAuth: vi.fn(async () => ({
+          authenticated: true as const,
+          user: { id: userId, email: "rollback@example.com" } as any,
+          tier: "contender" as const,
+          tierExpiresAt: null,
+        })),
+        quotaReservation: checkAndReserveDeckQuota,
+        rollbackQuota: rollbackSpy,
+      });
+
+      const res = await handler(
+        coachRequest({
+          runId: "err-run-1",
+          messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Explain elasticity" }] }],
+          document: { fileName: doc.fileName, sources: doc.sources },
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      await res.text();
+
+      await vi.waitFor(() => {
+        expect(rollbackSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(rollbackSpy).toHaveBeenCalledWith({
+        userId: `user:${userId}`,
+        tier: "contender",
+        actionKind: "coach",
+        reservedCostUsd: 0.004,
+        region: "ROW",
+      });
+
+      const ledger = await getUserQuotaLedger(`user:${userId}`, "contender", "ROW");
+      expect(ledger.windowReservedUsd).toBe(0);
+      expect(ledger.weeklyReservedUsd).toBe(0);
+      expect(ledger.cogsReservedUsd).toBe(0);
+    });
+
+    it("does not cap debrief replies for paid tiers (cram_pass / pro)", async () => {
+      const mockModel = createMockCoachStreamModel();
+      const handler = createCoachHandler({
+        getModel: () => mockModel,
+        verifyAuth: vi.fn(async () => ({
+          authenticated: true as const,
+          user: { id: "paid-user-1", email: "pro@example.com" } as any,
+          tier: "pro" as const,
+          tierExpiresAt: null,
+        })),
+        quotaReservation: checkAndReserveDeckQuota,
+        recordCogs: recordDeckGenerationCogs,
+      });
+
+      for (let i = 1; i <= 4; i++) {
+        const res = await handler(
+          coachRequest({
+            runId: "paid-run-1",
+            messages: [
+              {
+                id: `u-${i}`,
+                role: "user",
+                metadata: i === 1 ? { focus: debriefFocus } : undefined,
+                parts: [{ type: "text", text: `Question ${i}` }],
+              },
+            ],
+            document: { fileName: doc.fileName, sources: doc.sources },
+          }),
+        );
+        expect(res.status).toBe(200);
+        await res.text();
+      }
+    });
+
+    it("does not reserve rolling quota when AI is not configured", async () => {
+      vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "");
+      const reserveSpy = vi.fn();
+      const handler = createCoachHandler({
+        quotaReservation: reserveSpy,
+      });
+
+      const res = await handler(
+        coachRequest({
+          runId: "unconfigured-run",
+          messages: [
+            {
+              id: "1",
+              role: "user",
+              metadata: { focus: debriefFocus },
+              parts: [{ type: "text", text: "Debrief me" }],
+            },
+          ],
+          document: { fileName: doc.fileName, sources: doc.sources },
+        }),
+      );
+
+      expect(res.status).toBe(503);
+      expect(reserveSpy).not.toHaveBeenCalled();
+    });
   });
 });

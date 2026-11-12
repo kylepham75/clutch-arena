@@ -278,7 +278,10 @@ describe("Quantitative Finance Solver Engine", () => {
       const parsed = financeCalculationSpecSchema.parse(spec);
       const res = solveFinanceSpec(parsed);
       const decimals = parsed.decimals ?? 2;
-      const tolerance = Math.max(Math.pow(10, -decimals), 1e-4);
+      const isPercent = parsed.unit === "%" || parsed.solver === "wacc" || parsed.solver === "capm" || parsed.solver === "portfolio_return" || parsed.solver === "ytm" || parsed.solver === "irr";
+      const tolerance = isPercent
+        ? Math.max(Math.pow(10, -(decimals + 2)), 1e-6)
+        : Math.max(Math.pow(10, -decimals), 1e-4);
       const allValues = [res.correctValue, ...res.distractorValues];
 
       expect(allValues).toHaveLength(4);
@@ -501,6 +504,73 @@ describe("Quantitative Finance Solver Engine", () => {
       expect(formatFinanceValue(0.0875, "%", 2)).toBe("8.75%");
       expect(formatFinanceValue(4.5, "x", 1)).toBe("4.5x");
       expect(formatFinanceValue(7.25, "years", 2)).toBe("7.25 years");
+    });
+  });
+
+  describe("10. Portfolio Return, Structured Schema Params, and Empty-Param Guards", () => {
+    it("computes portfolio_return accurately with misconception distractors and 1-decimal percentage precision", () => {
+      const res = solveFinanceSpec({
+        solver: "portfolio_return",
+        params: {
+          scalars: [],
+          arrays: [
+            { name: "values", values: [25000, 35000] },
+            { name: "returns", values: [0.18, 0.25] },
+          ],
+        },
+        unit: "%",
+        decimals: 1,
+      });
+
+      // (25/60)*18% + (35/60)*25% = 22.0833...% -> 22.1%
+      expect(res.correctValue).toBeCloseTo(0.22083333, 6);
+      expect(res.correctOption).toBe("22.1%");
+      expect(res.options).not.toContain("0.0%");
+      expect(res.options).not.toContain("-25.0%");
+      expect(res.distractorOptions).toContain("21.5%"); // unweighted average (18+25)/2
+      expect(res.distractorOptions).toContain("20.9%"); // swapped weights
+      expect(res.distractorOptions).toContain("25.0%"); // highest single asset return
+      expect(new Set(res.options).size).toBe(4);
+    });
+
+    it("normalizes structured { scalars, arrays } params across all solvers including boolean flags", () => {
+      const ddmRes = solveFinanceSpec({
+        solver: "ddm",
+        params: {
+          scalars: [
+            { name: "dividend", value: 2.0 },
+            { name: "rate", value: 0.1 },
+            { name: "growth", value: 0.04 },
+            { name: "isD0", value: 1 },
+          ],
+          arrays: [],
+        },
+        unit: "$",
+        decimals: 2,
+      });
+      expect(ddmRes.correctOption).toBe("$34.67");
+    });
+
+    it("throws on empty or incomplete params instead of silently defaulting to 0.0% or $0.00", () => {
+      expect(() => solveFinanceSpec({ solver: "capm", params: {} })).toThrow();
+      expect(() =>
+        solveFinanceSpec({
+          solver: "capm",
+          params: { scalars: [], arrays: [] },
+          unit: "%",
+          decimals: 1,
+        }),
+      ).toThrow();
+      expect(() => solveFinanceSpec({ solver: "wacc", params: {} })).toThrow();
+      expect(() => solveFinanceSpec({ solver: "tvm", params: {} })).toThrow();
+      expect(() => solveFinanceSpec({ solver: "annuity", params: {} })).toThrow();
+      expect(() => solveFinanceSpec({ solver: "bond_price", params: {} })).toThrow();
+      expect(() => solveFinanceSpec({ solver: "perpetuity", params: {} })).toThrow();
+      expect(() => solveFinanceSpec({ solver: "ddm", params: {} })).toThrow();
+      expect(() => solveFinanceSpec({ solver: "npv", params: {} })).toThrow();
+      expect(() =>
+        solveFinanceSpec({ solver: "portfolio_return", params: {} }),
+      ).toThrow();
     });
   });
 });

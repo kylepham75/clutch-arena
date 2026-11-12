@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
+import { z } from "zod";
 import { APICallError, type LanguageModel } from "ai";
 import {
   generateQuestions,
   validateGeneratedStudy,
+  llmStudyOutputSchema,
   splitIntoBatchCounts,
   partitionSourcesAcrossBatches,
   groupSlidesByConcept,
@@ -618,6 +620,239 @@ describe("structured generation", () => {
 
     expect(new Set(q.options)).toEqual(new Set(expectedSolved.options));
     expect(q.options[q.correctIndex]).toBe(expectedSolved.correctOption);
+  });
+
+  it("keeps llmStudyOutputSchema strictly under Anthropic 24-optional-param limit with zero empty-property catchall objects", () => {
+    const jsonSchema = z.toJSONSchema(llmStudyOutputSchema) as Record<
+      string,
+      unknown
+    >;
+
+    let optionalParamCount = 0;
+    const emptyPropertyPaths: string[] = [];
+    const dynamicAdditionalPropsPaths: string[] = [];
+
+    const walk = (node: unknown, path: string) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        node.forEach((item, idx) => walk(item, `${path}[${idx}]`));
+        return;
+      }
+
+      const obj = node as Record<string, unknown>;
+      if (obj.type === "object" && obj.properties && typeof obj.properties === "object") {
+        const propKeys = Object.keys(obj.properties as Record<string, unknown>);
+        if (propKeys.length === 0) {
+          emptyPropertyPaths.push(path);
+        }
+        const reqSet = new Set(
+          Array.isArray(obj.required) ? (obj.required as string[]) : [],
+        );
+        for (const key of propKeys) {
+          if (!reqSet.has(key)) {
+            optionalParamCount++;
+          }
+          walk((obj.properties as Record<string, unknown>)[key], `${path}.${key}`);
+        }
+      }
+
+      if (
+        obj.additionalProperties !== undefined &&
+        typeof obj.additionalProperties !== "boolean"
+      ) {
+        dynamicAdditionalPropsPaths.push(path);
+      }
+
+      if (obj.items) walk(obj.items, `${path}[]`);
+      if (obj.$defs && typeof obj.$defs === "object") {
+        for (const [defKey, defVal] of Object.entries(
+          obj.$defs as Record<string, unknown>,
+        )) {
+          walk(defVal, `$defs.${defKey}`);
+        }
+      }
+    };
+
+    walk(jsonSchema, "root");
+
+    expect(emptyPropertyPaths).toEqual([]);
+    expect(dynamicAdditionalPropsPaths).toEqual([]);
+    expect(optionalParamCount).toBeLessThanOrEqual(24);
+  });
+
+  it("computes portfolio_return via structured params and still runs cross-family blind verification by default", async () => {
+    const portfolioDoc: ParsedDocument = {
+      fileName: "Chapter 11.pdf",
+      format: "pdf",
+      sources: [
+        {
+          id: "page-22",
+          label: "Page 22",
+          text: "Portfolio expected return: E[Rp] = sum(Xi * E[Ri]). Example: $25,000 Intel at 18% and $35,000 ATP Oil and Gas at 25%.",
+        },
+      ],
+      characterCount: 130,
+      pageCount: 1,
+      warnings: [],
+    };
+
+    const generatorModel = modelFor({
+      title: "Portfolio Expected Return",
+      sourceKind: "lecture",
+      questions: [
+        {
+          id: "port-1",
+          question:
+            "You hold $25,000 of Intel with an expected return of 18% and $35,000 of ATP Oil and Gas with an expected return of 25%. What is the portfolio's expected return?",
+          options: ["22.1%", "21.5%", "18.0%", "25.0%"],
+          correctIndex: 0,
+          explanation:
+            "Weights are 25/60 and 35/60, so $E[R_P] = 0.4167(18\\%) + 0.5833(25\\%) \\approx 22.1\\%$.",
+          financeSpec: {
+            solver: "portfolio_return",
+            params: {
+              scalars: [],
+              arrays: [
+                { name: "values", values: [25000, 35000] },
+                { name: "returns", values: [0.18, 0.25] },
+              ],
+            },
+            unit: "%",
+            decimals: 1,
+            distractorModes: ["unweighted_average", "highest_asset_return"],
+          },
+          conceptVariant: {
+            question:
+              "You invest $40,000 in Stock A (10% expected return) and $60,000 in Stock B (20% expected return). What is the portfolio's expected return?",
+            options: ["16.0%", "15.0%", "14.0%", "20.0%"],
+            correctIndex: 0,
+            explanation:
+              "Weights are 0.4 and 0.6, so $E[R_P] = 0.4(10\\%) + 0.6(20\\%) = 16.0\\%$.",
+            financeSpec: {
+              solver: "portfolio_return",
+              params: {
+                scalars: [],
+                arrays: [
+                  { name: "values", values: [40000, 60000] },
+                  { name: "returns", values: [0.1, 0.2] },
+                ],
+              },
+              unit: "%",
+              decimals: 1,
+            },
+          },
+        },
+      ],
+      annotations: [
+        {
+          questionId: "port-1",
+          sourceId: "page-22",
+          excerpt: "Portfolio expected return: E[Rp] = sum(Xi * E[Ri]).",
+          topic: "Portfolio expected return",
+          chapter: "Chapter 11",
+          rule: "$E[R_P] = \\sum X_i E[R_i]$",
+        },
+      ],
+      warnings: [],
+    });
+
+    const verifierModel = modelFor({
+      verdicts: [
+        {
+          id: "port-1",
+          selectedIndex: 0,
+          isAmbiguous: false,
+          confidence: "high",
+          reason: "Weighted return is 22.1%.",
+        },
+        {
+          id: "port-1::conceptVariant",
+          selectedIndex: 0,
+          isAmbiguous: false,
+          confidence: "high",
+          reason: "Weighted return is 16.0%.",
+        },
+      ],
+    });
+
+    const result = await generateQuestions(
+      portfolioDoc,
+      ingestionOptionsSchema.parse({ questionCount: 1 }),
+      new AbortController().signal,
+      generatorModel,
+      { verifierModel },
+    );
+
+    // Blind verifier MUST run even on solver-computed questions
+    expect(verifierModel.doGenerate).toHaveBeenCalledTimes(1);
+    const q = result.pack.questions[0];
+    expect(q.options[q.correctIndex]).toBe("22.1%");
+    expect(q.options).not.toContain("0.0%");
+    expect(q.conceptVariant.options[q.conceptVariant.correctIndex]).toBe("16.0%");
+  });
+
+  it("rejects/drops items with empty financeSpec params instead of emitting 0.0% options", async () => {
+    const portfolioDoc: ParsedDocument = {
+      fileName: "Chapter 11.pdf",
+      format: "pdf",
+      sources: [
+        {
+          id: "page-22",
+          label: "Page 22",
+          text: "Portfolio expected return: E[Rp] = sum(Xi * E[Ri]).",
+        },
+      ],
+      characterCount: 53,
+      pageCount: 1,
+      warnings: [],
+    };
+
+    const brokenGeneratorModel = modelFor({
+      title: "Portfolio Expected Return",
+      sourceKind: "lecture",
+      questions: [
+        {
+          id: "bad-1",
+          question: "What is the portfolio expected return?",
+          options: ["22.1%", "21.5%", "18.0%", "25.0%"],
+          correctIndex: 0,
+          explanation: "Weighted average is 22.1%.",
+          financeSpec: {
+            solver: "capm",
+            params: { scalars: [], arrays: [] },
+            unit: "%",
+            decimals: 1,
+          },
+          conceptVariant: {
+            question: "What is the variant portfolio expected return?",
+            options: ["16.0%", "15.0%", "10.0%", "20.0%"],
+            correctIndex: 0,
+            explanation: "Weighted average is 16.0%.",
+          },
+        },
+      ],
+      annotations: [
+        {
+          questionId: "bad-1",
+          sourceId: "page-22",
+          excerpt: "Portfolio expected return: E[Rp] = sum(Xi * E[Ri]).",
+          topic: "Portfolio expected return",
+          chapter: "Chapter 11",
+          rule: "$E[R_P] = \\sum X_i E[R_i]$",
+        },
+      ],
+      warnings: [],
+    });
+
+    await expect(
+      generateQuestions(
+        portfolioDoc,
+        ingestionOptionsSchema.parse({ questionCount: 1 }),
+        new AbortController().signal,
+        brokenGeneratorModel,
+        false,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_AI_OUTPUT", status: 502 });
   });
 
   it("enforces the hard gate on lowConfidenceSourceIds and drops questions from failed-vision pages", () => {

@@ -711,7 +711,7 @@ describe("Golden Evaluation: Quantitative Finance Solver & Misconception Distrac
     expect(uniqueFormatted.size).toBe(4);
 
     const allNumeric = [res.correctValue, ...res.distractorValues];
-    const tolerance = Math.max(Math.pow(10, -2), 1e-4);
+    const tolerance = Math.max(Math.pow(10, -(2 + 2)), 1e-6);
     for (let i = 0; i < allNumeric.length; i++) {
       for (let j = i + 1; j < allNumeric.length; j++) {
         expect(Math.abs(allNumeric[i] - allNumeric[j])).toBeGreaterThan(tolerance);

@@ -227,9 +227,6 @@ export async function POST(request: Request) {
         expiresAt: result.expiresAt,
         fulfilled: result.fulfilled,
         alreadyFulfilled: Boolean(result.alreadyFulfilled),
-        ...(isSandboxOrder || result.cogsCeilingUsd !== undefined
-          ? { cogsCeilingUsd: result.cogsCeilingUsd ?? 0.05 }
-          : {}),
       });
     }
 

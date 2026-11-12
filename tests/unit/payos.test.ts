@@ -23,6 +23,7 @@ import {
 import { POST as createPostRoute } from "@/app/api/payments/payos/create/route";
 import { POST as verifyPostRoute } from "@/app/api/payments/payos/verify/route";
 import { POST as webhookPostRoute } from "@/app/api/webhooks/payos/route";
+import * as rateLimitModule from "@/lib/rate-limit";
 
 let mockSubRecord: {
   id?: string;
@@ -36,6 +37,7 @@ let mockSubRecord: {
 let mockAuthUser: { id: string; email?: string } | null = null;
 let mockProfileEmail: string | null = null;
 let mockUpsertSubError: { message: string } | null = null;
+let mockUpsertQuotaLedgerErrorOnce: { message: string } | null = null;
 const mockUpsertSubSpy = vi.fn();
 const mockUpsertProfileSpy = vi.fn();
 const mockUpsertUserProfileSpy = vi.fn();
@@ -73,6 +75,11 @@ vi.mock("@/lib/supabase/server", () => {
             select: vi.fn(() => createChain(() => null)),
             upsert: vi.fn(async (data: unknown) => {
               mockUpsertQuotaLedgerSpy(data);
+              if (mockUpsertQuotaLedgerErrorOnce) {
+                const err = mockUpsertQuotaLedgerErrorOnce;
+                mockUpsertQuotaLedgerErrorOnce = null;
+                return { error: err };
+              }
               return { error: null };
             }),
           };
@@ -154,6 +161,7 @@ describe("PayOS Gateway Utilities", () => {
     process.env = { ...originalEnv };
     clearFulfilledOrderCache();
     mockUpsertSubError = null;
+    mockUpsertQuotaLedgerErrorOnce = null;
     mockUpsertQuotaLedgerSpy.mockClear();
   });
 
@@ -1324,7 +1332,7 @@ describe("PayOS Gateway Utilities", () => {
       expect(json.paid).toBe(true);
       expect(json.fulfilled).toBe(true);
       expect(json.tier).toBe("cram_pass");
-      expect(json.cogsCeilingUsd).toBe(0.05);
+      expect(json.cogsCeilingUsd).toBeUndefined();
 
       expect(mockUpsertSubSpy).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1339,6 +1347,16 @@ describe("PayOS Gateway Utilities", () => {
         expect.objectContaining({
           user_id: "user:admin_user_1",
           tier: "cram_pass",
+          deck_credits_used: 0,
+          cogs_spent_usd: 0,
+          cogs_reserved_usd: 0,
+          daily_burst_used: 0,
+          window_started_at: expect.any(String),
+          window_spent_usd: 0,
+          window_reserved_usd: 0,
+          weekly_started_at: expect.any(String),
+          weekly_spent_usd: 0,
+          weekly_reserved_usd: 0,
           cogs_ceiling_usd: 0.05,
           updated_at: expect.any(String),
         }),
@@ -1394,6 +1412,16 @@ describe("PayOS Gateway Utilities", () => {
         expect.objectContaining({
           user_id: "user:admin_user_1",
           tier: "cram_pass",
+          deck_credits_used: 0,
+          cogs_spent_usd: 0,
+          cogs_reserved_usd: 0,
+          daily_burst_used: 0,
+          window_started_at: expect.any(String),
+          window_spent_usd: 0,
+          window_reserved_usd: 0,
+          weekly_started_at: expect.any(String),
+          weekly_spent_usd: 0,
+          weekly_reserved_usd: 0,
           cogs_ceiling_usd: 0.05,
           updated_at: expect.any(String),
         }),
@@ -1416,6 +1444,145 @@ describe("PayOS Gateway Utilities", () => {
           }),
         }),
       );
+    });
+  });
+
+  describe("Rolling Quota Window Ledger Resets on Order Fulfillment", () => {
+    beforeEach(() => {
+      mockSubRecord = null;
+      mockAuthUser = null;
+      mockProfileEmail = null;
+      mockUpsertQuotaLedgerErrorOnce = null;
+      mockUpsertSubSpy.mockClear();
+      mockUpsertProfileSpy.mockClear();
+      mockUpsertUserProfileSpy.mockClear();
+      mockUpsertQuotaLedgerSpy.mockClear();
+      mockAdminUpdateSpy.mockClear();
+    });
+
+    it("resets all rolling window and cycle ledger columns when fulfilling standard paid plans", async () => {
+      mockSubRecord = {
+        user_id: "pro_upgrade_user_1",
+        tier: "pro_semester",
+        amount: 299000,
+      };
+
+      const result = await fulfillPayosOrder({
+        orderCode: 1730000011112,
+        amount: 299000,
+      });
+
+      expect(result.fulfilled).toBe(true);
+      expect(result.tier).toBe("pro_semester");
+      expect(mockUpsertQuotaLedgerSpy).toHaveBeenCalledTimes(1);
+
+      const ledgerPayload = mockUpsertQuotaLedgerSpy.mock.calls[0][0] as Record<string, unknown>;
+      expect(ledgerPayload).toEqual({
+        user_id: "user:pro_upgrade_user_1",
+        tier: "pro",
+        deck_credits_used: 0,
+        cogs_spent_usd: 0,
+        cogs_reserved_usd: 0,
+        daily_burst_used: 0,
+        window_started_at: expect.any(String),
+        window_spent_usd: 0,
+        window_reserved_usd: 0,
+        weekly_started_at: expect.any(String),
+        weekly_spent_usd: 0,
+        weekly_reserved_usd: 0,
+        updated_at: expect.any(String),
+      });
+      expect(ledgerPayload.window_started_at).toBe(ledgerPayload.updated_at);
+      expect(ledgerPayload.weekly_started_at).toBe(ledgerPayload.updated_at);
+      expect(Number.isNaN(Date.parse(String(ledgerPayload.window_started_at)))).toBe(false);
+      expect(ledgerPayload.cogs_ceiling_usd).toBeUndefined();
+    });
+
+    it("falls back to legacy user_quota_ledgers upsert payload if rolling window columns are pending migration", async () => {
+      mockSubRecord = {
+        user_id: "migration_fallback_user",
+        tier: "pro_monthly",
+        amount: 109000,
+      };
+      mockUpsertQuotaLedgerErrorOnce = {
+        message: 'column "window_started_at" of relation "user_quota_ledgers" does not exist',
+      };
+
+      const result = await fulfillPayosOrder({
+        orderCode: 1730000022223,
+        amount: 109000,
+      });
+
+      expect(result.fulfilled).toBe(true);
+      expect(mockUpsertQuotaLedgerSpy).toHaveBeenCalledTimes(2);
+
+      const firstPayload = mockUpsertQuotaLedgerSpy.mock.calls[0][0] as Record<string, unknown>;
+      expect(firstPayload).toMatchObject({
+        user_id: "user:migration_fallback_user",
+        tier: "pro_monthly",
+        window_spent_usd: 0,
+        window_reserved_usd: 0,
+        weekly_spent_usd: 0,
+        weekly_reserved_usd: 0,
+      });
+
+      const fallbackPayload = mockUpsertQuotaLedgerSpy.mock.calls[1][0] as Record<string, unknown>;
+      expect(fallbackPayload).toEqual({
+        user_id: "user:migration_fallback_user",
+        tier: "pro_monthly",
+        deck_credits_used: 0,
+        cogs_spent_usd: 0,
+        daily_burst_used: 0,
+        updated_at: firstPayload.updated_at,
+      });
+    });
+
+    it("calls invalidateUserQuotaLedgerCache and clears stale in-memory ledger cache on repurchase so exhausted window spend resets cleanly", async () => {
+      const userId = "repurchase_exhausted_user_1";
+      mockSubRecord = {
+        user_id: userId,
+        tier: "cram_pass",
+        amount: 69000,
+      };
+      mockAuthUser = {
+        id: userId,
+        email: "cram_student@school.edu.vn",
+      };
+
+      // 1. Seed user in in-memory quota ledger as exhausted (100% used in primary & guard windows)
+      const staleLedger = await rateLimitModule.getUserQuotaLedger(userId, "cram_pass", "VN");
+      staleLedger.windowSpentUsd = 0.35;
+      staleLedger.weeklySpentUsd = 0.85;
+      staleLedger.cogsSpentUsd = 0.85;
+      await rateLimitModule.saveUserQuotaLedger(staleLedger);
+
+      // Verify stale ledger is currently active in memory
+      const cachedBefore = await rateLimitModule.getUserQuotaLedger(userId, "cram_pass", "VN");
+      expect(cachedBefore.windowSpentUsd).toBe(0.35);
+
+      const invalidateSpy = vi.spyOn(rateLimitModule, "invalidateUserQuotaLedgerCache");
+
+      // 2. Execute fulfillment for same-tier repurchase
+      const result = await fulfillPayosOrder({
+        orderCode: 1730000077771, // ends in 1 -> cram_pass
+        amount: 69000,
+        expectedAmount: 69000,
+        fallbackUserId: userId,
+        userToken: "valid_token",
+      });
+
+      expect(result.fulfilled).toBe(true);
+
+      // Assert invalidateUserQuotaLedgerCache was called for the user
+      expect(invalidateSpy).toHaveBeenCalledWith(userId);
+
+      // 3. Verify in-memory ledger cache was cleared and fresh ledger has zeroed spend
+      const freshLedger = await rateLimitModule.getUserQuotaLedger(userId, "cram_pass", "VN");
+      expect(freshLedger.windowSpentUsd).toBe(0);
+      expect(freshLedger.weeklySpentUsd).toBe(0);
+      expect(freshLedger.cogsSpentUsd).toBe(0);
+
+      invalidateSpy.mockRestore();
     });
   });
 
