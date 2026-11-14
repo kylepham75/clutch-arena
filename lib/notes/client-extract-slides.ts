@@ -4,7 +4,10 @@ import {
   MAX_EXTRACTED_CHARACTERS,
   MAX_PDF_PAGES,
 } from "@/lib/ingestion/limits";
-import { extractSlideXmlText } from "@/lib/ingestion/parse-pptx";
+import {
+  extractSlideXmlText,
+  detectSlideEquationCandidates,
+} from "@/lib/ingestion/parse-pptx";
 
 export interface ExtractedSlideDeck {
   fileName: string;
@@ -12,6 +15,7 @@ export interface ExtractedSlideDeck {
   sources: SourceBlock[];
   warnings: string[];
   fileSha256?: string;
+  hasEmbeddedEquations?: boolean;
 }
 
 export type ClientSlideExtractionErrorCode =
@@ -360,6 +364,7 @@ async function extractPptxSlides(
   const sources: SourceBlock[] = [];
   let characterCount = 0;
   let emptySlides = 0;
+  let hasEmbeddedEquations = false;
 
   for (const slide of slideEntries) {
     signal?.throwIfAborted();
@@ -378,6 +383,26 @@ async function extractPptxSlides(
     }
 
     let text = extractSlideXmlText(xml);
+
+    // Detect embedded MathType / OLE / image equation candidates for server OCR recovery
+    if (!hasEmbeddedEquations) {
+      const relsPath = slide.path.replace(
+        /^ppt\/slides\/slide(\d+)\.xml$/i,
+        "ppt/slides/_rels/slide$1.xml.rels",
+      );
+      const relsFile = zip.file(relsPath);
+      let relsXml: string | undefined;
+      if (relsFile) {
+        try {
+          relsXml = await relsFile.async("text");
+        } catch {
+          // rels optional
+        }
+      }
+      if (detectSlideEquationCandidates(xml, relsXml, slide.num).length > 0) {
+        hasEmbeddedEquations = true;
+      }
+    }
 
     // Corresponding speaker notes if present
     const notePath = `ppt/notesSlides/notesSlide${slide.num}.xml`;
@@ -434,6 +459,7 @@ async function extractPptxSlides(
           `${emptySlides} slide(s) contained only images or had no extractable text.`,
         ]
       : [],
+    ...(hasEmbeddedEquations ? { hasEmbeddedEquations: true } : {}),
   };
 }
 

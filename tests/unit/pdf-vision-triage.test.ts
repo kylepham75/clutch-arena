@@ -560,6 +560,9 @@ describe("PDF Vision Triage & Multi-Signal Detection", () => {
       expect(
         isSlideMathCorrupted("Capital Asset Pricing Model: E(R) = Rf + beta*(E(Rm) - Rf)"),
       ).toBe(false);
+      expect(
+        isSlideMathCorrupted("Reference: https://clutcharena.com/docs and **Bold Concept**\n- *Key note*"),
+      ).toBe(false);
     });
 
     it("identifies corrupted math page numbers via detectCorruptedMathPages", () => {

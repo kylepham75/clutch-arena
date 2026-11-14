@@ -10,7 +10,21 @@ import type {
   NoteSection,
   NoteSubSection,
   SynthesisOmittedFormula,
+  PublishedHandout,
 } from "@/lib/schemas/notes";
+import { normalizeInventoryFormulaKey } from "@/lib/notes/formula-inventory";
+import { checkFormulaEquivalence } from "@/lib/notes/numeric-equivalence";
+import { verifyEvidenceQuoteMatch } from "@/lib/notes/deterministic-verifiers";
+import { evaluateClaimSupportDeterministically } from "@/lib/notes/verifier-llm";
+import {
+  verifyStrictKatexCompile,
+  verifyConditionPreservation,
+} from "@/lib/notes/quality-rubric";
+import { triageSlideDeck } from "@/lib/notes/slide-triage";
+import {
+  toPublishedHandout,
+  generateClutchNotePdfHtml,
+} from "@/lib/notes/export-pdf";
 
 export interface GoldenDeckDefinition {
   id: string;
@@ -23,6 +37,21 @@ export interface GoldenDeckDefinition {
   validOmittedFormulaIds?: string[];
   forbiddenInjectedFormulas?: string[];
   goldNote: ClutchNote;
+  requiredArtifactIds?: {
+    formulaIds: string[];
+    conceptKeywords: string[];
+  };
+  lateDeckTopics?: {
+    minSlide: number;
+    requiredKeywords: string[];
+    requiredFormulaIds: string[];
+  };
+  paraphraseCases?: Array<{
+    claim: string;
+    slide: number;
+    supportMode: "faithful_paraphrase" | "supported_combination" | "example_abstraction";
+    expectedSupported: boolean;
+  }>;
 }
 
 function createGoldNote(params: {
@@ -338,6 +367,51 @@ export const DECK_1_STOCK_VALUATION: GoldenDeckDefinition = {
     "g = \\frac{P_1 - P_0}{P_0}",
     "\\text{Dividend Yield} = \\frac{D_1}{P_0}",
   ],
+  requiredArtifactIds: {
+    formulaIds: ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"],
+    conceptKeywords: [
+      "present value",
+      "dividends",
+      "Gordon",
+      "terminal",
+      "sustainable growth",
+    ],
+  },
+  lateDeckTopics: {
+    minSlide: 7,
+    requiredKeywords: [
+      "sustainable growth",
+      "dividend yield",
+      "capital gains yield",
+    ],
+    requiredFormulaIds: ["F8", "F9"],
+  },
+  paraphraseCases: [
+    {
+      claim: "The value of any financial asset equals the present value of all its expected future cash flows.",
+      slide: 1,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: true,
+    },
+    {
+      claim: "In the Gordon growth model, the required return R must be strictly greater than the growth rate g.",
+      slide: 5,
+      supportMode: "supported_combination",
+      expectedSupported: true,
+    },
+    {
+      claim: "To calculate terminal stock price, divide the dividend paid at year T+1 by the difference between required return and perpetual growth rate.",
+      slide: 6,
+      supportMode: "example_abstraction",
+      expectedSupported: true,
+    },
+    {
+      claim: "Common stock guarantees zero volatility and fixed quarterly payouts regardless of corporate earnings.",
+      slide: 1,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: false,
+    },
+  ],
   goldNote: createGoldNote({
     id: "note-deck-1",
     title: "CHAPTER 9: STOCK VALUATION & DDM",
@@ -452,7 +526,6 @@ export const DECK_1_STOCK_VALUATION: GoldenDeckDefinition = {
                 slide: 4,
                 variables: [
                   { symbol: "D", definition: "Constant annual dividend" },
-                  { symbol: "R", definition: "Required rate of return" },
                 ],
               }),
             ],
@@ -556,7 +629,6 @@ export const DECK_1_STOCK_VALUATION: GoldenDeckDefinition = {
             slide: 8,
             variables: [
               { symbol: "D_1 / P_0", definition: "Dividend yield" },
-              { symbol: "g", definition: "Capital gains yield" },
             ],
           }),
         ],
@@ -817,6 +889,51 @@ export const DECK_2_RISK_AND_RETURN: GoldenDeckDefinition = {
     "\\text{Sharpe} = \\frac{E(R_p) - R_f}{\\sigma_p}",
     "\\text{Treynor} = \\frac{E(R_p) - R_f}{\\beta_p}",
     "E(R_i) = R_f + \\beta_1 F_1 + \\beta_2 F_2",
+  ],
+  requiredArtifactIds: {
+    formulaIds: ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"],
+    conceptKeywords: [
+      "expected return",
+      "variance",
+      "diversification",
+      "beta",
+      "CAPM",
+    ],
+  },
+  lateDeckTopics: {
+    minSlide: 8,
+    requiredKeywords: [
+      "Security Market Line",
+      "systematic risk",
+      "Portfolio Beta",
+    ],
+    requiredFormulaIds: ["F8", "F9"],
+  },
+  paraphraseCases: [
+    {
+      claim: "In financial markets, there is a fundamental trade-off between risk and return: higher expected returns require taking on greater risk.",
+      slide: 1,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: true,
+    },
+    {
+      claim: "When correlation rho is less than one, diversification reduces portfolio risk.",
+      slide: 6,
+      supportMode: "supported_combination",
+      expectedSupported: true,
+    },
+    {
+      claim: "To calculate portfolio beta, take the weighted average of the betas of the individual securities.",
+      slide: 9,
+      supportMode: "example_abstraction",
+      expectedSupported: true,
+    },
+    {
+      claim: "Quantum cryptocurrency arbitrage guarantees riskless profits and absolute immunity against sovereign default crises.",
+      slide: 7,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: false,
+    },
   ],
   goldNote: createGoldNote({
     id: "note-deck-2",
@@ -1196,6 +1313,50 @@ export const DECK_3_WACC: GoldenDeckDefinition = {
     "f_A = \\frac{E}{V} f_E + \\frac{D}{V} f_D",
     "\\text{WACC} = \\frac{E}{V} R_E(1 - T_C) + \\frac{D}{V} R_D",
   ],
+  requiredArtifactIds: {
+    formulaIds: ["F1", "F2", "F3", "F4", "F5", "F6", "F7"],
+    conceptKeywords: [
+      "cost of capital",
+      "cost of equity",
+      "after-tax cost of debt",
+      "WACC",
+    ],
+  },
+  lateDeckTopics: {
+    minSlide: 7,
+    requiredKeywords: [
+      "market values",
+      "Weighted Average Cost of Capital",
+      "hurdle rate",
+    ],
+    requiredFormulaIds: ["F6", "F7"],
+  },
+  paraphraseCases: [
+    {
+      claim: "The cost of capital is the minimum required rate of return that a firm must earn on its investments.",
+      slide: 1,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: true,
+    },
+    {
+      claim: "Because interest expense is tax-deductible, the effective after-tax cost of debt is adjusted by one minus the corporate tax rate.",
+      slide: 5,
+      supportMode: "supported_combination",
+      expectedSupported: true,
+    },
+    {
+      claim: "To calculate WACC, compute the weighted average of each capital component using market values.",
+      slide: 8,
+      supportMode: "example_abstraction",
+      expectedSupported: true,
+    },
+    {
+      claim: "Cryptocurrency staking yields are fully insured by federal deposit insurance corporations against sudden liquidity bankruptcy.",
+      slide: 4,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: false,
+    },
+  ],
   goldNote: createGoldNote({
     id: "note-deck-3",
     title: "CHAPTER 14: COST OF CAPITAL & WACC",
@@ -1521,6 +1682,51 @@ export const DECK_4_ELASTICITY: GoldenDeckDefinition = {
     "\\epsilon_d = \\frac{dQ}{dP} \\frac{P}{Q}",
     "Q = A P^{-\\alpha} I^{\\beta}",
   ],
+  requiredArtifactIds: {
+    formulaIds: ["F1", "F2", "F3", "F4", "F5", "F6"],
+    conceptKeywords: [
+      "elasticity",
+      "midpoint",
+      "total revenue",
+      "cross-price",
+      "income elasticity",
+    ],
+  },
+  lateDeckTopics: {
+    minSlide: 6,
+    requiredKeywords: [
+      "income elasticity",
+      "price elasticity of supply",
+      "long run",
+    ],
+    requiredFormulaIds: ["F5", "F6"],
+  },
+  paraphraseCases: [
+    {
+      claim: "Price elasticity of demand measures the sensitivity of quantity demanded to price changes.",
+      slide: 2,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: true,
+    },
+    {
+      claim: "When demand is inelastic, increasing price increases total revenue.",
+      slide: 4,
+      supportMode: "supported_combination",
+      expectedSupported: true,
+    },
+    {
+      claim: "To calculate arc elasticity with the midpoint method, divide the change in quantity over average quantity by change in price over average price.",
+      slide: 3,
+      supportMode: "example_abstraction",
+      expectedSupported: true,
+    },
+    {
+      claim: "Cryptocurrency blockchain mining completely eliminates consumer transaction fees across foreign currency remittance exchanges.",
+      slide: 5,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: false,
+    },
+  ],
   goldNote: createGoldNote({
     id: "note-deck-4",
     title: "PRICE ELASTICITY OF DEMAND & SUPPLY",
@@ -1827,6 +2033,51 @@ export const DECK_5_MONOPOLY: GoldenDeckDefinition = {
     "HHI = \\sum s_i^2",
     "P = MC",
   ],
+  requiredArtifactIds: {
+    formulaIds: ["F1", "F2", "F3", "F4", "F5", "F6"],
+    conceptKeywords: [
+      "monopoly",
+      "marginal revenue",
+      "marginal cost",
+      "profit maximization",
+      "Lerner Index",
+    ],
+  },
+  lateDeckTopics: {
+    minSlide: 6,
+    requiredKeywords: [
+      "economic profit",
+      "Lerner Index",
+      "pricing power",
+    ],
+    requiredFormulaIds: ["F5", "F6"],
+  },
+  paraphraseCases: [
+    {
+      claim: "A monopoly is the sole seller of a product with no close substitutes, giving price-setting market power.",
+      slide: 1,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: true,
+    },
+    {
+      claim: "To maximize economic profit, the monopolist produces the output level where marginal revenue equals marginal cost.",
+      slide: 5,
+      supportMode: "supported_combination",
+      expectedSupported: true,
+    },
+    {
+      claim: "To calculate the Lerner Index of market power, divide the price markup over marginal cost by price.",
+      slide: 7,
+      supportMode: "example_abstraction",
+      expectedSupported: true,
+    },
+    {
+      claim: "Government regulatory agencies automatically fix agricultural commodity auction prices to eliminate weather volatility shocks.",
+      slide: 3,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: false,
+    },
+  ],
   goldNote: createGoldNote({
     id: "note-deck-5",
     title: "MONOPOLY & MARKET POWER",
@@ -1900,7 +2151,7 @@ export const DECK_5_MONOPOLY: GoldenDeckDefinition = {
             latex: "MR = MC",
             formulaRefs: ["F4"],
             slide: 5,
-            variables: [{ symbol: "MR", definition: "Marginal revenue" }],
+            variables: [],
           }),
           createFormula({
             leadText: "Monopoly economic profit:",
@@ -2118,6 +2369,52 @@ export const DECK_6_IS_LM: GoldenDeckDefinition = {
     "\\pi_t - \\pi_{t-1} = -\\alpha (u_t - u_n)",
     "i_t = r^* + \\pi_t + 0.5(\\pi_t - \\pi^*) + 0.5(y_t - \\bar{y})",
     "Y = A K^\\alpha L^{1-\\alpha}",
+  ],
+  requiredArtifactIds: {
+    formulaIds: ["F1", "F2", "F3", "F4", "F5", "F6"],
+    conceptKeywords: [
+      "consumption function",
+      "investment",
+      "goods market",
+      "multiplier",
+      "money demand",
+      "LM relation",
+    ],
+  },
+  lateDeckTopics: {
+    minSlide: 6,
+    requiredKeywords: [
+      "Money Demand",
+      "LM Relation",
+      "financial markets",
+    ],
+    requiredFormulaIds: ["F5", "F6"],
+  },
+  paraphraseCases: [
+    {
+      claim: "In a closed economy, goods market equilibrium requires aggregate output Y to equal aggregate demand Z.",
+      slide: 4,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: true,
+    },
+    {
+      claim: "Private consumption depends positively on disposable income while investment depends negatively on interest rate.",
+      slide: 2,
+      supportMode: "supported_combination",
+      expectedSupported: true,
+    },
+    {
+      claim: "To calculate equilibrium output in the goods market, multiply autonomous spending by the multiplier one over one minus c_1.",
+      slide: 5,
+      supportMode: "example_abstraction",
+      expectedSupported: true,
+    },
+    {
+      claim: "Decentralized peer-to-peer cryptocurrency lending networks replace central bank currency issuance during sovereign debt defaults.",
+      slide: 6,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: false,
+    },
   ],
   goldNote: createGoldNote({
     id: "note-deck-6",
@@ -2412,6 +2709,51 @@ export const DECK_7_BOND_VALUATION: GoldenDeckDefinition = {
   forbiddenInjectedFormulas: [
     "\\frac{\\Delta P}{P} = -D^* \\Delta y + \\frac{1}{2} C (\\Delta y)^2",
     "dr_t = a(b - r_t)dt + \\sigma dW_t",
+  ],
+  requiredArtifactIds: {
+    formulaIds: ["F1", "F2", "F3", "F4", "F5", "F6"],
+    conceptKeywords: [
+      "coupon bond",
+      "yield to maturity",
+      "current yield",
+      "Macaulay duration",
+      "modified duration",
+    ],
+  },
+  lateDeckTopics: {
+    minSlide: 6,
+    requiredKeywords: [
+      "Modified duration",
+      "percentage change in bond price",
+      "yield",
+    ],
+    requiredFormulaIds: ["F5", "F6"],
+  },
+  paraphraseCases: [
+    {
+      claim: "The price P of a coupon bond is the present value of coupon annuity payments plus the present value of the face value.",
+      slide: 2,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: true,
+    },
+    {
+      claim: "Modified duration directly relates duration to percentage price changes for small changes in yield.",
+      slide: 6,
+      supportMode: "supported_combination",
+      expectedSupported: true,
+    },
+    {
+      claim: "To approximate percentage change in bond price, multiply negative modified duration by the change in yield to maturity.",
+      slide: 7,
+      supportMode: "example_abstraction",
+      expectedSupported: true,
+    },
+    {
+      claim: "Bond prices rise when market yields increase due to enhanced coupon discounting benefits.",
+      slide: 7,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: false,
+    },
   ],
   goldNote: createGoldNote({
     id: "note-deck-7",
@@ -2713,6 +3055,52 @@ export const DECK_8_OLS_REGRESSION: GoldenDeckDefinition = {
     "\\hat{\\beta}_{IV} = (Z'X)^{-1} Z' Y",
     "\\text{Var}_{HC}(\\hat{\\beta}) = (X'X)^{-1}(X'\\hat{\\Omega}X)(X'X)^{-1}",
   ],
+  requiredArtifactIds: {
+    formulaIds: ["F1", "F2", "F3", "F4", "F5", "F6", "F7"],
+    conceptKeywords: [
+      "sample mean",
+      "OLS",
+      "slope estimator",
+      "sum of squares",
+      "R-squared",
+      "t-statistic",
+    ],
+  },
+  lateDeckTopics: {
+    minSlide: 6,
+    requiredKeywords: [
+      "Coefficient of Determination",
+      "standard error",
+      "t-statistic",
+    ],
+    requiredFormulaIds: ["F5", "F6", "F7"],
+  },
+  paraphraseCases: [
+    {
+      claim: "The Ordinary Least Squares (OLS) estimator minimizes the sum of squared residuals.",
+      slide: 3,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: true,
+    },
+    {
+      claim: "The total variation in Y decomposes into explained and unexplained components: TSS = ESS + SSE.",
+      slide: 5,
+      supportMode: "supported_combination",
+      expectedSupported: true,
+    },
+    {
+      claim: "To compute the t-statistic for testing beta, divide the estimated slope minus null value by the standard error of beta.",
+      slide: 7,
+      supportMode: "example_abstraction",
+      expectedSupported: true,
+    },
+    {
+      claim: "Unsupervised quantum deep neural networks identify macroeconomic turning points without requiring empirical statistical observations.",
+      slide: 4,
+      supportMode: "faithful_paraphrase",
+      expectedSupported: false,
+    },
+  ],
   goldNote: createGoldNote({
     id: "note-deck-8",
     title: "OLS SIMPLE LINEAR REGRESSION",
@@ -2877,3 +3265,973 @@ export const GOLDEN_DECKS: GoldenDeckDefinition[] = [
   DECK_7_BOND_VALUATION,
   DECK_8_OLS_REGRESSION,
 ];
+
+// ============================================================================
+// COMPILER V2 BENCHMARK SUITE & 10-METRIC EVALUATION GATE
+// ============================================================================
+
+export const COMPILER_V2_CI_THRESHOLDS = {
+  MIN_FORMULA_DISCOVERY_RECALL: 0.98,
+  MIN_REQUIRED_ARTIFACT_INCLUSION: 1.0,
+  MIN_FIRST_USE_SYMBOL_HYGIENE: 1.0,
+  MIN_LATE_DECK_COVERAGE: 1.0,
+  MIN_PARAPHRASE_ACCEPTANCE: 1.0,
+  MIN_PLACED_FORMULA_EQUIVALENCE: 1.0,
+  MIN_CONDITION_PRESERVATION: 1.0,
+  MIN_STRICT_KATEX_COMPILE: 1.0,
+  MAX_UNSUPPORTED_CLAIMS: 0,
+  REQUIRE_PUBLICATION_HYGIENE: true,
+} as const;
+
+export interface CompilerDeckEvalResult {
+  deckId: string;
+  deckTitle: string;
+  passed: boolean;
+  formulaDiscoveryRecall: number;
+  requiredArtifactInclusionRate: number;
+  firstUseSymbolHygieneRate: number;
+  lateDeckCoverageRate: number;
+  paraphraseAcceptanceRate: number;
+  placedFormulaEquivalenceRate: number;
+  conditionPreservationRate: number;
+  strictKatexCompileRate: number;
+  unsupportedClaimCount: number;
+  publicationHygienePassed: boolean;
+  placedFormulaIds: string[];
+  missingFormulaIds: string[];
+  omittedFormulaIds: string[];
+  missingArtifactIds: string[];
+  duplicateSymbolDefinitions: Array<{ symbol: string; sectionLetter: string }>;
+  uncoveredLateDeckItems: string[];
+  failedParaphraseClaims: string[];
+  inequivalentFormulas: string[];
+  invertedConditions: string[];
+  katexCompileFailures: string[];
+  unsupportedClaims: string[];
+  violations: string[];
+}
+
+export interface CompilerSuiteEvalReport {
+  passed: boolean;
+  totalDecks: number;
+  passedDecks: number;
+  failedDecks: number;
+  averageDiscoveryRecall: number;
+  averageArtifactInclusion: number;
+  averageSymbolHygiene: number;
+  averageLateDeckCoverage: number;
+  averageParaphraseAcceptance: number;
+  averagePlacedEquivalence: number;
+  averageConditionPreservation: number;
+  averageStrictKatexCompile: number;
+  totalUnsupportedClaims: number;
+  allPublicationHygienePassed: boolean;
+  deckResults: CompilerDeckEvalResult[];
+  violations: string[];
+}
+
+/**
+ * Extracts all placed formula objects across note sections and subsections in reading order.
+ */
+function extractNoteFormulasInOrder(
+  sections: NoteSection[],
+): Array<{ formula: NoteFormula; sectionLetter: string }> {
+  const list: Array<{ formula: NoteFormula; sectionLetter: string }> = [];
+  for (const sec of sections) {
+    if (Array.isArray(sec.formulas)) {
+      for (const f of sec.formulas) {
+        list.push({ formula: f, sectionLetter: sec.letter });
+      }
+    }
+    if (Array.isArray(sec.subSections)) {
+      for (const sub of sec.subSections) {
+        if (Array.isArray(sub.formulas)) {
+          for (const f of sub.formulas) {
+            list.push({ formula: f, sectionLetter: sec.letter });
+          }
+        }
+      }
+    }
+  }
+  return list;
+}
+
+/**
+ * Extracts all textual content across note sections for keyword and concept matching.
+ */
+function extractAllNoteText(sections: NoteSection[]): string {
+  const parts: string[] = [];
+  for (const sec of sections) {
+    parts.push(sec.titleVi, sec.titleEn || "", sec.coreStatement || "", sec.overview || "");
+    if (sec.bulletPoints) parts.push(...sec.bulletPoints);
+    if (sec.groundedBullets) {
+      for (const b of sec.groundedBullets) {
+        parts.push(b.text, b.evidence || "");
+      }
+    }
+    if (sec.formulas) {
+      for (const f of sec.formulas) {
+        parts.push(f.name || "", f.leadText || "", f.latex, f.description || "");
+        for (const v of f.variables || []) {
+          parts.push(v.symbol, v.definition);
+        }
+      }
+    }
+    if (sec.subSections) {
+      for (const sub of sec.subSections) {
+        parts.push(sub.heading, sub.leadIn || "");
+        if (sub.bulletPoints) parts.push(...sub.bulletPoints);
+        if (sub.groundedBullets) {
+          for (const b of sub.groundedBullets) {
+            parts.push(b.text, b.evidence || "");
+          }
+        }
+        if (sub.formulas) {
+          for (const f of sub.formulas) {
+            parts.push(f.name || "", f.leadText || "", f.latex, f.description || "");
+            for (const v of f.variables || []) {
+              parts.push(v.symbol, v.definition);
+            }
+          }
+        }
+      }
+    }
+    if (sec.keyTakeaways) {
+      parts.push(sec.keyTakeaways.title || "");
+      parts.push(sec.keyTakeaways.modelSelectionRule || "");
+      parts.push(sec.keyTakeaways.realWorldConditions || "");
+      parts.push(sec.keyTakeaways.boundaryConditions || "");
+      if (sec.keyTakeaways.summaryPoints) parts.push(...sec.keyTakeaways.summaryPoints);
+      if (sec.keyTakeaways.items) {
+        for (const item of sec.keyTakeaways.items) {
+          parts.push(item.point, item.evidence || "");
+          if (item.subBullets) parts.push(...item.subBullets);
+        }
+      }
+    }
+  }
+  return parts.filter(Boolean).join(" ");
+}
+
+/**
+ * Evaluates a single golden lecture deck and ClutchNote against the 10-Metric Compiler Benchmark.
+ */
+export function evaluateCompilerGoldenDeck(
+  deck: GoldenDeckDefinition,
+  note: ClutchNote = deck.goldNote,
+): CompilerDeckEvalResult {
+  const violations: string[] = [];
+
+  // --------------------------------------------------------------------------
+  // Metric 1: Formula Discovery Recall (>= 0.98)
+  // --------------------------------------------------------------------------
+  const ledgerById = new Map<string, FormulaLedgerEntry>();
+  for (const entry of deck.expectedLedger) {
+    ledgerById.set(entry.id, entry);
+  }
+
+  const placedIdsSet = new Set<string>();
+  const formulasInOrder = extractNoteFormulasInOrder(note.sections);
+  const placedFormulas = formulasInOrder.map((item) => item.formula);
+
+  for (const f of placedFormulas) {
+    if (Array.isArray(f.formulaRefs)) {
+      for (const ref of f.formulaRefs) {
+        if (ledgerById.has(ref)) placedIdsSet.add(ref);
+      }
+    }
+    if (Array.isArray(f.derivedFrom)) {
+      for (const der of f.derivedFrom) {
+        if (ledgerById.has(der)) placedIdsSet.add(der);
+      }
+    }
+    const fNormKey = normalizeInventoryFormulaKey(f.latex);
+    if (fNormKey) {
+      for (const entry of deck.expectedLedger) {
+        const eLatexKey = normalizeInventoryFormulaKey(entry.latex);
+        const eRawKey = normalizeInventoryFormulaKey(entry.raw);
+        if (fNormKey === eLatexKey || fNormKey === eRawKey) {
+          placedIdsSet.add(entry.id);
+        }
+      }
+    }
+  }
+
+  const validOmittedSet = new Set(deck.validOmittedFormulaIds || []);
+  const omittedIdsSet = new Set<string>();
+  if (Array.isArray(note.omitted)) {
+    for (const om of note.omitted) {
+      if (om && om.formulaId && validOmittedSet.has(om.formulaId)) {
+        omittedIdsSet.add(om.formulaId);
+      }
+    }
+  }
+  for (const validId of validOmittedSet) {
+    if (!placedIdsSet.has(validId)) {
+      omittedIdsSet.add(validId);
+    }
+  }
+
+  const placedFormulaIds = Array.from(placedIdsSet).sort();
+  const omittedFormulaIds = Array.from(omittedIdsSet).sort();
+  const accountedIds = Array.from(new Set([...placedFormulaIds, ...omittedFormulaIds]));
+  const missingFormulaIds = deck.expectedPlacedFormulaIds.filter(
+    (id) => !placedIdsSet.has(id),
+  );
+
+  const formulaDiscoveryRecall =
+    deck.expectedLedger.length === 0
+      ? 1.0
+      : Number((accountedIds.length / deck.expectedLedger.length).toFixed(4));
+
+  if (formulaDiscoveryRecall < COMPILER_V2_CI_THRESHOLDS.MIN_FORMULA_DISCOVERY_RECALL) {
+    violations.push(
+      `Formula discovery recall ${(formulaDiscoveryRecall * 100).toFixed(1)}% < ${(COMPILER_V2_CI_THRESHOLDS.MIN_FORMULA_DISCOVERY_RECALL * 100).toFixed(1)}%. Missing formula IDs: ${missingFormulaIds.join(", ")}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Metric 2: Required-Artifact Inclusion Rate (=== 1.0)
+  // --------------------------------------------------------------------------
+  const requiredFormulaIds =
+    deck.requiredArtifactIds?.formulaIds ?? deck.expectedPlacedFormulaIds;
+  const conceptKeywords = deck.requiredArtifactIds?.conceptKeywords ?? [];
+  const missingArtifactIds: string[] = [];
+
+  for (const fId of requiredFormulaIds) {
+    if (!placedIdsSet.has(fId)) {
+      missingArtifactIds.push(`formula:${fId}`);
+    }
+  }
+
+  const allNoteText = extractAllNoteText(note.sections);
+  const allNoteTextLower = allNoteText.toLowerCase();
+
+  for (const kw of conceptKeywords) {
+    if (!allNoteTextLower.includes(kw.toLowerCase())) {
+      missingArtifactIds.push(`concept:${kw}`);
+    }
+  }
+
+  const totalRequiredArtifacts = requiredFormulaIds.length + conceptKeywords.length;
+  const requiredArtifactInclusionRate =
+    totalRequiredArtifacts === 0
+      ? 1.0
+      : Number(
+          (
+            (totalRequiredArtifacts - missingArtifactIds.length) /
+            totalRequiredArtifacts
+          ).toFixed(4),
+        );
+
+  if (requiredArtifactInclusionRate < COMPILER_V2_CI_THRESHOLDS.MIN_REQUIRED_ARTIFACT_INCLUSION) {
+    violations.push(
+      `Required artifact inclusion rate ${(requiredArtifactInclusionRate * 100).toFixed(1)}% < 100%. Missing artifacts: ${missingArtifactIds.join(", ")}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Metric 3: First-Use Symbol Hygiene Rate (=== 1.0)
+  // --------------------------------------------------------------------------
+  const duplicateSymbolDefinitions: Array<{ symbol: string; sectionLetter: string }> = [];
+  const seenSymbols = new Set<string>();
+  let totalVariableDefinitions = 0;
+
+  for (const { formula, sectionLetter } of formulasInOrder) {
+    for (const v of formula.variables || []) {
+      const sym = v.symbol.replace(/^\$+|\$+$/g, "").trim();
+      if (!sym) continue;
+      totalVariableDefinitions++;
+      if (seenSymbols.has(sym)) {
+        duplicateSymbolDefinitions.push({ symbol: sym, sectionLetter });
+      } else {
+        seenSymbols.add(sym);
+      }
+    }
+  }
+
+  const firstUseSymbolHygieneRate =
+    totalVariableDefinitions === 0
+      ? 1.0
+      : Number(
+          (
+            (totalVariableDefinitions - duplicateSymbolDefinitions.length) /
+            totalVariableDefinitions
+          ).toFixed(4),
+        );
+
+  if (firstUseSymbolHygieneRate < COMPILER_V2_CI_THRESHOLDS.MIN_FIRST_USE_SYMBOL_HYGIENE) {
+    violations.push(
+      `First-use symbol hygiene rate ${(firstUseSymbolHygieneRate * 100).toFixed(1)}% < 100%. Duplicate definitions: ${duplicateSymbolDefinitions.map((d) => `${d.symbol} in Sec ${d.sectionLetter}`).join(", ")}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Metric 4: Late-Deck Coverage Rate (=== 1.0)
+  // --------------------------------------------------------------------------
+  const uncoveredLateDeckItems: string[] = [];
+  let lateDeckCoverageRate = 1.0;
+
+  if (deck.lateDeckTopics) {
+    const { minSlide, requiredKeywords, requiredFormulaIds: lateFormulas } = deck.lateDeckTopics;
+    const lateRequirementsTotal = 1 + requiredKeywords.length + lateFormulas.length;
+    let lateSatisfied = 0;
+
+    const hasLateSlide = note.sections.some((s) =>
+      s.sourceSlides?.some((slideNum) => slideNum >= minSlide),
+    );
+    if (hasLateSlide) {
+      lateSatisfied++;
+    } else {
+      uncoveredLateDeckItems.push(`Late-deck slides (>= ${minSlide}) not covered`);
+    }
+
+    for (const fId of lateFormulas) {
+      if (placedIdsSet.has(fId)) {
+        lateSatisfied++;
+      } else {
+        uncoveredLateDeckItems.push(`Missing late-deck formula ${fId}`);
+      }
+    }
+
+    const lateSections = note.sections.filter((s) =>
+      s.sourceSlides?.some((slideNum) => slideNum >= minSlide),
+    );
+    const lateSectionsText = extractAllNoteText(lateSections).toLowerCase();
+
+    for (const kw of requiredKeywords) {
+      if (lateSectionsText.includes(kw.toLowerCase()) || allNoteTextLower.includes(kw.toLowerCase())) {
+        lateSatisfied++;
+      } else {
+        uncoveredLateDeckItems.push(`Missing late-deck keyword "${kw}"`);
+      }
+    }
+
+    lateDeckCoverageRate =
+      lateRequirementsTotal === 0
+        ? 1.0
+        : Number((lateSatisfied / lateRequirementsTotal).toFixed(4));
+
+    if (lateDeckCoverageRate < COMPILER_V2_CI_THRESHOLDS.MIN_LATE_DECK_COVERAGE) {
+      violations.push(
+        `Late-deck coverage rate ${(lateDeckCoverageRate * 100).toFixed(1)}% < 100%. Uncovered items: ${uncoveredLateDeckItems.join(", ")}`,
+      );
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Metric 5: Paraphrase Acceptance Rate (=== 1.0)
+  // --------------------------------------------------------------------------
+  const failedParaphraseClaims: string[] = [];
+  let paraphraseAcceptanceRate = 1.0;
+
+  if (deck.paraphraseCases && deck.paraphraseCases.length > 0) {
+    let correctCount = 0;
+    for (let i = 0; i < deck.paraphraseCases.length; i++) {
+      const pc = deck.paraphraseCases[i];
+      const verdict = evaluateClaimSupportDeterministically(
+        {
+          claimId: `case-${i + 1}`,
+          packetId: `P-case-${i + 1}`,
+          sectionLetter: "GLOBAL",
+          text: pc.claim,
+          slideCitations: [pc.slide],
+          slide: pc.slide,
+          supportMode: pc.supportMode,
+        },
+        deck.sources,
+      );
+
+      const isSupported = verdict.criticOutcome === "SUPPORTED";
+      if (isSupported === pc.expectedSupported) {
+        correctCount++;
+      } else {
+        failedParaphraseClaims.push(
+          `Case "${pc.claim}" expected ${pc.expectedSupported ? "SUPPORTED" : "REJECTED"} but got ${verdict.criticOutcome}`,
+        );
+      }
+    }
+
+    paraphraseAcceptanceRate = Number(
+      (correctCount / deck.paraphraseCases.length).toFixed(4),
+    );
+
+    if (paraphraseAcceptanceRate < COMPILER_V2_CI_THRESHOLDS.MIN_PARAPHRASE_ACCEPTANCE) {
+      violations.push(
+        `Paraphrase acceptance rate ${(paraphraseAcceptanceRate * 100).toFixed(1)}% < 100%. Failed cases: ${failedParaphraseClaims.join("; ")}`,
+      );
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Metric 6: Placed Formula Equivalence Rate (=== 1.0)
+  // --------------------------------------------------------------------------
+  let equivalentPlacedCount = 0;
+  const inequivalentFormulas: string[] = [];
+
+  for (const f of placedFormulas) {
+    let parentEntry: FormulaLedgerEntry | undefined;
+    if (f.formulaRefs && f.formulaRefs.length > 0) {
+      parentEntry = ledgerById.get(f.formulaRefs[0]);
+    } else if (f.derivedFrom && f.derivedFrom.length > 0) {
+      parentEntry = ledgerById.get(f.derivedFrom[0]);
+    }
+
+    if (!parentEntry) {
+      const fNormKey = normalizeInventoryFormulaKey(f.latex);
+      parentEntry = deck.expectedLedger.find(
+        (e) =>
+          normalizeInventoryFormulaKey(e.latex) === fNormKey ||
+          normalizeInventoryFormulaKey(e.raw) === fNormKey,
+      );
+    }
+
+    if (parentEntry) {
+      if (f.status === "contradicted") {
+        inequivalentFormulas.push(`Contradicted formula: $${f.latex}$`);
+        continue;
+      }
+      const fNormKey = normalizeInventoryFormulaKey(f.latex);
+      const pNormKey = normalizeInventoryFormulaKey(parentEntry.latex);
+      if (fNormKey && pNormKey && fNormKey === pNormKey) {
+        equivalentPlacedCount++;
+      } else {
+        const equivRes = checkFormulaEquivalence(parentEntry.latex, f.latex);
+        if (equivRes.equivalent && !equivRes.contradicts) {
+          equivalentPlacedCount++;
+        } else {
+          inequivalentFormulas.push(`Inequivalent: $${f.latex}$ vs $${parentEntry.latex}$`);
+        }
+      }
+    } else {
+      const matchesAny = deck.expectedLedger.some(
+        (e) =>
+          normalizeInventoryFormulaKey(e.latex) ===
+          normalizeInventoryFormulaKey(f.latex),
+      );
+      if (matchesAny) {
+        equivalentPlacedCount++;
+      } else {
+        inequivalentFormulas.push(`No parent ledger entry for $${f.latex}$`);
+      }
+    }
+  }
+
+  const placedFormulaEquivalenceRate =
+    placedFormulas.length === 0
+      ? 1.0
+      : Number((equivalentPlacedCount / placedFormulas.length).toFixed(4));
+
+  if (placedFormulaEquivalenceRate < COMPILER_V2_CI_THRESHOLDS.MIN_PLACED_FORMULA_EQUIVALENCE) {
+    violations.push(
+      `Placed formula equivalence rate ${(placedFormulaEquivalenceRate * 100).toFixed(1)}% < 100%. Inequivalent formulas: ${inequivalentFormulas.join("; ")}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Metric 7: Condition Preservation Rate (=== 1.0)
+  // --------------------------------------------------------------------------
+  const invertedConditions: string[] = [];
+  const triageResult = triageSlideDeck(deck.sources);
+  const boundaryAtoms = triageResult.extractedAtoms.filter(
+    (a) => a.kind === "boundary_condition",
+  );
+
+  const conditionRes = verifyConditionPreservation({
+    sections: note.sections,
+    atoms: boundaryAtoms,
+  });
+
+  for (const missing of conditionRes.missingConditions) {
+    invertedConditions.push(`Missing/Inverted condition (${missing.atomId}): ${missing.reason}`);
+  }
+
+  const sourcesText = deck.sources.map((s) => s.text).join("\n");
+  const hasInversion =
+    (/\br\s*<\s*g\b/i.test(allNoteText) && /\br\s*>\s*g\b/i.test(sourcesText)) ||
+    (/\bg\s*>\s*r\b/i.test(allNoteText) && /\bg\s*<\s*r\b/i.test(sourcesText)) ||
+    (/\b\\rho\s*>\s*1\b/i.test(allNoteText) && /\\rho\s*<\s*1/i.test(sourcesText)) ||
+    (/\bmr\s*>\s*p\b/i.test(allNoteText) && /\bmr\s*<\s*p\b/i.test(sourcesText));
+
+  if (hasInversion && !invertedConditions.some((c) => c.includes("inequality"))) {
+    invertedConditions.push("Mathematical inequality condition inverted relative to sources");
+  }
+
+  const totalConditions = Math.max(1, boundaryAtoms.length);
+  const conditionPreservationRate =
+    invertedConditions.length === 0
+      ? 1.0
+      : Number(
+          Math.max(
+            0,
+            (totalConditions - invertedConditions.length) / totalConditions,
+          ).toFixed(4),
+        );
+
+  if (conditionPreservationRate < COMPILER_V2_CI_THRESHOLDS.MIN_CONDITION_PRESERVATION) {
+    violations.push(
+      `Condition preservation rate ${(conditionPreservationRate * 100).toFixed(1)}% < 100%. Inverted conditions: ${invertedConditions.join("; ")}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Metric 8: Strict KaTeX Compile Rate (=== 1.0)
+  // --------------------------------------------------------------------------
+  const katexCompileFailures: string[] = [];
+  const katexRes = verifyStrictKatexCompile({ sections: note.sections });
+
+  for (const f of katexRes.failures) {
+    katexCompileFailures.push(`[${f.sectionLetter}:${f.targetId}] ${f.error}: '${f.latex}'`);
+  }
+
+  const strictKatexCompileRate =
+    katexRes.totalChecked === 0
+      ? 1.0
+      : Number(
+          (
+            (katexRes.totalChecked - katexRes.failures.length) /
+            katexRes.totalChecked
+          ).toFixed(4),
+        );
+
+  if (strictKatexCompileRate < COMPILER_V2_CI_THRESHOLDS.MIN_STRICT_KATEX_COMPILE) {
+    violations.push(
+      `Strict KaTeX compile rate ${(strictKatexCompileRate * 100).toFixed(1)}% < 100% (${katexRes.failures.length} failures). Failures: ${katexCompileFailures.join("; ")}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Metric 9: Unsupported Claim Count (=== 0)
+  // --------------------------------------------------------------------------
+  const unsupportedClaims: string[] = [];
+  const groundedClaims: Array<{
+    text: string;
+    slide: number;
+    evidence?: string;
+    status?: string;
+    verdict?: string;
+  }> = [];
+
+  for (const sec of note.sections) {
+    for (const b of sec.groundedBullets || []) {
+      groundedClaims.push({
+        text: b.text,
+        slide: b.slide,
+        evidence: b.evidence,
+        status: b.status,
+        verdict: b.verdict,
+      });
+    }
+    for (const sub of sec.subSections || []) {
+      for (const b of sub.groundedBullets || []) {
+        groundedClaims.push({
+          text: b.text,
+          slide: b.slide,
+          evidence: b.evidence,
+          status: b.status,
+          verdict: b.verdict,
+        });
+      }
+    }
+    for (const item of sec.keyTakeaways?.items || []) {
+      groundedClaims.push({
+        text: item.point,
+        slide: item.slide || 1,
+        evidence: item.evidence,
+        status: item.status,
+        verdict: item.verdict,
+      });
+    }
+  }
+
+  for (const claim of groundedClaims) {
+    if (claim.verdict === "UNSUPPORTED" || claim.status === "unsupported") {
+      unsupportedClaims.push(`Explicitly UNSUPPORTED on slide ${claim.slide}: "${claim.text}"`);
+      continue;
+    }
+    if (!claim.evidence || !claim.evidence.trim()) {
+      unsupportedClaims.push(`Lacks supporting evidence quote on slide ${claim.slide}: "${claim.text}"`);
+      continue;
+    }
+    const quoteRes = verifyEvidenceQuoteMatch(claim.evidence, claim.slide, deck.sources);
+    if (!quoteRes.matched) {
+      unsupportedClaims.push(`Evidence failed source match on slide ${claim.slide}: "${claim.evidence}"`);
+    }
+  }
+
+  if ((note.verification?.unsupportedClaimsRemoved ?? 0) > 0) {
+    unsupportedClaims.push(`${note.verification!.unsupportedClaimsRemoved} unsupported claims were removed during verification gate`);
+  }
+
+  const unsupportedClaimCount = unsupportedClaims.length;
+  if (unsupportedClaimCount > COMPILER_V2_CI_THRESHOLDS.MAX_UNSUPPORTED_CLAIMS) {
+    violations.push(
+      `Unsupported claim count (${unsupportedClaimCount}) exceeds threshold 0: ${unsupportedClaims.join("; ")}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Metric 10: Publication Hygiene Passed (=== true)
+  // --------------------------------------------------------------------------
+  const published = toPublishedHandout(note);
+  const strippedClean =
+    !("formulaLedger" in published) &&
+    !("omitted" in published) &&
+    !("verification" in published);
+
+  const renderedHtml = generateClutchNotePdfHtml(published);
+  const hasUncapturedNoise = renderedHtml.includes("Uncaptured Source Formulas");
+  const hasNeedsReviewNoise = renderedHtml.includes("Needs review");
+
+  const publicationHygienePassed =
+    strippedClean && !hasUncapturedNoise && !hasNeedsReviewNoise;
+
+  if (!publicationHygienePassed) {
+    violations.push(
+      `Publication hygiene failed: strippedClean=${strippedClean}, uncapturedNoise=${hasUncapturedNoise}, needsReviewNoise=${hasNeedsReviewNoise}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Final Verdict
+  // --------------------------------------------------------------------------
+  const passed =
+    formulaDiscoveryRecall >= COMPILER_V2_CI_THRESHOLDS.MIN_FORMULA_DISCOVERY_RECALL &&
+    requiredArtifactInclusionRate >= COMPILER_V2_CI_THRESHOLDS.MIN_REQUIRED_ARTIFACT_INCLUSION &&
+    firstUseSymbolHygieneRate >= COMPILER_V2_CI_THRESHOLDS.MIN_FIRST_USE_SYMBOL_HYGIENE &&
+    lateDeckCoverageRate >= COMPILER_V2_CI_THRESHOLDS.MIN_LATE_DECK_COVERAGE &&
+    paraphraseAcceptanceRate >= COMPILER_V2_CI_THRESHOLDS.MIN_PARAPHRASE_ACCEPTANCE &&
+    placedFormulaEquivalenceRate >= COMPILER_V2_CI_THRESHOLDS.MIN_PLACED_FORMULA_EQUIVALENCE &&
+    conditionPreservationRate >= COMPILER_V2_CI_THRESHOLDS.MIN_CONDITION_PRESERVATION &&
+    strictKatexCompileRate >= COMPILER_V2_CI_THRESHOLDS.MIN_STRICT_KATEX_COMPILE &&
+    unsupportedClaimCount <= COMPILER_V2_CI_THRESHOLDS.MAX_UNSUPPORTED_CLAIMS &&
+    publicationHygienePassed === COMPILER_V2_CI_THRESHOLDS.REQUIRE_PUBLICATION_HYGIENE;
+
+  return {
+    deckId: deck.id,
+    deckTitle: deck.title,
+    passed,
+    formulaDiscoveryRecall,
+    requiredArtifactInclusionRate,
+    firstUseSymbolHygieneRate,
+    lateDeckCoverageRate,
+    paraphraseAcceptanceRate,
+    placedFormulaEquivalenceRate,
+    conditionPreservationRate,
+    strictKatexCompileRate,
+    unsupportedClaimCount,
+    publicationHygienePassed,
+    placedFormulaIds,
+    missingFormulaIds,
+    omittedFormulaIds,
+    missingArtifactIds,
+    duplicateSymbolDefinitions,
+    uncoveredLateDeckItems,
+    failedParaphraseClaims,
+    inequivalentFormulas,
+    invertedConditions,
+    katexCompileFailures,
+    unsupportedClaims,
+    violations,
+  };
+}
+
+/**
+ * Runs the full Compiler v2 Benchmark Suite across golden decks and evaluates overall CI compliance.
+ */
+export function runCompilerGoldenBenchmarkSuite(
+  decks: GoldenDeckDefinition[] = GOLDEN_DECKS,
+): CompilerSuiteEvalReport {
+  const deckResults: CompilerDeckEvalResult[] = [];
+  const aggregatedViolations: string[] = [];
+
+  let recallSum = 0;
+  let artifactSum = 0;
+  let hygieneSum = 0;
+  let lateSum = 0;
+  let paraphraseSum = 0;
+  let equivSum = 0;
+  let condSum = 0;
+  let katexSum = 0;
+  let totalUnsupported = 0;
+  let allPubHygiene = true;
+  let passedDecks = 0;
+  let failedDecks = 0;
+
+  for (const deck of decks) {
+    const res = evaluateCompilerGoldenDeck(deck, deck.goldNote);
+    deckResults.push(res);
+
+    recallSum += res.formulaDiscoveryRecall;
+    artifactSum += res.requiredArtifactInclusionRate;
+    hygieneSum += res.firstUseSymbolHygieneRate;
+    lateSum += res.lateDeckCoverageRate;
+    paraphraseSum += res.paraphraseAcceptanceRate;
+    equivSum += res.placedFormulaEquivalenceRate;
+    condSum += res.conditionPreservationRate;
+    katexSum += res.strictKatexCompileRate;
+    totalUnsupported += res.unsupportedClaimCount;
+    if (!res.publicationHygienePassed) allPubHygiene = false;
+
+    if (res.passed) {
+      passedDecks++;
+    } else {
+      failedDecks++;
+      aggregatedViolations.push(`[${deck.id}] ${res.violations.join(" | ")}`);
+    }
+  }
+
+  const n = decks.length;
+  const averageDiscoveryRecall = n === 0 ? 1.0 : Number((recallSum / n).toFixed(4));
+  const averageArtifactInclusion = n === 0 ? 1.0 : Number((artifactSum / n).toFixed(4));
+  const averageSymbolHygiene = n === 0 ? 1.0 : Number((hygieneSum / n).toFixed(4));
+  const averageLateDeckCoverage = n === 0 ? 1.0 : Number((lateSum / n).toFixed(4));
+  const averageParaphraseAcceptance = n === 0 ? 1.0 : Number((paraphraseSum / n).toFixed(4));
+  const averagePlacedEquivalence = n === 0 ? 1.0 : Number((equivSum / n).toFixed(4));
+  const averageConditionPreservation = n === 0 ? 1.0 : Number((condSum / n).toFixed(4));
+  const averageStrictKatexCompile = n === 0 ? 1.0 : Number((katexSum / n).toFixed(4));
+
+  const passed =
+    failedDecks === 0 &&
+    averageDiscoveryRecall >= COMPILER_V2_CI_THRESHOLDS.MIN_FORMULA_DISCOVERY_RECALL &&
+    averageArtifactInclusion >= COMPILER_V2_CI_THRESHOLDS.MIN_REQUIRED_ARTIFACT_INCLUSION &&
+    averageSymbolHygiene >= COMPILER_V2_CI_THRESHOLDS.MIN_FIRST_USE_SYMBOL_HYGIENE &&
+    averageLateDeckCoverage >= COMPILER_V2_CI_THRESHOLDS.MIN_LATE_DECK_COVERAGE &&
+    averageParaphraseAcceptance >= COMPILER_V2_CI_THRESHOLDS.MIN_PARAPHRASE_ACCEPTANCE &&
+    averagePlacedEquivalence >= COMPILER_V2_CI_THRESHOLDS.MIN_PLACED_FORMULA_EQUIVALENCE &&
+    averageConditionPreservation >= COMPILER_V2_CI_THRESHOLDS.MIN_CONDITION_PRESERVATION &&
+    averageStrictKatexCompile >= COMPILER_V2_CI_THRESHOLDS.MIN_STRICT_KATEX_COMPILE &&
+    totalUnsupported <= COMPILER_V2_CI_THRESHOLDS.MAX_UNSUPPORTED_CLAIMS &&
+    allPubHygiene === COMPILER_V2_CI_THRESHOLDS.REQUIRE_PUBLICATION_HYGIENE;
+
+  return {
+    passed,
+    totalDecks: n,
+    passedDecks,
+    failedDecks,
+    averageDiscoveryRecall,
+    averageArtifactInclusion,
+    averageSymbolHygiene,
+    averageLateDeckCoverage,
+    averageParaphraseAcceptance,
+    averagePlacedEquivalence,
+    averageConditionPreservation,
+    averageStrictKatexCompile,
+    totalUnsupportedClaims: totalUnsupported,
+    allPublicationHygienePassed: allPubHygiene,
+    deckResults,
+    violations: aggregatedViolations,
+  };
+}
+
+/**
+ * Creates a 105-slide Corporate Finance fixture deck with CAPM and Portfolio Beta
+ * placed in the late deck (Slides 85–105).
+ */
+export function create105SlideLateDeckFixture(): GoldenDeckDefinition {
+  const sources: SourceBlock[] = [
+    {
+      id: "slide-1",
+      label: "Slide 1",
+      text: "Corporate Finance: Principles of Corporate Finance and Capital Markets. Foundations of investment decision making.",
+    },
+    {
+      id: "slide-10",
+      label: "Slide 10",
+      text: "Time Value of Money and Discounting. Present value of cash flows.",
+    },
+    {
+      id: "slide-50",
+      label: "Slide 50",
+      text: "Capital Budgeting and NPV. Net present value decision rules.",
+    },
+    {
+      id: "slide-85",
+      label: "Slide 85",
+      text: "Systematic Risk and Beta. The beta coefficient measures sensitivity to market movements: \\beta_i = \\frac{Cov(R_i, R_M)}{\\sigma_M^2}.",
+    },
+    {
+      id: "slide-95",
+      label: "Slide 95",
+      text: "Capital Asset Pricing Model (CAPM). The Security Market Line specifies expected return: E(R_i) = R_f + \\beta_i (E(R_M) - R_f).",
+    },
+    {
+      id: "slide-105",
+      label: "Slide 105",
+      text: "Portfolio Beta and Risk Aggregation. The beta of a portfolio is the weighted average of individual asset betas: \\beta_p = w_A \\beta_A + w_B \\beta_B.",
+    },
+  ];
+
+  const ledger: FormulaLedgerEntry[] = [
+    {
+      id: "F_BETA",
+      slide: 85,
+      raw: "\\beta_i = \\frac{Cov(R_i, R_M)}{\\sigma_M^2}",
+      latex: "\\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}",
+      origin: "text",
+      label: "Beta Coefficient",
+      evidence: "\\beta_i = \\frac{Cov(R_i, R_M)}{\\sigma_M^2}",
+      variables: [
+        { symbol: "\\beta_i", definition: "Beta of asset i" },
+        { symbol: "\\sigma_M^2", definition: "Market variance" },
+      ],
+    },
+    {
+      id: "F_CAPM",
+      slide: 95,
+      raw: "E(R_i) = R_f + \\beta_i (E(R_M) - R_f)",
+      latex: "E(R_i) = R_f + \\beta_i(E(R_M) - R_f)",
+      origin: "text",
+      label: "Capital Asset Pricing Model",
+      evidence: "E(R_i) = R_f + \\beta_i (E(R_M) - R_f)",
+      variables: [
+        { symbol: "R_f", definition: "Risk-free rate" },
+        { symbol: "E(R_M) - R_f", definition: "Market risk premium" },
+      ],
+    },
+    {
+      id: "F_BETA_P",
+      slide: 105,
+      raw: "\\beta_p = w_A \\beta_A + w_B \\beta_B",
+      latex: "\\beta_p = w_A \\beta_A + w_B \\beta_B",
+      origin: "text",
+      label: "Portfolio Beta",
+      evidence: "\\beta_p = w_A \\beta_A + w_B \\beta_B",
+      variables: [
+        { symbol: "\\beta_p", definition: "Portfolio beta" },
+        { symbol: "w_A", definition: "Weight of asset A" },
+      ],
+    },
+  ];
+
+  const goldNote = createGoldNote({
+    id: "note-105-slide-corp-fin",
+    title: "CORPORATE FINANCE (105 SLIDES COMPREHENSIVE)",
+    subject: "Corporate Finance",
+    originalFileName: "corp-fin-105-slides.pptx",
+    originalSlideCount: 105,
+    executiveSummary:
+      "Comprehensive Corporate Finance note covering capital budgeting, systematic risk, CAPM, and portfolio beta across 105 lecture slides.",
+    formulaLedger: ledger,
+    sections: [
+      createSection({
+        id: "sec-105-a",
+        letter: "A",
+        titleVi: "A. TỔNG QUAN TÀI CHÍNH DOANH NGHIỆP",
+        titleEn: "Corporate Finance Overview",
+        overview: "Core principles of valuation and capital budgeting.",
+        groundedBullets: [
+          createGroundedBullet(
+            "Foundations of investment decision making",
+            1,
+            "Foundations of investment decision making",
+          ),
+        ],
+        sourceSlides: [1, 10, 50],
+      }),
+      createSection({
+        id: "sec-105-b",
+        letter: "B",
+        titleVi: "B. MÔ HÌNH ĐỊNH GIÁ TÀI SẢN VỐN (CAPM) VÀ BETA DANH MỤC",
+        titleEn: "CAPM and Portfolio Beta",
+        overview: "Systematic risk pricing on the Security Market Line:",
+        formulas: [
+          createFormula({
+            leadText: "Beta coefficient formula:",
+            latex: "\\beta_i = \\frac{\\text{Cov}(R_i, R_M)}{\\sigma_M^2}",
+            formulaRefs: ["F_BETA"],
+            slide: 85,
+            variables: [
+              { symbol: "\\beta_i", definition: "Beta of asset i" },
+              { symbol: "\\sigma_M^2", definition: "Market variance" },
+            ],
+          }),
+          createFormula({
+            leadText: "CAPM Security Market Line:",
+            latex: "E(R_i) = R_f + \\beta_i(E(R_M) - R_f)",
+            formulaRefs: ["F_CAPM"],
+            slide: 95,
+            variables: [
+              { symbol: "R_f", definition: "Risk-free rate" },
+              { symbol: "E(R_M) - R_f", definition: "Market risk premium" },
+            ],
+          }),
+          createFormula({
+            leadText: "Portfolio beta:",
+            latex: "\\beta_p = w_A \\beta_A + w_B \\beta_B",
+            formulaRefs: ["F_BETA_P"],
+            slide: 105,
+            variables: [
+              { symbol: "\\beta_p", definition: "Portfolio beta" },
+              { symbol: "w_A", definition: "Weight of asset A" },
+            ],
+          }),
+        ],
+        groundedBullets: [
+          createGroundedBullet(
+            "The beta coefficient measures sensitivity to market movements",
+            85,
+            "beta coefficient measures sensitivity to market movements",
+          ),
+          createGroundedBullet(
+            "The Security Market Line specifies expected return under CAPM",
+            95,
+            "Security Market Line specifies expected return",
+          ),
+          createGroundedBullet(
+            "The beta of a portfolio is the weighted average of individual asset betas",
+            105,
+            "beta of a portfolio is the weighted average of individual asset betas",
+          ),
+        ],
+        sourceSlides: [85, 95, 105],
+      }),
+    ],
+  });
+
+  return {
+    id: "fixture-105-slide-corporate-finance",
+    title: "Corporate Finance (105 Slides)",
+    subject: "Corporate Finance",
+    slideCount: 105,
+    sources,
+    expectedLedger: ledger,
+    expectedPlacedFormulaIds: ["F_BETA", "F_CAPM", "F_BETA_P"],
+    goldNote,
+    requiredArtifactIds: {
+      formulaIds: ["F_BETA", "F_CAPM", "F_BETA_P"],
+      conceptKeywords: ["CAPM", "Security Market Line", "Portfolio Beta"],
+    },
+    lateDeckTopics: {
+      minSlide: 85,
+      requiredKeywords: ["CAPM", "Security Market Line", "Portfolio Beta"],
+      requiredFormulaIds: ["F_CAPM", "F_BETA_P"],
+    },
+    paraphraseCases: [
+      {
+        claim: "The beta coefficient measures sensitivity to market movements.",
+        slide: 85,
+        supportMode: "faithful_paraphrase",
+        expectedSupported: true,
+      },
+      {
+        claim: "Under the Capital Asset Pricing Model, expected return equals the risk-free rate plus beta times the market risk premium.",
+        slide: 95,
+        supportMode: "supported_combination",
+        expectedSupported: true,
+      },
+      {
+        claim: "To calculate portfolio beta, multiply each asset beta by its portfolio weight and sum the products.",
+        slide: 105,
+        supportMode: "example_abstraction",
+        expectedSupported: true,
+      },
+      {
+        claim: "Quantum cryptocurrency arbitrage guarantees riskless profits and absolute immunity against sovereign default crises.",
+        slide: 85,
+        supportMode: "faithful_paraphrase",
+        expectedSupported: false,
+      },
+    ],
+  };
+}

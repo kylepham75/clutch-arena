@@ -20,7 +20,9 @@ import {
   type SynthesisResult,
   type FormulaLedgerEntry,
   type ExtractedSlideClaim,
+  type AcceptedFormula,
 } from "@/lib/schemas/notes";
+import type { SourceBlock } from "@/lib/schemas/ingestion";
 import {
   generatedClutchNoteSchema,
   applyHallucinationShield,
@@ -35,6 +37,8 @@ import {
   injectLedgerFormulasById,
   mapSynthesisSection,
   generateClutchNote,
+  compileClutchNoteV2,
+  type CompiledNoteOutput,
 } from "@/lib/ai/generate-notes";
 import {
   getSafeOpenRouterReasoningEffort,
@@ -2183,6 +2187,367 @@ describe("Clutch Notes AI Schema & Prompt Verification", () => {
         expect(synthCall?.model?.modelId).toBe("anthropic/claude-haiku-5.5");
         expect(synthCall?.providerOptions?.openrouter?.reasoning?.effort).toBe("none");
         expect(synthCall?.maxOutputTokens).toBeGreaterThanOrEqual(32_768);
+      } finally {
+        if (prevOpenRouterKey === undefined) {
+          delete process.env.OPENROUTER_API_KEY;
+        } else {
+          process.env.OPENROUTER_API_KEY = prevOpenRouterKey;
+        }
+      }
+    });
+  });
+
+  describe("Stage 2: v2 Compiler Pipeline, Chapter-Agnostic Consolidation & AcceptedFormula Injection Guard", () => {
+    it("never overwrites a validated structured AcceptedFormula with a flattened origin: 'text' scrape while marking formula ID as placed", () => {
+      const structuredLatex = "P_0 = \\frac{D_1}{R - g}";
+      const flattenedLatex = "P_0 = D_1 / (R - g)";
+
+      const testSection = createTestSection({
+        id: "sec-a-1",
+        letter: "A",
+        titleVi: "A. ĐỊNH GIÁ CỔ PHIẾU THEO DÒNG CỔ TỨC (DDM)",
+        formulas: [
+          createTestFormula({
+            formulaRefs: ["F1"],
+            latex: structuredLatex,
+            origin: "omml",
+            variables: [
+              { symbol: "P_0", definition: "Giá cổ phiếu thời điểm hiện tại" },
+              { symbol: "D_1", definition: "Cổ tức kỳ vọng chi trả vào cuối năm 1" },
+              { symbol: "R", definition: "Tỷ suất sinh lợi đòi hỏi của nhà đầu tư" },
+              { symbol: "g", definition: "Tốc độ tăng trưởng cổ tức bền vững" },
+            ],
+          }),
+        ],
+      });
+
+      const textScrapeLedger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 4,
+          raw: "P0 = D1 / (R - g)",
+          latex: flattenedLatex,
+          origin: "text",
+          confidence: 0.6,
+          variables: [],
+        },
+      ];
+
+      const acceptedFormulas: AcceptedFormula[] = [
+        {
+          id: "F1",
+          slide: 4,
+          raw: "P0 = D1 / (R - g)",
+          displayLatex: structuredLatex,
+          origin: "omml",
+          kind: "formula",
+          evidenceIds: [],
+          symbolBindingIds: ["sym-p0", "sym-d1", "sym-r", "sym-g"],
+          conditionAtomIds: [],
+          sourceVariantIds: [],
+          revision: 1,
+        },
+      ];
+
+      // Test with acceptedFormulas passed
+      const resultWithAccepted = injectLedgerFormulasById(
+        [testSection],
+        textScrapeLedger,
+        acceptedFormulas,
+      );
+
+      expect(resultWithAccepted.placedIds.has("F1")).toBe(true);
+      expect(resultWithAccepted.sections[0].formulas[0].latex).toBe(structuredLatex);
+      expect(resultWithAccepted.sections[0].formulas[0].latex).not.toBe(flattenedLatex);
+      expect(resultWithAccepted.sections[0].formulas[0].formulaRefs).toEqual(["F1"]);
+
+      // Test without acceptedFormulas: structural quality comparison preserves \frac over flattened / text
+      const resultWithoutAccepted = injectLedgerFormulasById(
+        [testSection],
+        textScrapeLedger,
+      );
+
+      expect(resultWithoutAccepted.placedIds.has("F1")).toBe(true);
+      expect(resultWithoutAccepted.sections[0].formulas[0].latex).toBe(structuredLatex);
+      expect(resultWithoutAccepted.sections[0].formulas[0].latex).not.toBe(flattenedLatex);
+
+      // Conversely, if synthesized formula has degraded text drift and ledger has higher quality OMML equation, it updates
+      const driftedSection = createTestSection({
+        id: "sec-a-2",
+        letter: "A",
+        titleVi: "A. ĐỊNH GIÁ CỔ PHIẾU",
+        formulas: [
+          createTestFormula({
+            formulaRefs: ["F1"],
+            latex: "P_0 = D_1 / (R - g)",
+            origin: "llm",
+          }),
+        ],
+      });
+
+      const highQualityLedger: FormulaLedgerEntry[] = [
+        {
+          id: "F1",
+          slide: 4,
+          raw: "P0 = \\frac{D_1}{R - g}",
+          latex: structuredLatex,
+          origin: "omml",
+          confidence: 0.95,
+          variables: [],
+        },
+      ];
+
+      const upgradedResult = injectLedgerFormulasById([driftedSection], highQualityLedger);
+      expect(upgradedResult.placedIds.has("F1")).toBe(true);
+      expect(upgradedResult.sections[0].formulas[0].latex).toBe(structuredLatex);
+    });
+
+    it("contains zero hardcoded Chapter 9 title overrides across arbitrary topics and custom Stock Valuation headers", () => {
+      // Case A: Arbitrary non-Chapter 9 topic (Chapter 16 Capital Structure) with 6 sections
+      const capitalStructureSections: NoteSection[] = [
+        createTestSection({
+          id: "sec-a",
+          letter: "A",
+          titleVi: "A. TỔNG QUAN CƠ CẤU VỐN (CAPITAL STRUCTURE OVERVIEW)",
+          bulletPoints: ["Financial leverage affects EPS and ROE variability."],
+        }),
+        createTestSection({
+          id: "sec-b",
+          letter: "B",
+          titleVi: "B. ĐỊNH ĐỀ M&M I KHÔNG CÓ THUẾ (MM PROPOSITION I NO TAX)",
+          bulletPoints: ["Firm value is independent of capital structure."],
+        }),
+        createTestSection({
+          id: "sec-c",
+          letter: "C",
+          titleVi: "C. ĐỊNH ĐỀ M&M II KHÔNG CÓ THUẾ (MM PROPOSITION II NO TAX)",
+          bulletPoints: ["Cost of equity rises linearly with debt-equity ratio."],
+        }),
+        createTestSection({
+          id: "sec-d",
+          letter: "D",
+          titleVi: "D. TẤM CHẮN THUẾ LÃI VAY VÀ ĐỊNH ĐỀ M&M CÓ THUẾ",
+          bulletPoints: ["Interest tax shield increases levered firm value."],
+        }),
+        createTestSection({
+          id: "sec-e",
+          letter: "E",
+          titleVi: "E. CHI PHÍ KIỆT QUỆ TÀI CHÍNH VÀ VỠ NỢ",
+          bulletPoints: ["Direct and indirect costs of financial distress."],
+        }),
+        createTestSection({
+          id: "sec-f",
+          letter: "F",
+          titleVi: "F. LÝ THUYẾT ĐÁNH ĐỔI TỐI ƯU (STATIC TRADE-OFF THEORY)",
+          bulletPoints: ["Optimal debt ratio balances tax shield and distress costs."],
+        }),
+      ];
+
+      const rawCapStructText = `
+        Chapter 16: Capital Structure and Financial Leverage.
+        M&M Proposition I and II without tax.
+        M&M Proposition I and II with corporate taxes.
+        Interest tax shield: PV(Tax Shield) = Tc * D.
+        Costs of financial distress and optimal capital structure.
+      `;
+
+      const shieldedCapStruct = applyHallucinationShield(
+        capitalStructureSections,
+        rawCapStructText,
+      );
+
+      expect(shieldedCapStruct.length).toBe(6);
+      expect(shieldedCapStruct[2].titleVi).not.toContain("DDM");
+      expect(shieldedCapStruct[2].titleVi).toContain("M&M II");
+      expect(shieldedCapStruct[3].titleVi).not.toContain("PARAMETERS IN DIVIDEND DISCOUNT MODEL");
+      expect(shieldedCapStruct[3].titleVi).toContain("TẤM CHẮN THUẾ");
+      expect(shieldedCapStruct[4].titleVi).not.toContain("VALUE OF PREFERENCE SHARE");
+      expect(shieldedCapStruct[4].titleVi).toContain("KIỆT QUỆ TÀI CHÍNH");
+      expect(shieldedCapStruct[5].titleVi).toContain("ĐÁNH ĐỔI TỐI ƯU");
+
+      // Case B: Stock Valuation topic with custom section headers
+      const customStockSections: NoteSection[] = [
+        createTestSection({
+          id: "sec-a",
+          letter: "A",
+          titleVi: "A. CƠ CHẾ ĐỊNH GIÁ VÀ QUYỀN CỦA CỔ ĐÔNG",
+          bulletPoints: ["Shareholder rights and cash flow claims."],
+        }),
+        createTestSection({
+          id: "sec-b",
+          letter: "B",
+          titleVi: "B. MÔ HÌNH TỔNG QUÁT CHIẾT KHẤU CỔ TỨC DDM",
+          bulletPoints: ["Generalized dividend discount model."],
+        }),
+        createTestSection({
+          id: "sec-c",
+          letter: "C",
+          titleVi: "C. MÔ HÌNH TĂNG TRƯỞNG PHI HẰNG SỐ (NON-CONSTANT GROWTH)",
+          bulletPoints: ["Multi-stage dividend growth model."],
+        }),
+        createTestSection({
+          id: "sec-d",
+          letter: "D",
+          titleVi: "D. PHÂN TÍCH ĐỘ NHẠY CỦA TỐC ĐỘ TĂNG TRƯỞNG G",
+          bulletPoints: ["Sensitivity analysis of growth rate and required return."],
+        }),
+        createTestSection({
+          id: "sec-e",
+          letter: "E",
+          titleVi: "E. ĐỊNH GIÁ THEO BỘI SỐ THỊ TRƯỜNG P/E VÀ P/B",
+          bulletPoints: ["Market multiple valuation using comparable multiples."],
+        }),
+        createTestSection({
+          id: "sec-f",
+          letter: "F",
+          titleVi: "F. ĐÁNH GIÁ HIỆU SUẤT VÀ TÍNH KHẢ THI THỰC TẾ",
+          bulletPoints: ["Practical limitations of equity valuation models."],
+        }),
+      ];
+
+      const rawStockText = `
+        Chapter 9: Stock Valuation.
+        Dividend Discount Model (DDM). Parameters: D1, R, g.
+        Preference shares valuation.
+        Comparable multiples: P/E, P/B.
+      `;
+
+      const shieldedStock = applyHallucinationShield(
+        customStockSections,
+        rawStockText,
+      );
+
+      expect(shieldedStock.length).toBe(6);
+      expect(shieldedStock[3].titleVi).toBe("D. PHÂN TÍCH ĐỘ NHẠY CỦA TỐC ĐỘ TĂNG TRƯỞNG G");
+      expect(shieldedStock[3].titleVi).not.toContain("PARAMETERS IN DIVIDEND DISCOUNT MODEL");
+      expect(shieldedStock[4].titleVi).toBe("E. ĐỊNH GIÁ THEO BỘI SỐ THỊ TRƯỜNG P/E VÀ P/B");
+      expect(shieldedStock[4].titleVi).not.toContain("VALUE OF PREFERENCE SHARE");
+      expect(shieldedStock[2].titleVi).toBe("C. MÔ HÌNH TĂNG TRƯỞNG PHI HẰNG SỐ (NON-CONSTANT GROWTH)");
+    });
+
+    it("executes the full v2 compiler pipeline via compileClutchNoteV2 and generateClutchNote with useCompilerV2: true", async () => {
+      const prevOpenRouterKey = process.env.OPENROUTER_API_KEY;
+      process.env.OPENROUTER_API_KEY = "sk-or-v1-test-key";
+      try {
+        const sources: SourceBlock[] = [
+          {
+            id: "slide-1",
+            label: "Slide 1: Mô hình Chiết khấu Cổ tức",
+            text: `
+              Chương 9: Định giá Cổ phiếu.
+              Mô hình Gordon Growth:
+              P_0 = \\frac{D_1}{R - g}
+              Trong đó:
+              P_0: Giá cổ phiếu hiện tại
+              D_1: Cổ tức kỳ vọng năm tới
+              R: Tỷ suất sinh lợi đòi hỏi
+              g: Tốc độ tăng trưởng cổ tức không đổi
+            `,
+          },
+          {
+            id: "slide-2",
+            label: "Slide 2: Cổ phiếu Ưu đãi và Tăng trưởng Bằng Không",
+            text: `
+              Định giá cổ phiếu ưu đãi (Zero Growth DDM):
+              P_0 = \\frac{D}{R}
+              Trong đó:
+              P_0: Giá cổ phiếu hiện tại
+              D: Cổ tức cố định hàng năm
+              R: Tỷ suất sinh lợi đòi hỏi
+            `,
+          },
+        ];
+
+        const ledger: FormulaLedgerEntry[] = [
+          {
+            id: "F1",
+            slide: 1,
+            raw: "P_0 = \\frac{D_1}{R - g}",
+            latex: "P_0 = \\frac{D_1}{R - g}",
+            origin: "omml",
+            confidence: 0.95,
+            variables: [
+              { symbol: "P_0", definition: "Giá cổ phiếu hiện tại" },
+              { symbol: "D_1", definition: "Cổ tức kỳ vọng năm tới" },
+              { symbol: "R", definition: "Tỷ suất sinh lợi đòi hỏi" },
+              { symbol: "g", definition: "Tốc độ tăng trưởng cổ tức không đổi" },
+            ],
+          },
+          {
+            id: "F2",
+            slide: 2,
+            raw: "P_0 = \\frac{D}{R}",
+            latex: "P_0 = \\frac{D}{R}",
+            origin: "omml",
+            confidence: 0.95,
+            variables: [
+              { symbol: "P_0", definition: "Giá cổ phiếu hiện tại" },
+              { symbol: "D", definition: "Cổ tức cố định hàng năm" },
+              { symbol: "R", definition: "Tỷ suất sinh lợi đòi hỏi" },
+            ],
+          },
+        ];
+
+        // 1. Direct invocation of compileClutchNoteV2
+        const compiled = await compileClutchNoteV2({
+          fileName: "Chapter_09_Stock_Valuation.pptx",
+          slideCount: 2,
+          sources,
+          formulaLedger: ledger,
+        });
+
+        expect(compiled.clutchNote).toBeDefined();
+        expect(compiled.publishedHandout).toBeDefined();
+        expect(compiled.placedFormulaIds).toContain("F1");
+        expect(compiled.placedFormulaIds).toContain("F2");
+        expect(compiled.clutchNote.sections.length).toBeGreaterThanOrEqual(1);
+
+        // Verify first-use symbol definitions in reading order:
+        // P_0 and R are first introduced on F1, so they must NOT be re-defined on F2
+        const allFormulas = compiled.clutchNote.sections.flatMap((s) => [
+          ...s.formulas,
+          ...(s.subSections ?? []).flatMap((sub) => sub.formulas),
+        ]);
+        const f1 = allFormulas.find((f) => f.formulaRefs?.includes("F1"));
+        const f2 = allFormulas.find((f) => f.formulaRefs?.includes("F2"));
+
+        expect(f1).toBeDefined();
+        expect(f2).toBeDefined();
+
+        if (f1 && f2) {
+          const f1Symbols = f1.variables.map((v) => v.symbol.replace(/^\$+|\$+$/g, "").trim());
+          expect(f1Symbols).toContain("P_0");
+          expect(f1Symbols).toContain("R");
+
+          const f2Symbols = f2.variables.map((v) => v.symbol.replace(/^\$+|\$+$/g, "").trim());
+          expect(f2Symbols).toContain("D");
+          expect(f2Symbols).not.toContain("P_0");
+          expect(f2Symbols).not.toContain("R");
+        }
+
+        // Verify that rawMarkdown renders "**Trong đó:**"
+        expect(compiled.clutchNote.rawMarkdown).toContain("**Trong đó:**");
+        expect(compiled.clutchNote.rawMarkdown).toContain("$P_0$");
+
+        // 2. Invocation via generateClutchNote with useCompilerV2: true and onCompiledHandout callback
+        const onCompiledHandout = vi.fn();
+        const clutchNote = await generateClutchNote({
+          fileName: "Chapter_09_Stock_Valuation.pptx",
+          slideCount: 2,
+          sources,
+          formulaLedger: ledger,
+          useCompilerV2: true,
+          onCompiledHandout,
+          skipVerifierLlm: true,
+          maxRepairAttempts: 0,
+        });
+
+        expect(onCompiledHandout).toHaveBeenCalledTimes(1);
+        const handedOutput = onCompiledHandout.mock.calls[0][0];
+        expect(handedOutput.clutchNote.title).toBe(clutchNote.title);
+        expect(clutchNote.sections.length).toBeGreaterThanOrEqual(1);
+        expect(clutchNote.verification).toBeDefined();
+        expect(clutchNote.rawMarkdown).toContain("**Trong đó:**");
       } finally {
         if (prevOpenRouterKey === undefined) {
           delete process.env.OPENROUTER_API_KEY;

@@ -14,6 +14,12 @@ import {
   DECK_7_BOND_VALUATION,
   DECK_8_OLS_REGRESSION,
   type GoldenDeckDefinition,
+  COMPILER_V2_CI_THRESHOLDS,
+  evaluateCompilerGoldenDeck,
+  runCompilerGoldenBenchmarkSuite,
+  create105SlideLateDeckFixture,
+  type CompilerDeckEvalResult,
+  type CompilerSuiteEvalReport,
 } from "@/lib/notes/eval/golden-decks";
 import {
   evaluateGoldenDeck,
@@ -1120,6 +1126,415 @@ describe("Golden Evaluation: 5-Step Numeric Resolution Cascade & Section Gate", 
     expect(gateRes.omittedNotices[0]).toContain("Section C");
 
     expect(gateRes.sections.map((s) => s.letter)).toEqual(["A", "B"]);
+  });
+});
+
+describe("Stage 4.2: 10-Metric Compiler Golden Benchmark Suite", () => {
+  describe("Suite Aggregation & 100% CI Compliance", () => {
+    it("all 8 golden decks pass evaluateCompilerGoldenDeck with 100% compliance across all 10 metrics", () => {
+      for (const deck of GOLDEN_DECKS) {
+        const result = evaluateCompilerGoldenDeck(deck, deck.goldNote);
+        expect(
+          result.passed,
+          `Deck ${deck.id} failed 10-metric compiler CI evaluation: ${result.violations.join(" | ")}`,
+        ).toBe(true);
+        expect(result.formulaDiscoveryRecall).toBeGreaterThanOrEqual(
+          COMPILER_V2_CI_THRESHOLDS.MIN_FORMULA_DISCOVERY_RECALL,
+        );
+        expect(result.requiredArtifactInclusionRate).toBe(
+          COMPILER_V2_CI_THRESHOLDS.MIN_REQUIRED_ARTIFACT_INCLUSION,
+        );
+        expect(result.firstUseSymbolHygieneRate).toBe(
+          COMPILER_V2_CI_THRESHOLDS.MIN_FIRST_USE_SYMBOL_HYGIENE,
+        );
+        expect(result.lateDeckCoverageRate).toBe(
+          COMPILER_V2_CI_THRESHOLDS.MIN_LATE_DECK_COVERAGE,
+        );
+        expect(result.paraphraseAcceptanceRate).toBe(
+          COMPILER_V2_CI_THRESHOLDS.MIN_PARAPHRASE_ACCEPTANCE,
+        );
+        expect(result.placedFormulaEquivalenceRate).toBe(
+          COMPILER_V2_CI_THRESHOLDS.MIN_PLACED_FORMULA_EQUIVALENCE,
+        );
+        expect(result.conditionPreservationRate).toBe(
+          COMPILER_V2_CI_THRESHOLDS.MIN_CONDITION_PRESERVATION,
+        );
+        expect(result.strictKatexCompileRate).toBe(
+          COMPILER_V2_CI_THRESHOLDS.MIN_STRICT_KATEX_COMPILE,
+        );
+        expect(result.unsupportedClaimCount).toBe(
+          COMPILER_V2_CI_THRESHOLDS.MAX_UNSUPPORTED_CLAIMS,
+        );
+        expect(result.publicationHygienePassed).toBe(
+          COMPILER_V2_CI_THRESHOLDS.REQUIRE_PUBLICATION_HYGIENE,
+        );
+        expect(result.violations).toHaveLength(0);
+      }
+    });
+
+    it("runCompilerGoldenBenchmarkSuite evaluates all 8 decks and reports 100% compliance", () => {
+      const suiteReport = runCompilerGoldenBenchmarkSuite(GOLDEN_DECKS);
+
+      expect(suiteReport.passed).toBe(true);
+      expect(suiteReport.totalDecks).toBe(8);
+      expect(suiteReport.passedDecks).toBe(8);
+      expect(suiteReport.failedDecks).toBe(0);
+      expect(suiteReport.averageDiscoveryRecall).toBeGreaterThanOrEqual(0.98);
+      expect(suiteReport.averageArtifactInclusion).toBe(1.0);
+      expect(suiteReport.averageSymbolHygiene).toBe(1.0);
+      expect(suiteReport.averageLateDeckCoverage).toBe(1.0);
+      expect(suiteReport.averageParaphraseAcceptance).toBe(1.0);
+      expect(suiteReport.averagePlacedEquivalence).toBe(1.0);
+      expect(suiteReport.averageConditionPreservation).toBe(1.0);
+      expect(suiteReport.averageStrictKatexCompile).toBe(1.0);
+      expect(suiteReport.totalUnsupportedClaims).toBe(0);
+      expect(suiteReport.allPublicationHygienePassed).toBe(true);
+      expect(suiteReport.violations).toHaveLength(0);
+    });
+  });
+
+  describe("Metric 1: Formula Discovery Recall (>= 0.98)", () => {
+    it("reports >= 0.98 formula discovery recall across all 8 golden decks", () => {
+      for (const deck of GOLDEN_DECKS) {
+        const result = evaluateCompilerGoldenDeck(deck, deck.goldNote);
+        expect(result.formulaDiscoveryRecall).toBeGreaterThanOrEqual(0.98);
+        expect(result.missingFormulaIds).toHaveLength(0);
+      }
+    });
+
+    it("fails recall threshold when an essential placed formula is missing", () => {
+      const compromisedNote = cloneNote(DECK_1_STOCK_VALUATION.goldNote);
+      // Remove Gordon Growth formula F4 from section C
+      const secC = compromisedNote.sections.find((s) => s.letter === "C");
+      expect(secC).toBeDefined();
+      if (secC?.subSections) {
+        secC.subSections = secC.subSections.filter(
+          (sub) => !sub.heading.includes("Constant Growth"),
+        );
+      }
+
+      const result = evaluateCompilerGoldenDeck(
+        DECK_1_STOCK_VALUATION,
+        compromisedNote,
+      );
+
+      expect(result.passed).toBe(false);
+      expect(result.formulaDiscoveryRecall).toBeLessThan(0.98);
+      expect(result.missingFormulaIds).toContain("F4");
+      expect(result.missingFormulaIds).toContain("F5");
+      expect(
+        result.violations.some((v) => v.includes("Formula discovery recall")),
+      ).toBe(true);
+    });
+  });
+
+  describe("Metric 2: Required-Artifact Inclusion Rate (=== 1.0)", () => {
+    it("reports 100% required artifact inclusion across all 8 golden decks", () => {
+      for (const deck of GOLDEN_DECKS) {
+        const result = evaluateCompilerGoldenDeck(deck, deck.goldNote);
+        expect(result.requiredArtifactInclusionRate).toBe(1.0);
+        expect(result.missingArtifactIds).toHaveLength(0);
+      }
+    });
+
+    it("fails inclusion rate when a required formula is omitted", () => {
+      const compromisedNote = cloneNote(DECK_1_STOCK_VALUATION.goldNote);
+      // Drop formula F7 from section C subSection Case 3
+      const secC = compromisedNote.sections.find((s) => s.letter === "C");
+      const case3 = secC?.subSections?.find((sub) =>
+        sub.heading.includes("Non-Constant"),
+      );
+      expect(case3).toBeDefined();
+      if (case3) {
+        case3.formulas = case3.formulas.filter(
+          (f) => !f.formulaRefs?.includes("F7"),
+        );
+      }
+
+      const result = evaluateCompilerGoldenDeck(
+        DECK_1_STOCK_VALUATION,
+        compromisedNote,
+      );
+
+      expect(result.passed).toBe(false);
+      expect(result.requiredArtifactInclusionRate).toBeLessThan(1.0);
+      expect(result.missingArtifactIds).toContain("formula:F7");
+      expect(
+        result.violations.some((v) => v.includes("Required artifact inclusion")),
+      ).toBe(true);
+    });
+
+    it("fails inclusion rate when a required conceptual keyword is missing", () => {
+      const compromisedNote = cloneNote(DECK_1_STOCK_VALUATION.goldNote);
+      // Remove all mentions of "sustainable growth" from section D
+      const secD = compromisedNote.sections.find((s) => s.letter === "D");
+      expect(secD).toBeDefined();
+      if (secD) {
+        secD.titleVi = "D. THAM SỐ KHÁC";
+        secD.titleEn = "Other Parameters";
+        secD.overview = "";
+        secD.groundedBullets = [];
+        secD.bulletPoints = [];
+        secD.formulas = [];
+      }
+
+      const result = evaluateCompilerGoldenDeck(
+        DECK_1_STOCK_VALUATION,
+        compromisedNote,
+      );
+
+      expect(result.passed).toBe(false);
+      expect(result.requiredArtifactInclusionRate).toBeLessThan(1.0);
+      expect(result.missingArtifactIds).toContain("concept:sustainable growth");
+    });
+  });
+
+  describe("Metric 3: First-Use Symbol Hygiene Rate (=== 1.0)", () => {
+    it("reports 100% first-use symbol hygiene with zero duplicate variable definitions in all 8 decks", () => {
+      for (const deck of GOLDEN_DECKS) {
+        const result = evaluateCompilerGoldenDeck(deck, deck.goldNote);
+        expect(result.firstUseSymbolHygieneRate).toBe(1.0);
+        expect(result.duplicateSymbolDefinitions).toHaveLength(0);
+      }
+    });
+
+    it("fails first-use symbol hygiene when a variable symbol is redundantly re-defined in a later formula", () => {
+      const compromisedNote = cloneNote(DECK_1_STOCK_VALUATION.goldNote);
+      // Re-define $R$ (already defined in F1 in section B) inside formula F3 in section C
+      const secC = compromisedNote.sections.find((s) => s.letter === "C");
+      const case1 = secC?.subSections?.find((sub) =>
+        sub.heading.includes("Zero Growth"),
+      );
+      expect(case1).toBeDefined();
+      if (case1 && case1.formulas.length > 0) {
+        case1.formulas[0].variables.push({
+          symbol: "R",
+          definition: "Required rate of return (duplicate definition)",
+        });
+      }
+
+      const result = evaluateCompilerGoldenDeck(
+        DECK_1_STOCK_VALUATION,
+        compromisedNote,
+      );
+
+      expect(result.passed).toBe(false);
+      expect(result.firstUseSymbolHygieneRate).toBeLessThan(1.0);
+      expect(result.duplicateSymbolDefinitions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ symbol: "R", sectionLetter: "C" }),
+        ]),
+      );
+      expect(
+        result.violations.some((v) => v.includes("First-use symbol hygiene")),
+      ).toBe(true);
+    });
+
+    it("fails first-use symbol hygiene when symbol $P_0$ is re-defined later in section D", () => {
+      const compromisedNote = cloneNote(DECK_1_STOCK_VALUATION.goldNote);
+      // Re-define $P_0$ in F9 of section D
+      const secD = compromisedNote.sections.find((s) => s.letter === "D");
+      expect(secD).toBeDefined();
+      if (secD && secD.formulas.length > 1) {
+        secD.formulas[1].variables.push({
+          symbol: "P_0",
+          definition: "Current stock price (redundant)",
+        });
+      }
+
+      const result = evaluateCompilerGoldenDeck(
+        DECK_1_STOCK_VALUATION,
+        compromisedNote,
+      );
+
+      expect(result.passed).toBe(false);
+      expect(result.firstUseSymbolHygieneRate).toBeLessThan(1.0);
+      expect(result.duplicateSymbolDefinitions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ symbol: "P_0", sectionLetter: "D" }),
+        ]),
+      );
+    });
+  });
+
+  describe("Metric 4: Late-Deck CAPM & Topic Coverage (=== 1.0)", () => {
+    it("Deck 2 (Risk, Return & CAPM) achieves 100% late-deck coverage for CAPM and Portfolio Beta", () => {
+      const result = evaluateCompilerGoldenDeck(
+        DECK_2_RISK_AND_RETURN,
+        DECK_2_RISK_AND_RETURN.goldNote,
+      );
+      expect(result.lateDeckCoverageRate).toBe(1.0);
+      expect(result.uncoveredLateDeckItems).toHaveLength(0);
+    });
+
+    it("105-slide Corporate Finance fixture achieves 100% late-deck coverage on slides 85–105", () => {
+      const fixture = create105SlideLateDeckFixture();
+      expect(fixture.slideCount).toBe(105);
+      expect(fixture.lateDeckTopics?.minSlide).toBe(85);
+
+      const result = evaluateCompilerGoldenDeck(fixture, fixture.goldNote);
+      expect(result.passed).toBe(true);
+      expect(result.lateDeckCoverageRate).toBe(1.0);
+      expect(result.uncoveredLateDeckItems).toHaveLength(0);
+    });
+
+    it("fails late-deck coverage when late sections (slides >= 85) are truncated from the 105-slide deck", () => {
+      const fixture = create105SlideLateDeckFixture();
+      const truncatedNote = cloneNote(fixture.goldNote);
+
+      // Truncate section B which contains late-deck slides 85-105
+      truncatedNote.sections = truncatedNote.sections.filter(
+        (s) => !s.sourceSlides?.some((num) => num >= 85),
+      );
+
+      const result = evaluateCompilerGoldenDeck(fixture, truncatedNote);
+      expect(result.passed).toBe(false);
+      expect(result.lateDeckCoverageRate).toBeLessThan(1.0);
+      expect(result.uncoveredLateDeckItems.length).toBeGreaterThan(0);
+      expect(
+        result.uncoveredLateDeckItems.some((item) =>
+          item.includes("Late-deck slides"),
+        ),
+      ).toBe(true);
+      expect(
+        result.violations.some((v) => v.includes("Late-deck coverage rate")),
+      ).toBe(true);
+    });
+  });
+
+  describe("Metric 5: Paraphrase Acceptance Rate (=== 1.0)", () => {
+    it("reports 100% paraphrase acceptance across all 8 golden decks", () => {
+      for (const deck of GOLDEN_DECKS) {
+        const result = evaluateCompilerGoldenDeck(deck, deck.goldNote);
+        expect(result.paraphraseAcceptanceRate).toBe(1.0);
+        expect(result.failedParaphraseClaims).toHaveLength(0);
+      }
+    });
+
+    it("correctly validates faithful_paraphrase, supported_combination, and example_abstraction", () => {
+      const deck1 = DECK_1_STOCK_VALUATION;
+      expect(deck1.paraphraseCases).toBeDefined();
+      expect(deck1.paraphraseCases!.length).toBeGreaterThanOrEqual(4);
+
+      const modes = deck1.paraphraseCases!.map((c) => c.supportMode);
+      expect(modes).toContain("faithful_paraphrase");
+      expect(modes).toContain("supported_combination");
+      expect(modes).toContain("example_abstraction");
+
+      const result = evaluateCompilerGoldenDeck(deck1, deck1.goldNote);
+      expect(result.paraphraseAcceptanceRate).toBe(1.0);
+    });
+
+    it("rejects genuinely ungrounded claims without false-positive acceptance", () => {
+      const deck2 = DECK_2_RISK_AND_RETURN;
+      const ungroundedCase = deck2.paraphraseCases?.find(
+        (c) => c.expectedSupported === false,
+      );
+      expect(ungroundedCase).toBeDefined();
+      expect(ungroundedCase!.claim).toContain("cryptocurrency arbitrage");
+
+      const result = evaluateCompilerGoldenDeck(deck2, deck2.goldNote);
+      expect(result.paraphraseAcceptanceRate).toBe(1.0);
+      expect(result.failedParaphraseClaims).toHaveLength(0);
+    });
+  });
+
+  describe("Metrics 6–10: Equivalence, Condition Preservation, Strict KaTeX, Zero Unsupported, Publication Hygiene", () => {
+    it("Metric 6 (Equivalence): detects mathematical contradictions and sign flips", () => {
+      const compromisedNote = cloneNote(DECK_1_STOCK_VALUATION.goldNote);
+      // Flip sign in Gordon Growth formula denominator to (R + g)
+      const secC = compromisedNote.sections.find((s) => s.letter === "C");
+      const gordonSub = secC?.subSections?.find((sub) =>
+        sub.heading.includes("Constant Growth"),
+      );
+      expect(gordonSub).toBeDefined();
+      if (gordonSub) {
+        const f4 = gordonSub.formulas.find((f) => f.formulaRefs?.includes("F4"));
+        if (f4) {
+          f4.latex = "P_0 = \\frac{D_1}{R + g}";
+          f4.status = "contradicted";
+        }
+      }
+
+      const result = evaluateCompilerGoldenDeck(
+        DECK_1_STOCK_VALUATION,
+        compromisedNote,
+      );
+      expect(result.passed).toBe(false);
+      expect(result.placedFormulaEquivalenceRate).toBeLessThan(1.0);
+      expect(result.inequivalentFormulas.length).toBeGreaterThan(0);
+    });
+
+    it("Metric 7 (Condition Preservation): detects boundary condition inequality inversion (R < g vs R > g)", () => {
+      const compromisedNote = cloneNote(DECK_1_STOCK_VALUATION.goldNote);
+      // Invert boundary condition in Section C bullet from R > g to R < g
+      const secC = compromisedNote.sections.find((s) => s.letter === "C");
+      const gordonSub = secC?.subSections?.find((sub) =>
+        sub.heading.includes("Constant Growth"),
+      );
+      expect(gordonSub).toBeDefined();
+      if (gordonSub && gordonSub.groundedBullets) {
+        gordonSub.groundedBullets = gordonSub.groundedBullets.map((b) => ({
+          ...b,
+          text: "Crucial boundary condition: required return R must be strictly less than growth rate g (R < g)",
+        }));
+      }
+
+      const result = evaluateCompilerGoldenDeck(
+        DECK_1_STOCK_VALUATION,
+        compromisedNote,
+      );
+      expect(result.passed).toBe(false);
+      expect(result.conditionPreservationRate).toBeLessThan(1.0);
+      expect(result.invertedConditions.length).toBeGreaterThan(0);
+    });
+
+    it("Metric 8 (Strict KaTeX Compile): detects invalid KaTeX syntax, raw arrows, and unbalanced braces", () => {
+      const compromisedNote = cloneNote(DECK_1_STOCK_VALUATION.goldNote);
+      // Inject unbalanced brace into formula in section B
+      const secB = compromisedNote.sections.find((s) => s.letter === "B");
+      expect(secB).toBeDefined();
+      if (secB && secB.formulas.length > 0) {
+        secB.formulas[0].latex = "P_0 = \\frac{D_1 + P_1}{1 + R"; // Missing closing brace
+      }
+
+      const result = evaluateCompilerGoldenDeck(
+        DECK_1_STOCK_VALUATION,
+        compromisedNote,
+      );
+      expect(result.passed).toBe(false);
+      expect(result.strictKatexCompileRate).toBeLessThan(1.0);
+      expect(result.katexCompileFailures.length).toBeGreaterThan(0);
+      expect(
+        result.katexCompileFailures.some((f) => f.includes("Unbalanced curly braces")),
+      ).toBe(true);
+    });
+
+    it("Metric 9 (Unsupported Claims): flags hallucinated bullets with missing or non-matching evidence", () => {
+      const compromisedNote = cloneNote(DECK_3_WACC.goldNote);
+      // Add a hallucinated bullet to section A
+      compromisedNote.sections[0].groundedBullets?.push({
+        text: "WACC is completely irrelevant when investing in high-risk cryptocurrencies",
+        slide: 1,
+        evidence: "WACC is completely irrelevant when investing in high-risk cryptocurrencies",
+        status: "verified",
+        verdict: "SUPPORTED",
+      });
+
+      const result = evaluateCompilerGoldenDeck(DECK_3_WACC, compromisedNote);
+      expect(result.passed).toBe(false);
+      expect(result.unsupportedClaimCount).toBeGreaterThan(0);
+      expect(
+        result.violations.some((v) => v.includes("Unsupported claim count")),
+      ).toBe(true);
+    });
+
+    it("Metric 10 (Publication Hygiene): confirms toPublishedHandout strips debug fields and contains zero noise", () => {
+      for (const deck of GOLDEN_DECKS) {
+        const result = evaluateCompilerGoldenDeck(deck, deck.goldNote);
+        expect(result.publicationHygienePassed).toBe(true);
+      }
+    });
   });
 });
 

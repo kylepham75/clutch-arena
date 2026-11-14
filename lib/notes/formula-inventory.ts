@@ -9,6 +9,7 @@ import {
   repairCorruptedLatex,
   isLikelyInlineMath,
   wrapBareEnglishInLatex,
+  renderKatexSafe,
 } from "@/lib/math/latex";
 import { normalizePdfMathSymbols } from "@/lib/notes/pdf-symbol-normalizer";
 import {
@@ -18,9 +19,27 @@ import {
   type ExtractionResult,
   type FormulaLedgerEntry,
   type FormulaOrigin,
+  type FormulaCandidateKind,
+  type FormulaLifecycleState,
+  type FormulaCandidate,
+  type AcceptedFormulaKind,
+  type AcceptedFormula,
+  type SymbolBinding,
+  formulaCandidateSchema,
+  acceptedFormulaSchema,
+  symbolBindingSchema,
 } from "@/lib/schemas/notes";
 
-export type { FormulaOrigin };
+export type {
+  FormulaOrigin,
+  FormulaCandidateKind,
+  FormulaLifecycleState,
+  FormulaCandidate,
+  AcceptedFormulaKind,
+  AcceptedFormula,
+  SymbolBinding,
+};
+export { formulaCandidateSchema, acceptedFormulaSchema, symbolBindingSchema };
 
 export interface FormulaInventoryItem {
   id: string; // Deterministic sequential ID: "F1", "F2", "F3", ...
@@ -1547,4 +1566,857 @@ export async function buildMergedFormulaLedger(
     claims: [],
     chunkCount: 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Clutch Note AI v2: Formula Candidate Adjudication & Scoped Symbol Bindings
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalizes symbol keys for robust symbol matching across LaTeX formulations.
+ */
+function normalizeSymbolKey(sym: string): string {
+  if (!sym) return "";
+  return sym
+    .trim()
+    .replace(/^\$+|\$+$/g, "")
+    .replace(/\\(?:mathrm|mathbf|boldsymbol|text)\{([^{}]*)\}/g, "$1")
+    .replace(/_\{([^{}]+)\}/g, "_$1")
+    .replace(/\^\{([^{}]+)\}/g, "^$1");
+}
+
+/**
+ * Evaluates whether two variable definitions share the same semantic meaning.
+ */
+export function areMeaningsEquivalent(
+  m1: string | null,
+  m2: string | null,
+): boolean {
+  if (m1 === null && m2 === null) return true;
+  if (m1 === null || m2 === null) return false;
+  const n1 = m1
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, " ")
+    .replace(/\s+/g, " ");
+  const n2 = m2
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, " ")
+    .replace(/\s+/g, " ");
+  if (n1 === n2) return true;
+
+  const w1 = new Set(n1.split(" ").filter((w) => w.length > 2));
+  const w2 = new Set(n2.split(" ").filter((w) => w.length > 2));
+  if (w1.size === 0 || w2.size === 0) return false;
+
+  let intersection = 0;
+  for (const w of w1) {
+    if (w2.has(w)) intersection++;
+  }
+  const minLen = Math.min(w1.size, w2.size);
+  return minLen > 0 && intersection / minLen >= 0.75;
+}
+
+/**
+ * Extracts symbolic variable tokens from LaTeX strings and explicit variable lists.
+ */
+export function extractSymbolsFromLatex(
+  latex: string,
+  definedVars?: Array<{ symbol: string; definition?: string }>,
+): string[] {
+  const symbols = new Set<string>();
+
+  // 1. Add any explicitly defined variables from input
+  if (definedVars && definedVars.length > 0) {
+    for (const v of definedVars) {
+      const s = (v.symbol || "").trim().replace(/^\$+|\$+$/g, "");
+      if (s) symbols.add(s);
+    }
+  }
+
+  // 2. Tokenize the LaTeX string
+  let s = (latex || "").replace(/^\$+|\$+$/g, "").trim();
+
+  // Strip text blocks: \text{...}
+  s = s.replace(/\\text\{[^{}]*\}/g, " ");
+
+  // Strip common structural LaTeX command names
+  const LATEX_STRUCTURAL_COMMANDS =
+    /\\(?:frac|dfrac|tfrac|sum|prod|int|sqrt|partial|left|right|times|div|cdot|pm|mp|approx|equiv|le|ge|leq|geq|ne|neq|in|notin|implies|rightarrow|leftarrow|iff|to|quad|qquad|enspace|space|begin|end|matrix|pmatrix|bmatrix)\b/g;
+  s = s.replace(LATEX_STRUCTURAL_COMMANDS, " ");
+
+  // Match subscripted/superscripted variables e.g. P_0, D_1, r_f, \beta_i, CF_t, R_M
+  // or Greek letters: \alpha, \beta, \sigma, etc.
+  // or standalone Latin variables / acronyms: R, g, NPV, IRR
+  const TOKEN_REGEX =
+    /\\?[a-zA-Z]+(?:_\{?[a-zA-Z0-9+\-]+\}?|\^\{?[a-zA-Z0-9+\-]+\}?)*(?:_\{?[a-zA-Z0-9+\-]+\}?|\^\{?[a-zA-Z0-9+\-]+\}?)*/g;
+
+  let match: RegExpExecArray | null;
+  while ((match = TOKEN_REGEX.exec(s)) !== null) {
+    let token = match[0].trim();
+    if (!token) continue;
+
+    // Filter out common math functions
+    if (
+      /^(?:sin|cos|tan|cot|sec|csc|ln|log|exp|min|max|lim|det|dim)$/i.test(token)
+    ) {
+      continue;
+    }
+
+    // Filter out pure numbers
+    if (/^\d+$/.test(token)) continue;
+
+    // Normalize single-character braces in subscripts: P_{0} -> P_0
+    token = token
+      .replace(/_\{([^{}]+)\}/g, "_$1")
+      .replace(/\^\{([^{}]+)\}/g, "^$1");
+
+    symbols.add(token);
+  }
+
+  return Array.from(symbols);
+}
+
+/**
+ * Determines whether two LaTeX formulas represent variants of the same mathematical equation
+ * (e.g. structured \frac vs flattened ASCII division slash, or missing LHS on a text scrape).
+ */
+export function areFormulasEquivalentVariants(
+  tex1: string,
+  tex2: string,
+): boolean {
+  if (!tex1 || !tex2) return false;
+  if (tex1 === tex2) return true;
+
+  const k1 = normalizeInventoryFormulaKey(tex1);
+  const k2 = normalizeInventoryFormulaKey(tex2);
+  if (k1 && k2 && k1 === k2) return true;
+
+  const toSlash = (t: string) => {
+    let s = t.replace(
+      /\\(?:frac|dfrac|tfrac)\{([^{}]+)\}\{([^{}]+)\}/g,
+      "($1)/($2)",
+    );
+    s = s.replace(
+      /\\(?:frac|dfrac|tfrac)\{([^{}]+)\}\{([^{}]+)\}/g,
+      "($1)/($2)",
+    );
+    return s;
+  };
+
+  const simplify = (t: string) => {
+    let s = toSlash(t);
+    s = s.replace(
+      /\\(?:text|mathrm|mathbf|boldsymbol|textbf|mathit|operatorname)\{([^{}]*)\}/g,
+      "$1",
+    );
+    s = s.replace(/\\(?:left|right)[.()[\]|]/g, "");
+    s = s.replace(/[_^{}()\[\]\s$]/g, "").toLowerCase();
+    return s;
+  };
+
+  const s1 = simplify(tex1);
+  const s2 = simplify(tex2);
+  if (s1 === s2) return true;
+
+  // Check if one has LHS and the other only captured RHS
+  if (s1.includes("=") && !s2.includes("=")) {
+    const rhs1 = s1.split("=")[1];
+    if (rhs1 && rhs1 === s2) return true;
+  }
+  if (s2.includes("=") && !s1.includes("=")) {
+    const rhs2 = s2.split("=")[1];
+    if (rhs2 && rhs2 === s1) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Scores the structural quality and representation fidelity of a formula candidate
+ * to prefer clean structured LaTeX (\frac, subscripts) over flattened text scrapes.
+ */
+export function getFormulaQualityScore(cand: FormulaCandidate): number {
+  let score = 0;
+  const tex = cand.proposedLatex || "";
+
+  // Origin preference: omml (40) > llm (30) > ocr (20) > text (10)
+  if (cand.origin === "omml") score += 40;
+  else if (cand.origin === "llm") score += 30;
+  else if (cand.origin === "ocr") score += 20;
+  else if (cand.origin === "text") score += 10;
+
+  if (typeof cand.confidence === "number") {
+    score += Math.round(cand.confidence * 20);
+  }
+
+  // Structural LaTeX commands
+  if (/\\frac\b/.test(tex)) score += 25;
+  if (/\\sum\b/.test(tex)) score += 25;
+  if (/\\sqrt\b/.test(tex)) score += 25;
+  if (/\\prod\b/.test(tex)) score += 25;
+  if (/\\int\b/.test(tex)) score += 25;
+
+  // Subscripts and superscripts
+  if (/_[a-zA-Z0-9{]/.test(tex)) score += 15;
+  if (/\^[a-zA-Z0-9{]/.test(tex)) score += 15;
+
+  // Equality or relation
+  if (tex.includes("=")) score += 20;
+
+  // Proper \text{...} formatting
+  if (/\\text\{[^{}]+\}/.test(tex)) score += 10;
+
+  // Penalties
+  // Flattened division slash
+  if (
+    /\b[a-zA-Z0-9_]+\s*\/\s*[a-zA-Z0-9_]+/.test(tex) &&
+    !/\\frac/.test(tex)
+  ) {
+    score -= 15;
+  }
+  // Flattened subscript like D1 or P0 instead of D_1 or P_0
+  if (/\b[A-Za-z]\d\b/.test(tex) && !/_[0-9]/.test(tex)) {
+    score -= 15;
+  }
+  // Missing LHS
+  if (
+    !tex.includes("=") &&
+    !tex.includes("\\implies") &&
+    !tex.includes("<") &&
+    !tex.includes(">")
+  ) {
+    score -= 20;
+  }
+
+  return score;
+}
+
+/**
+ * Classifies a detected formula candidate into one of FormulaCandidateKind
+ * and determines its lifecycle state (ACCEPTED, NEEDS_ADJUDICATION, or EXCLUDED_WITH_REASON).
+ */
+export function classifyFormulaCandidate(
+  raw: string,
+  proposedLatex: string,
+  options?: {
+    isExerciseOnly?: boolean;
+    origin?: FormulaOrigin;
+    confidence?: number;
+  },
+): {
+  kind: FormulaCandidateKind;
+  state: FormulaLifecycleState;
+  exclusionReason?: string;
+  warnings: string[];
+} {
+  const cleanProposed = (proposedLatex || "").trim();
+  const cleanRaw = (raw || "").trim();
+  const warnings: string[] = [];
+
+  if (options?.isExerciseOnly) {
+    warnings.push(
+      "Formula appeared within an exercise or worked example context",
+    );
+  }
+
+  // 1. Incomplete fragment check: dangling relation operator or empty side
+  if (!cleanProposed && !cleanRaw) {
+    return {
+      kind: "incomplete_fragment",
+      state: "EXCLUDED_WITH_REASON",
+      exclusionReason: "Incomplete or dangling equation fragment",
+      warnings,
+    };
+  }
+
+  if (
+    isDanglingOrEmptySideEquation(cleanProposed) ||
+    isDanglingOrEmptySideEquation(cleanRaw)
+  ) {
+    return {
+      kind: "incomplete_fragment",
+      state: "EXCLUDED_WITH_REASON",
+      exclusionReason: "Incomplete or dangling equation fragment",
+      warnings,
+    };
+  }
+
+  // Check for dangling inequality operators at start/end
+  if (
+    /^[<>]|[<>]$|\\(?:le|ge|leq|geq|ne|neq|in|notin)\s*$/.test(cleanProposed) ||
+    /^\s*\\(?:le|ge|leq|geq|ne|neq|in|notin)/.test(cleanProposed)
+  ) {
+    return {
+      kind: "incomplete_fragment",
+      state: "EXCLUDED_WITH_REASON",
+      exclusionReason: "Incomplete or dangling equation fragment",
+      warnings,
+    };
+  }
+
+  // 2. KaTeX validity check on proposed LaTeX
+  const katexRender = renderKatexSafe(cleanProposed, true);
+  const isBrokenKatex =
+    katexRender.includes("katex-error") ||
+    katexRender.includes("katex-fallback");
+
+  if (isBrokenKatex) {
+    // Attempt repair
+    const repaired = cleanLatexEquation(cleanProposed);
+    const repairedKatex = renderKatexSafe(repaired, true);
+    const stillBroken =
+      !repaired ||
+      repairedKatex.includes("katex-error") ||
+      repairedKatex.includes("katex-fallback");
+
+    if (stillBroken) {
+      return {
+        kind: "incomplete_fragment",
+        state: "EXCLUDED_WITH_REASON",
+        exclusionReason: "Invalid KaTeX math syntax: failed rendering",
+        warnings: [...warnings, "Unrepairable KaTeX syntax error"],
+      };
+    }
+  }
+
+  // 3. Decision rule check: arrow / implication / if-when decision logic with symbolic variables
+  const hasDecisionArrow =
+    /\\(?:implies|rightarrow|impliedby|iff|to)\b|[⇒→⇐⇔]|(?<![<>])=>|(?<!<)->/.test(
+      cleanProposed,
+    );
+  const hasDecisionWords =
+    /\\text\{\s*(?:if|when|then|accept|reject|invest|hold|buy|sell)\b/i.test(
+      cleanProposed,
+    ) || /\b(?:if|when|then|accept|reject|invest)\b/i.test(cleanProposed);
+
+  if (
+    (hasDecisionArrow || hasDecisionWords) &&
+    hasSymbolicVariables(cleanProposed)
+  ) {
+    let state: FormulaLifecycleState = "ACCEPTED";
+    if (
+      options?.origin === "ocr" &&
+      typeof options.confidence === "number" &&
+      options.confidence < 0.70
+    ) {
+      state = "NEEDS_ADJUDICATION";
+      warnings.push("Low-confidence OCR transcription requires adjudication");
+    } else if (isBrokenKatex) {
+      state = "NEEDS_ADJUDICATION";
+      warnings.push("KaTeX syntax error required automatic repair");
+    }
+    return {
+      kind: "decision_rule",
+      state,
+      warnings,
+    };
+  }
+
+  // 4. Boundary condition check: inequalities and domain restrictions (<, >, \le, \ge, \neq, \in, etc.)
+  const hasBoundaryOperator =
+    /(?<!\\(?:le|ge|ne|leq|geq|neq))[<>](?![=<>])|\\(?:le|ge|leq|geq|ne|neq|in|notin)\b|[≤≥≠∈∉]/.test(
+      cleanProposed,
+    );
+
+  if (hasBoundaryOperator && hasSymbolicVariables(cleanProposed)) {
+    let state: FormulaLifecycleState = "ACCEPTED";
+    if (
+      options?.origin === "ocr" &&
+      typeof options.confidence === "number" &&
+      options.confidence < 0.70
+    ) {
+      state = "NEEDS_ADJUDICATION";
+      warnings.push("Low-confidence OCR transcription requires adjudication");
+    } else if (isBrokenKatex) {
+      state = "NEEDS_ADJUDICATION";
+      warnings.push("KaTeX syntax error required automatic repair");
+    }
+    return {
+      kind: "boundary_condition",
+      state,
+      warnings,
+    };
+  }
+
+  // 5. Identity check: accounting and financial identities with \text{...} multi-word terms
+  const hasMultiWordText =
+    /\\text\{[^{}]*\s+[^{}]*\}/i.test(cleanProposed) ||
+    isRecognizedAccountingTerm(cleanProposed);
+
+  if (
+    cleanProposed.includes("=") &&
+    hasMultiWordText &&
+    !isNumericPluginOrScalarAssignment(cleanProposed)
+  ) {
+    let state: FormulaLifecycleState = "ACCEPTED";
+    if (
+      options?.origin === "ocr" &&
+      typeof options.confidence === "number" &&
+      options.confidence < 0.70
+    ) {
+      state = "NEEDS_ADJUDICATION";
+      warnings.push("Low-confidence OCR transcription requires adjudication");
+    } else if (isBrokenKatex) {
+      state = "NEEDS_ADJUDICATION";
+      warnings.push("KaTeX syntax error required automatic repair");
+    }
+    return {
+      kind: "identity",
+      state,
+      warnings,
+    };
+  }
+
+  // 6. Numeric instantiation or intermediate arithmetic exclusion
+  const isNumeric = isNumericPluginOrScalarAssignment(cleanProposed);
+  const isProse = isPureProsePhrase(cleanProposed);
+  const isNontrivial = isNontrivialFormula(cleanProposed);
+
+  if (isNumeric || isProse || !isNontrivial) {
+    const isArith = !cleanProposed.includes("=");
+    return {
+      kind: isArith ? "intermediate_arithmetic" : "numeric_instantiation",
+      state: "EXCLUDED_WITH_REASON",
+      exclusionReason:
+        "Numeric substitution drill or non-symbolic prose fragment",
+      warnings,
+    };
+  }
+
+  // 7. General formula: standard symbolic equation
+  let state: FormulaLifecycleState = "ACCEPTED";
+  if (
+    options?.origin === "ocr" &&
+    typeof options.confidence === "number" &&
+    options.confidence < 0.70
+  ) {
+    state = "NEEDS_ADJUDICATION";
+    warnings.push("Low-confidence OCR transcription requires adjudication");
+  } else if (isBrokenKatex) {
+    state = "NEEDS_ADJUDICATION";
+    warnings.push("KaTeX syntax error required automatic repair");
+  }
+
+  return {
+    kind: "general_formula",
+    state,
+    warnings,
+  };
+}
+
+export interface AdjudicateFormulaCandidatesInput {
+  ledger?: FormulaLedgerEntry[];
+  deterministicInventory?: FormulaInventoryItem[];
+  extractedFormulas?: ExtractedFormulaItem[];
+  sources?: SourceBlock[];
+  scopeResolver?: (slide: number) => string;
+}
+
+/**
+ * Adjudicates raw inventory / ledger / extracted formulas into FormulaCandidate[],
+ * promotes only ACCEPTED candidates into AcceptedFormula[], merges variants favoring structured LaTeX,
+ * extracts scoped deduplicated SymbolBindings, and isolates excluded candidates.
+ */
+export function adjudicateFormulaCandidates(
+  input: AdjudicateFormulaCandidatesInput,
+): {
+  candidates: FormulaCandidate[];
+  acceptedFormulas: AcceptedFormula[];
+  symbolBindings: SymbolBinding[];
+  excludedCandidates: FormulaCandidate[];
+  needsAdjudication: FormulaCandidate[];
+} {
+  // 1. Gather raw candidate items from inputs
+  type RawItem = {
+    slide: number;
+    raw: string;
+    proposedLatex: string;
+    origin: FormulaOrigin;
+    confidence?: number;
+    label?: string;
+    variables?: Array<{ symbol: string; definition: string }>;
+    evidence?: string;
+    isExerciseOnly?: boolean;
+  };
+
+  const rawItems: RawItem[] = [];
+
+  if (input.ledger && input.ledger.length > 0) {
+    for (const entry of input.ledger) {
+      rawItems.push({
+        slide: Math.max(1, entry.slide || 1),
+        raw: entry.raw || entry.latex,
+        proposedLatex: entry.latex,
+        origin: entry.origin,
+        confidence: entry.confidence,
+        label: entry.label,
+        variables: entry.variables,
+        evidence: entry.evidence,
+        isExerciseOnly: entry.isExerciseOnly,
+      });
+    }
+  } else {
+    if (
+      input.deterministicInventory &&
+      input.deterministicInventory.length > 0
+    ) {
+      for (const item of input.deterministicInventory) {
+        rawItems.push({
+          slide: Math.max(1, item.slide || 1),
+          raw: item.raw || item.latex,
+          proposedLatex: item.latex,
+          origin: item.origin,
+          confidence: item.confidence,
+        });
+      }
+    } else if (input.sources && input.sources.length > 0) {
+      const inv = buildFormulaInventory(input.sources);
+      for (const item of inv) {
+        rawItems.push({
+          slide: Math.max(1, item.slide || 1),
+          raw: item.raw || item.latex,
+          proposedLatex: item.latex,
+          origin: item.origin,
+          confidence: item.confidence,
+        });
+      }
+    }
+
+    if (input.extractedFormulas && input.extractedFormulas.length > 0) {
+      for (const item of input.extractedFormulas) {
+        rawItems.push({
+          slide: Math.max(1, item.slide || 1),
+          raw: item.raw || item.latex,
+          proposedLatex: item.latex,
+          origin: "llm",
+          label: item.label || undefined,
+          variables: item.variables,
+          evidence: item.evidence,
+          isExerciseOnly: item.isExerciseOnly,
+        });
+      }
+    }
+  }
+
+  // Sort raw items by slide ascending
+  rawItems.sort((a, b) => a.slide - b.slide);
+
+  // 2. Classify each candidate into FormulaCandidate
+  const candidates: FormulaCandidate[] = [];
+
+  for (let i = 0; i < rawItems.length; i++) {
+    const item = rawItems[i];
+    const candidateId = `C_F${i + 1}`;
+    const classification = classifyFormulaCandidate(
+      item.raw,
+      item.proposedLatex,
+      {
+        isExerciseOnly: item.isExerciseOnly,
+        origin: item.origin,
+        confidence: item.confidence,
+      },
+    );
+
+    const candidate = formulaCandidateSchema.parse({
+      id: candidateId,
+      slide: item.slide,
+      raw: item.raw,
+      proposedLatex: item.proposedLatex,
+      origin: item.origin,
+      kind: classification.kind,
+      state: classification.state,
+      confidence: item.confidence,
+      exclusionReason: classification.exclusionReason,
+      warnings: classification.warnings,
+      evidence: item.evidence,
+    });
+
+    candidates.push(candidate);
+  }
+
+  const excludedCandidates = candidates.filter(
+    (c) => c.state === "EXCLUDED_WITH_REASON",
+  );
+  const needsAdjudication = candidates.filter(
+    (c) => c.state === "NEEDS_ADJUDICATION",
+  );
+  const acceptedCandidates = candidates.filter((c) => c.state === "ACCEPTED");
+
+  // 3. Cluster accepted candidates that are variants of the same formula
+  type Cluster = {
+    candidates: FormulaCandidate[];
+    rawItems: RawItem[];
+  };
+
+  const clusters: Cluster[] = [];
+
+  for (let i = 0; i < acceptedCandidates.length; i++) {
+    const cand = acceptedCandidates[i];
+    const rawItem =
+      rawItems.find(
+        (r) => r.raw === cand.raw && r.slide === cand.slide,
+      ) || {
+        slide: cand.slide,
+        raw: cand.raw,
+        proposedLatex: cand.proposedLatex,
+        origin: cand.origin,
+      };
+
+    let matchedCluster: Cluster | null = null;
+    for (const cluster of clusters) {
+      const leader = cluster.candidates[0];
+      if (
+        Math.abs(leader.slide - cand.slide) <= 1 &&
+        areFormulasEquivalentVariants(
+          leader.proposedLatex,
+          cand.proposedLatex,
+        )
+      ) {
+        matchedCluster = cluster;
+        break;
+      }
+    }
+
+    if (matchedCluster) {
+      matchedCluster.candidates.push(cand);
+      matchedCluster.rawItems.push(rawItem);
+    } else {
+      clusters.push({
+        candidates: [cand],
+        rawItems: [rawItem],
+      });
+    }
+  }
+
+  // 4. Form AcceptedFormula for each cluster
+  const acceptedFormulas: AcceptedFormula[] = [];
+  const symbolBindings: SymbolBinding[] = [];
+
+  let formulaCounter = 1;
+
+  for (const cluster of clusters) {
+    // Pick the winner with highest quality score
+    cluster.candidates.sort(
+      (a, b) => getFormulaQualityScore(b) - getFormulaQualityScore(a),
+    );
+    const winner = cluster.candidates[0];
+    const sourceVariantIds = cluster.candidates.map((c) => c.id);
+
+    // Merge labels and evidence
+    const label =
+      cluster.rawItems.map((r) => r.label).find(Boolean) || undefined;
+
+    const evidenceList = cluster.candidates
+      .map((c) => c.evidence)
+      .filter((e): e is string => Boolean(e && e.trim()));
+
+    // Verify KaTeX rendering on displayLatex
+    let displayLatex = winner.proposedLatex;
+    const katexHtml = renderKatexSafe(displayLatex, true);
+    if (
+      katexHtml.includes("katex-error") ||
+      katexHtml.includes("katex-fallback")
+    ) {
+      const cleaned = cleanLatexEquation(displayLatex);
+      const cleanedHtml = renderKatexSafe(cleaned, true);
+      if (
+        !cleanedHtml.includes("katex-error") &&
+        !cleanedHtml.includes("katex-fallback")
+      ) {
+        displayLatex = cleaned;
+      } else {
+        // Find if any variant has valid KaTeX
+        const validVariant = cluster.candidates.find((c) => {
+          const vHtml = renderKatexSafe(c.proposedLatex, true);
+          return (
+            !vHtml.includes("katex-error") &&
+            !vHtml.includes("katex-fallback")
+          );
+        });
+        if (validVariant) {
+          displayLatex = validVariant.proposedLatex;
+        } else {
+          // Cannot admit broken KaTeX formula into acceptedFormulas
+          for (const c of cluster.candidates) {
+            c.state = "EXCLUDED_WITH_REASON";
+            c.exclusionReason = "Invalid KaTeX math syntax: failed rendering";
+            excludedCandidates.push(c);
+          }
+          continue;
+        }
+      }
+    }
+
+    // Map candidate kind to accepted formula kind
+    let acceptedKind: AcceptedFormulaKind = "formula";
+    if (winner.kind === "identity") acceptedKind = "identity";
+    else if (winner.kind === "decision_rule") acceptedKind = "symbolic_rule";
+    else if (winner.kind === "boundary_condition") acceptedKind = "boundary";
+
+    // 5. Scoped Symbol Binding Extraction
+    const scopeId = input.scopeResolver
+      ? input.scopeResolver(winner.slide)
+      : "global";
+
+    const clusterVars: Array<{ symbol: string; definition: string }> = [];
+    for (const r of cluster.rawItems) {
+      if (r.variables && r.variables.length > 0) {
+        for (const v of r.variables) {
+          if (!clusterVars.some((cv) => cv.symbol === v.symbol)) {
+            clusterVars.push(v);
+          }
+        }
+      }
+    }
+
+    const symbolsInFormula = extractSymbolsFromLatex(
+      displayLatex,
+      clusterVars,
+    );
+    const formulaSymbolBindingIds: string[] = [];
+
+    for (const sym of symbolsInFormula) {
+      const cleanSym = sym.trim();
+      if (!cleanSym) continue;
+
+      // Check if defined in variables
+      const matchedVar = clusterVars.find(
+        (v) =>
+          normalizeSymbolKey(v.symbol) === normalizeSymbolKey(cleanSym),
+      );
+      const meaning = matchedVar ? matchedVar.definition.trim() : null;
+
+      // Scoping and reuse logic:
+      const existingBindingsForGlyph = symbolBindings.filter(
+        (b) =>
+          normalizeSymbolKey(b.symbolLatex) ===
+          normalizeSymbolKey(cleanSym),
+      );
+
+      let targetBinding: SymbolBinding | null = null;
+
+      if (meaning !== null) {
+        // Check if there is an existing binding with the same meaning anywhere in the deck
+        const sameMeaningBinding = existingBindingsForGlyph.find(
+          (b) => b.meaning !== null && areMeaningsEquivalent(b.meaning, meaning),
+        );
+
+        if (sameMeaningBinding) {
+          targetBinding = sameMeaningBinding;
+        } else {
+          // Check if an earlier binding in the same scope had meaning: null
+          const nullInSameScope = existingBindingsForGlyph.find(
+            (b) => b.scopeId === scopeId && b.meaning === null,
+          );
+          if (nullInSameScope) {
+            nullInSameScope.meaning = meaning;
+            targetBinding = nullInSameScope;
+          } else {
+            // New meaning in new/current scope: create distinct scoped binding
+            const newId = `SYM_${symbolBindings.length + 1}`;
+            targetBinding = symbolBindingSchema.parse({
+              id: newId,
+              scopeId,
+              symbolLatex: cleanSym,
+              meaning,
+              slide: winner.slide,
+              evidenceIds: evidenceList,
+            });
+            symbolBindings.push(targetBinding);
+          }
+        }
+      } else {
+        // Meaning is null: check if binding exists in current scope or globally
+        const existingInScope = existingBindingsForGlyph.find(
+          (b) => b.scopeId === scopeId,
+        );
+        if (existingInScope) {
+          targetBinding = existingInScope;
+        } else if (existingBindingsForGlyph.length > 0) {
+          // Reuse first binding if no conflict
+          targetBinding = existingBindingsForGlyph[0];
+        } else {
+          // New symbol with meaning: null
+          const newId = `SYM_${symbolBindings.length + 1}`;
+          targetBinding = symbolBindingSchema.parse({
+            id: newId,
+            scopeId,
+            symbolLatex: cleanSym,
+            meaning: null,
+            slide: winner.slide,
+            evidenceIds: evidenceList,
+          });
+          symbolBindings.push(targetBinding);
+        }
+      }
+
+      if (
+        targetBinding &&
+        !formulaSymbolBindingIds.includes(targetBinding.id)
+      ) {
+        formulaSymbolBindingIds.push(targetBinding.id);
+      }
+    }
+
+    const formulaId = `F${formulaCounter++}`;
+    const accepted = acceptedFormulaSchema.parse({
+      id: formulaId,
+      slide: winner.slide,
+      kind: acceptedKind,
+      displayLatex,
+      raw: winner.raw,
+      label,
+      origin: winner.origin,
+      evidenceIds: evidenceList,
+      symbolBindingIds: formulaSymbolBindingIds,
+      conditionAtomIds: [],
+      sourceVariantIds,
+      revision: 1,
+    });
+
+    acceptedFormulas.push(accepted);
+  }
+
+  // Sort acceptedFormulas by slide ascending, then ID
+  acceptedFormulas.sort((a, b) => {
+    if (a.slide !== b.slide) return a.slide - b.slide;
+    return a.id.localeCompare(b.id, undefined, { numeric: true });
+  });
+
+  return {
+    candidates,
+    acceptedFormulas,
+    symbolBindings,
+    excludedCandidates,
+    needsAdjudication,
+  };
+}
+
+/**
+ * Returns all AcceptedFormulas belonging to the given slide numbers,
+ * sorted by slide number and formula ID.
+ */
+export function getAcceptedFormulasForSlides(
+  acceptedFormulas: AcceptedFormula[],
+  slides: number[],
+): AcceptedFormula[] {
+  if (
+    !acceptedFormulas ||
+    acceptedFormulas.length === 0 ||
+    !slides ||
+    slides.length === 0
+  ) {
+    return [];
+  }
+  const slideSet = new Set(slides);
+  return acceptedFormulas
+    .filter((f) => slideSet.has(f.slide))
+    .sort((a, b) => {
+      if (a.slide !== b.slide) {
+        return a.slide - b.slide;
+      }
+      return a.id.localeCompare(b.id, undefined, { numeric: true });
+    });
 }

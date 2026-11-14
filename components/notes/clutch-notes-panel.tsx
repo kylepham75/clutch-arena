@@ -53,13 +53,21 @@ function hasCorruptedMath(sources: SourceBlock[]): boolean {
       return true;
     }
 
+    // Sanitize benign URLs, markdown bold/italic formatting, and code comments before checking dangling/conflicting operators
+    const sanitizedForOps = text
+      .replace(/https?:\/\/\S+/gi, " ")
+      .replace(/\*\*([^\s*\n](?:[^*\n]*[^\s*\n])?)\*\*/g, "$1")
+      .replace(/(^|\s)\*([^\s*\n](?:[^*\n]*[^\s*\n])?)\*/g, "$1$2")
+      .replace(/\*\*|\/\/|\/\*|\*\//g, " ")
+      .replace(/^\s*[-*]\s+\*/gm, " ");
+
     // 3. Lines ending with dangling binary math operators without right-hand side
-    if (/(?:^|\s)[A-Za-z0-9_\)]+\s*(?:[+*/=≤≥≠≈÷×]|−)\s*$/m.test(text)) {
+    if (/(?:^|\s)[A-Za-z0-9_\)]+\s*(?:[+*/=≤≥≠≈÷×]|−)\s*$/m.test(sanitizedForOps)) {
       return true;
     }
 
     // 4. Broken adjacent conflicting operators (e.g. "+ =", "= /")
-    if (/(?:[+\-*/=≤≥≠≈÷×]|−)\s*(?:[=*/≤≥≠≈÷×])/.test(text)) {
+    if (/(?:[+\-*/=≤≥≠≈÷×]|−)\s*(?:[=*/≤≥≠≈÷×])/.test(sanitizedForOps)) {
       return true;
     }
 
@@ -244,18 +252,19 @@ export function ClutchNotesPanel({
         }
       }
 
-      // Check if client-extracted PDF slides exhibit corrupted math or heavy PUA substitutions
+      // Check if client-extracted PDF slides exhibit corrupted math or PPTX has embedded equation images
       const isPdf = selectedFile.name.toLowerCase().endsWith(".pdf");
-      if (
-        !useMultipartFallback &&
-        extracted &&
-        isPdf &&
-        hasCorruptedMath(extracted.sources)
-      ) {
-        console.warn(
-          "[ClutchNotes] Unreadable/corrupted math streams or PUA substitutions detected in client-extracted PDF. Preferring server multipart upload for high-fidelity OCR.",
-        );
-        useMultipartFallback = true;
+      const needsServerOcrRecovery =
+        Boolean(extracted) &&
+        ((isPdf && hasCorruptedMath(extracted!.sources)) ||
+          Boolean(extracted?.hasEmbeddedEquations));
+      if (!useMultipartFallback && needsServerOcrRecovery) {
+        if (selectedFile.size <= 4.5 * 1024 * 1024) {
+          console.warn(
+            "[ClutchNotes] Embedded/corrupted math streams detected in client-extracted deck. Preferring server multipart upload for high-fidelity OCR.",
+          );
+          useMultipartFallback = true;
+        }
       }
 
       const effectiveTier = tier && tier !== "contender" ? tier : "contender";
@@ -567,27 +576,33 @@ export function ClutchNotesPanel({
   if (note) {
     return (
       <div className="w-full max-w-4xl mx-auto space-y-4">
-        {warnings && warnings.length > 0 && (
-          <div
-            role="alert"
-            className="bg-[#fffbeb] border border-[#fde68a] rounded-2xl p-4 sm:p-5 text-[#92400e] shadow-xs space-y-2.5 animate-in fade-in duration-200"
-          >
-            <div className="flex items-center gap-2 font-bold text-sm sm:text-base text-[#b45309]">
-              <AlertCircle size={18} className="text-[#d97706] flex-shrink-0" />
-              <span>{t.notes.someSlidesUnread}</span>
+        {(() => {
+          const actionableWarnings = (warnings || []).filter(
+            (w) => !/^Deduplicated\s+\d+\s+incremental animation slide\(s\)\.?$/i.test(w.trim()),
+          );
+          if (actionableWarnings.length === 0) return null;
+          return (
+            <div
+              role="alert"
+              className="bg-[#fffbeb] border border-[#fde68a] rounded-2xl p-4 sm:p-5 text-[#92400e] shadow-xs space-y-2.5 animate-in fade-in duration-200"
+            >
+              <div className="flex items-center gap-2 font-bold text-sm sm:text-base text-[#b45309]">
+                <AlertCircle size={18} className="text-[#d97706] flex-shrink-0" />
+                <span>{t.notes.someSlidesUnread}</span>
+              </div>
+              <ul className="list-disc list-inside space-y-1 text-xs sm:text-sm text-[#92400e] pl-1">
+                {actionableWarnings.map((warn, index) => (
+                  <li key={index} className="leading-relaxed">
+                    {warn}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs sm:text-sm text-[#b45309] font-medium pt-2 border-t border-[#fde68a]">
+                {t.notes.unreadFormulasNote}
+              </p>
             </div>
-            <ul className="list-disc list-inside space-y-1 text-xs sm:text-sm text-[#92400e] pl-1">
-              {warnings.map((warn, index) => (
-                <li key={index} className="leading-relaxed">
-                  {warn}
-                </li>
-              ))}
-            </ul>
-            <p className="text-xs sm:text-sm text-[#b45309] font-medium pt-2 border-t border-[#fde68a]">
-              {t.notes.unreadFormulasNote}
-            </p>
-          </div>
-        )}
+          );
+        })()}
         {quizError && (
           <div
             role="alert"

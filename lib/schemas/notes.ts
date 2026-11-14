@@ -176,6 +176,40 @@ export const keyTakeawaysSchema = z.object({
     .describe("Concise numbered bullet points synthesizing the key rules"),
 });
 
+// 5. Teaching Block Schemas (declared before noteSectionSchema so compiled blocks survive validation)
+export const supportModeSchema = z.enum([
+  "faithful_paraphrase",
+  "supported_combination",
+  "example_abstraction",
+]);
+export type SupportMode = z.infer<typeof supportModeSchema>;
+
+export const teachingBlockKindSchema = z.enum([
+  "intuition",
+  "case",
+  "recipe",
+  "parameter_guide",
+  "comparison",
+  "caution",
+  "takeaway",
+  "structured_table",
+]);
+export type TeachingBlockKind = z.infer<typeof teachingBlockKindSchema>;
+
+export const teachingBlockSchema = z.object({
+  id: z.string(),
+  kind: teachingBlockKindSchema,
+  heading: z.string().optional(),
+  text: z.string(),
+  steps: z.array(z.string()).optional(),
+  slideCitations: z.array(z.number().int().min(1)).default([]),
+  supportAtomIds: z.array(z.string()).default([]),
+  supportMode: supportModeSchema.default("faithful_paraphrase"),
+  formulaRefs: z.array(z.string()).default([]),
+  symbolBindingIds: z.array(z.string()).default([]),
+});
+export type TeachingBlock = z.infer<typeof teachingBlockSchema>;
+
 export const noteSectionSchema = z.object({
   id: z.string(),
   letter: z.string().describe("Section alphabetical identifier: A, B, C, D, E..."),
@@ -220,6 +254,7 @@ export const noteSectionSchema = z.object({
       "Ordered sub-cases or sub-topics within this section (e.g. CASE 1, CASE 2, CASE 3, or 'Finding g', 'Finding R')",
     ),
   keyTakeaways: keyTakeawaysSchema.nullable().optional(),
+  blocks: z.array(teachingBlockSchema).optional(),
   sourceSlides: z
     .array(z.number())
     .optional()
@@ -487,3 +522,263 @@ export interface GenerateNotesRequest {
   slidesText?: string;
   focus?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Clutch Note AI v2 Compiler Data Contracts
+// ---------------------------------------------------------------------------
+
+// 1. Slide & Region Triage Schemas
+export const slideRegionTagSchema = z.enum([
+  "ADMIN",
+  "CONCEPT",
+  "FORMULA",
+  "WORKED_EXAMPLE",
+  "DIAGRAM_TABLE",
+  "EXAM_HINT",
+  "EXTRACTION_UNCERTAIN",
+]);
+export type SlideRegionTag = z.infer<typeof slideRegionTagSchema>;
+
+export const slideDispositionSchema = z.enum([
+  "INCLUDE",
+  "EXTRACT_RECIPE_ONLY",
+  "PLANNING_SIGNAL_ONLY",
+  "CONSOLIDATE_BUILD",
+  "EXCLUDE_NOISE",
+]);
+export type SlideDisposition = z.infer<typeof slideDispositionSchema>;
+
+export const triagedSlideSchema = z.object({
+  slide: z.number().int().min(1),
+  label: z.string(),
+  tags: z.array(slideRegionTagSchema),
+  disposition: slideDispositionSchema,
+  reason: z.string(),
+  requiresVisionAdjudication: z.boolean(),
+  extractedRecipeSteps: z.array(z.string()).default([]),
+  cleanedText: z.string(),
+});
+export type TriagedSlide = z.infer<typeof triagedSlideSchema>;
+
+// 2. Source Evidence & Atom Schemas
+export const evidenceRefSchema = z.object({
+  id: z.string(),
+  slide: z.number().int().min(1),
+  atomId: z.string().optional(),
+  excerpt: z.string().optional(),
+});
+export type EvidenceRef = z.infer<typeof evidenceRefSchema>;
+
+export const sourceAtomKindSchema = z.enum([
+  "definition",
+  "concept",
+  "rule",
+  "formula_candidate",
+  "procedure",
+  "boundary_condition",
+  "exam_hint",
+]);
+export type SourceAtomKind = z.infer<typeof sourceAtomKindSchema>;
+
+export const sourceAtomSchema = z.object({
+  id: z.string(),
+  slide: z.number().int().min(1),
+  kind: sourceAtomKindSchema,
+  topic: z.string(),
+  content: z.string(),
+  evidence: z.string(),
+  isWorkedExampleDerived: z.boolean().optional(),
+});
+export type SourceAtom = z.infer<typeof sourceAtomSchema>;
+
+// 3. Formula Candidate & Accepted Formula Lifecycle Schemas
+export const formulaLifecycleStateSchema = z.enum([
+  "DETECTED",
+  "TRANSCRIBED",
+  "CROSS_CHECKED",
+  "ACCEPTED",
+  "NEEDS_ADJUDICATION",
+  "EXCLUDED_WITH_REASON",
+]);
+export type FormulaLifecycleState = z.infer<typeof formulaLifecycleStateSchema>;
+
+export const formulaCandidateKindSchema = z.enum([
+  "general_formula",
+  "identity",
+  "decision_rule",
+  "boundary_condition",
+  "numeric_instantiation",
+  "intermediate_arithmetic",
+  "incomplete_fragment",
+]);
+export type FormulaCandidateKind = z.infer<typeof formulaCandidateKindSchema>;
+
+export const formulaCandidateSchema = z.object({
+  id: z.string(),
+  slide: z.number().int().min(1),
+  raw: z.string(),
+  proposedLatex: z.string(),
+  origin: formulaOriginSchema,
+  kind: formulaCandidateKindSchema,
+  state: formulaLifecycleStateSchema,
+  confidence: z.number().optional(),
+  exclusionReason: z.string().optional(),
+  warnings: z.array(z.string()).default([]),
+  evidence: z.string().optional(),
+});
+export type FormulaCandidate = z.infer<typeof formulaCandidateSchema>;
+
+export const acceptedFormulaKindSchema = z.enum([
+  "formula",
+  "identity",
+  "symbolic_rule",
+  "boundary",
+]);
+export type AcceptedFormulaKind = z.infer<typeof acceptedFormulaKindSchema>;
+
+export const acceptedFormulaSchema = z.object({
+  id: z.string(),
+  slide: z.number().int().min(1),
+  kind: acceptedFormulaKindSchema,
+  displayLatex: z.string(),
+  raw: z.string(),
+  label: z.string().optional(),
+  origin: formulaOriginSchema,
+  evidenceIds: z.array(z.string()).default([]),
+  symbolBindingIds: z.array(z.string()).default([]),
+  conditionAtomIds: z.array(z.string()).default([]),
+  sourceVariantIds: z.array(z.string()).default([]),
+  revision: z.number().int().min(1).default(1),
+});
+export type AcceptedFormula = z.infer<typeof acceptedFormulaSchema>;
+
+// 4. Scoped Symbol Binding Schema
+export const symbolBindingSchema = z.object({
+  id: z.string(),
+  scopeId: z.string().default("global"),
+  symbolLatex: z.string(),
+  meaning: z.string().nullable(),
+  slide: z.number().int().min(1),
+  evidenceIds: z.array(z.string()).default([]),
+});
+export type SymbolBinding = z.infer<typeof symbolBindingSchema>;
+
+// 5. Section Draft & Document Blueprint Schemas (TeachingBlock declared above noteSectionSchema)
+export const sectionDraftSchema = z.object({
+  id: z.string(),
+  letter: z.string(),
+  titleVi: z.string(),
+  titleEn: z.string().optional(),
+  sourceSlides: z.array(z.number().int().min(1)),
+  blocks: z.array(teachingBlockSchema),
+});
+export type SectionDraft = z.infer<typeof sectionDraftSchema>;
+
+export const blueprintSectionPlanSchema = z.object({
+  id: z.string(),
+  letter: z.string(),
+  titleVi: z.string(),
+  titleEn: z.string().optional(),
+  sourceSlides: z.array(z.number().int().min(1)),
+  requiredFormulaIds: z.array(z.string()).default([]),
+  requiredAtomIds: z.array(z.string()).default([]),
+  symbolScopeId: z.string().default("global"),
+  targetBlockBudget: z.number().int().min(1).max(20).default(6),
+});
+export type BlueprintSectionPlan = z.infer<typeof blueprintSectionPlanSchema>;
+
+export const documentBlueprintSchema = z.object({
+  title: z.string(),
+  subject: z.string(),
+  primaryLanguage: z.enum(["en", "vi", "bilingual"]).default("bilingual"),
+  executiveSummary: z.string(),
+  sections: z.array(blueprintSectionPlanSchema).min(1).max(12),
+  glossary: z
+    .array(
+      z.object({
+        termEn: z.string(),
+        termVi: z.string(),
+      }),
+    )
+    .default([]),
+});
+export type DocumentBlueprint = z.infer<typeof documentBlueprintSchema>;
+
+// 6. Critic Defect, Typed Patch & Publication vs. QA Separation Schemas
+export const criticOutcomeSchema = z.enum([
+  "SUPPORTED",
+  "OVERSTATED",
+  "CONTRADICTED",
+  "MISSING_CONDITION",
+  "INSUFFICIENT_EVIDENCE",
+  "SOURCE_UNREADABLE",
+]);
+export type CriticOutcome = z.infer<typeof criticOutcomeSchema>;
+
+export const noteDefectTypeSchema = z.enum([
+  "MISSING_FORMULA",
+  "UNSUPPORTED_CLAUSE",
+  "BAD_RECIPE_ABSTRACTION",
+  "MISSING_CONDITION",
+  "FORMULA_TRANSCRIPTION_DISPUTE",
+  "SYMBOL_DEFINITION_MISPLACED",
+  "SECTION_OVERFULL",
+  "KATEX_SYNTAX_ERROR",
+]);
+export type NoteDefectType = z.infer<typeof noteDefectTypeSchema>;
+
+export const noteDefectSchema = z.object({
+  id: z.string(),
+  sectionLetter: z.string(),
+  targetId: z.string(),
+  defectType: noteDefectTypeSchema,
+  reason: z.string(),
+  slide: z.number().optional(),
+  requiredFormulaId: z.string().optional(),
+});
+export type NoteDefect = z.infer<typeof noteDefectSchema>;
+
+export const notePatchSchema = z.object({
+  defectId: z.string(),
+  sectionLetter: z.string(),
+  targetBlockId: z.string().optional(),
+  operation: z.enum([
+    "REPLACE_BLOCK",
+    "INSERT_FORMULA",
+    "REWRITE_CLAUSE",
+    "REMOVE_REDUNDANT_BLOCK",
+    "REPLACE_SECTION",
+  ]),
+  baseRevision: z.number().int().min(1).default(1),
+  updatedSection: noteSectionSchema.optional(),
+  updatedBlock: teachingBlockSchema.optional(),
+});
+export type NotePatch = z.infer<typeof notePatchSchema>;
+
+export const publishedHandoutSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  subject: z.string(),
+  createdAt: z.string().default(() => new Date().toISOString()),
+  originalFileName: z.string(),
+  originalSlideCount: z.number().int().positive(),
+  estimatedDistilledPages: z.number().int().positive().default(3),
+  noiseReductionRate: z.number().default(85),
+  executiveSummary: z.string().default(""),
+  sections: z.array(noteSectionSchema).min(1),
+  rawMarkdown: z.string().optional(),
+  divergenceNotices: z.array(textbookDivergenceNoticeSchema).default([]),
+});
+export type PublishedHandout = z.infer<typeof publishedHandoutSchema>;
+
+export const qaReportSchema = z.object({
+  status: z.enum(["READY", "NEEDS_SOURCE_REVIEW", "LAYOUT_OVERFLOW", "FAILED"]),
+  missingRequiredFormulaIds: z.array(z.string()).default([]),
+  acceptedFormulaCount: z.number().int().min(0).default(0),
+  excludedCandidateCount: z.number().int().min(0).default(0),
+  defects: z.array(noteDefectSchema).default([]),
+  appliedPatches: z.number().int().min(0).default(0),
+  verificationRecord: noteVerificationRecordSchema.optional(),
+});
+export type QAReport = z.infer<typeof qaReportSchema>;
+

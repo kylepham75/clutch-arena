@@ -193,13 +193,13 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(TIER_LIMITS.cram_pass.canHostArenaRemix).toBe(true);
     expect(TIER_LIMITS.cram_pass.maxArenaPlayers).toBe(15);
     expect(TIER_LIMITS.cram_pass.cogsCeilingUsd.VN).toBe(0.85);
-    expect(TIER_LIMITS.cram_pass.cogsCeilingUsd.ROW).toBe(1.50);
+    expect(TIER_LIMITS.cram_pass.cogsCeilingUsd.ROW).toBe(0.85);
     expect(TIER_LIMITS.cram_pass.rollingQuota.primaryWindowHours).toBe(24);
     expect(TIER_LIMITS.cram_pass.rollingQuota.primaryBudgetUsd.VN).toBe(0.35);
-    expect(TIER_LIMITS.cram_pass.rollingQuota.primaryBudgetUsd.ROW).toBe(0.60);
+    expect(TIER_LIMITS.cram_pass.rollingQuota.primaryBudgetUsd.ROW).toBe(0.35);
     expect(TIER_LIMITS.cram_pass.rollingQuota.guardWindowHours).toBe(168);
     expect(TIER_LIMITS.cram_pass.rollingQuota.guardBudgetUsd.VN).toBe(0.85);
-    expect(TIER_LIMITS.cram_pass.rollingQuota.guardBudgetUsd.ROW).toBe(1.50);
+    expect(TIER_LIMITS.cram_pass.rollingQuota.guardBudgetUsd.ROW).toBe(0.85);
     expect(TIER_LIMITS.cram_pass.rollingQuota.cycleCeilingApplies).toBe(true);
 
     const proMonthly = PRICING_PLANS.find((p) => p.id === "pro_monthly")!;
@@ -218,13 +218,13 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(TIER_LIMITS.pro_monthly.canHostArenaRemix).toBe(true);
     expect(TIER_LIMITS.pro_monthly.maxArenaPlayers).toBe(15);
     expect(TIER_LIMITS.pro_monthly.cogsCeilingUsd.VN).toBe(1.50);
-    expect(TIER_LIMITS.pro_monthly.cogsCeilingUsd.ROW).toBe(3.20);
+    expect(TIER_LIMITS.pro_monthly.cogsCeilingUsd.ROW).toBe(1.50);
     expect(TIER_LIMITS.pro_monthly.rollingQuota.primaryWindowHours).toBe(24);
     expect(TIER_LIMITS.pro_monthly.rollingQuota.primaryBudgetUsd.VN).toBe(0.28);
-    expect(TIER_LIMITS.pro_monthly.rollingQuota.primaryBudgetUsd.ROW).toBe(0.60);
+    expect(TIER_LIMITS.pro_monthly.rollingQuota.primaryBudgetUsd.ROW).toBe(0.28);
     expect(TIER_LIMITS.pro_monthly.rollingQuota.guardWindowHours).toBe(168);
     expect(TIER_LIMITS.pro_monthly.rollingQuota.guardBudgetUsd.VN).toBe(0.55);
-    expect(TIER_LIMITS.pro_monthly.rollingQuota.guardBudgetUsd.ROW).toBe(1.20);
+    expect(TIER_LIMITS.pro_monthly.rollingQuota.guardBudgetUsd.ROW).toBe(0.55);
     expect(TIER_LIMITS.pro_monthly.rollingQuota.cycleCeilingApplies).toBe(true);
 
     const pro = PRICING_PLANS.find((p) => p.id === "pro")!;
@@ -243,13 +243,13 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(TIER_LIMITS.pro.canHostArenaRemix).toBe(true);
     expect(TIER_LIMITS.pro.maxArenaPlayers).toBe(15);
     expect(TIER_LIMITS.pro.cogsCeilingUsd.VN).toBe(3.80);
-    expect(TIER_LIMITS.pro.cogsCeilingUsd.ROW).toBe(8.50);
+    expect(TIER_LIMITS.pro.cogsCeilingUsd.ROW).toBe(3.80);
     expect(TIER_LIMITS.pro.rollingQuota.primaryWindowHours).toBe(24);
     expect(TIER_LIMITS.pro.rollingQuota.primaryBudgetUsd.VN).toBe(0.40);
-    expect(TIER_LIMITS.pro.rollingQuota.primaryBudgetUsd.ROW).toBe(0.85);
+    expect(TIER_LIMITS.pro.rollingQuota.primaryBudgetUsd.ROW).toBe(0.40);
     expect(TIER_LIMITS.pro.rollingQuota.guardWindowHours).toBe(168);
     expect(TIER_LIMITS.pro.rollingQuota.guardBudgetUsd.VN).toBe(0.85);
-    expect(TIER_LIMITS.pro.rollingQuota.guardBudgetUsd.ROW).toBe(1.90);
+    expect(TIER_LIMITS.pro.rollingQuota.guardBudgetUsd.ROW).toBe(0.85);
     expect(TIER_LIMITS.pro.rollingQuota.cycleCeilingApplies).toBe(true);
 
     const tutor = PRICING_PLANS.find((p) => p.id === "tutor")!;
@@ -268,13 +268,13 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(TIER_LIMITS.tutor.hasCohortAnalytics).toBe(true);
     expect(TIER_LIMITS.tutor.canCustomWatermarkPdf).toBe(true);
     expect(TIER_LIMITS.tutor.cogsCeilingUsd.VN).toBe(6.50);
-    expect(TIER_LIMITS.tutor.cogsCeilingUsd.ROW).toBe(10.50);
+    expect(TIER_LIMITS.tutor.cogsCeilingUsd.ROW).toBe(6.50);
     expect(TIER_LIMITS.tutor.rollingQuota.primaryWindowHours).toBe(24);
     expect(TIER_LIMITS.tutor.rollingQuota.primaryBudgetUsd.VN).toBe(1.10);
-    expect(TIER_LIMITS.tutor.rollingQuota.primaryBudgetUsd.ROW).toBe(1.80);
+    expect(TIER_LIMITS.tutor.rollingQuota.primaryBudgetUsd.ROW).toBe(1.10);
     expect(TIER_LIMITS.tutor.rollingQuota.guardWindowHours).toBe(168);
     expect(TIER_LIMITS.tutor.rollingQuota.guardBudgetUsd.VN).toBe(2.50);
-    expect(TIER_LIMITS.tutor.rollingQuota.guardBudgetUsd.ROW).toBe(4.20);
+    expect(TIER_LIMITS.tutor.rollingQuota.guardBudgetUsd.ROW).toBe(2.50);
     expect(TIER_LIMITS.tutor.rollingQuota.cycleCeilingApplies).toBe(true);
 
     expect(getMaxArenaPlayersForTier("contender")).toBe(8);
@@ -411,11 +411,11 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(getStoredTierExpires()).toBe(futureDate);
   });
 
-  it("resolves regional COGS ceilings accurately via getRegionalCogsCeiling", () => {
+  it("resolves regional COGS ceilings accurately via getRegionalCogsCeiling (unified VN & ROW)", () => {
     expect(getRegionalCogsCeiling("pro_monthly", "VN")).toBe(1.50);
-    expect(getRegionalCogsCeiling("pro_monthly", "ROW")).toBe(3.20);
+    expect(getRegionalCogsCeiling("pro_monthly", "ROW")).toBe(1.50);
     expect(getRegionalCogsCeiling(TIER_LIMITS.pro_monthly.cogsCeilingUsd, "VN")).toBe(1.50);
-    expect(getRegionalCogsCeiling(TIER_LIMITS.pro_monthly.cogsCeilingUsd, "ROW")).toBe(3.20);
+    expect(getRegionalCogsCeiling(TIER_LIMITS.pro_monthly.cogsCeilingUsd, "ROW")).toBe(1.50);
     expect(getRegionalCogsCeiling(1.5, "VN")).toBe(1.5);
     expect(getRegionalCogsCeiling(1.5, "ROW")).toBe(1.5);
   });
@@ -704,24 +704,24 @@ describe("Rolling % Quota Windows, Guards, Shared Pool & Regeneration Allowances
     expect(getRegionalGuardBudget("contender", "VN")).toBe(0.32);
 
     expect(getRegionalWindowBudget("cram_pass", "VN")).toBe(0.35);
-    expect(getRegionalWindowBudget("cram_pass", "ROW")).toBe(0.60);
+    expect(getRegionalWindowBudget("cram_pass", "ROW")).toBe(0.35);
     expect(getRegionalGuardBudget("cram_pass", "VN")).toBe(0.85);
-    expect(getRegionalGuardBudget("cram_pass", "ROW")).toBe(1.50);
+    expect(getRegionalGuardBudget("cram_pass", "ROW")).toBe(0.85);
 
     expect(getRegionalWindowBudget("pro_monthly", "VN")).toBe(0.28);
-    expect(getRegionalWindowBudget("pro_monthly", "ROW")).toBe(0.60);
+    expect(getRegionalWindowBudget("pro_monthly", "ROW")).toBe(0.28);
     expect(getRegionalGuardBudget("pro_monthly", "VN")).toBe(0.55);
-    expect(getRegionalGuardBudget("pro_monthly", "ROW")).toBe(1.20);
+    expect(getRegionalGuardBudget("pro_monthly", "ROW")).toBe(0.55);
 
     expect(getRegionalWindowBudget("pro", "VN")).toBe(0.40);
-    expect(getRegionalWindowBudget("pro", "ROW")).toBe(0.85);
+    expect(getRegionalWindowBudget("pro", "ROW")).toBe(0.40);
     expect(getRegionalGuardBudget("pro", "VN")).toBe(0.85);
-    expect(getRegionalGuardBudget("pro", "ROW")).toBe(1.90);
+    expect(getRegionalGuardBudget("pro", "ROW")).toBe(0.85);
 
     expect(getRegionalWindowBudget("tutor", "VN")).toBe(1.10);
-    expect(getRegionalWindowBudget("tutor", "ROW")).toBe(1.80);
+    expect(getRegionalWindowBudget("tutor", "ROW")).toBe(1.10);
     expect(getRegionalGuardBudget("tutor", "VN")).toBe(2.50);
-    expect(getRegionalGuardBudget("tutor", "ROW")).toBe(4.20);
+    expect(getRegionalGuardBudget("tutor", "ROW")).toBe(2.50);
 
     expect(formatQuotaPercentBadge(75, false)).toBe("75% AI quota remaining");
     expect(formatQuotaPercentBadge(75, true)).toBe("Còn 75% hạn mức AI");
@@ -1130,7 +1130,7 @@ describe("Pre-Flight COGS Ceiling & Progressive 4-Tier Degradation Ladder", () =
     expect(status.bannerNotice).toContain("Subscription deck generation budget reached for this period");
   });
 
-  it("enforces regional COGS degradation ceilings (VN: $3.80 vs ROW: $8.50 for Semester Pro)", () => {
+  it("enforces unified COGS degradation ceilings (VN & ROW: $3.80 for Semester Pro)", () => {
     const proCeiling = TIER_LIMITS.pro.cogsCeilingUsd;
 
     // VN Region: ceiling is $3.80
@@ -1159,27 +1159,26 @@ describe("Pre-Flight COGS Ceiling & Progressive 4-Tier Degradation Ladder", () =
     expect(vnHalted.mode).toBe("halted");
     expect(vnHalted.serveCachedPoolsOnly).toBe(true);
 
-    // ROW Region: ceiling is $8.50
-    const rowUnderVnCeiling = evaluateCogsDegradation(2.66, proCeiling, 0, 0, "ROW");
-    expect(rowUnderVnCeiling.ceilingUsd).toBe(8.5);
-    expect(rowUnderVnCeiling.utilizationRatio).toBeCloseTo(0.3129, 2);
-    expect(rowUnderVnCeiling.mode).toBe("full");
+    // ROW Region: matches unified $3.80 ceiling
+    const rowUnderCeiling = evaluateCogsDegradation(1.0, proCeiling, 0, 0, "ROW");
+    expect(rowUnderCeiling.ceilingUsd).toBe(3.8);
+    expect(rowUnderCeiling.mode).toBe("full");
 
-    // ROW Region: reaches gentle degradation at $5.95 (70% of $8.50)
-    const rowGentle = evaluateCogsDegradation(5.95, proCeiling, 0, 0, "ROW");
-    expect(rowGentle.ceilingUsd).toBe(8.5);
+    // ROW Region: reaches gentle degradation at $2.66 (70% of $3.80)
+    const rowGentle = evaluateCogsDegradation(2.66, proCeiling, 0, 0, "ROW");
+    expect(rowGentle.ceilingUsd).toBe(3.8);
     expect(rowGentle.utilizationRatio).toBe(0.7);
     expect(rowGentle.mode).toBe("gentle");
 
-    // ROW Region: reaches hard degradation at > 90% of $8.50 ($7.65)
-    const rowHard = evaluateCogsDegradation(7.66, proCeiling, 0.01, 0, "ROW");
-    expect(rowHard.ceilingUsd).toBe(8.5);
+    // ROW Region: reaches hard degradation at > 90% of $3.80 ($3.43)
+    const rowHard = evaluateCogsDegradation(3.43, proCeiling, 0.01, 0, "ROW");
+    expect(rowHard.ceilingUsd).toBe(3.8);
     expect(rowHard.utilizationRatio).toBeGreaterThan(0.9);
     expect(rowHard.mode).toBe("hard");
 
-    // ROW Region: halted when exceeding $8.50
-    const rowHalted = evaluateCogsDegradation(8.6, proCeiling, 0, 0, "ROW");
-    expect(rowHalted.ceilingUsd).toBe(8.5);
+    // ROW Region: halted when exceeding $3.80
+    const rowHalted = evaluateCogsDegradation(3.85, proCeiling, 0, 0, "ROW");
+    expect(rowHalted.ceilingUsd).toBe(3.8);
     expect(rowHalted.mode).toBe("halted");
   });
 

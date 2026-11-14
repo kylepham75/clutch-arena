@@ -18,6 +18,15 @@ import {
   isFormulaGroundedOnSlide,
   extractTextFormulas,
   type FormulaInventoryItem,
+  classifyFormulaCandidate,
+  adjudicateFormulaCandidates,
+  getAcceptedFormulasForSlides,
+  extractSymbolsFromLatex,
+  areFormulasEquivalentVariants,
+  getFormulaQualityScore,
+  formulaCandidateSchema,
+  acceptedFormulaSchema,
+  symbolBindingSchema,
 } from "@/lib/notes/formula-inventory";
 import { normalizePdfArrowSymbols } from "@/lib/ingestion/parse-pdf";
 import { parseSlideDeck } from "@/lib/notes/parse-slides";
@@ -1435,6 +1444,470 @@ describe("Stage 1 Task 1.3: PUA Math Symbol Normalization, Dangling = Rejection,
       expect(ledger[0].latex).toContain("\\sigma");
       expect(ledger[0].latex).not.toMatch(/[\uE000-\uF8FF]/);
       expect(ledger[0].raw).not.toMatch(/[\uE000-\uF8FF]/);
+    });
+  });
+
+  describe("Clutch Note AI v2 — Formula Candidate Adjudication & Scoped Symbol Bindings", () => {
+    describe("classifyFormulaCandidate", () => {
+      it("rejects incomplete or dangling equations with EXCLUDED_WITH_REASON", () => {
+        const dangling1 = classifyFormulaCandidate("T =", "T =");
+        expect(dangling1.state).toBe("EXCLUDED_WITH_REASON");
+        expect(dangling1.kind).toBe("incomplete_fragment");
+        expect(dangling1.exclusionReason).toContain("Incomplete or dangling");
+
+        const dangling2 = classifyFormulaCandidate("S ==", "S ==");
+        expect(dangling2.state).toBe("EXCLUDED_WITH_REASON");
+        expect(dangling2.kind).toBe("incomplete_fragment");
+
+        const dangling3 = classifyFormulaCandidate("= 0.12", "= 0.12");
+        expect(dangling3.state).toBe("EXCLUDED_WITH_REASON");
+        expect(dangling3.kind).toBe("incomplete_fragment");
+
+        const dangling4 = classifyFormulaCandidate("g <", "g <");
+        expect(dangling4.state).toBe("EXCLUDED_WITH_REASON");
+        expect(dangling4.kind).toBe("incomplete_fragment");
+      });
+
+      it("rejects numeric plug-ins and scalar assignments with EXCLUDED_WITH_REASON", () => {
+        const plugin = classifyFormulaCandidate(
+          "0.26 = 0.04 + 1.1 * (0.24 - 0.04)",
+          "0.26 = 0.04 + 1.1 \\times (0.24 - 0.04)",
+        );
+        expect(plugin.state).toBe("EXCLUDED_WITH_REASON");
+        expect(plugin.kind).toBe("numeric_instantiation");
+        expect(plugin.exclusionReason).toContain("Numeric substitution");
+
+        const scalar = classifyFormulaCandidate("t = 1", "t = 1");
+        expect(scalar.state).toBe("EXCLUDED_WITH_REASON");
+        expect(scalar.kind).toBe("numeric_instantiation");
+
+        const currencyScalar = classifyFormulaCandidate("P = $50", "P = \\$50");
+        expect(currencyScalar.state).toBe("EXCLUDED_WITH_REASON");
+        expect(currencyScalar.kind).toBe("numeric_instantiation");
+      });
+
+      it("rejects non-symbolic prose fragments with EXCLUDED_WITH_REASON", () => {
+        const prose = classifyFormulaCandidate(
+          "Average of Independent Identical Risks",
+          "Average of Independent Identical Risks",
+        );
+        expect(prose.state).toBe("EXCLUDED_WITH_REASON");
+        expect([
+          "intermediate_arithmetic",
+          "incomplete_fragment",
+          "numeric_instantiation",
+        ]).toContain(prose.kind);
+        expect(prose.exclusionReason).toContain(
+          "Numeric substitution drill or non-symbolic prose fragment",
+        );
+      });
+
+      it("accepts standard symbolic general formulas", () => {
+        const dgm = classifyFormulaCandidate(
+          "P_0 = D_1 / (R - g)",
+          "P_0 = \\frac{D_1}{R - g}",
+        );
+        expect(dgm.state).toBe("ACCEPTED");
+        expect(dgm.kind).toBe("general_formula");
+        expect(dgm.exclusionReason).toBeUndefined();
+
+        const capm = classifyFormulaCandidate(
+          "E[R_i] = r_f + \\beta_i (E[R_M] - r_f)",
+          "E[R_i] = r_f + \\beta_i (E[R_M] - r_f)",
+        );
+        expect(capm.state).toBe("ACCEPTED");
+        expect(capm.kind).toBe("general_formula");
+      });
+
+      it("accepts accounting identities with multi-word terms", () => {
+        const nwc = classifyFormulaCandidate(
+          "Net Working Capital = Current Assets - Current Liabilities",
+          "\\text{Net Working Capital} = \\text{Current Assets} - \\text{Current Liabilities}",
+        );
+        expect(nwc.state).toBe("ACCEPTED");
+        expect(nwc.kind).toBe("identity");
+      });
+
+      it("accepts boundary conditions and domain restrictions with symbolic variables", () => {
+        const bound1 = classifyFormulaCandidate("g < R", "g < R");
+        expect(bound1.state).toBe("ACCEPTED");
+        expect(bound1.kind).toBe("boundary_condition");
+
+        const bound2 = classifyFormulaCandidate("R > g", "R > g");
+        expect(bound2.state).toBe("ACCEPTED");
+        expect(bound2.kind).toBe("boundary_condition");
+
+        const bound3 = classifyFormulaCandidate(
+          "\\rho_{ij} \\in [-1, 1]",
+          "\\rho_{ij} \\in [-1, 1]",
+        );
+        expect(bound3.state).toBe("ACCEPTED");
+        expect(bound3.kind).toBe("boundary_condition");
+      });
+
+      it("accepts decision rules with implication arrows and symbolic variables", () => {
+        const rule1 = classifyFormulaCandidate(
+          "NPV > 0 => Accept",
+          "NPV > 0 \\implies \\text{Accept}",
+        );
+        expect(rule1.state).toBe("ACCEPTED");
+        expect(rule1.kind).toBe("decision_rule");
+
+        const rule2 = classifyFormulaCandidate(
+          "IRR > R => Invest",
+          "IRR > R \\implies \\text{Invest}",
+        );
+        expect(rule2.state).toBe("ACCEPTED");
+        expect(rule2.kind).toBe("decision_rule");
+      });
+
+      it("flags low-confidence OCR formulas as NEEDS_ADJUDICATION", () => {
+        const ocrLow = classifyFormulaCandidate(
+          "P_0 = D_1 / (R - g)",
+          "P_0 = \\frac{D_1}{R - g}",
+          { origin: "ocr", confidence: 0.65 },
+        );
+        expect(ocrLow.state).toBe("NEEDS_ADJUDICATION");
+        expect(ocrLow.warnings).toContain(
+          "Low-confidence OCR transcription requires adjudication",
+        );
+
+        const ocrHigh = classifyFormulaCandidate(
+          "P_0 = D_1 / (R - g)",
+          "P_0 = \\frac{D_1}{R - g}",
+          { origin: "ocr", confidence: 0.95 },
+        );
+        expect(ocrHigh.state).toBe("ACCEPTED");
+      });
+
+      it("excludes syntactically invalid KaTeX formulas", () => {
+        const broken = classifyFormulaCandidate(
+          "\\frac{D_1}{",
+          "\\frac{D_1}{",
+        );
+        expect(broken.state).toBe("EXCLUDED_WITH_REASON");
+        expect(broken.exclusionReason).toContain("KaTeX");
+      });
+    });
+
+    describe("adjudicateFormulaCandidates", () => {
+      it("prefers structured LaTeX over flattened text scrapes when merging variants on same or adjacent slides", () => {
+        const result = adjudicateFormulaCandidates({
+          deterministicInventory: [
+            {
+              id: "F1",
+              slide: 2,
+              raw: "D1/(R-g)",
+              latex: "D1/(R-g)",
+              origin: "text",
+            },
+            {
+              id: "F2",
+              slide: 2,
+              raw: "P_0 = D_1 / (R - g)",
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              origin: "omml",
+            },
+          ],
+        });
+
+        expect(result.candidates).toHaveLength(2);
+        expect(result.acceptedFormulas).toHaveLength(1);
+
+        const accepted = result.acceptedFormulas[0];
+        expect(accepted.displayLatex).toBe("P_0 = \\frac{D_1}{R - g}");
+        expect(accepted.origin).toBe("omml");
+        expect(accepted.sourceVariantIds).toContain("C_F1");
+        expect(accepted.sourceVariantIds).toContain("C_F2");
+      });
+
+      it("never admits KaTeX-invalid strings into acceptedFormulas", () => {
+        const result = adjudicateFormulaCandidates({
+          deterministicInventory: [
+            {
+              id: "F1",
+              slide: 1,
+              raw: "P_0 = \\frac{D_1}{R - g}",
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              origin: "omml",
+            },
+            {
+              id: "F2",
+              slide: 3,
+              raw: "\\frac{unclosed_brace",
+              latex: "\\frac{unclosed_brace",
+              origin: "text",
+            },
+          ],
+        });
+
+        expect(result.acceptedFormulas).toHaveLength(1);
+        expect(result.acceptedFormulas[0].displayLatex).toBe(
+          "P_0 = \\frac{D_1}{R - g}",
+        );
+        expect(
+          result.excludedCandidates.some(
+            (c) => c.raw === "\\frac{unclosed_brace",
+          ),
+        ).toBe(true);
+      });
+
+      it("keeps distinct pedagogical forms as separate AcceptedFormula entries", () => {
+        const result = adjudicateFormulaCandidates({
+          ledger: [
+            {
+              id: "F1",
+              slide: 4,
+              raw: "P_0 = \\sum_{t=1}^\\infty \\frac{D_t}{(1+R)^t}",
+              latex: "P_0 = \\sum_{t=1}^\\infty \\frac{D_t}{(1+R)^t}",
+              origin: "omml",
+              variables: [],
+            },
+            {
+              id: "F2",
+              slide: 4,
+              raw: "P_0 = \\frac{D_1}{R - g}",
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              origin: "omml",
+              variables: [],
+            },
+          ],
+        });
+
+        expect(result.acceptedFormulas).toHaveLength(2);
+        expect(result.acceptedFormulas[0].displayLatex).toContain("\\sum");
+        expect(result.acceptedFormulas[1].displayLatex).toContain("R - g");
+      });
+    });
+
+    describe("Scoped SymbolBinding creation", () => {
+      it("shares SymbolBinding.id when same symbol has same meaning across deck", () => {
+        const result = adjudicateFormulaCandidates({
+          ledger: [
+            {
+              id: "F1",
+              slide: 2,
+              raw: "P_0 = \\frac{D_1}{R - g}",
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              origin: "omml",
+              variables: [
+                { symbol: "R", definition: "Required rate of return" },
+                { symbol: "g", definition: "Dividend growth rate" },
+              ],
+            },
+            {
+              id: "F2",
+              slide: 5,
+              raw: "R = \\frac{D_1}{P_0} + g",
+              latex: "R = \\frac{D_1}{P_0} + g",
+              origin: "omml",
+              variables: [
+                { symbol: "R", definition: "Required rate of return" },
+                { symbol: "g", definition: "Dividend growth rate" },
+              ],
+            },
+          ],
+        });
+
+        const rBindings = result.symbolBindings.filter(
+          (s) => s.symbolLatex === "R",
+        );
+        expect(rBindings).toHaveLength(1);
+
+        const f1 = result.acceptedFormulas[0];
+        const f2 = result.acceptedFormulas[1];
+        expect(f1.symbolBindingIds).toContain(rBindings[0].id);
+        expect(f2.symbolBindingIds).toContain(rBindings[0].id);
+      });
+
+      it("creates distinct SymbolBinding.id when symbol has a different meaning in a new scope", () => {
+        const scopeResolver = (slide: number) => {
+          return slide >= 10 ? "macro_finance" : "equity_valuation";
+        };
+
+        const result = adjudicateFormulaCandidates({
+          scopeResolver,
+          ledger: [
+            {
+              id: "F1",
+              slide: 2,
+              raw: "P_0 = \\frac{D_1}{R - g}",
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              origin: "omml",
+              variables: [
+                { symbol: "R", definition: "Required rate of return on equity" },
+              ],
+            },
+            {
+              id: "F2",
+              slide: 10,
+              raw: "Y = C + I + G + R",
+              latex: "Y = C + I + G + R",
+              origin: "omml",
+              variables: [
+                {
+                  symbol: "R",
+                  definition: "Total government revenue from tariffs",
+                },
+              ],
+            },
+          ],
+        });
+
+        const rBindings = result.symbolBindings.filter(
+          (s) => s.symbolLatex === "R",
+        );
+        expect(rBindings).toHaveLength(2);
+
+        const equityR = rBindings.find((b) => b.scopeId === "equity_valuation");
+        const macroR = rBindings.find((b) => b.scopeId === "macro_finance");
+
+        expect(equityR).toBeDefined();
+        expect(macroR).toBeDefined();
+        expect(equityR?.id).not.toBe(macroR?.id);
+        expect(equityR?.meaning).toBe("Required rate of return on equity");
+        expect(macroR?.meaning).toBe("Total government revenue from tariffs");
+      });
+
+      it("sets meaning: null for symbols without explicit slide definitions (no fabricated definitions)", () => {
+        const result = adjudicateFormulaCandidates({
+          ledger: [
+            {
+              id: "F1",
+              slide: 3,
+              raw: "P_0 = \\frac{D_1}{R - g}",
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              origin: "omml",
+              variables: [],
+            },
+          ],
+        });
+
+        expect(result.symbolBindings.length).toBeGreaterThanOrEqual(4);
+        for (const binding of result.symbolBindings) {
+          expect(binding.meaning).toBeNull();
+        }
+      });
+    });
+
+    describe("Validation of outputs against Zod schemas", () => {
+      it("validates all output structures against formulaCandidateSchema, acceptedFormulaSchema, and symbolBindingSchema", () => {
+        const result = adjudicateFormulaCandidates({
+          deterministicInventory: [
+            {
+              id: "F1",
+              slide: 1,
+              raw: "T =",
+              latex: "T =",
+              origin: "text",
+            },
+            {
+              id: "F2",
+              slide: 2,
+              raw: "0.26 = 0.04 + 1.1 * (0.24 - 0.04)",
+              latex: "0.26 = 0.04 + 1.1 \\times (0.24 - 0.04)",
+              origin: "text",
+            },
+            {
+              id: "F3",
+              slide: 3,
+              raw: "P_0 = D_1 / (R - g)",
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              origin: "omml",
+            },
+            {
+              id: "F4",
+              slide: 4,
+              raw: "g < R",
+              latex: "g < R",
+              origin: "text",
+            },
+            {
+              id: "F5",
+              slide: 5,
+              raw: "NPV > 0 => Accept",
+              latex: "NPV > 0 \\implies \\text{Accept}",
+              origin: "text",
+            },
+          ],
+        });
+
+        // 1. Every candidate passes formulaCandidateSchema
+        for (const cand of result.candidates) {
+          expect(() => formulaCandidateSchema.parse(cand)).not.toThrow();
+        }
+
+        // 2. Every accepted formula passes acceptedFormulaSchema
+        for (const formula of result.acceptedFormulas) {
+          expect(() => acceptedFormulaSchema.parse(formula)).not.toThrow();
+        }
+
+        // 3. Every symbol binding passes symbolBindingSchema
+        for (const binding of result.symbolBindings) {
+          expect(() => symbolBindingSchema.parse(binding)).not.toThrow();
+        }
+
+        // 4. Excluded and needs-adjudication collections
+        for (const excluded of result.excludedCandidates) {
+          expect(() => formulaCandidateSchema.parse(excluded)).not.toThrow();
+          expect(excluded.state).toBe("EXCLUDED_WITH_REASON");
+        }
+
+        for (const adj of result.needsAdjudication) {
+          expect(() => formulaCandidateSchema.parse(adj)).not.toThrow();
+          expect(adj.state).toBe("NEEDS_ADJUDICATION");
+        }
+      });
+
+      it("filters and sorts section-scoped formulas with getAcceptedFormulasForSlides", () => {
+        const result = adjudicateFormulaCandidates({
+          ledger: [
+            {
+              id: "F1",
+              slide: 1,
+              raw: "A = B",
+              latex: "A = B",
+              origin: "omml",
+              variables: [],
+            },
+            {
+              id: "F2",
+              slide: 3,
+              raw: "C = D",
+              latex: "C = D",
+              origin: "omml",
+              variables: [],
+            },
+            {
+              id: "F3",
+              slide: 2,
+              raw: "E = F",
+              latex: "E = F",
+              origin: "omml",
+              variables: [],
+            },
+            {
+              id: "F4",
+              slide: 3,
+              raw: "G = H",
+              latex: "G = H",
+              origin: "omml",
+              variables: [],
+            },
+          ],
+        });
+
+        const sectionFormulas = getAcceptedFormulasForSlides(
+          result.acceptedFormulas,
+          [2, 3],
+        );
+
+        expect(sectionFormulas).toHaveLength(3);
+        expect(sectionFormulas[0].slide).toBe(2);
+        expect(sectionFormulas[1].slide).toBe(3);
+        expect(sectionFormulas[2].slide).toBe(3);
+        expect(sectionFormulas.some((f) => f.slide === 1)).toBe(false);
+      });
     });
   });
 });

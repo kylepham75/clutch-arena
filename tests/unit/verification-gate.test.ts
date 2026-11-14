@@ -20,6 +20,16 @@ import {
   type FormulaLedgerEntry,
   type SynthesisOmittedFormula,
   type SynthesisSection,
+  type DocumentBlueprint,
+  type SectionDraft,
+  type TeachingBlock,
+  type AcceptedFormula,
+  type SourceAtom,
+  type SymbolBinding,
+  type NoteDefect,
+  type NotePatch,
+  type FormulaCandidate,
+  notePatchSchema,
 } from "@/lib/schemas/notes";
 import {
   runVerificationGate,
@@ -30,8 +40,17 @@ import {
   runSectionQualityGate,
   extractFinancialConventions,
   pinConventionsToSections,
+  isRequiredConceptClaimOrBullet,
+  buildTypedNotePatches,
+  applyTypedNotePatches,
+  runCompilerV2VerificationGate,
   type FinancialConventionPin,
 } from "@/lib/notes/verification-gate";
+import {
+  evaluateClaimSupportDeterministically,
+  evaluateEvidencePackets,
+  type EvidencePacketItem,
+} from "@/lib/notes/verifier-llm";
 import { buildNotesPrompt } from "@/lib/ai/prompts-notes";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
 
@@ -1871,6 +1890,792 @@ describe("Stage 4.4 Verification Gate & Targeted Repair Loop", () => {
       expect(vi.mocked(generateObject)).toHaveBeenCalled();
       expect(result.repairAttempted).toBe(true);
       expect(result.verification.placedFormulaIds).toContain("F1");
+    });
+  });
+
+  describe("v2 Evidence-Packet Criticism & Bounded Typed Patch Repair", () => {
+    describe("SupportMode Evaluation", () => {
+      it("faithful_paraphrase: approves paraphrased statements with >= 0.35 token overlap without penalizing lack of verbatim copy", () => {
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 2",
+            text: "Dividend Discount Model: The fundamental value of a share of stock equals the present value of all expected future dividends.",
+          },
+        ];
+
+        const atoms: SourceAtom[] = [
+          {
+            id: "atom-1",
+            slide: 2,
+            kind: "concept",
+            topic: "DDM",
+            content: "Giá trị cổ phiếu bằng hiện giá của toàn bộ dòng cổ tức kỳ vọng trong tương lai.",
+            evidence: "present value of all expected future dividends",
+          },
+        ];
+
+        // Bilingual paraphrase without verbatim substring copy
+        const claim: EvidencePacketItem = {
+          packetId: "p1",
+          claimId: "c1",
+          sectionLetter: "A",
+          text: "Mô hình DDM xác định giá trị hiện tại của cổ phiếu dựa trên dòng cổ tức kỳ vọng tương lai.",
+          slideCitations: [2],
+          supportMode: "faithful_paraphrase",
+          supportAtomIds: ["atom-1"],
+        };
+
+        const verdict = evaluateClaimSupportDeterministically(claim, sources, atoms);
+        expect(verdict.criticOutcome).toBe("SUPPORTED");
+        expect(verdict.defectType).toBeUndefined();
+      });
+
+      it("faithful_paraphrase: detects inverted mathematical inequalities and returns CONTRADICTED", () => {
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 3",
+            text: "Gordon Growth Model requires g < R. If growth rate exceeds discount rate, model fails.",
+          },
+        ];
+
+        const claim: EvidencePacketItem = {
+          packetId: "p2",
+          claimId: "c2",
+          sectionLetter: "A",
+          text: "Mô hình Gordon yêu cầu tốc độ tăng trưởng g phải lớn hơn chiết khấu R (g > R).",
+          slideCitations: [3],
+          supportMode: "faithful_paraphrase",
+        };
+
+        const verdict = evaluateClaimSupportDeterministically(claim, sources);
+        expect(verdict.criticOutcome).toBe("CONTRADICTED");
+        expect(verdict.reason).toContain("inequality");
+      });
+
+      it("supported_combination: verifies statement synthesized across multiple slides and source atoms", () => {
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 4",
+            text: "Stage 1 represents high non-constant growth period where dividends grow rapidly.",
+          },
+          {
+            id: "s2",
+            label: "Slide 5",
+            text: "Stage 2 transitions into perpetual constant growth rate g where the Gordon model applies.",
+          },
+        ];
+
+        const atoms: SourceAtom[] = [
+          {
+            id: "atom-s1",
+            slide: 4,
+            kind: "procedure",
+            topic: "Two-stage DDM",
+            content: "Giai đoạn 1 tăng trưởng siêu thường với tỷ lệ cao.",
+            evidence: "high non-constant growth",
+          },
+          {
+            id: "atom-s2",
+            slide: 5,
+            kind: "procedure",
+            topic: "Two-stage DDM",
+            content: "Giai đoạn 2 chuyển sang tăng trưởng ổn định vĩnh viễn theo mô hình Gordon.",
+            evidence: "constant growth rate g",
+          },
+        ];
+
+        const claim: EvidencePacketItem = {
+          packetId: "p3",
+          claimId: "c3",
+          sectionLetter: "B",
+          text: "Mô hình chiết khấu 2 giai đoạn kết hợp giai đoạn 1 tăng trưởng nhanh với giai đoạn 2 tăng trưởng ổn định vĩnh viễn.",
+          slideCitations: [4, 5],
+          supportMode: "supported_combination",
+          supportAtomIds: ["atom-s1", "atom-s2"],
+        };
+
+        const verdict = evaluateClaimSupportDeterministically(claim, sources, atoms);
+        expect(verdict.criticOutcome).toBe("SUPPORTED");
+      });
+
+      it("example_abstraction: validates symbolic recipes and rejects spurious ungrounded drill numbers", () => {
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 6",
+            text: "Example: Company XYZ paid D0 = $2.00, R = 12%, g = 5%. Step 1: Calculate D1 = 2 * 1.05 = 2.10. Step 2: P0 = 2.10 / (0.12 - 0.05) = $30.",
+          },
+        ];
+
+        // Valid symbolic abstraction
+        const validRecipeClaim: EvidencePacketItem = {
+          packetId: "p-rec-1",
+          claimId: "c-rec-1",
+          sectionLetter: "C",
+          text: "Quy trình tính toán giá cổ phiếu theo mô hình tăng trưởng đều:",
+          steps: [
+            "Bước 1: Tính cổ tức kỳ vọng D1 bằng cách lấy D0 nhân (1 + g)",
+            "Bước 2: Thay D1 vào công thức P0 = D1 / (R - g) để tính thị giá",
+          ],
+          slideCitations: [6],
+          supportMode: "example_abstraction",
+        };
+
+        const validVerdict = evaluateClaimSupportDeterministically(validRecipeClaim, sources);
+        expect(validVerdict.criticOutcome).toBe("SUPPORTED");
+
+        // Invalid recipe with spurious ungrounded numbers (e.g. 888.75)
+        const invalidRecipeClaim: EvidencePacketItem = {
+          packetId: "p-rec-2",
+          claimId: "c-rec-2",
+          sectionLetter: "C",
+          text: "Quy trình tính toán giá cổ phiếu:",
+          steps: [
+            "Bước 1: Nhân số tiền bất kỳ 888.75 với tỷ lệ chiết khấu",
+            "Bước 2: Chia cho hệ số",
+          ],
+          slideCitations: [6],
+          supportMode: "example_abstraction",
+        };
+
+        const invalidVerdict = evaluateClaimSupportDeterministically(invalidRecipeClaim, sources);
+        expect(invalidVerdict.criticOutcome).toBe("OVERSTATED");
+        expect(invalidVerdict.defectType).toBe("BAD_RECIPE_ABSTRACTION");
+      });
+    });
+
+    describe("Forbid Silent DROP of Required Concepts", () => {
+      it("identifies required concepts via isRequiredConceptClaimOrBullet", () => {
+        const atoms: SourceAtom[] = [
+          {
+            id: "atom-rule-1",
+            slide: 2,
+            kind: "boundary_condition",
+            topic: "Gordon Condition",
+            content: "Điều kiện bắt buộc: Tỷ lệ tăng trưởng g phải nhỏ hơn tỷ suất sinh lời đòi hỏi R (g < R).",
+            evidence: "Condition: g < R is required",
+          },
+        ];
+
+        const blueprint: DocumentBlueprint = {
+          title: "CORPORATE FINANCE",
+          subject: "Corporate Finance",
+          primaryLanguage: "bilingual",
+          executiveSummary: "Summary",
+          sections: [
+            {
+              id: "sec-a",
+              letter: "A",
+              titleVi: "A. ĐỊNH GIÁ",
+              sourceSlides: [2],
+              requiredFormulaIds: ["F1"],
+              requiredAtomIds: ["atom-rule-1"],
+              symbolScopeId: "global",
+              targetBlockBudget: 6,
+            },
+          ],
+          glossary: [],
+        };
+
+        const check1 = isRequiredConceptClaimOrBullet({
+          text: "Tỷ lệ tăng trưởng g phải nhỏ hơn tỷ suất chiết khấu R (g < R)",
+          slide: 2,
+          sectionLetter: "A",
+          blueprint,
+          atoms,
+        });
+        expect(check1.isRequired).toBe(true);
+        expect(check1.matchingAtom?.id).toBe("atom-rule-1");
+
+        const check2 = isRequiredConceptClaimOrBullet({
+          text: "Arbitrary unrelated marketing statement without atom grounding",
+          slide: 2,
+          sectionLetter: "A",
+          blueprint,
+          atoms,
+        });
+        expect(check2.isRequired).toBe(false);
+      });
+
+      it("rewrites required concepts deterministically in applyMarkPolicyAndGate instead of silently dropping them", async () => {
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 2",
+            text: "Stock Valuation. Condition: g < R is required for constant growth model.",
+          },
+        ];
+
+        const ledger: FormulaLedgerEntry[] = [
+          {
+            id: "F1",
+            slide: 2,
+            raw: "P0 = D1 / (R - g)",
+            latex: "P_0 = \\frac{D_1}{R - g}",
+            origin: "text",
+            variables: [],
+          },
+        ];
+
+        const atoms: SourceAtom[] = [
+          {
+            id: "atom-boundary-1",
+            slide: 2,
+            kind: "boundary_condition",
+            topic: "Boundary Rule",
+            content: "Điều kiện áp dụng bắt buộc: g < R để mẫu số luôn dương.",
+            evidence: "g < R is required",
+          },
+        ];
+
+        const section = createSection({
+          id: "sec-a-1",
+          letter: "A",
+          titleVi: "A. MÔ HÌNH CHIẾT KHẤU",
+          formulas: [
+            createFormula({
+              latex: "P_0 = \\frac{D_1}{R - g}",
+              formulaRefs: ["F1"],
+              slide: 2,
+            }),
+          ],
+          groundedBullets: [
+            {
+              text: "Điều kiện áp dụng g < R để mẫu số luôn dương",
+              slide: 2,
+              evidence: "g < R is required",
+            },
+            {
+              text: "Random non-required marketing bullet that should be dropped",
+              slide: 2,
+              evidence: "Totally unrelated phrase",
+            },
+          ],
+          bulletPoints: [
+            "Điều kiện áp dụng g < R để mẫu số luôn dương",
+            "Random non-required marketing bullet that should be dropped",
+          ],
+        });
+
+        // Mock LLM returning UNSUPPORTED for both bullets
+        vi.mocked(generateObject).mockResolvedValueOnce({
+          object: {
+            verdicts: [
+              {
+                claimId: "C1", // Bullet 1 (required concept)
+                slide: 2,
+                verdict: "UNSUPPORTED",
+                reason: "Omitted by external verifier check",
+              },
+              {
+                claimId: "C2", // Bullet 2 (non-required)
+                slide: 2,
+                verdict: "UNSUPPORTED",
+                reason: "Marketing claim not in slides",
+              },
+            ],
+          },
+        } as any);
+
+        const result = await runVerificationGate({
+          sections: [section],
+          sources,
+          ledger,
+          options: {
+            enableVerifierLlm: true,
+            verifierModel: {} as any,
+            maxRepairAttempts: 0,
+            atoms,
+            forbidSilentDropOfRequiredConcepts: true,
+          },
+        });
+
+        // The required concept bullet must NOT be dropped; it should be rewritten from matchingAtom
+        expect(result.sections[0].groundedBullets?.length).toBe(1);
+        expect(result.sections[0].groundedBullets?.[0].text).toBe(
+          "Điều kiện áp dụng bắt buộc: g < R để mẫu số luôn dương.",
+        );
+        expect(result.sections[0].groundedBullets?.[0].status).toBe("verified");
+        expect(result.sections[0].groundedBullets?.[0].verdict).toBe("SUPPORTED");
+
+        // The non-required bullet was pruned
+        expect(result.verification.unsupportedClaimsRemoved).toBe(1);
+      });
+
+      it("forbids numeric DROP in Step 7 for required concepts and preserves or restores them", async () => {
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 3",
+            text: "Dividend growth rules.",
+          },
+        ];
+
+        const ledger: FormulaLedgerEntry[] = [];
+
+        const atoms: SourceAtom[] = [
+          {
+            id: "atom-req-proc",
+            slide: 3,
+            kind: "procedure",
+            topic: "Gordon procedure",
+            content: "Xác định tỷ suất sinh lời đòi hỏi R trước khi ước lượng g.",
+            evidence: "Dividend growth rules.",
+          },
+        ];
+
+        // Bullet contains ungrounded numbers (e.g. "99.9%") so numeric cascade would resolve action "DROP"
+        const section = createSection({
+          id: "sec-a-2",
+          letter: "A",
+          titleVi: "A. QUY TRÌNH",
+          formulas: [],
+          groundedBullets: [
+            {
+              text: "Xác định tỷ suất sinh lời đòi hỏi R đạt 99.9% trước khi ước lượng g.",
+              slide: 3,
+              evidence: "Dividend growth rules.",
+            },
+            {
+              text: "Another bullet so section isn't empty.",
+              slide: 3,
+              evidence: "Dividend growth rules.",
+            },
+          ],
+          bulletPoints: [
+            "Xác định tỷ suất sinh lời đòi hỏi R đạt 99.9% trước khi ước lượng g.",
+            "Another bullet so section isn't empty.",
+          ],
+        });
+
+        const result = await runVerificationGate({
+          sections: [section],
+          sources,
+          ledger,
+          options: {
+            skipVerifierLlm: true,
+            maxRepairAttempts: 0,
+            atoms,
+            forbidSilentDropOfRequiredConcepts: true,
+          },
+        });
+
+        // Required concept is preserved/restored, not dropped by Step 7 numeric drop
+        const keptTexts = result.sections[0].groundedBullets?.map((b) => b.text) || [];
+        expect(keptTexts).toContain(
+          "Xác định tỷ suất sinh lời đòi hỏi R trước khi ước lượng g.",
+        );
+      });
+    });
+
+    describe("Bounded NotePatch Repair & Deterministic Recompilation", () => {
+      it("buildTypedNotePatches: generates bounded NotePatch operations for defects", () => {
+        const blueprint: DocumentBlueprint = {
+          title: "FINANCE NOTES",
+          subject: "Corporate Finance",
+          primaryLanguage: "bilingual",
+          executiveSummary: "Exec summary",
+          sections: [
+            {
+              id: "sec-a",
+              letter: "A",
+              titleVi: "A. CÔNG THỨC ĐỊNH GIÁ",
+              sourceSlides: [1],
+              requiredFormulaIds: ["F1", "F2"],
+              requiredAtomIds: ["atom-c1"],
+              symbolScopeId: "global",
+              targetBlockBudget: 2,
+            },
+          ],
+          glossary: [],
+        };
+
+        const acceptedFormulas: AcceptedFormula[] = [
+          {
+            id: "F1",
+            slide: 1,
+            kind: "formula",
+            displayLatex: "P_0 = \\frac{D_1}{R - g}",
+            raw: "P0 = D1 / (R - g)",
+            label: "Gordon Growth",
+            origin: "text",
+            evidenceIds: ["ev-1"],
+            symbolBindingIds: ["sym-p0", "sym-d1", "sym-r", "sym-g"],
+            conditionAtomIds: ["atom-c1"],
+            sourceVariantIds: [],
+            revision: 1,
+          },
+        ];
+
+        const atoms: SourceAtom[] = [
+          {
+            id: "atom-c1",
+            slide: 1,
+            kind: "boundary_condition",
+            topic: "Gordon Condition",
+            content: "Điều kiện g < R",
+            evidence: "g < R is required",
+          },
+        ];
+
+        const symbolBindings: SymbolBinding[] = [
+          { id: "sym-p0", scopeId: "global", symbolLatex: "P_0", meaning: "Giá cổ phiếu hiện tại", slide: 1, evidenceIds: [] },
+          { id: "sym-d1", scopeId: "global", symbolLatex: "D_1", meaning: "Cổ tức năm tiếp theo", slide: 1, evidenceIds: [] },
+          { id: "sym-r", scopeId: "global", symbolLatex: "R", meaning: "Tỷ suất sinh lời đòi hỏi", slide: 1, evidenceIds: [] },
+          { id: "sym-g", scopeId: "global", symbolLatex: "g", meaning: "Tỷ lệ tăng trưởng cổ tức", slide: 1, evidenceIds: [] },
+        ];
+
+        const sectionDrafts: SectionDraft[] = [
+          {
+            id: "sec-a",
+            letter: "A",
+            titleVi: "A. CÔNG THỨC ĐỊNH GIÁ",
+            sourceSlides: [1],
+            blocks: [
+              {
+                id: "b-intro",
+                kind: "intuition",
+                text: "Giới thiệu nguyên lý định giá cổ phiếu theo chiết khấu cổ tức.",
+                slideCitations: [1],
+                supportAtomIds: ["atom-c1"],
+                supportMode: "faithful_paraphrase",
+                formulaRefs: [],
+                symbolBindingIds: [],
+              },
+              {
+                id: "b-recipe",
+                kind: "recipe",
+                text: "Các bước tính toán",
+                steps: ["Bước 1: Tính", "Bước 2: Thay"],
+                slideCitations: [1],
+                supportAtomIds: ["atom-c1"],
+                supportMode: "example_abstraction",
+                formulaRefs: [],
+                symbolBindingIds: [],
+              },
+              {
+                id: "b-redundant",
+                kind: "case",
+                text: "Khối dư thừa không mang công thức hay atom độc nhất.",
+                slideCitations: [1],
+                supportAtomIds: [],
+                supportMode: "faithful_paraphrase",
+                formulaRefs: [],
+                symbolBindingIds: [],
+              },
+            ],
+          },
+        ];
+
+        const defects: NoteDefect[] = [
+          {
+            id: "def-1",
+            sectionLetter: "A",
+            targetId: "F1",
+            defectType: "MISSING_FORMULA",
+            reason: "Formula F1 is missing from section drafts",
+            requiredFormulaId: "F1",
+            slide: 1,
+          },
+          {
+            id: "def-2",
+            sectionLetter: "A",
+            targetId: "b-intro",
+            defectType: "MISSING_CONDITION",
+            reason: "Missing condition g < R",
+            slide: 1,
+          },
+        ];
+
+        const patches = buildTypedNotePatches({
+          defects,
+          sectionDrafts,
+          blueprint,
+          acceptedFormulas,
+          atoms,
+          symbolBindings,
+          currentRevision: 1,
+        });
+
+        expect(patches.length).toBe(2);
+        expect(patches[0].operation).toBe("INSERT_FORMULA");
+        expect(patches[0].updatedBlock?.formulaRefs).toContain("F1");
+        expect(patches[1].operation).toBe("REPLACE_BLOCK");
+        expect(notePatchSchema.safeParse(patches[0]).success).toBe(true);
+        expect(notePatchSchema.safeParse(patches[1]).success).toBe(true);
+      });
+
+      it("applyTypedNotePatches: applies patches immutably and enforces formula coverage", () => {
+        const acceptedFormulas: AcceptedFormula[] = [
+          {
+            id: "F1",
+            slide: 1,
+            kind: "formula",
+            displayLatex: "P_0 = \\frac{D_1}{R - g}",
+            raw: "P0 = D1 / (R - g)",
+            label: "Gordon Growth",
+            origin: "text",
+            evidenceIds: [],
+            symbolBindingIds: [],
+            conditionAtomIds: [],
+            sourceVariantIds: [],
+            revision: 1,
+          },
+        ];
+
+        const sectionDrafts: SectionDraft[] = [
+          {
+            id: "sec-a",
+            letter: "A",
+            titleVi: "A. NGUYÊN LÝ",
+            sourceSlides: [1],
+            blocks: [
+              {
+                id: "b-1",
+                kind: "intuition",
+                text: "Định giá theo cổ tức",
+                slideCitations: [1],
+                supportAtomIds: [],
+                supportMode: "faithful_paraphrase",
+                formulaRefs: [],
+                symbolBindingIds: [],
+              },
+            ],
+          },
+        ];
+
+        const newBlock: TeachingBlock = {
+          id: "b-f1",
+          kind: "case",
+          heading: "Công thức Gordon",
+          text: "Áp dụng công thức F1",
+          slideCitations: [1],
+          supportAtomIds: [],
+          supportMode: "faithful_paraphrase",
+          formulaRefs: ["F1"],
+          symbolBindingIds: [],
+        };
+
+        const patches: NotePatch[] = [
+          {
+            defectId: "d-1",
+            sectionLetter: "A",
+            operation: "INSERT_FORMULA",
+            baseRevision: 1,
+            updatedBlock: newBlock,
+          },
+        ];
+
+        const result = applyTypedNotePatches({
+          sectionDrafts,
+          patches,
+          acceptedFormulas,
+          atoms: [],
+          currentRevision: 1,
+        });
+
+        expect(result.appliedPatches.length).toBe(1);
+        expect(result.sectionDrafts[0].blocks.length).toBe(2);
+        expect(result.sectionDrafts[0].blocks[1].formulaRefs).toContain("F1");
+      });
+
+      it("runCompilerV2VerificationGate: executes full critic + rubric + typed patch repair + recompilation", async () => {
+        const blueprint: DocumentBlueprint = {
+          title: "VALUATION MASTER SHEET",
+          subject: "Corporate Finance",
+          primaryLanguage: "bilingual",
+          executiveSummary: "Executive summary of valuation.",
+          sections: [
+            {
+              id: "sec-a",
+              letter: "A",
+              titleVi: "A. ĐỊNH GIÁ DDM",
+              sourceSlides: [1],
+              requiredFormulaIds: ["F1"],
+              requiredAtomIds: ["atom-c1"],
+              symbolScopeId: "global",
+              targetBlockBudget: 5,
+            },
+          ],
+          glossary: [],
+        };
+
+        const acceptedFormulas: AcceptedFormula[] = [
+          {
+            id: "F1",
+            slide: 1,
+            kind: "formula",
+            displayLatex: "P_0 = \\frac{D_1}{R - g}",
+            raw: "P0 = D1 / (R - g)",
+            label: "Gordon Growth Model",
+            origin: "text",
+            evidenceIds: ["ev-1"],
+            symbolBindingIds: ["sym-p0", "sym-d1", "sym-r", "sym-g"],
+            conditionAtomIds: ["atom-c1"],
+            sourceVariantIds: [],
+            revision: 1,
+          },
+        ];
+
+        const atoms: SourceAtom[] = [
+          {
+            id: "atom-c1",
+            slide: 1,
+            kind: "boundary_condition",
+            topic: "Gordon Condition",
+            content: "Điều kiện áp dụng: g < R để mẫu số luôn dương.",
+            evidence: "Condition: g < R",
+          },
+        ];
+
+        const symbolBindings: SymbolBinding[] = [
+          { id: "sym-p0", scopeId: "global", symbolLatex: "P_0", meaning: "Giá cổ phiếu hiện tại", slide: 1, evidenceIds: [] },
+          { id: "sym-d1", scopeId: "global", symbolLatex: "D_1", meaning: "Cổ tức năm tiếp theo", slide: 1, evidenceIds: [] },
+          { id: "sym-r", scopeId: "global", symbolLatex: "R", meaning: "Tỷ suất sinh lời đòi hỏi", slide: 1, evidenceIds: [] },
+          { id: "sym-g", scopeId: "global", symbolLatex: "g", meaning: "Tỷ lệ tăng trưởng cổ tức", slide: 1, evidenceIds: [] },
+        ];
+
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 1",
+            text: "Stock Valuation. Gordon Growth Model: P0 = D1 / (R - g). Condition: g < R.",
+          },
+        ];
+
+        // Section draft initially missing F1 (triggers MISSING_FORMULA defect)
+        const sectionDrafts: SectionDraft[] = [
+          {
+            id: "sec-a",
+            letter: "A",
+            titleVi: "A. ĐỊNH GIÁ DDM",
+            sourceSlides: [1],
+            blocks: [
+              {
+                id: "block-intro",
+                kind: "intuition",
+                heading: "Nguyên lý định giá",
+                text: "Mô hình chiết khấu cổ tức đánh giá giá trị cổ phiếu dựa trên dòng tiền tương lai.",
+                slideCitations: [1],
+                supportAtomIds: ["atom-c1"],
+                supportMode: "faithful_paraphrase",
+                formulaRefs: [],
+                symbolBindingIds: [],
+              },
+            ],
+          },
+        ];
+
+        const result = await runCompilerV2VerificationGate({
+          fileName: "lecture.pdf",
+          blueprint,
+          sectionDrafts,
+          acceptedFormulas,
+          atoms,
+          symbolBindings,
+          sources,
+          options: {
+            maxRepairAttempts: 1,
+          },
+        });
+
+        // Verifies typed patch repair resolved the missing formula
+        expect(result.appliedPatches.length).toBeGreaterThan(0);
+        expect(result.qaReport.appliedPatches).toBe(result.appliedPatches.length);
+        expect(result.compiledOutput.placedFormulaIds).toContain("F1");
+        expect(result.rubricReport.manifestCoverage.missingFormulaIds).toEqual([]);
+        expect(result.rubricReport.passed).toBe(true);
+        expect(result.verification.status).toBe("passed");
+      });
+
+      it("runVerificationGate: seamlessly delegates to Compiler v2 gate when v2 inputs are provided", async () => {
+        const blueprint: DocumentBlueprint = {
+          title: "CORPORATE FINANCE V2",
+          subject: "Corporate Finance",
+          primaryLanguage: "bilingual",
+          executiveSummary: "Executive summary",
+          sections: [
+            {
+              id: "sec-a",
+              letter: "A",
+              titleVi: "A. CÔNG THỨC CƠ BẢN",
+              sourceSlides: [1],
+              requiredFormulaIds: ["F1"],
+              requiredAtomIds: [],
+              symbolScopeId: "global",
+              targetBlockBudget: 5,
+            },
+          ],
+          glossary: [],
+        };
+
+        const acceptedFormulas: AcceptedFormula[] = [
+          {
+            id: "F1",
+            slide: 1,
+            kind: "formula",
+            displayLatex: "P_0 = \\frac{D_1}{R - g}",
+            raw: "P0 = D1 / (R - g)",
+            label: "Gordon Growth",
+            origin: "text",
+            evidenceIds: [],
+            symbolBindingIds: [],
+            conditionAtomIds: [],
+            sourceVariantIds: [],
+            revision: 1,
+          },
+        ];
+
+        const sectionDrafts: SectionDraft[] = [
+          {
+            id: "sec-a",
+            letter: "A",
+            titleVi: "A. CÔNG THỨC CƠ BẢN",
+            sourceSlides: [1],
+            blocks: [
+              {
+                id: "b-1",
+                kind: "case",
+                heading: "Gordon Formula",
+                text: "Công thức tính P0 từ Slide 1",
+                slideCitations: [1],
+                supportAtomIds: [],
+                supportMode: "faithful_paraphrase",
+                formulaRefs: ["F1"],
+                symbolBindingIds: [],
+              },
+            ],
+          },
+        ];
+
+        const sources: SourceBlock[] = [
+          {
+            id: "s1",
+            label: "Slide 1",
+            text: "P0 = D1 / (R - g)",
+          },
+        ];
+
+        const result = await runVerificationGate({
+          sections: [],
+          sources,
+          ledger: [],
+          blueprint,
+          sectionDrafts,
+          acceptedFormulas,
+          atoms: [],
+          symbolBindings: [],
+        });
+
+        expect(result.qaReport).toBeDefined();
+        expect(result.publishedHandout).toBeDefined();
+        expect(result.rubricReport).toBeDefined();
+        expect(result.compiledOutput).toBeDefined();
+        expect(result.verification.placedFormulaIds).toContain("F1");
+      });
     });
   });
 });

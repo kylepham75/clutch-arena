@@ -408,13 +408,13 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
         }),
       );
 
-      // 3. Regional window/guard/COGS ceiling verification
+      // 3. Regional window/guard/COGS ceiling verification (unified VN & ROW USD limits)
       expect(getRegionalWindowBudget("pro_monthly", "VN")).toBe(0.28);
-      expect(getRegionalWindowBudget("pro_monthly", "ROW")).toBe(0.60);
+      expect(getRegionalWindowBudget("pro_monthly", "ROW")).toBe(0.28);
       expect(getRegionalGuardBudget("pro_monthly", "VN")).toBe(0.55);
-      expect(getRegionalGuardBudget("pro_monthly", "ROW")).toBe(1.20);
+      expect(getRegionalGuardBudget("pro_monthly", "ROW")).toBe(0.55);
       expect(getRegionalCogsCeiling("pro_monthly", "VN")).toBe(1.50);
-      expect(getRegionalCogsCeiling("pro_monthly", "ROW")).toBe(3.20);
+      expect(getRegionalCogsCeiling("pro_monthly", "ROW")).toBe(1.50);
 
       // 4. Rate limiter recognizes pro_monthly as paid
       const rateRes = await checkRateLimit(userId, "ingest", "pro_monthly");

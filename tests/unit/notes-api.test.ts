@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("server-only", () => ({}));
-import { POST } from "@/app/api/notes/generate/route";
+import {
+  POST,
+  NOTES_SHARED_CACHE_PIPELINE_VERSION,
+} from "@/app/api/notes/generate/route";
 import { NextRequest } from "next/server";
 import { generateClutchNote } from "@/lib/ai/generate-notes";
 import { IngestionError } from "@/lib/ingestion/errors";
@@ -17,8 +20,18 @@ import {
   computeContentHash,
   toClientQuota,
 } from "@/lib/rate-limit";
-
-const NOTES_SHARED_CACHE_PIPELINE_VERSION = "notes-v1";
+import {
+  NOTES_EXTRACTOR_SLUG,
+  NOTES_CRITIC_SLUG,
+  NOTES_PLANNER_SLUG,
+  NOTES_WRITER_SLUG,
+  NOTES_ESCALATION_SLUG,
+  NOTES_MAX_ESCALATION_ATTEMPTS,
+  resolveNotesCompilerSlug,
+  getNotesCompilerModel,
+  getNotesV2RoutingBundle,
+  computeNotesV2DeckCogsUsd,
+} from "@/lib/ai/provider";
 import type { ClutchNote } from "@/lib/schemas/notes";
 
 vi.mock("@/lib/ai/generate-notes", () => ({
@@ -583,7 +596,7 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
       language: "en",
       mode: "notes",
       focusHash: "",
-      pipelineVersion: "notes-v1",
+      pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
     });
     expect(cachedEntry?.clutchNote).toEqual(mockNote);
 
@@ -1076,10 +1089,10 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
 
     const userId = `user-ocr-gated-${Date.now()}`;
     const ledger = await getUserQuotaLedger(userId, "cram_pass", "ROW");
-    // 93.3% used of $0.60 ROW budget -> mode: "hard", allowVisionOcr: false, but $0.04 remains (>= $0.004 minHeadroom)
-    ledger.windowSpentUsd = 0.56;
-    ledger.weeklySpentUsd = 0.56;
-    ledger.cogsSpentUsd = 0.56;
+    // 91.4% used of unified $0.35 budget -> mode: "hard", allowVisionOcr: false, with $0.03 headroom (>= $0.02 reserve)
+    ledger.windowSpentUsd = 0.32;
+    ledger.weeklySpentUsd = 0.32;
+    ledger.cogsSpentUsd = 0.32;
     await saveUserQuotaLedger(ledger);
 
     const slideSources = [
@@ -1202,7 +1215,7 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     expect(vi.mocked(generateClutchNote)).not.toHaveBeenCalled();
   });
 
-  it("enforces cache isolation between Free (notes-free-v1) and Paid (notes-v1) tiers", async () => {
+  it("enforces cache isolation between Free (notes-free-v1) and Paid (notes-v2) tiers", async () => {
     const paidOnlyNote: ClutchNote = {
       ...mockNote,
       id: "note-paid-exclusive",
@@ -1214,7 +1227,7 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
       title: "FREE CONCISE NOTE",
     };
 
-    // 1. Seed Paid entry under notes-v1
+    // 1. Seed Paid entry under notes-v2
     const fileBytesPaid = Buffer.from("paid-deck-content-isolation-test");
     const fileSha256Paid = computeFileSha256(fileBytesPaid);
     await setSharedDeckCache({
@@ -1223,7 +1236,7 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
       language: "en",
       mode: "notes",
       focusHash: "",
-      pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION, // "notes-v1"
+      pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION, // "notes-v2"
       questionPool: [],
       clutchNote: paidOnlyNote,
     });
@@ -1276,7 +1289,7 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
 
     vi.mocked(generateClutchNote).mockResolvedValueOnce(paidOnlyNote);
 
-    // Pro request for the Free file must MISS cache (looks for notes-v1) and NOT receive the free note
+    // Pro request for the Free file must MISS cache (looks for notes-v2) and NOT receive the free note
     const proForm = new FormData();
     proForm.append(
       "file",
@@ -1303,5 +1316,297 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     expect(vi.mocked(generateClutchNote)).toHaveBeenCalledWith(
       expect.objectContaining({ tier: "pro" }),
     );
+  });
+
+  describe("v2 Notes Compiler Routing, COGS Accounting & notes-v2 Cache Versioning", () => {
+    describe("1. Cache pipeline version & legacy notes-v1 isolation", () => {
+      it("exports NOTES_SHARED_CACHE_PIPELINE_VERSION as 'notes-v2'", () => {
+        expect(NOTES_SHARED_CACHE_PIPELINE_VERSION).toBe("notes-v2");
+      });
+
+      it("isolates new notes-v2 cache entries from legacy notes-v1 cached entries", async () => {
+        const legacyNote: ClutchNote = {
+          ...mockNote,
+          id: "note-legacy-v1-only",
+          title: "LEGACY V1 NOTE",
+        };
+        const v2Note: ClutchNote = {
+          ...mockNote,
+          id: "note-modern-v2",
+          title: "V2 COMPILED NOTE",
+        };
+
+        const slideText = "V1 to V2 migration slide content.";
+        const sources = [{ id: "slide-1", label: "Slide 1", text: slideText }];
+        const fileSha256 = "a".repeat(64);
+        const contentHash = computeContentHash({
+          normalizedText: slideText,
+          pageCount: 1,
+        });
+
+        // Seed shared cache with legacy pipelineVersion: "notes-v1"
+        await setSharedDeckCache({
+          contentHash,
+          fileSha256,
+          language: "en",
+          mode: "notes",
+          focusHash: "",
+          pipelineVersion: "notes-v1",
+          questionPool: [],
+          clutchNote: legacyNote,
+        });
+
+        // Verify lookup under notes-v2 returns null (miss)
+        const v2Lookup = await getSharedDeckCache({
+          contentHash,
+          fileSha256,
+          language: "en",
+          mode: "notes",
+          focusHash: "",
+          pipelineVersion: NOTES_SHARED_CACHE_PIPELINE_VERSION,
+        });
+        expect(v2Lookup).toBeNull();
+
+        // Making a Pro request should miss the legacy notes-v1 cache and trigger fresh generation
+        vi.mocked(generateClutchNote).mockResolvedValueOnce(v2Note);
+        const req = new NextRequest("http://localhost:3000/api/notes/generate", {
+          method: "POST",
+          headers: {
+            "x-test-tier": "pro",
+            "x-test-user-id": "v2-cache-migration-user",
+            "x-enforce-quota": "true",
+            origin: "http://localhost:3000",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            fileName: "v1-migration.pdf",
+            fileSha256,
+            sources,
+          }),
+        });
+
+        const res = await POST(req);
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.ok).toBe(true);
+        expect(data.cached).toBeUndefined(); // Missed legacy v1!
+        expect(data.note.id).toBe("note-modern-v2");
+        expect(vi.mocked(generateClutchNote)).toHaveBeenCalledTimes(1);
+
+        // Check that it's now stored under notes-v2
+        const storedV2 = await getSharedDeckCache({
+          contentHash,
+          fileSha256,
+          language: "en",
+          mode: "notes",
+          focusHash: "",
+          pipelineVersion: "notes-v2",
+        });
+        expect(storedV2?.clutchNote.id).toBe("note-modern-v2");
+
+        // Verify the legacy entry under notes-v1 is still preserved intact
+        const storedLegacy = await getSharedDeckCache({
+          contentHash,
+          fileSha256,
+          language: "en",
+          mode: "notes",
+          focusHash: "",
+          pipelineVersion: "notes-v1",
+        });
+        expect(storedLegacy?.clutchNote.id).toBe("note-legacy-v1-only");
+      });
+    });
+
+    describe("2. v2 Model Routing Specifications", () => {
+      it("pins extractor and critic to DeepSeek V4.1 Flash", () => {
+        expect(NOTES_EXTRACTOR_SLUG).toBe("deepseek/deepseek-v4.1-flash-1017");
+        expect(NOTES_CRITIC_SLUG).toBe("deepseek/deepseek-v4.1-flash-1017");
+        expect(resolveNotesCompilerSlug("extractor")).toBe(NOTES_EXTRACTOR_SLUG);
+        expect(resolveNotesCompilerSlug("critic")).toBe(NOTES_CRITIC_SLUG);
+      });
+
+      it("pins planner and writer to Claude Haiku 5.5 by default", () => {
+        expect(NOTES_PLANNER_SLUG).toBe("anthropic/claude-haiku-5.5");
+        expect(NOTES_WRITER_SLUG).toBe("anthropic/claude-haiku-5.5");
+        expect(resolveNotesCompilerSlug("planner")).toBe(NOTES_PLANNER_SLUG);
+        expect(resolveNotesCompilerSlug("writer")).toBe(NOTES_WRITER_SLUG);
+      });
+
+      it("escalates writer and planner to Gemini 2.5 Flash on attempt 1, bounded to max 1 attempt", () => {
+        expect(NOTES_ESCALATION_SLUG).toBe("google/gemini-2.5-flash");
+        expect(NOTES_MAX_ESCALATION_ATTEMPTS).toBe(1);
+
+        // Writer escalation
+        expect(resolveNotesCompilerSlug("writer", { escalate: true })).toBe(
+          NOTES_ESCALATION_SLUG,
+        );
+        expect(
+          resolveNotesCompilerSlug("writer", {
+            escalate: true,
+            escalationAttempt: 1,
+          }),
+        ).toBe(NOTES_ESCALATION_SLUG);
+        // Bounded: attempt 2 exceeds max escalation attempts, falls back to primary Haiku 5.5
+        expect(
+          resolveNotesCompilerSlug("writer", {
+            escalate: true,
+            escalationAttempt: 2,
+          }),
+        ).toBe(NOTES_WRITER_SLUG);
+
+        // Planner escalation
+        expect(resolveNotesCompilerSlug("planner", { escalate: true })).toBe(
+          NOTES_ESCALATION_SLUG,
+        );
+        expect(
+          resolveNotesCompilerSlug("planner", {
+            escalate: true,
+            escalationAttempt: 2,
+          }),
+        ).toBe(NOTES_PLANNER_SLUG);
+
+        // Explicit escalation role
+        expect(resolveNotesCompilerSlug("escalation")).toBe(NOTES_ESCALATION_SLUG);
+        expect(
+          resolveNotesCompilerSlug("escalation", { escalationAttempt: 2 }),
+        ).toBe(NOTES_WRITER_SLUG);
+      });
+
+      it("returns bundle with extractor, critic, planner, writer, escalationSlug, and maxEscalationAttempts", () => {
+        const defaultBundle = getNotesV2RoutingBundle();
+        expect(defaultBundle.extractor.slug).toBe("deepseek/deepseek-v4.1-flash-1017");
+        expect(defaultBundle.critic.slug).toBe("deepseek/deepseek-v4.1-flash-1017");
+        expect(defaultBundle.planner.slug).toBe("anthropic/claude-haiku-5.5");
+        expect(defaultBundle.writer.slug).toBe("anthropic/claude-haiku-5.5");
+        expect(defaultBundle.writer.escalated).toBe(false);
+        expect(defaultBundle.escalationSlug).toBe("google/gemini-2.5-flash");
+        expect(defaultBundle.maxEscalationAttempts).toBe(1);
+
+        const escalatedBundle = getNotesV2RoutingBundle({ escalateWriter: true });
+        expect(escalatedBundle.writer.slug).toBe("google/gemini-2.5-flash");
+        expect(escalatedBundle.writer.escalated).toBe(true);
+
+        const boundedBundle = getNotesV2RoutingBundle({
+          escalateWriter: true,
+          escalationAttempt: 2,
+        });
+        expect(boundedBundle.writer.slug).toBe("anthropic/claude-haiku-5.5");
+        expect(boundedBundle.writer.escalated).toBe(false);
+      });
+    });
+
+    describe("3. Real Per-Deck COGS Accounting", () => {
+      it("computes deck COGS with telemetryCostUsd and visionCostUsd", () => {
+        const cogs = computeNotesV2DeckCogsUsd({
+          telemetryCostUsd: 0.012345,
+          visionCostUsd: 0.005,
+        });
+        expect(cogs).toBe(0.017345);
+      });
+
+      it("falls back to totalTokens when telemetryCostUsd is missing or zero", () => {
+        // 20,000 tokens at default 0.8 per million = 0.016
+        const cogsDefaultRate = computeNotesV2DeckCogsUsd({
+          telemetryCostUsd: 0,
+          totalTokens: 20_000,
+        });
+        expect(cogsDefaultRate).toBe(0.016);
+
+        // 20,000 tokens with custom tokenRateUsdPerMillion = 1.2
+        const cogsCustomRate = computeNotesV2DeckCogsUsd({
+          totalTokens: 20_000,
+          tokenRateUsdPerMillion: 1.2,
+          visionCostUsd: 0.002,
+        });
+        expect(cogsCustomRate).toBe(0.026);
+      });
+
+      it("falls back to reservedCostUsd when both telemetryCostUsd and totalTokens are missing", () => {
+        const cogs = computeNotesV2DeckCogsUsd({
+          reservedCostUsd: 0.02,
+          visionCostUsd: 0.004,
+        });
+        expect(cogs).toBe(0.024);
+
+        const cogsEmpty = computeNotesV2DeckCogsUsd({});
+        expect(cogsEmpty).toBe(0);
+      });
+
+      it("forwards real telemetryCostUsd + visionCostUsd to recordDeckGenerationCogs on POST", async () => {
+        const spyRecordCogs = vi.spyOn(rateLimitModule, "recordDeckGenerationCogs");
+        vi.mocked(generateClutchNote).mockImplementationOnce(async (options) => {
+          options.onTelemetry?.({
+            costUsd: 0.0185,
+            totalTokens: 15_000,
+            servedModel: "anthropic/claude-haiku-5.5",
+          });
+          return mockNote;
+        });
+
+        const req = new NextRequest("http://localhost:3000/api/notes/generate", {
+          method: "POST",
+          headers: {
+            "x-test-tier": "pro",
+            "x-test-user-id": "user-cogs-real-telemetry",
+            "x-enforce-quota": "true",
+            origin: "http://localhost:3000",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            fileName: "Real_Cogs.pptx",
+            sources: [{ id: "slide-1", label: "Slide 1", text: "Balance sheet assets equal liabilities plus equity." }],
+          }),
+        });
+
+        const res = await POST(req);
+        expect(res.status).toBe(200);
+        expect(spyRecordCogs).toHaveBeenCalledWith(
+          "user-cogs-real-telemetry",
+          "pro",
+          0.0185,
+          expect.any(Number),
+          "ROW",
+        );
+        spyRecordCogs.mockRestore();
+      });
+
+      it("forwards token fallback cost to recordDeckGenerationCogs when costUsd is zero but totalTokens is present", async () => {
+        const spyRecordCogs = vi.spyOn(rateLimitModule, "recordDeckGenerationCogs");
+        vi.mocked(generateClutchNote).mockImplementationOnce(async (options) => {
+          options.onTelemetry?.({
+            costUsd: 0,
+            totalTokens: 25_000,
+            servedModel: "anthropic/claude-haiku-5.5",
+          });
+          return mockNote;
+        });
+
+        const req = new NextRequest("http://localhost:3000/api/notes/generate", {
+          method: "POST",
+          headers: {
+            "x-test-tier": "pro",
+            "x-test-user-id": "user-cogs-token-fallback",
+            "x-enforce-quota": "true",
+            origin: "http://localhost:3000",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            fileName: "Token_Fallback.pptx",
+            sources: [{ id: "slide-1", label: "Slide 1", text: "Cash flow statement operations section." }],
+          }),
+        });
+
+        const res = await POST(req);
+        expect(res.status).toBe(200);
+        expect(spyRecordCogs).toHaveBeenCalledWith(
+          "user-cogs-token-fallback",
+          "pro",
+          0.02,
+          expect.any(Number),
+          "ROW",
+        );
+        spyRecordCogs.mockRestore();
+      });
+    });
   });
 });

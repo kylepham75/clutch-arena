@@ -24,6 +24,24 @@ export const ALLOWED_NOTES_SLUGS = [
   NOTES_GEMINI_FLASH_SLUG,
 ] as const;
 
+// ============================================================================
+// Notes Compiler v2 Model Routing Constants & Roles
+// ============================================================================
+
+export const NOTES_EXTRACTOR_SLUG = DEFAULT_VERIFIER_SLUG;
+export const NOTES_CRITIC_SLUG = DEFAULT_VERIFIER_SLUG;
+export const NOTES_PLANNER_SLUG = DEFAULT_GENERATOR_SLUG;
+export const NOTES_WRITER_SLUG = DEFAULT_GENERATOR_SLUG;
+export const NOTES_ESCALATION_SLUG = NOTES_GEMINI_FLASH_SLUG;
+export const NOTES_MAX_ESCALATION_ATTEMPTS = 1;
+
+export type NotesCompilerModelRole =
+  | "extractor"
+  | "critic"
+  | "planner"
+  | "writer"
+  | "escalation";
+
 export function resolveAllowedNotesSlug(candidateSlug?: string | null): string {
   const trimmed = candidateSlug?.trim();
   if (!trimmed) {
@@ -490,7 +508,8 @@ export function getNoteSummarizerModel(
     process.env.OPENROUTER_NOTES_GENERATOR_MODEL?.trim() ||
     (isPaid
       ? process.env.OPENROUTER_NOTES_PAID_MODEL?.trim()
-      : process.env.OPENROUTER_NOTES_FREE_MODEL?.trim());
+      : process.env.OPENROUTER_NOTES_FREE_MODEL?.trim()) ||
+    (options?.degraded ? NOTES_GEMINI_FLASH_SLUG : undefined);
 
   // Clutch Notes AI is strictly restricted to Haiku 5.5, DeepSeek V4.1 Flash, or Gemini 2.5 Flash (never Sonnet)
   const slug = resolveAllowedNotesSlug(configuredNotesModel);
@@ -510,6 +529,141 @@ export function getNotesFallbackModels(primarySlug?: string | null): ReturnType<
   return orderedFallbacks.map((slug) =>
     getOpenRouterModel(slug, { reasoningEffort: "none" }),
   );
+}
+
+export function resolveNotesCompilerSlug(
+  role: NotesCompilerModelRole,
+  options?: { escalate?: boolean; escalationAttempt?: number },
+): string {
+  const attempt = options?.escalationAttempt ?? 1;
+  const withinLimit = attempt <= NOTES_MAX_ESCALATION_ATTEMPTS;
+
+  switch (role) {
+    case "extractor":
+      return NOTES_EXTRACTOR_SLUG;
+    case "critic":
+      return NOTES_CRITIC_SLUG;
+    case "planner":
+      if (options?.escalate && withinLimit) {
+        return NOTES_ESCALATION_SLUG;
+      }
+      return NOTES_PLANNER_SLUG;
+    case "writer":
+      if (options?.escalate && withinLimit) {
+        return NOTES_ESCALATION_SLUG;
+      }
+      return NOTES_WRITER_SLUG;
+    case "escalation":
+      if (withinLimit) {
+        return NOTES_ESCALATION_SLUG;
+      }
+      return NOTES_WRITER_SLUG;
+    default:
+      return NOTES_WRITER_SLUG;
+  }
+}
+
+export function getNotesCompilerModel(
+  role: NotesCompilerModelRole,
+  options?: { escalate?: boolean; escalationAttempt?: number },
+): {
+  model: ReturnType<typeof getOpenRouterModel>;
+  slug: string;
+  role: NotesCompilerModelRole;
+  escalated: boolean;
+} {
+  const slug = resolveNotesCompilerSlug(role, options);
+  const escalated = slug === NOTES_ESCALATION_SLUG;
+
+  let model: ReturnType<typeof getOpenRouterModel>;
+  try {
+    model = getOpenRouterModel(slug, { reasoningEffort: "none" });
+  } catch (err) {
+    // In production (outside Vitest unit tests), never fabricate a dummy key or relax ZDR privacy config
+    if (process.env.NODE_ENV === "production" && !process.env.VITEST) {
+      throw err;
+    }
+    const extraBody = {
+      provider: OPENROUTER_PRIVACY_PROVIDER_CONFIG,
+      reasoning: {
+        effort: "none" as const,
+      },
+    };
+    const openrouter = createOpenRouter({
+      apiKey: "sk-or-v1-test-placeholder-key",
+      extraBody,
+    });
+    model = openrouter(slug, { extraBody }) as ReturnType<typeof getOpenRouterModel>;
+  }
+
+  return {
+    model,
+    slug,
+    role,
+    escalated,
+  };
+}
+
+export function getNotesV2RoutingBundle(options?: {
+  escalateWriter?: boolean;
+  escalationAttempt?: number;
+}) {
+  return {
+    extractor: getNotesCompilerModel("extractor"),
+    critic: getNotesCompilerModel("critic"),
+    planner: getNotesCompilerModel("planner"),
+    writer: getNotesCompilerModel("writer", {
+      escalate: options?.escalateWriter,
+      escalationAttempt: options?.escalationAttempt,
+    }),
+    escalationSlug: NOTES_ESCALATION_SLUG,
+    maxEscalationAttempts: NOTES_MAX_ESCALATION_ATTEMPTS,
+  };
+}
+
+export function computeNotesV2DeckCogsUsd(input: {
+  telemetryCostUsd?: number;
+  totalTokens?: number;
+  visionCostUsd?: number;
+  reservedCostUsd?: number;
+  tokenRateUsdPerMillion?: number;
+}): number {
+  let baseCost = 0;
+  if (
+    typeof input.telemetryCostUsd === "number" &&
+    Number.isFinite(input.telemetryCostUsd) &&
+    input.telemetryCostUsd > 0
+  ) {
+    baseCost = input.telemetryCostUsd;
+  } else if (
+    typeof input.totalTokens === "number" &&
+    Number.isFinite(input.totalTokens) &&
+    input.totalTokens > 0
+  ) {
+    const rate =
+      typeof input.tokenRateUsdPerMillion === "number" &&
+      Number.isFinite(input.tokenRateUsdPerMillion) &&
+      input.tokenRateUsdPerMillion > 0
+        ? input.tokenRateUsdPerMillion
+        : 0.8;
+    baseCost = (input.totalTokens / 1_000_000) * rate;
+  } else if (
+    typeof input.reservedCostUsd === "number" &&
+    Number.isFinite(input.reservedCostUsd) &&
+    input.reservedCostUsd > 0
+  ) {
+    baseCost = input.reservedCostUsd;
+  }
+
+  const visionCost =
+    typeof input.visionCostUsd === "number" &&
+    Number.isFinite(input.visionCostUsd) &&
+    input.visionCostUsd > 0
+      ? input.visionCostUsd
+      : 0;
+
+  const total = Math.max(0, baseCost + visionCost);
+  return Number(total.toFixed(6));
 }
 
 export function getDistillerModel(options?: {

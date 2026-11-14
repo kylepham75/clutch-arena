@@ -37,13 +37,21 @@ export function isSlideMathCorrupted(text: string): boolean {
     return true;
   }
 
+  // Sanitize benign URLs, markdown bold/italic formatting, and code comments before checking dangling/conflicting operators
+  const sanitizedForOps = text
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\*\*([^\s*\n](?:[^*\n]*[^\s*\n])?)\*\*/g, "$1")
+    .replace(/(^|\s)\*([^\s*\n](?:[^*\n]*[^\s*\n])?)\*/g, "$1$2")
+    .replace(/\*\*|\/\/|\/\*|\*\//g, " ")
+    .replace(/^\s*[-*]\s+\*/gm, " ");
+
   // 3. Lines ending with dangling binary math operators without right-hand side
-  if (/(?:^|\s)[A-Za-z0-9_\)]+\s*(?:[+*/=≤≥≠≈÷×]|−)\s*$/m.test(text)) {
+  if (/(?:^|\s)[A-Za-z0-9_\)]+\s*(?:[+*/=≤≥≠≈÷×]|−)\s*$/m.test(sanitizedForOps)) {
     return true;
   }
 
   // 4. Broken adjacent conflicting operator chains (e.g. "+ =", "= /", "= +", "× ÷")
-  if (/(?:[+\-*/=≤≥≠≈÷×]|−)\s*(?:[=*/≤≥≠≈÷×])/.test(text)) {
+  if (/(?:[+\-*/=≤≥≠≈÷×]|−)\s*(?:[=*/≤≥≠≈÷×])/.test(sanitizedForOps)) {
     return true;
   }
 
@@ -324,8 +332,8 @@ export async function parseSlideDeck(
     fileSha256,
     ...(imageHashes ? { imageHashes } : {}),
     ...(dedupedSlideCount > 0 ? { dedupedSlideCount } : {}),
-    ...(ocrEquations && ocrEquations.length > 0 ? { ocrEquations } : {}),
-    ...(ommlEquations && ommlEquations.length > 0 ? { ommlEquations } : {}),
+    ...(ocrEquations ? { ocrEquations } : {}),
+    ...(ommlEquations ? { ommlEquations } : {}),
     ...(pageVisionStatus ? { pageVisionStatus } : {}),
   };
 }

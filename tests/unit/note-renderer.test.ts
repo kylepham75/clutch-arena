@@ -7,6 +7,8 @@ import ts from "typescript";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
 import type {
   ClutchNote,
+  PublishedHandout,
+  TeachingBlock,
   NoteFormula,
   TextbookDivergenceNotice,
 } from "@/lib/schemas/notes";
@@ -63,20 +65,29 @@ function loadTsxModule<T = Record<string, unknown>>(relPath: string): T {
 }
 
 interface NoteRendererModule {
+  toPublishedHandout: (note: ClutchNote | PublishedHandout) => PublishedHandout;
+  TeachingBlockView: React.ComponentType<{
+    block: TeachingBlock;
+    formulasById?: Map<string, NoteFormula>;
+  }>;
   formatSlideList: (slides: number[]) => string;
   SlideChip: React.ComponentType<{ slide?: number; slides?: number[]; label?: string }>;
   ItemStatusChip: React.ComponentType<{ status?: string; reviewReason?: string }>;
   FormulaStatusBadge: React.ComponentType<{ formula: NoteFormula }>;
   TextbookDivergenceCard: React.ComponentType<{ notice: TextbookDivergenceNotice }>;
   NoteRenderer: React.ComponentType<{
-    note: ClutchNote;
+    note: ClutchNote | PublishedHandout;
     onReset: () => void;
     onCreateQuiz?: (questionCount?: number) => void;
     isCreatingQuiz?: boolean;
+    canExportPdf?: boolean;
+    onUpgradeClick?: () => void;
   }>;
 }
 
 const {
+  toPublishedHandout,
+  TeachingBlockView,
   formatSlideList,
   SlideChip,
   ItemStatusChip,
@@ -86,6 +97,152 @@ const {
 } = loadTsxModule<NoteRendererModule>("components/notes/note-renderer.tsx");
 
 describe("NoteRenderer Helper Functions & Subcomponents", () => {
+  describe("toPublishedHandout", () => {
+    it("strips compiler debug fields (formulaLedger, omitted, verification) while preserving sections and divergenceNotices", () => {
+      const legacyNote: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        formulaLedger: [
+          {
+            id: "F1",
+            slide: 4,
+            raw: "P0 = D1/(1+R)",
+            latex: "P_0 = \\frac{D_1}{1 + R}",
+            variables: [],
+            origin: "omml",
+          },
+        ],
+        omitted: [
+          {
+            formulaId: "F2",
+            reason: "Exercise drill",
+          },
+        ],
+        verification: {
+          status: "passed",
+          repairAttempted: false,
+          coverageRatio: 0.8,
+          totalLedgerFormulas: 2,
+          placedFormulaIds: ["F1"],
+          uncapturedFormulaIds: ["F2"],
+          unsupportedClaimsRemoved: 0,
+          needsReviewCount: 1,
+          contradictedFormulaCount: 0,
+          evidenceMatchRatio: 1,
+          numberGroundingPassed: true,
+          ungroundedNumbers: [],
+          symbolGroundingPassed: true,
+          ungroundedSymbols: [],
+          claimVerdicts: [],
+          formulaResults: [],
+          warnings: ["Warning 1"],
+          divergenceNotices: [
+            {
+              ruleId: "div-1",
+              packId: "pack-1",
+              title: "Divergence Title",
+              message: "Divergence Message",
+              slide: 4,
+            },
+          ],
+        },
+      };
+
+      const published = toPublishedHandout(legacyNote);
+
+      expect((published as Record<string, unknown>).formulaLedger).toBeUndefined();
+      expect((published as Record<string, unknown>).omitted).toBeUndefined();
+      expect((published as Record<string, unknown>).verification).toBeUndefined();
+      expect(published.divergenceNotices).toHaveLength(1);
+      expect(published.divergenceNotices[0].title).toBe("Divergence Title");
+      expect(published.sections).toHaveLength(SAMPLE_CLUTCH_NOTE.sections.length);
+    });
+
+    it("strips noisy needs_review / unsupported statuses and reviewReason strings while preserving verified and derived", () => {
+      const dirtyNote: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        sections: [
+          {
+            id: "sec-test",
+            letter: "A",
+            titleVi: "A. TEST SECTION",
+            titleEn: "",
+            overview: "",
+            bulletPoints: [],
+            groundedBullets: [
+              {
+                text: "Verified bullet",
+                slide: 1,
+                evidence: "Ev 1",
+                status: "verified",
+              },
+              {
+                text: "Noisy bullet",
+                slide: 2,
+                evidence: "Ev 2",
+                status: "needs_review",
+                reviewReason: "Noisy reason",
+              },
+            ],
+            formulas: [
+              {
+                name: "Verified formula",
+                latex: "F_1",
+                variables: [],
+                status: "verified",
+              },
+              {
+                name: "Derived formula",
+                latex: "F_2",
+                variables: [],
+                status: "derived",
+                derivedFrom: ["F1"],
+              },
+              {
+                name: "Noisy formula",
+                latex: "F_3",
+                variables: [],
+                status: "needs_review",
+                reviewReason: "Flagged noisy",
+              },
+            ],
+            subSections: [],
+            keyTakeaways: {
+              title: "KEY TAKEAWAYS",
+              items: [
+                {
+                  point: "Takeaway 1",
+                  subBullets: [],
+                  status: "needs_review",
+                  reviewReason: "Noisy takeaway",
+                },
+              ],
+              summaryPoints: [],
+            },
+            sourceSlides: [1, 2],
+          },
+        ],
+      };
+
+      const published = toPublishedHandout(dirtyNote);
+      const sec = published.sections[0];
+
+      // Bullets
+      expect(sec.groundedBullets![0].status).toBe("verified");
+      expect(sec.groundedBullets![1].status).toBeUndefined();
+      expect(sec.groundedBullets![1].reviewReason).toBeUndefined();
+
+      // Formulas
+      expect(sec.formulas[0].status).toBe("verified");
+      expect(sec.formulas[1].status).toBe("derived");
+      expect(sec.formulas[2].status).toBeUndefined();
+      expect(sec.formulas[2].reviewReason).toBeUndefined();
+
+      // Takeaways
+      expect(sec.keyTakeaways!.items![0].status).toBeUndefined();
+      expect(sec.keyTakeaways!.items![0].reviewReason).toBeUndefined();
+    });
+  });
+
   describe("formatSlideList", () => {
     it("returns empty string for empty array or no slides", () => {
       expect(formatSlideList([])).toBe("");
@@ -152,24 +309,21 @@ describe("NoteRenderer Helper Functions & Subcomponents", () => {
       expect(html).toContain('title="Contradicts slide 6 equation"');
     });
 
-    it("renders Needs review badge for needs_review status", () => {
-      const html = renderToStaticMarkup(
+    it("suppresses Needs review badge for needs_review and unsupported status (returns null)", () => {
+      const htmlNeedsReview = renderToStaticMarkup(
         React.createElement(ItemStatusChip, {
           status: "needs_review",
           reviewReason: "Symbol not in legend",
         }),
       );
-      expect(html).toContain("Needs review");
-      expect(html).toContain('title="Symbol not in legend"');
-    });
+      expect(htmlNeedsReview).toBe("");
 
-    it("renders Needs review badge for unsupported status", () => {
-      const html = renderToStaticMarkup(
+      const htmlUnsupported = renderToStaticMarkup(
         React.createElement(ItemStatusChip, {
           status: "unsupported",
         }),
       );
-      expect(html).toContain("Needs review");
+      expect(htmlUnsupported).toBe("");
     });
 
     it("returns null for verified or undefined status", () => {
@@ -230,8 +384,8 @@ describe("NoteRenderer Helper Functions & Subcomponents", () => {
       expect(html).not.toContain("Derived from");
     });
 
-    it("renders Needs review badge", () => {
-      const html = renderToStaticMarkup(
+    it("suppresses yellow Needs review and unsupported badges (returns null)", () => {
+      const htmlNeedsReview = renderToStaticMarkup(
         React.createElement(FormulaStatusBadge, {
           formula: {
             name: "",
@@ -241,7 +395,19 @@ describe("NoteRenderer Helper Functions & Subcomponents", () => {
           },
         }),
       );
-      expect(html).toContain("Needs review");
+      expect(htmlNeedsReview).toBe("");
+
+      const htmlUnsupported = renderToStaticMarkup(
+        React.createElement(FormulaStatusBadge, {
+          formula: {
+            name: "",
+            latex: "P_0 = \\frac{D_1}{R - g}",
+            variables: [],
+            status: "unsupported",
+          },
+        }),
+      );
+      expect(htmlUnsupported).toBe("");
     });
 
     it("renders Contradicted badge", () => {
@@ -269,6 +435,61 @@ describe("NoteRenderer Helper Functions & Subcomponents", () => {
         }),
       );
       expect(html).toBe("");
+    });
+  });
+
+  describe("TeachingBlockView", () => {
+    it("renders recipe block with structured recipe container and numbered step list", () => {
+      const html = renderToStaticMarkup(
+        React.createElement(TeachingBlockView, {
+          block: {
+            id: "recipe-1",
+            kind: "recipe",
+            heading: "5-Step DDM Calculation",
+            text: "Follow these steps to compute intrinsic value:",
+            steps: [
+              "Estimate dividend growth rate g",
+              "Compute required return R",
+              "Apply Gordon model formula",
+            ],
+            slideCitations: [7],
+            supportAtomIds: [],
+            supportMode: "faithful_paraphrase",
+            formulaRefs: [],
+            symbolBindingIds: [],
+          },
+        }),
+      );
+
+      expect(html).toContain("note-recipe-card");
+      expect(html).toContain("Recipe");
+      expect(html).toContain("5-Step DDM Calculation");
+      expect(html).toContain("Estimate dividend growth rate g");
+      expect(html).toContain("Apply Gordon model formula");
+      expect(html).toContain("Slide 7");
+    });
+
+    it("renders caution block with boundary condition styling", () => {
+      const html = renderToStaticMarkup(
+        React.createElement(TeachingBlockView, {
+          block: {
+            id: "caution-1",
+            kind: "caution",
+            heading: "Model Boundary Condition",
+            text: "Gordon Growth model breaks down if R <= g.",
+            slideCitations: [8],
+            supportAtomIds: [],
+            supportMode: "faithful_paraphrase",
+            formulaRefs: [],
+            symbolBindingIds: [],
+          },
+        }),
+      );
+
+      expect(html).toContain("note-caution-card");
+      expect(html).toContain("Caution / Boundary");
+      expect(html).toContain("Model Boundary Condition");
+      expect(html).toContain("Gordon Growth model breaks down if R &lt;= g.");
     });
   });
 
@@ -330,7 +551,7 @@ describe("NoteRenderer Component Integration", () => {
     expect(html).toContain("Constant growth → Gordon model");
   });
 
-  it("renders Stage 5.1 verification features: warning banners, divergence cards, badges, and uncaptured formulas", () => {
+  it("renders divergence cards, verified badges, derived badges, and boundary conditions without yellow badges or debug tables", () => {
     const enrichedNote: ClutchNote = {
       ...SAMPLE_CLUTCH_NOTE,
       verification: {
@@ -482,6 +703,7 @@ describe("NoteRenderer Component Integration", () => {
                 reviewReason: "Unverified assumption on growth duration.",
               },
             ],
+            boundaryConditions: "Make sure g < R, otherwise the model breaks down",
             summaryPoints: [],
           },
         },
@@ -495,52 +717,131 @@ describe("NoteRenderer Component Integration", () => {
       }),
     );
 
-    // 1. Ingestion Warning Banner
-    expect(html).toContain("Ingestion &amp; Verification Notices");
-    expect(html).toContain("2 Notices");
-    expect(html).toContain("OCR detected low confidence table values");
-    expect(html).toContain("Mathematical contradiction between slide text");
-    expect(html).toContain("Formulas or tables from these slides should be double-checked");
+    // 1. Debug UI Elimination: Zero Warning Banner & Zero Uncaptured Section
+    expect(html).not.toContain("Ingestion &amp; Verification Notices");
+    expect(html).not.toContain("Ingestion & Verification Notices");
+    expect(html).not.toContain("Uncaptured Source Formulas");
+    expect(html).not.toContain("Formula Omitted");
+    expect(html).not.toContain("Formulas Omitted");
+    expect(html).not.toContain("Plowback Ratio Definition");
 
-    // 2. Global and Section Textbook Divergence Notices
+    // 2. Yellow Badge Elimination: Zero "Needs review" badges
+    expect(html).not.toContain("Needs review");
+    expect(html).not.toContain("Slide does not explicitly mention bear markets.");
+    expect(html).not.toContain("Unverified assumption on growth duration.");
+
+    // 3. Global and Section Textbook Divergence Notices preserved
     expect(html).toContain("Global Notation Convention");
     expect(html).toContain("All rates expressed as annual nominal percentages unless stated.");
     expect(html).toContain("Perpetuity Notation in Section A");
 
-    // 3. Slide Chips
+    // 4. Slide Chips preserved
     expect(html).toContain("Slide 4");
     expect(html).toContain("Slide 7");
     expect(html).toContain("Slide 8");
     expect(html).toContain("Slide 9");
 
-    // 4. Verification Badges
+    // 5. Verified, Derived, and Contradicted badges preserved
     expect(html).toContain("Verified");
     expect(html).toContain("Derived from F1");
-    expect(html).toContain("Needs review");
     expect(html).toContain("Contradicted");
 
-    // 5. Review Reasons & Explanations
+    // 6. Contradicted Review Reasons preserved
     expect(html).toContain("Denominator should be R - g, not R + g.");
-    expect(html).toContain("Review note: ");
-    expect(html).toContain("Slide does not explicitly mention bear markets.");
     expect(html).toContain("Slide equation explicitly incorporates P_1.");
-    expect(html).toContain("Unverified assumption on growth duration.");
 
-    // 6. Formula-level Divergence Card
+    // 7. Formula-level Divergence Card preserved
     expect(html).toContain("Denominator Sign Error");
     expect(html).toContain("Slides use addition instead of subtraction.");
 
-    // 7. Dedicated Uncaptured Source Formulas Section
-    expect(html).toContain("Uncaptured Source Formulas");
-    expect(html).toContain("1 Formula Omitted");
-    expect(html).toContain("F4");
-    expect(html).toContain("Plowback Ratio Definition");
-    expect(html).toContain("Slide 16");
-    expect(html).toContain("Appeared solely in footnote of slide 16");
+    // 8. Prominent Boundary Conditions preserved in Takeaways
+    expect(html).toContain("Boundary Condition:");
+    expect(html).toContain("Make sure g &lt; R, otherwise the model breaks down");
   });
 
-  describe("Regression Tests: Bug 1 (Suppression of omitted_by_rule formulas in NoteRenderer)", () => {
-    it("suppresses formulas with status: 'omitted_by_rule' (or in omittedByRuleFormulaIds) from Uncaptured Source Formulas section while displaying status: 'uncaptured_error'", () => {
+  describe("Structured Recipes and Section Blocks", () => {
+    it("renders recipe subSections with structured recipe card and numbered steps", () => {
+      const noteWithRecipe: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        sections: [
+          {
+            id: "sec-recipe",
+            letter: "A",
+            titleVi: "A. QUY TRÌNH TÍNH TOÁN DDM",
+            titleEn: "DDM Step-by-Step Recipe",
+            overview: "",
+            bulletPoints: [],
+            subSections: [
+              {
+                heading: "Quy trình 3 bước định giá cổ phiếu (Calculation Recipe)",
+                leadIn: "Thực hiện lần lượt các bước:",
+                bulletPoints: [
+                  "Bước 1: Dự phóng dòng cổ tức kỳ vọng D_1",
+                  "Bước 2: Xác định tỷ suất chiết khấu R",
+                  "Bước 3: Chiết khấu về hiện tại P_0",
+                ],
+                formulas: [],
+              },
+            ],
+            formulas: [],
+            sourceSlides: [5],
+          },
+        ],
+      };
+
+      const html = renderToStaticMarkup(
+        React.createElement(NoteRenderer, {
+          note: noteWithRecipe,
+          onReset: () => {},
+        }),
+      );
+
+      expect(html).toContain("note-recipe-card");
+      expect(html).toContain("note-recipe-heading");
+      expect(html).toContain("Quy trình 3 bước định giá cổ phiếu");
+      expect(html).toContain("Bước 1: Dự phóng dòng cổ tức kỳ vọng");
+      expect(html).toContain("D_1");
+    });
+
+    it("renders optional teaching blocks on section cleanly", () => {
+      const noteWithBlocks = {
+        ...SAMPLE_CLUTCH_NOTE,
+        sections: [
+          {
+            ...SAMPLE_CLUTCH_NOTE.sections[0],
+            blocks: [
+              {
+                id: "b-1",
+                kind: "recipe" as const,
+                heading: "Section Level Recipe Block",
+                text: "Recipe steps:",
+                steps: ["Step A", "Step B"],
+                slideCitations: [4],
+                supportAtomIds: [],
+                supportMode: "faithful_paraphrase" as const,
+                formulaRefs: [],
+                symbolBindingIds: [],
+              },
+            ],
+          },
+        ],
+      };
+
+      const html = renderToStaticMarkup(
+        React.createElement(NoteRenderer, {
+          note: noteWithBlocks,
+          onReset: () => {},
+        }),
+      );
+
+      expect(html).toContain("note-recipe-card");
+      expect(html).toContain("Section Level Recipe Block");
+      expect(html).toContain("Step A");
+    });
+  });
+
+  describe("PublishedHandout Boundary: Elimination of Debug & Uncaptured Sections", () => {
+    it("never renders uncaptured formula sections or uncaptured warnings even when passed legacy notes", () => {
       const noteMixedOmitted: ClutchNote = {
         ...SAMPLE_CLUTCH_NOTE,
         verification: {
@@ -613,83 +914,11 @@ describe("NoteRenderer Component Integration", () => {
         }),
       );
 
-      // Section must render for F3
-      expect(html).toContain("Uncaptured Source Formulas");
-      expect(html).toContain("1 Formula Omitted");
-      expect(html).toContain("F3");
-      expect(html).toContain("Firm Cost of Capital");
-      expect(html).toContain("Core syllabus equation unplaced");
-
-      // Must suppress F2 (omitted_by_rule)
-      expect(html).not.toContain("Intermediate Rearrangement");
-      expect(html).not.toContain("Intermediate derivation rearrangement step");
-
-      // Warning banner shows F3
-      expect(html).toContain("Uncaptured formula IDs: F3");
-    });
-
-    it("suppresses the entire uncaptured section and uncaptured warning banner when ALL unplaced formulas are omitted_by_rule", () => {
-      const noteAllOmittedByRule: ClutchNote = {
-        ...SAMPLE_CLUTCH_NOTE,
-        verification: {
-          status: "passed",
-          repairAttempted: false,
-          coverageRatio: 0.5,
-          totalLedgerFormulas: 2,
-          placedFormulaIds: ["F1"],
-          omittedByRuleFormulaIds: ["F2"],
-          uncapturedFormulaIds: [],
-          unsupportedClaimsRemoved: 0,
-          needsReviewCount: 0,
-          contradictedFormulaCount: 0,
-          evidenceMatchRatio: 1,
-          numberGroundingPassed: true,
-          ungroundedNumbers: [],
-          symbolGroundingPassed: true,
-          ungroundedSymbols: [],
-          claimVerdicts: [],
-          formulaResults: [],
-          warnings: ["Uncaptured formula IDs: F2"], // stale warning should be suppressed
-          divergenceNotices: [],
-        },
-        formulaLedger: [
-          {
-            id: "F1",
-            slide: 4,
-            raw: "P0 = D1/(1+R)",
-            latex: "P_0 = \\frac{D_1}{1 + R}",
-            variables: [],
-            origin: "omml",
-          },
-          {
-            id: "F2",
-            slide: 5,
-            raw: "R = (D1/P0) + g",
-            latex: "R = \\frac{D_1}{P_0} + g",
-            label: "Intermediate Rearrangement",
-            variables: [],
-            origin: "text",
-          },
-        ],
-        omitted: [
-          {
-            formulaId: "F2",
-            status: "omitted_by_rule",
-            reason: "Duplicate rearrangement identity",
-          },
-        ],
-      };
-
-      const html = renderToStaticMarkup(
-        React.createElement(NoteRenderer, {
-          note: noteAllOmittedByRule,
-          onReset: () => {},
-        }),
-      );
-
-      // Section and warning banner must be completely suppressed
+      // Student publication layer must be 100% clean of uncaptured debug sections
       expect(html).not.toContain("Uncaptured Source Formulas");
+      expect(html).not.toContain("Formula Omitted");
       expect(html).not.toContain("Uncaptured formula IDs");
+      expect(html).not.toContain("Core syllabus equation unplaced");
     });
 
     it("renders Quiz Deck creation CTA button and banner only when onCreateQuiz prop is provided", () => {

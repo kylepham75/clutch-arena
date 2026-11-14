@@ -4,20 +4,20 @@ import {
   buildPrintableNotesHtml,
   exportClutchNotePdf,
   exportNotesToPdf,
+  toPublishedHandout,
+  renderTeachingBlockHtml,
   formatSlideList,
   renderSlideChip,
   renderItemStatusBadge,
   renderFormulaStatusBadge,
   renderDivergenceNoticeHtml,
-  getUncapturedFormulas,
-  renderUncapturedSectionHtml,
   renderPdfFormula,
   cleanLatexForFallback,
   type PdfWatermarkOptions,
 } from "@/lib/notes/export-pdf";
 import { CLUTCH_ARENA_BRAND_NAME, CLUTCH_ARENA_ICON_DATA_URL } from "@/lib/notes/brand-assets";
 import { SAMPLE_CLUTCH_NOTE } from "@/lib/notes/sample-note";
-import type { ClutchNote, NoteFormula } from "@/lib/schemas/notes";
+import type { ClutchNote, NoteFormula, TeachingBlock } from "@/lib/schemas/notes";
 
 describe("Clutch Arena Watermarked PDF Export Generator", () => {
   it("generates concise study handout HTML with watermark, boxed equations, subSections, and KaTeX", () => {
@@ -60,17 +60,84 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
     expect(html).toContain("Trong đó:");
     expect(html).toContain("pdf-variable-list");
 
-    // 7. Must include crisp bordered Key Takeaways box with structured sub-bullets
+    // 7. Must include crisp bordered Key Takeaways box with structured sub-bullets & boundary condition
     expect(html).toContain("pdf-takeaways-card");
     expect(html).toContain("KEY TAKEAWAYS");
     expect(html).toContain("Constant growth → Gordon model");
-    expect(html).toContain("otherwise the model breaks down");
+    expect(html).toContain("Make sure g &lt; R, otherwise the model breaks down");
     expect(html).toContain("katex");
 
-    // 8. Must include print CSS rules with page-break-inside avoid
+    // 8. Must include A4 print CSS rules with page-break and orphan/widow hygiene
+    expect(html).toContain("@page");
+    expect(html).toContain("size: A4");
+    expect(html).toContain("margin: 16mm 18mm 18mm 18mm");
     expect(html).toContain("@media print");
     expect(html).toContain("page-break-inside: avoid");
     expect(html).toContain("break-inside: avoid");
+    expect(html).toContain("page-break-after: avoid");
+    expect(html).toContain("break-after: avoid");
+    expect(html).toContain("orphans: 3");
+    expect(html).toContain("widows: 3");
+  });
+
+  describe("toPublishedHandout", () => {
+    it("strips compiler QA debug fields (formulaLedger, omitted, verification) while preserving sections and divergence notices", () => {
+      const legacyNote: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        formulaLedger: [
+          {
+            id: "F1",
+            slide: 4,
+            raw: "P0 = D1/(1+R)",
+            latex: "P_0 = \\frac{D_1}{1 + R}",
+            variables: [],
+            origin: "omml",
+          },
+        ],
+        omitted: [
+          {
+            formulaId: "F2",
+            reason: "Exercise drill",
+          },
+        ],
+        verification: {
+          status: "passed",
+          repairAttempted: false,
+          coverageRatio: 0.8,
+          totalLedgerFormulas: 2,
+          placedFormulaIds: ["F1"],
+          uncapturedFormulaIds: ["F2"],
+          unsupportedClaimsRemoved: 0,
+          needsReviewCount: 1,
+          contradictedFormulaCount: 0,
+          evidenceMatchRatio: 1,
+          numberGroundingPassed: true,
+          ungroundedNumbers: [],
+          symbolGroundingPassed: true,
+          ungroundedSymbols: [],
+          claimVerdicts: [],
+          formulaResults: [],
+          warnings: ["Warning 1"],
+          divergenceNotices: [
+            {
+              ruleId: "div-pdf-1",
+              packId: "pack-1",
+              title: "PDF Divergence Rule",
+              message: "Notice message for PDF",
+              slide: 4,
+            },
+          ],
+        },
+      };
+
+      const published = toPublishedHandout(legacyNote);
+
+      expect((published as Record<string, unknown>).formulaLedger).toBeUndefined();
+      expect((published as Record<string, unknown>).omitted).toBeUndefined();
+      expect((published as Record<string, unknown>).verification).toBeUndefined();
+      expect(published.divergenceNotices).toHaveLength(1);
+      expect(published.divergenceNotices[0].title).toBe("PDF Divergence Rule");
+    });
   });
 
   it("formats slide lists correctly into ranges", () => {
@@ -88,12 +155,11 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
     expect(renderSlideChip()).toBe("");
   });
 
-  it("renders status badges correctly for items and formulas", () => {
+  it("renders status badges correctly for items and formulas, suppressing yellow needs_review badges", () => {
     expect(renderItemStatusBadge("contradicted")).toContain("pdf-status-contradicted");
     expect(renderItemStatusBadge("contradicted")).toContain("Contradicted");
-    expect(renderItemStatusBadge("needs_review")).toContain("pdf-status-review");
-    expect(renderItemStatusBadge("needs_review")).toContain("Needs review");
-    expect(renderItemStatusBadge("unsupported")).toContain("pdf-status-review");
+    expect(renderItemStatusBadge("needs_review")).toBe("");
+    expect(renderItemStatusBadge("unsupported")).toBe("");
     expect(renderItemStatusBadge("verified")).toBe("");
 
     const formulaVerified: NoteFormula = {
@@ -127,7 +193,7 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
       variables: [],
       status: "needs_review",
     };
-    expect(renderFormulaStatusBadge(formulaReview)).toContain("Needs review");
+    expect(renderFormulaStatusBadge(formulaReview)).toBe("");
 
     const formulaContradicted: NoteFormula = {
       name: "",
@@ -158,7 +224,90 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
     expect(noticeHtml).toContain("katex");
   });
 
-  it("renders enriched notes with grounded bullets, verification badges, divergence notices, warning banners, and uncaptured formulas", () => {
+  describe("Teaching Blocks & Recipe HTML Rendering", () => {
+    it("renders recipe block with structured recipe container and ordered step list", () => {
+      const recipeBlock: TeachingBlock = {
+        id: "recipe-tb-1",
+        kind: "recipe",
+        heading: "Gordon Growth 3-Step Valuation",
+        text: "Follow these three steps:",
+        steps: [
+          "Find expected dividend D_1",
+          "Determine discount rate R",
+          "Calculate P_0 = D_1 / (R - g)",
+        ],
+        slideCitations: [7],
+        supportAtomIds: [],
+        supportMode: "faithful_paraphrase",
+        formulaRefs: [],
+        symbolBindingIds: [],
+      };
+
+      const html = renderTeachingBlockHtml(recipeBlock);
+      expect(html).toContain("pdf-recipe-card");
+      expect(html).toContain("Recipe");
+      expect(html).toContain("Gordon Growth 3-Step Valuation");
+      expect(html).toContain("pdf-recipe-steps");
+      expect(html).toContain("Find expected dividend");
+      expect(html).toContain("D_1");
+      expect(html).toContain("Slide 7");
+    });
+
+    it("renders caution block with boundary condition styling", () => {
+      const cautionBlock: TeachingBlock = {
+        id: "caution-tb-1",
+        kind: "caution",
+        heading: "Boundary Condition Pitfall",
+        text: "Requires R > g; otherwise denominator becomes negative.",
+        slideCitations: [8],
+        supportAtomIds: [],
+        supportMode: "faithful_paraphrase",
+        formulaRefs: [],
+        symbolBindingIds: [],
+      };
+
+      const html = renderTeachingBlockHtml(cautionBlock);
+      expect(html).toContain("pdf-caution-card");
+      expect(html).toContain("Caution / Boundary");
+      expect(html).toContain("Boundary Condition Pitfall");
+      expect(html).toContain("Requires R &gt; g");
+    });
+
+    it("renders recipe subSections with pdf-recipe-card container", () => {
+      const noteWithRecipeSub: ClutchNote = {
+        ...SAMPLE_CLUTCH_NOTE,
+        sections: [
+          {
+            id: "sec-rec-pdf",
+            letter: "A",
+            titleVi: "A. RECIPE SECTION",
+            titleEn: "",
+            overview: "",
+            bulletPoints: [],
+            subSections: [
+              {
+                heading: "Step-by-Step Calculation Recipe",
+                leadIn: "Quy trình giải bài tập:",
+                bulletPoints: ["Step 1: Compute g", "Step 2: Compute P_0"],
+                formulas: [],
+              },
+            ],
+            formulas: [],
+            sourceSlides: [5],
+          },
+        ],
+      };
+
+      const html = generateClutchNotePdfHtml(noteWithRecipeSub);
+      expect(html).toContain("pdf-recipe-card");
+      expect(html).toContain("pdf-recipe-heading");
+      expect(html).toContain("Step-by-Step Calculation Recipe");
+      expect(html).toContain("pdf-recipe-steps");
+      expect(html).toContain("Step 1: Compute g");
+    });
+  });
+
+  it("renders enriched notes with grounded bullets, verified badges, divergence notices, and zero debug tables or yellow notices", () => {
     const enrichedNote: ClutchNote = {
       ...SAMPLE_CLUTCH_NOTE,
       verification: {
@@ -325,6 +474,7 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
                 reviewReason: "Direct contradiction with Slide 6 note.",
               },
             ],
+            boundaryConditions: "R > g strictly required",
             summaryPoints: [],
           },
         },
@@ -333,21 +483,26 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
 
     const html = generateClutchNotePdfHtml(enrichedNote);
 
-    // 1. Ingestion Warning Banner
-    expect(html).toContain("pdf-warning-banner");
-    expect(html).toContain("Ingestion & Verification Notices");
-    expect(html).toContain("2 Notices");
-    expect(html).toContain("OCR detected low confidence table values");
-    expect(html).toContain("Mathematical contradiction between slide text");
-    expect(html).toContain("Formulas or tables from these slides should be double-checked");
+    // 1. Elimination of Ingestion Warning Banner & Uncaptured Debug Section
+    expect(html).not.toContain("pdf-warning-banner");
+    expect(html).not.toContain("Ingestion & Verification Notices");
+    expect(html).not.toContain("pdf-uncaptured-section");
+    expect(html).not.toContain("Uncaptured Source Formulas");
+    expect(html).not.toContain("Formula Omitted");
+    expect(html).not.toContain("Formulas Omitted");
+    expect(html).not.toContain("Earnings Per Share");
 
-    // 2. Global and Section Divergence Notices
+    // 2. Yellow Badge Elimination: Zero "Needs review" badges
+    expect(html).not.toContain("Needs review");
+    expect(html).not.toContain("Variable b is not defined on slide 10.");
+
+    // 3. Global and Section Divergence Notices preserved
     expect(html).toContain("pdf-global-divergences");
     expect(html).toContain("Global Notation Convention");
     expect(html).toContain("pdf-section-divergences");
     expect(html).toContain("Perpetuity Notation in Section A");
 
-    // 3. Slide Chips
+    // 4. Slide Chips preserved
     expect(html).toContain("pdf-slide-chip");
     expect(html).toContain("Slide 4");
     expect(html).toContain("Slide 7");
@@ -355,114 +510,37 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
     expect(html).toContain("Slide 9");
     expect(html).toContain("Slide 10");
 
-    // 4. Status Badges on Formulas
+    // 5. Status Badges on Formulas preserved
     expect(html).toContain("pdf-status-verified");
     expect(html).toContain("Verified");
     expect(html).toContain("pdf-status-derived");
     expect(html).toContain("Derived from F1");
-    expect(html).toContain("pdf-status-review");
-    expect(html).toContain("Needs review");
     expect(html).toContain("pdf-status-contradicted");
     expect(html).toContain("Contradicted");
 
-    // 5. Formula Review Reasons
+    // 6. Formula Review Reasons for Contradicted preserved
     expect(html).toContain("Denominator should be R - g, not R + g.");
-    expect(html).toContain("Variable b is not defined on slide 10.");
 
-    // 6. Grounded Bullets with Slide Chips and Badges
+    // 7. Grounded Bullets with Slide Chips and Badges preserved
     expect(html).toContain("pdf-grounded-bullets");
-    expect(html).toContain("Slide does not explicitly mention bear markets.");
     expect(html).toContain("Slide equation explicitly incorporates P_1.");
 
-    // 7. Takeaway Items with Slide Chips and Badges
-    expect(html).toContain("Unverified assumption on growth duration.");
+    // 8. Takeaway Items with Slide Chips and Badges preserved
     expect(html).toContain("Direct contradiction with Slide 6 note.");
 
-    // 8. Formula-level Divergence Card
+    // 9. Formula-level Divergence Card preserved
     expect(html).toContain("Denominator Sign Error");
     expect(html).toContain("Standard Textbook Form");
     expect(html).toContain("Lecturer's Form");
 
-    // 9. Uncaptured Source Formulas Section
-    expect(html).toContain("pdf-uncaptured-section");
-    expect(html).toContain("Uncaptured Source Formulas");
-    expect(html).toContain("1 Formula Omitted");
-    expect(html).toContain("F3");
-    expect(html).toContain("Earnings Per Share");
-    expect(html).toContain("Appeared solely in practice exercise #4 on slide 12");
-
-    // 10. Required CSS Classes Verification
-    expect(html).toContain(".pdf-slide-chip");
-    expect(html).toContain(".pdf-status-badge");
-    expect(html).toContain(".pdf-status-verified");
-    expect(html).toContain(".pdf-status-derived");
-    expect(html).toContain(".pdf-status-review");
-    expect(html).toContain(".pdf-status-contradicted");
-    expect(html).toContain(".pdf-divergence-card");
-    expect(html).toContain(".pdf-uncaptured-section");
-    expect(html).toContain(".pdf-warning-banner");
+    // 10. Boundary conditions rendered prominently in Key Takeaways
+    expect(html).toContain("Boundary Condition:");
+    expect(html).toContain("R &gt; g strictly required");
   });
 
-  it("extracts uncaptured formulas correctly", () => {
-    const noteWithLedger: ClutchNote = {
-      ...SAMPLE_CLUTCH_NOTE,
-      verification: {
-        status: "passed",
-        repairAttempted: false,
-        coverageRatio: 0.5,
-        totalLedgerFormulas: 2,
-        placedFormulaIds: ["F1"],
-        uncapturedFormulaIds: ["F2"],
-        unsupportedClaimsRemoved: 0,
-        needsReviewCount: 0,
-        contradictedFormulaCount: 0,
-        evidenceMatchRatio: 1,
-        numberGroundingPassed: true,
-        ungroundedNumbers: [],
-        symbolGroundingPassed: true,
-        ungroundedSymbols: [],
-        claimVerdicts: [],
-        formulaResults: [],
-        warnings: [],
-        divergenceNotices: [],
-      },
-      formulaLedger: [
-        {
-          id: "F1",
-          slide: 4,
-          raw: "P0 = D1/(1+R)",
-          latex: "P_0 = \\frac{D_1}{1 + R}",
-          variables: [],
-          origin: "omml",
-        },
-        {
-          id: "F2",
-          slide: 15,
-          raw: "g = ROE * b",
-          latex: "g = \\text{ROE} \\times b",
-          variables: [],
-          origin: "text",
-          evidence: "Appendix slide 15",
-        },
-      ],
-      omitted: [
-        {
-          formulaId: "F2",
-          reason: "Moved to supplementary appendix",
-        },
-      ],
-    };
-
-    const uncaptured = getUncapturedFormulas(noteWithLedger);
-    expect(uncaptured).toHaveLength(1);
-    expect(uncaptured[0].id).toBe("F2");
-    expect(uncaptured[0].slide).toBe(15);
-    expect(uncaptured[0].reason).toBe("Moved to supplementary appendix");
-  });
-
-  describe("Regression Tests: Bug 1 & Bug 4 (Suppression of omitted_by_rule formulas & formula card CSS)", () => {
-    it("suppresses status: 'omitted_by_rule' formulas from both 'Uncaptured Source Formulas' and warning banner while displaying status: 'uncaptured_error'", () => {
-      const noteWithMixedOmitted: ClutchNote = {
+  describe("Publication Boundary: Elimination of Uncaptured Debug Tables", () => {
+    it("never renders uncaptured formula sections or uncaptured warnings even when passed legacy notes with uncapturedFormulaIds", () => {
+      const legacyNoteWithUncaptured: ClutchNote = {
         ...SAMPLE_CLUTCH_NOTE,
         verification: {
           status: "marked",
@@ -527,89 +605,13 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
         ],
       };
 
-      // 1. getUncapturedFormulas should filter out F2 (omitted_by_rule) and keep F3 (uncaptured_error)
-      const uncaptured = getUncapturedFormulas(noteWithMixedOmitted);
-      expect(uncaptured).toHaveLength(1);
-      expect(uncaptured[0].id).toBe("F3");
-      expect(uncaptured.some((item) => item.id === "F2")).toBe(false);
+      const html = generateClutchNotePdfHtml(legacyNoteWithUncaptured);
 
-      // 2. generateClutchNotePdfHtml HTML output checks
-      const html = generateClutchNotePdfHtml(noteWithMixedOmitted);
-
-      // The uncaptured section must contain F3 but must NOT contain F2
-      expect(html).toContain("pdf-uncaptured-section");
-      expect(html).toContain("Uncaptured Source Formulas");
-      expect(html).toContain("F3");
-      expect(html).toContain("Cost of Capital");
-      expect(html).toContain("Unplaced core syllabus formula");
-      expect(html).not.toContain("Intermediate Derivation");
-      expect(html).not.toContain("Intermediate derivation rearrangement step");
-
-      // The warning banner must show F3
-      expect(html).toContain("pdf-warning-banner");
-      expect(html).toContain("Uncaptured formula IDs: F3");
-    });
-
-    it("suppresses the entire uncaptured section and uncaptured warning banner when ALL unplaced formulas are omitted_by_rule", () => {
-      const noteAllOmittedByRule: ClutchNote = {
-        ...SAMPLE_CLUTCH_NOTE,
-        verification: {
-          status: "passed",
-          repairAttempted: false,
-          coverageRatio: 0.5,
-          totalLedgerFormulas: 2,
-          placedFormulaIds: ["F1"],
-          omittedByRuleFormulaIds: ["F2"],
-          uncapturedFormulaIds: [],
-          unsupportedClaimsRemoved: 0,
-          needsReviewCount: 0,
-          contradictedFormulaCount: 0,
-          evidenceMatchRatio: 1,
-          numberGroundingPassed: true,
-          ungroundedNumbers: [],
-          symbolGroundingPassed: true,
-          ungroundedSymbols: [],
-          claimVerdicts: [],
-          formulaResults: [],
-          warnings: ["Uncaptured formula IDs: F2"], // stale warning should be suppressed
-          divergenceNotices: [],
-        },
-        formulaLedger: [
-          {
-            id: "F1",
-            slide: 4,
-            raw: "P0 = D1/(1+R)",
-            latex: "P_0 = \\frac{D_1}{1 + R}",
-            variables: [],
-            origin: "omml",
-          },
-          {
-            id: "F2",
-            slide: 5,
-            raw: "R = (D1/P0) + g",
-            latex: "R = \\frac{D_1}{P_0} + g",
-            label: "Intermediate Derivation",
-            variables: [],
-            origin: "text",
-          },
-        ],
-        omitted: [
-          {
-            formulaId: "F2",
-            status: "omitted_by_rule",
-            reason: "Duplicate rearrangement identity",
-          },
-        ],
-      };
-
-      const uncaptured = getUncapturedFormulas(noteAllOmittedByRule);
-      expect(uncaptured).toHaveLength(0);
-
-      const html = generateClutchNotePdfHtml(noteAllOmittedByRule);
-      expect(html).not.toContain("<section class=\"pdf-uncaptured-section\">");
+      expect(html).not.toContain("pdf-uncaptured-section");
+      expect(html).not.toContain("Uncaptured Source Formulas");
       expect(html).not.toContain("Formula Omitted");
-      expect(html).not.toContain("The following formulas appeared in the lecture slides");
-      expect(html).not.toContain("<h3 class=\"pdf-uncaptured-title\">Uncaptured Source Formulas</h3>");
+      expect(html).not.toContain("Unplaced core syllabus formula");
+      expect(html).not.toContain("pdf-warning-banner");
       expect(html).not.toContain("Uncaptured formula IDs");
     });
 
@@ -687,7 +689,7 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
         close: vi.fn(),
       };
       const mockPrintWindow = {
-        opener: "initial-parent-opener" as any,
+        opener: "initial-parent-opener" as unknown,
         document: mockDocument,
         focus: vi.fn(),
         print: vi.fn(),
@@ -718,172 +720,6 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
       const html = generateClutchNotePdfHtml(SAMPLE_CLUTCH_NOTE);
       expect(html).toContain("https://cdn.jsdelivr.net/npm/katex@0.19.0/dist/katex.min.css");
       expect(html).not.toContain("katex@0.16.8");
-    });
-
-    it("normalizes PUA glyphs in uncaptured formulas and renders cleanly without raw katex-error leaks", () => {
-      const noteWithPuaUncaptured: ClutchNote = {
-        ...SAMPLE_CLUTCH_NOTE,
-        verification: {
-          status: "marked",
-          repairAttempted: false,
-          coverageRatio: 0.5,
-          totalLedgerFormulas: 3,
-          placedFormulaIds: ["F1"],
-          uncapturedFormulaIds: ["F_PUA_1", "F_PUA_2"],
-          unsupportedClaimsRemoved: 0,
-          needsReviewCount: 0,
-          contradictedFormulaCount: 0,
-          evidenceMatchRatio: 1,
-          numberGroundingPassed: true,
-          ungroundedNumbers: [],
-          symbolGroundingPassed: true,
-          ungroundedSymbols: [],
-          claimVerdicts: [],
-          formulaResults: [],
-          warnings: ["Uncaptured formula IDs: F_PUA_1, F_PUA_2"],
-          divergenceNotices: [],
-        },
-        formulaLedger: [
-          {
-            id: "F1",
-            slide: 4,
-            raw: "P0 = D1/(1+R)",
-            latex: "P_0 = \\frac{D_1}{1 + R}",
-            variables: [],
-            origin: "omml",
-          },
-          {
-            id: "F_PUA_1",
-            slide: 14,
-            raw: "\uF0E1 Rate = \uF0B4 10%",
-            latex: "\\text{\uF0E1 Rate} = \uF0B4 10\\%",
-            label: "PUA Arrow \uF0E1 & Multiply \uF0B4 Formula",
-            variables: [],
-            origin: "text",
-            evidence: "Slide 14 context with \uF0E1 arrow",
-          },
-          {
-            id: "F_PUA_2",
-            slide: 15,
-            raw: "\uF044 P = \uF0D6{\uF0A5}",
-            latex: "\uF044 P = \\sqrt{\uF0A5}",
-            label: "PUA Delta \uF044 & Infinity \uF0A5",
-            variables: [],
-            origin: "text",
-            evidence: "Slide 15 context with \uF044 Delta",
-          },
-        ],
-        omitted: [
-          {
-            formulaId: "F_PUA_1",
-            status: "uncaptured_error",
-            reason: "Formula containing PUA arrow \uF0E1 and multiplication \uF0B4 omitted",
-          },
-          {
-            formulaId: "F_PUA_2",
-            status: "uncaptured_error",
-            reason: "Formula containing PUA Delta \uF044 omitted",
-          },
-        ],
-      };
-
-      const html = generateClutchNotePdfHtml(noteWithPuaUncaptured);
-
-      // 1. Uncaptured section must be present and contain formula IDs
-      expect(html).toContain("pdf-uncaptured-section");
-      expect(html).toContain("F_PUA_1");
-      expect(html).toContain("F_PUA_2");
-
-      // 2. Must NOT contain raw .katex-error or style="color:#cc0000"
-      expect(html).not.toContain("<span class=\"katex-error\"");
-      expect(html).not.toContain("class=\"katex-error\"");
-      expect(html).not.toContain("color:#cc0000");
-
-      // 3. PUA characters must be normalized to standard Unicode (↑, ×, Δ, ∞)
-      expect(html).toContain("↑");
-      expect(html).toContain("×");
-      expect(html).toContain("Δ");
-    });
-
-    it("handles edge-case broken LaTeX in uncaptured formulas with clean fallback and zero katex-error leaks", () => {
-      const noteWithBrokenUncaptured: ClutchNote = {
-        ...SAMPLE_CLUTCH_NOTE,
-        verification: {
-          status: "marked",
-          repairAttempted: false,
-          coverageRatio: 0.5,
-          totalLedgerFormulas: 2,
-          placedFormulaIds: ["F1"],
-          uncapturedFormulaIds: ["F_BROKEN_1", "F_BROKEN_2"],
-          unsupportedClaimsRemoved: 0,
-          needsReviewCount: 0,
-          contradictedFormulaCount: 0,
-          evidenceMatchRatio: 1,
-          numberGroundingPassed: true,
-          ungroundedNumbers: [],
-          symbolGroundingPassed: true,
-          ungroundedSymbols: [],
-          claimVerdicts: [],
-          formulaResults: [],
-          warnings: ["Uncaptured formula IDs: F_BROKEN_1, F_BROKEN_2"],
-          divergenceNotices: [],
-        },
-        formulaLedger: [
-          {
-            id: "F1",
-            slide: 4,
-            raw: "P0 = D1/(1+R)",
-            latex: "P_0 = \\frac{D_1}{1 + R}",
-            variables: [],
-            origin: "omml",
-          },
-          {
-            id: "F_BROKEN_1",
-            slide: 18,
-            raw: "P0 = {broken unclosed brace",
-            latex: "P_0 = {broken unclosed brace",
-            label: "Broken Syntax Formula",
-            variables: [],
-            origin: "text",
-            evidence: "Slide 18 worked example",
-          },
-          {
-            id: "F_BROKEN_2",
-            slide: 19,
-            raw: "\\invalidLaTeXCommand{arg1}{arg2}",
-            latex: "\\invalidLaTeXCommand{arg1}{arg2}",
-            label: "Unsupported LaTeX Macro",
-            variables: [],
-            origin: "text",
-            evidence: "Slide 19 raw extraction",
-          },
-        ],
-        omitted: [
-          {
-            formulaId: "F_BROKEN_1",
-            status: "uncaptured_error",
-            reason: "Corrupted source equation with unclosed braces",
-          },
-          {
-            formulaId: "F_BROKEN_2",
-            status: "uncaptured_error",
-            reason: "Unknown command from OCR extraction",
-          },
-        ],
-      };
-
-      const html = generateClutchNotePdfHtml(noteWithBrokenUncaptured);
-
-      // Must NOT contain raw red .katex-error markup
-      expect(html).not.toContain("<span class=\"katex-error\"");
-      expect(html).not.toContain("class=\"katex-error\"");
-      expect(html).not.toContain("color:#cc0000");
-
-      // Must render clean fallback representation inside pdf-uncaptured-math
-      expect(html).toContain("pdf-uncaptured-section");
-      expect(html).toContain("pdf-math-fallback");
-      expect(html).toContain("P_0 = broken unclosed brace");
-      expect(html).toContain("invalidLaTeXCommand");
     });
 
     it("hardens core formula blocks against broken LaTeX syntax and PUA symbols with zero katex-error leakage", () => {
@@ -986,28 +822,6 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
 
       expect(cleanLatexForFallback("\uF0E1 Return = \uF0B1 5%"))
         .toBe("↑ Return = ± 5%");
-    });
-
-    it("verifies renderUncapturedSectionHtml normalizes PUA in labels and reasons and handles edge-case latex", () => {
-      const items = [
-        {
-          id: "F_TEST",
-          slide: 12,
-          latex: "{broken syntax",
-          label: "PUA Label \uF0E1",
-          reason: "PUA Reason \uF0B4 with multiplier",
-        },
-      ];
-
-      const html = renderUncapturedSectionHtml(items);
-      expect(html).toContain("pdf-uncaptured-section");
-      expect(html).toContain("F_TEST");
-      expect(html).toContain("Slide 12");
-      expect(html).toContain("PUA Label ↑");
-      expect(html).toContain("PUA Reason × with multiplier");
-      expect(html).toContain("pdf-math-fallback");
-      expect(html).not.toContain("<span class=\"katex-error\"");
-      expect(html).not.toContain("class=\"katex-error\"");
     });
   });
 
@@ -1131,7 +945,7 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
         close: vi.fn(),
       };
       const mockPrintWindow = {
-        opener: "initial-parent-opener" as any,
+        opener: "initial-parent-opener" as unknown,
         document: mockDocument,
         focus: vi.fn(),
         print: vi.fn(),
@@ -1157,4 +971,3 @@ describe("Clutch Arena Watermarked PDF Export Generator", () => {
     });
   });
 });
-

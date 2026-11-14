@@ -322,9 +322,9 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
       expect(cram.rollingQuota.guardWindowHours).toBe(168);
       expect(cram.rollingQuota.cycleCeilingApplies).toBe(true);
       expect(getRegionalWindowBudget("cram_pass", "VN")).toBe(0.35);
-      expect(getRegionalWindowBudget("cram_pass", "ROW")).toBe(0.60);
+      expect(getRegionalWindowBudget("cram_pass", "ROW")).toBe(0.35);
       expect(getRegionalCogsCeiling("cram_pass", "VN")).toBe(0.85);
-      expect(getRegionalCogsCeiling("cram_pass", "ROW")).toBe(1.50);
+      expect(getRegionalCogsCeiling("cram_pass", "ROW")).toBe(0.85);
 
       const proMonthly = TIER_LIMITS.pro_monthly;
       expect(proMonthly.maxQuestionsPerRun).toBe(30);
@@ -333,7 +333,9 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
       expect(proMonthly.rollingQuota.guardWindowHours).toBe(168);
       expect(proMonthly.rollingQuota.cycleCeilingApplies).toBe(true);
       expect(getRegionalWindowBudget("pro_monthly", "VN")).toBe(0.28);
+      expect(getRegionalWindowBudget("pro_monthly", "ROW")).toBe(0.28);
       expect(getRegionalGuardBudget("pro_monthly", "VN")).toBe(0.55);
+      expect(getRegionalGuardBudget("pro_monthly", "ROW")).toBe(0.55);
 
       const pro = TIER_LIMITS.pro;
       expect(pro.maxQuestionsPerRun).toBe(30);
@@ -343,9 +345,9 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
       expect(pro.rollingQuota.guardWindowHours).toBe(168);
       expect(pro.rollingQuota.cycleCeilingApplies).toBe(true);
       expect(getRegionalWindowBudget("pro", "VN")).toBe(0.40);
-      expect(getRegionalWindowBudget("pro", "ROW")).toBe(0.85);
+      expect(getRegionalWindowBudget("pro", "ROW")).toBe(0.40);
       expect(getRegionalGuardBudget("pro", "VN")).toBe(0.85);
-      expect(getRegionalGuardBudget("pro", "ROW")).toBe(1.90);
+      expect(getRegionalGuardBudget("pro", "ROW")).toBe(0.85);
 
       const tutor = TIER_LIMITS.tutor;
       expect(tutor.maxQuestionsPerRun).toBe(30);
@@ -354,7 +356,7 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
       expect(tutor.rollingQuota.guardWindowHours).toBe(168);
       expect(tutor.rollingQuota.cycleCeilingApplies).toBe(true);
       expect(getRegionalWindowBudget("tutor", "VN")).toBe(1.10);
-      expect(getRegionalWindowBudget("tutor", "ROW")).toBe(1.80);
+      expect(getRegionalWindowBudget("tutor", "ROW")).toBe(1.10);
     });
 
     it("presents distinct rolling quota tier benefits in PRICING_PLANS", () => {

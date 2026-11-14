@@ -20,6 +20,10 @@ import {
   type FormulaOmissionStatus,
   type ExtractedSlideClaim,
   type ExtractionResult,
+  type AcceptedFormula,
+  type SymbolBinding,
+  type FormulaCandidate,
+  type PublishedHandout,
   synthesisSchema,
   extractionSchema,
 } from "@/lib/schemas/notes";
@@ -33,7 +37,10 @@ import {
   buildMergedFormulaLedger,
   mergeFormulaLedger,
   getSafeOpenRouterReasoningEffort,
+  adjudicateFormulaCandidates,
+  getFormulaQualityScore,
   type FormulaInventoryItem,
+  type FormulaOrigin,
 } from "@/lib/notes/formula-inventory";
 import { IngestionError } from "@/lib/ingestion/errors";
 import { OMITTED_BY_RULE_REASON_REGEX } from "@/lib/notes/deterministic-verifiers";
@@ -47,7 +54,22 @@ import {
   getOpenRouterApiKey,
   getVerifierModel,
 } from "./provider";
-import { CLUTCH_NOTES_SYSTEM_PROMPT, buildNotesPrompt } from "./prompts-notes";
+import {
+  CLUTCH_NOTES_SYSTEM_PROMPT,
+  buildNotesPrompt,
+  extractFinancialConventions,
+} from "./prompts-notes";
+import {
+  planDocumentBlueprint,
+  writeSectionDraftsParallel,
+  compileNoteDocument,
+  applyFirstUseSymbolBindingsToSections,
+  type CompiledNoteOutput,
+} from "@/lib/ai/note-compiler";
+import {
+  triageSlideDeck,
+  type TriageSlideDeckResult,
+} from "@/lib/notes/slide-triage";
 import {
   repairCorruptedLatex,
   ensureInlineMathDelimiters,
@@ -90,6 +112,8 @@ export {
   type SynthesisFormula,
   type ExtractionResult,
 } from "@/lib/schemas/notes";
+
+export type { CompiledNoteOutput } from "@/lib/ai/note-compiler";
 
 /**
  * Strict LLM generation schema where EVERY property is REQUIRED (no .optional() or .default()).
@@ -270,6 +294,8 @@ export interface GenerateClutchNoteOptions {
   skipVerifierLlm?: boolean;
   maxRepairAttempts?: number;
   throwOnContradictedFormula?: boolean;
+  useCompilerV2?: boolean;
+  onCompiledHandout?: (output: CompiledNoteOutput) => void;
   onTelemetry?: (telemetry: {
     totalTokens: number;
     costUsd: number;
@@ -582,25 +608,7 @@ export function lintFormula(f: NoteFormula, contextHint?: string): string[] {
   return warnings;
 }
 
-/**
- * Removes a top-level formula if an equivalent formula already exists inside sec.subSections.
- */
-function deduplicateSectionC(sec: NoteSection): NoteSection {
-  if (!sec.subSections || sec.subSections.length === 0) {
-    return sec;
-  }
-  const subKeys = new Set<string>();
-  for (const sub of sec.subSections) {
-    for (const f of sub.formulas) {
-      const k = normalizeFormulaKey(f.latex);
-      if (k) subKeys.add(k);
-    }
-  }
-  return {
-    ...sec,
-    formulas: sec.formulas.filter((f) => !subKeys.has(normalizeFormulaKey(f.latex))),
-  };
-}
+
 
 /**
  * Deduplicates multiple subSections in the same section that cover the exact same case or topic.
@@ -814,337 +822,146 @@ export function deduplicateSectionFormulas(sec: NoteSection): NoteSection {
 }
 
 /**
- * Consolidates fragmented sections (e.g. when an LLM outputs 8–10 sections by splitting
- * every case and parameter into separate top-level sections) into the canonical 5 sections.
- * Never drops sections or formulas!
- */
-function consolidateFragmentedSections(
-  sections: NoteSection[],
-  rawSlideText: string,
-): NoteSection[] {
-  const isWaccOrCostOfCapital =
-    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn/i.test(
-      `${rawSlideText} ${sections.map((s) => s.titleVi).join(" ")}`,
-    );
-
-  const isChapter9StockValuation =
-    !isWaccOrCostOfCapital &&
-    (/stock valuation|định giá cổ phiếu|dividend discount|gordon growth/i.test(rawSlideText) ||
-      /stock valuation|định giá cổ phiếu/i.test(sections.map((s) => s.titleVi).join(" ")) ||
-      /ddm|ritm|hạnh hạnh/i.test(
-        `${rawSlideText} ${sections.map((s) => s.titleVi).join(" ")}`,
-      ));
-
-  if (!isChapter9StockValuation) {
-    return sections;
-  }
-
-  const isFragmented =
-    sections.length > 5 ||
-    sections.some((s) =>
-      /case\s*[123]|ritm|hạnh hạnh|zero growth|tăng trưởng đều|không tăng trưởng|differential|finding.*growth|finding.*discount|cứu trợ|bổ trợ/i.test(
-        s.titleVi,
-      ),
-    );
-
-  if (!isFragmented) {
-    return sections;
-  }
-
-  let sectionA: NoteSection | null = null;
-  let sectionB: NoteSection | null = null;
-  let sectionC: NoteSection | null = null;
-  let sectionD: NoteSection | null = null;
-  let sectionE: NoteSection | null = null;
-  const unmatchedSections: NoteSection[] = [];
-
-  function mergeIntoSection(target: NoteSection, sec: NoteSection) {
-    if (sec.bulletPoints && sec.bulletPoints.length > 0) {
-      target.bulletPoints.push(...sec.bulletPoints);
-    }
-    if (sec.groundedBullets && sec.groundedBullets.length > 0) {
-      target.groundedBullets = [
-        ...(target.groundedBullets || []),
-        ...sec.groundedBullets,
-      ];
-    }
-    if (sec.formulas && sec.formulas.length > 0) {
-      target.formulas.push(...sec.formulas);
-    }
-    if (sec.subSections && sec.subSections.length > 0) {
-      target.subSections = [...(target.subSections || []), ...sec.subSections];
-    }
-    if (sec.sourceSlides && sec.sourceSlides.length > 0) {
-      const combined = new Set([...(target.sourceSlides || []), ...sec.sourceSlides]);
-      target.sourceSlides = Array.from(combined).sort((a, b) => a - b);
-    }
-    if (sec.keyTakeaways) {
-      if (!target.keyTakeaways) {
-        target.keyTakeaways = { ...sec.keyTakeaways };
-      } else {
-        target.keyTakeaways = {
-          ...target.keyTakeaways,
-          items: [
-            ...(target.keyTakeaways.items || []),
-            ...(sec.keyTakeaways.items || []),
-          ],
-          summaryPoints: [
-            ...(target.keyTakeaways.summaryPoints || []),
-            ...(sec.keyTakeaways.summaryPoints || []),
-          ],
-        };
-      }
-    }
-  }
-
-  for (const sec of sections) {
-    const title = sec.titleVi.toLowerCase();
-
-    // Section A: Fundamental Principle
-    if (/nguyên lý|cơ bản|fundamental.*principle/i.test(title)) {
-      if (!sectionA) sectionA = { ...sec };
-      else mergeIntoSection(sectionA, sec);
-      continue;
-    }
-
-    // Section B: One-Period Formula
-    if (/công thức tổng quát|tổng quát|one-period|đầu tư trong 1 năm/i.test(title)) {
-      if (!sectionB) sectionB = { ...sec };
-      else mergeIntoSection(sectionB, sec);
-      continue;
-    }
-
-    // Section D: Parameters (Finding g / Finding R)
-    if (
-      /parameters|tham số|finding.*(growth|discount|r|g)|growth rate|discount rate|tốc độ tăng trưởng/i.test(
-        title,
-      ) ||
-      (sec.subSections &&
-        sec.subSections.some((sub) => /finding.*(growth|discount|r|g)/i.test(sub.heading)))
-    ) {
-      if (!sectionD) {
-        sectionD = {
-          ...sec,
-          titleVi: "D. PARAMETERS IN DIVIDEND DISCOUNT MODEL",
-          formulas: [...sec.formulas],
-          subSections:
-            sec.subSections && sec.subSections.length > 0
-              ? [...sec.subSections]
-              : [
-                  {
-                    heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
-                    bulletPoints: [...sec.bulletPoints],
-                    groundedBullets: sec.groundedBullets
-                      ? [...sec.groundedBullets]
-                      : undefined,
-                    formulas: [...sec.formulas],
-                  },
-                ],
-        };
-      } else {
-        mergeIntoSection(sectionD, sec);
-      }
-      continue;
-    }
-
-    // Section E: Preference Shares / Deferred Preferred
-    if (
-      /preference|preferred|ưu đãi|ưu tiên|cứu trợ|bổ trợ/i.test(title) ||
-      (sec.subSections &&
-        sec.subSections.some((sub) =>
-          /preference|preferred|ưu đãi|ưu tiên|cứu trợ|bổ trợ/i.test(sub.heading),
-        ))
-    ) {
-      if (!sectionE) {
-        sectionE = {
-          ...sec,
-          titleVi: "E. VALUE OF PREFERENCE SHARE",
-          formulas: [...sec.formulas],
-          subSections:
-            sec.subSections && sec.subSections.length > 0
-              ? [...sec.subSections]
-              : [
-                  {
-                    heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
-                    bulletPoints: [...sec.bulletPoints],
-                    groundedBullets: sec.groundedBullets
-                      ? [...sec.groundedBullets]
-                      : undefined,
-                    formulas: [...sec.formulas],
-                  },
-                ],
-        };
-      } else {
-        mergeIntoSection(sectionE, sec);
-      }
-      continue;
-    }
-
-    // Section C: DDM & Cases (Zero Growth, Constant Growth, Differential Growth, ritm, hạnh hạnh)
-    if (
-      /ddm|dividend discount|case\s*[123]|zero growth|constant growth|tăng trưởng|ritm|hạnh hạnh/i.test(
-        title,
-      ) ||
-      sec.formulas.some((f) =>
-        /\\sum|D_?1\s*\/\s*\(R\s*-\s*g\)|D\s*\/\s*R/i.test(f.latex),
-      )
-    ) {
-      if (!sectionC) {
-        sectionC = {
-          ...sec,
-          titleVi: "C. DDM (DIVIDEND DISCOUNT MODEL)",
-          formulas: [...sec.formulas],
-          subSections:
-            sec.subSections && sec.subSections.length > 0
-              ? [...sec.subSections]
-              : [
-                  {
-                    heading: sec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, ""),
-                    bulletPoints: [...sec.bulletPoints],
-                    groundedBullets: sec.groundedBullets
-                      ? [...sec.groundedBullets]
-                      : undefined,
-                    formulas: [...sec.formulas],
-                  },
-                ],
-        };
-      } else {
-        mergeIntoSection(sectionC, sec);
-      }
-      continue;
-    }
-
-    unmatchedSections.push(sec);
-  }
-
-  const result: NoteSection[] = [];
-  if (sectionA) result.push(sectionA);
-  if (sectionB) result.push(sectionB);
-  if (sectionC) result.push(sectionC);
-  if (sectionD) result.push(sectionD);
-  if (sectionE) result.push(sectionE);
-
-  for (const unmatched of unmatchedSections) {
-    if (result.length < 5) {
-      result.push(unmatched);
-    } else {
-      const lastSection = result[result.length - 1];
-      const extraSubHeading = unmatched.titleVi.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
-      const newSub: NoteSubSection = {
-        heading: extraSubHeading,
-        leadIn: unmatched.overview || undefined,
-        bulletPoints: [...unmatched.bulletPoints],
-        groundedBullets: unmatched.groundedBullets
-          ? [...unmatched.groundedBullets]
-          : undefined,
-        formulas: [...unmatched.formulas],
-      };
-      if (unmatched.subSections && unmatched.subSections.length > 0) {
-        lastSection.subSections = [
-          ...(lastSection.subSections || []),
-          newSub,
-          ...unmatched.subSections,
-        ];
-      } else {
-        lastSection.subSections = [...(lastSection.subSections || []), newSub];
-      }
-      if (unmatched.keyTakeaways) {
-        if (!lastSection.keyTakeaways) {
-          lastSection.keyTakeaways = { ...unmatched.keyTakeaways };
-        } else {
-          lastSection.keyTakeaways = {
-            ...lastSection.keyTakeaways,
-            items: [
-              ...(lastSection.keyTakeaways.items || []),
-              ...(unmatched.keyTakeaways.items || []),
-            ],
-            summaryPoints: [
-              ...(lastSection.keyTakeaways.summaryPoints || []),
-              ...(unmatched.keyTakeaways.summaryPoints || []),
-            ],
-          };
-        }
-      }
-      if (unmatched.sourceSlides && unmatched.sourceSlides.length > 0) {
-        const combined = new Set([...(lastSection.sourceSlides || []), ...unmatched.sourceSlides]);
-        lastSection.sourceSlides = Array.from(combined).sort((a, b) => a - b);
-      }
-    }
-  }
-
-  return result.length >= 3 ? result : sections;
-}
-
-/**
- * Universally consolidates sections into strictly 3–5 canonical sections (A through E)
- * across any course or academic discipline (Finance, Economics, Accounting, Statistics, STEM).
- * Preserves keyTakeaways items, summaryPoints, and sourceSlides from merged extra sections.
+ * Universally consolidates sections across any course or academic discipline.
+ * - If consecutive or multiple sections share the exact same explicit section letter
+ *   (e.g., two sections both labeled letter: "A", as in fragmented LLM output),
+ *   merges duplicate-letter sections cleanly (preserving 100% of bulletPoints,
+ *   groundedBullets, formulas, subSections, keyTakeaways, and sourceSlides).
+ * - If sections.length > 12, merges overflow sections (> 12) into section 12's
+ *   subSections so no content is ever dropped.
  */
 function consolidateSectionsUniversally(
   sections: NoteSection[],
-  rawSlideText: string,
-  isChapter9StockValuation: boolean,
+  _rawSlideText?: string,
 ): NoteSection[] {
-  if (isChapter9StockValuation) {
-    return consolidateFragmentedSections(sections, rawSlideText);
+  if (!sections || sections.length === 0) {
+    return [];
   }
 
-  // If sections are between 1 and 12, keep them as is (ensures full coverage of 8-10+ section decks without dropping late CAPM topics)
-  if (sections.length <= 12 && sections.length >= 1) {
-    return sections;
-  }
+  // 1. Merge sections that share the exact same explicit section letter
+  const merged: NoteSection[] = [];
+  for (const sec of sections) {
+    const rawLetter = (sec.letter || "").trim().toUpperCase();
+    const existing = rawLetter
+      ? merged.find((m) => (m.letter || "").trim().toUpperCase() === rawLetter)
+      : undefined;
 
-  // If sections > 12, consolidate extra sections into section 12
-  if (sections.length > 12) {
-    const headSections = sections.slice(0, 11);
-    const baseSectionLast = { ...sections[11] };
-    const mergedSubSections: NoteSubSection[] = baseSectionLast.subSections
-      ? [...baseSectionLast.subSections]
-      : [];
-
-    for (let i = 11; i < sections.length; i++) {
-      const extraSec = sections[i];
-      const extraSubHeading = extraSec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
-      mergedSubSections.push({
-        heading: extraSubHeading,
-        leadIn: extraSec.overview || undefined,
-        bulletPoints: [...extraSec.bulletPoints],
-        groundedBullets: extraSec.groundedBullets
-          ? [...extraSec.groundedBullets]
-          : undefined,
-        formulas: [...extraSec.formulas],
-      });
-      if (extraSec.subSections && extraSec.subSections.length > 0) {
-        mergedSubSections.push(...extraSec.subSections);
+    if (existing) {
+      if (sec.bulletPoints && sec.bulletPoints.length > 0) {
+        existing.bulletPoints.push(...sec.bulletPoints);
       }
-      if (extraSec.keyTakeaways) {
-        if (!baseSectionLast.keyTakeaways) {
-          baseSectionLast.keyTakeaways = { ...extraSec.keyTakeaways };
+      if (sec.groundedBullets && sec.groundedBullets.length > 0) {
+        existing.groundedBullets = [
+          ...(existing.groundedBullets || []),
+          ...sec.groundedBullets,
+        ];
+      }
+      if (sec.formulas && sec.formulas.length > 0) {
+        existing.formulas.push(...sec.formulas);
+      }
+      if (sec.subSections && sec.subSections.length > 0) {
+        existing.subSections = [
+          ...(existing.subSections || []),
+          ...sec.subSections,
+        ];
+      }
+      if (sec.sourceSlides && sec.sourceSlides.length > 0) {
+        const combined = new Set([
+          ...(existing.sourceSlides || []),
+          ...sec.sourceSlides,
+        ]);
+        existing.sourceSlides = Array.from(combined).sort((a, b) => a - b);
+      }
+      if (sec.keyTakeaways) {
+        if (!existing.keyTakeaways) {
+          existing.keyTakeaways = { ...sec.keyTakeaways };
         } else {
-          baseSectionLast.keyTakeaways = {
-            ...baseSectionLast.keyTakeaways,
+          existing.keyTakeaways = {
+            ...existing.keyTakeaways,
             items: [
-              ...(baseSectionLast.keyTakeaways.items || []),
-              ...(extraSec.keyTakeaways.items || []),
+              ...(existing.keyTakeaways.items || []),
+              ...(sec.keyTakeaways.items || []),
             ],
             summaryPoints: [
-              ...(baseSectionLast.keyTakeaways.summaryPoints || []),
-              ...(extraSec.keyTakeaways.summaryPoints || []),
+              ...(existing.keyTakeaways.summaryPoints || []),
+              ...(sec.keyTakeaways.summaryPoints || []),
             ],
           };
         }
       }
-      if (extraSec.sourceSlides && extraSec.sourceSlides.length > 0) {
-        const combined = new Set([...(baseSectionLast.sourceSlides || []), ...extraSec.sourceSlides]);
-        baseSectionLast.sourceSlides = Array.from(combined).sort((a, b) => a - b);
+      if (!existing.overview && sec.overview) {
+        existing.overview = sec.overview;
       }
+      if (!existing.coreStatement && sec.coreStatement) {
+        existing.coreStatement = sec.coreStatement;
+      }
+    } else {
+      merged.push({
+        ...sec,
+        bulletPoints: [...(sec.bulletPoints || [])],
+        groundedBullets: sec.groundedBullets ? [...sec.groundedBullets] : undefined,
+        formulas: [...(sec.formulas || [])],
+        subSections: sec.subSections ? [...sec.subSections] : [],
+        sourceSlides: sec.sourceSlides ? [...sec.sourceSlides] : undefined,
+      });
     }
-
-    baseSectionLast.subSections = mergedSubSections;
-    return [...headSections, baseSectionLast];
   }
 
-  return sections;
+  // 2. If merged.length <= 12, keep as-is
+  if (merged.length <= 12) {
+    return merged;
+  }
+
+  // 3. If merged.length > 12, merge overflow sections (> 12) into section 12's subSections
+  const headSections = merged.slice(0, 11);
+  const baseSectionLast = { ...merged[11] };
+  const mergedSubSections: NoteSubSection[] = baseSectionLast.subSections
+    ? [...baseSectionLast.subSections]
+    : [];
+
+  for (let i = 12; i < merged.length; i++) {
+    const extraSec = merged[i];
+    const extraSubHeading = extraSec.titleVi.replace(/^[A-Z0-9]+\.\s*/i, "").trim();
+    mergedSubSections.push({
+      heading: extraSubHeading,
+      leadIn: extraSec.overview || undefined,
+      bulletPoints: [...extraSec.bulletPoints],
+      groundedBullets: extraSec.groundedBullets
+        ? [...extraSec.groundedBullets]
+        : undefined,
+      formulas: [...extraSec.formulas],
+    });
+    if (extraSec.subSections && extraSec.subSections.length > 0) {
+      mergedSubSections.push(...extraSec.subSections);
+    }
+    if (extraSec.keyTakeaways) {
+      if (!baseSectionLast.keyTakeaways) {
+        baseSectionLast.keyTakeaways = { ...extraSec.keyTakeaways };
+      } else {
+        baseSectionLast.keyTakeaways = {
+          ...baseSectionLast.keyTakeaways,
+          items: [
+            ...(baseSectionLast.keyTakeaways.items || []),
+            ...(extraSec.keyTakeaways.items || []),
+          ],
+          summaryPoints: [
+            ...(baseSectionLast.keyTakeaways.summaryPoints || []),
+            ...(extraSec.keyTakeaways.summaryPoints || []),
+          ],
+        };
+      }
+    }
+    if (extraSec.sourceSlides && extraSec.sourceSlides.length > 0) {
+      const combined = new Set([
+        ...(baseSectionLast.sourceSlides || []),
+        ...extraSec.sourceSlides,
+      ]);
+      baseSectionLast.sourceSlides = Array.from(combined).sort((a, b) => a - b);
+    }
+  }
+
+  baseSectionLast.subSections = mergedSubSections;
+  return [...headSections, baseSectionLast];
 }
 
 /**
@@ -1251,32 +1068,15 @@ export function applyHallucinationShield(
   sections: NoteSection[],
   rawSlideText: string = "",
 ): NoteSection[] {
-  const normSlideText = rawSlideText.toLowerCase();
-  const allTitlesText = sections.map((s) => s.titleVi).join(" ").toLowerCase();
-  const combinedContext = `${normSlideText} ${allTitlesText}`;
-
-  const isWaccOrCostOfCapital =
-    /wacc|cost of capital|chi phí (sử dụng )?vốn|chi phí vốn/i.test(combinedContext);
-
-  const isChapter9StockValuation =
-    !isWaccOrCostOfCapital &&
-    (/stock valuation|định giá cổ phiếu|dividend discount|gordon growth/i.test(rawSlideText) ||
-      /stock valuation|định giá cổ phiếu/i.test(allTitlesText) ||
-      /ddm|ritm|hạnh hạnh/i.test(combinedContext));
-
-  // Step 1: Consolidate fragmented sections universally into 3–5 canonical sections
-  const consolidated = consolidateSectionsUniversally(
-    sections,
-    rawSlideText,
-    isChapter9StockValuation,
-  );
+  // Step 1: Consolidate fragmented sections universally into canonical sections
+  const consolidated = consolidateSectionsUniversally(sections, rawSlideText);
 
   // Step 2: Apply fine-grained formula and header sanitization
   const processed = consolidated.map((sec, idx) => {
     const sequentialLetter = String.fromCharCode(65 + idx);
 
     // 2a. Sanitize headers and purge machine-translation hallucinations
-    sec.titleVi = sanitizeAcademicHeader(sec.titleVi, sequentialLetter, isChapter9StockValuation);
+    sec.titleVi = sanitizeAcademicHeader(sec.titleVi, sequentialLetter);
     sec.letter = sequentialLetter;
     sec.id = `sec-${sequentialLetter.toLowerCase()}-${idx + 1}`;
 
@@ -1348,11 +1148,6 @@ export function applyHallucinationShield(
         sub.formulas = sub.formulas.map(sanitizeFormula);
         return sub;
       });
-    }
-
-    // 2d. Section C top-level deduplication against subSections (structure-preserving)
-    if (isChapter9StockValuation) {
-      sec = deduplicateSectionC(sec);
     }
 
     return sec;
@@ -1581,9 +1376,28 @@ function buildMarkdownNote(note: Omit<ClutchNote, "rawMarkdown">): string {
   return parts.join("\n").trim();
 }
 
+function scoreLatexQuality(
+  latex: string,
+  origin: FormulaOrigin = "text",
+  confidence?: number,
+): number {
+  return getFormulaQualityScore({
+    id: "temp",
+    slide: 1,
+    raw: latex,
+    proposedLatex: latex,
+    origin,
+    kind: "general_formula",
+    state: "ACCEPTED",
+    confidence,
+    warnings: [],
+  });
+}
+
 export function injectLedgerFormulasById(
   sections: NoteSection[],
   ledger: FormulaLedgerEntry[],
+  acceptedFormulas?: AcceptedFormula[],
 ): { sections: NoteSection[]; placedIds: Set<string> } {
   const placedIds = new Set<string>();
   if (!ledger || ledger.length === 0) {
@@ -1604,6 +1418,13 @@ export function injectLedgerFormulasById(
     const rawKey = normalizeFormulaKey(entry.raw);
     if (rawKey && !ledgerKeyMap.has(rawKey)) {
       ledgerKeyMap.set(rawKey, entry);
+    }
+  }
+
+  const acceptedMap = new Map<string, AcceptedFormula>();
+  if (acceptedFormulas && acceptedFormulas.length > 0) {
+    for (const af of acceptedFormulas) {
+      acceptedMap.set(af.id.trim().toUpperCase(), af);
     }
   }
 
@@ -1634,17 +1455,51 @@ export function injectLedgerFormulasById(
     if (validRefs.length > 0 && validDerived.length === 0) {
       if (validRefs.length === 1) {
         const entry = validRefs[0];
-        const isEntryValid = isCleanValidLatexFormula(entry.latex);
+        const ma = acceptedMap.get(entry.id.trim().toUpperCase());
+        let candidateLatex = entry.latex;
+        let candidateOrigin: FormulaOrigin = entry.origin;
+
+        if (ma && isCleanValidLatexFormula(ma.displayLatex)) {
+          const maScore = scoreLatexQuality(ma.displayLatex, ma.origin);
+          const entryScore = scoreLatexQuality(entry.latex, entry.origin, entry.confidence);
+          if (maScore >= entryScore) {
+            candidateLatex = ma.displayLatex;
+            candidateOrigin = ma.origin;
+          }
+        }
+
+        const isCandidateValid = isCleanValidLatexFormula(candidateLatex);
         const isCurrentValid = isCleanValidLatexFormula(f.latex);
 
-        if (isEntryValid) {
+        if (isCandidateValid) {
           placedIds.add(entry.id);
-          f.latex = entry.latex;
           f.formulaRefs = [entry.id];
           f.derivedFrom = [];
           f.slide = f.slide ?? entry.slide;
-          f.origin = entry.origin;
+          f.origin = candidateOrigin;
           f.confidence = entry.confidence;
+
+          if (isCurrentValid) {
+            const currentScore = scoreLatexQuality(
+              f.latex,
+              (f.origin as FormulaOrigin) || "llm",
+              f.confidence,
+            );
+            const candidateScore = scoreLatexQuality(
+              candidateLatex,
+              candidateOrigin,
+              entry.confidence,
+            );
+
+            // New v2 Guard: If f.latex is already structured LaTeX and candidate is lower-quality text scrape, preserve f.latex!
+            if (candidateOrigin === "text" && candidateScore < currentScore) {
+              // Preserve f.latex!
+            } else {
+              f.latex = candidateLatex;
+            }
+          } else {
+            f.latex = candidateLatex;
+          }
 
           if (
             (!f.variables || f.variables.length === 0) &&
@@ -1675,7 +1530,38 @@ export function injectLedgerFormulasById(
           f.derivedFrom = [];
           f.slide = f.slide ?? validEntries[0].slide;
           f.origin = validEntries[0].origin;
-          f.latex = validEntries.map((e) => e.latex).join(", \\quad ");
+
+          const resolvedLatexList = validEntries.map((e) => {
+            const ma = acceptedMap.get(e.id.trim().toUpperCase());
+            if (ma && isCleanValidLatexFormula(ma.displayLatex)) {
+              const aScore = scoreLatexQuality(ma.displayLatex, ma.origin);
+              const eScore = scoreLatexQuality(e.latex, e.origin, e.confidence);
+              if (aScore >= eScore) return ma.displayLatex;
+            }
+            return e.latex;
+          });
+
+          const combinedLatex = resolvedLatexList.join(", \\quad ");
+          if (isCurrentValid) {
+            const currentScore = scoreLatexQuality(
+              f.latex,
+              (f.origin as FormulaOrigin) || "llm",
+              f.confidence,
+            );
+            const candidateScore = scoreLatexQuality(
+              combinedLatex,
+              validEntries[0].origin,
+              validEntries[0].confidence,
+            );
+
+            if (validEntries[0].origin === "text" && candidateScore < currentScore) {
+              // Preserve f.latex
+            } else {
+              f.latex = combinedLatex;
+            }
+          } else {
+            f.latex = combinedLatex;
+          }
         } else if (isCurrentValid) {
           f.slide = f.slide ?? validRefs[0].slide;
         }
@@ -1695,17 +1581,54 @@ export function injectLedgerFormulasById(
       const normKey = normalizeFormulaKey(f.latex);
       const matchedEntry = normKey ? ledgerKeyMap.get(normKey) : undefined;
       if (matchedEntry) {
-        const isEntryValid = isCleanValidLatexFormula(matchedEntry.latex);
+        const ma = acceptedMap.get(matchedEntry.id.trim().toUpperCase());
+        let candidateLatex = matchedEntry.latex;
+        let candidateOrigin: FormulaOrigin = matchedEntry.origin;
+
+        if (ma && isCleanValidLatexFormula(ma.displayLatex)) {
+          const maScore = scoreLatexQuality(ma.displayLatex, ma.origin);
+          const entryScore = scoreLatexQuality(
+            matchedEntry.latex,
+            matchedEntry.origin,
+            matchedEntry.confidence,
+          );
+          if (maScore >= entryScore) {
+            candidateLatex = ma.displayLatex;
+            candidateOrigin = ma.origin;
+          }
+        }
+
+        const isEntryValid = isCleanValidLatexFormula(candidateLatex);
         const isCurrentValid = isCleanValidLatexFormula(f.latex);
 
         if (isEntryValid) {
           placedIds.add(matchedEntry.id);
           f.formulaRefs = [matchedEntry.id];
           f.derivedFrom = [];
-          f.latex = matchedEntry.latex;
           f.slide = f.slide ?? matchedEntry.slide;
-          f.origin = matchedEntry.origin;
+          f.origin = candidateOrigin;
           f.confidence = matchedEntry.confidence;
+
+          if (isCurrentValid) {
+            const currentScore = scoreLatexQuality(
+              f.latex,
+              (f.origin as FormulaOrigin) || "llm",
+              f.confidence,
+            );
+            const candidateScore = scoreLatexQuality(
+              candidateLatex,
+              candidateOrigin,
+              matchedEntry.confidence,
+            );
+
+            if (candidateOrigin === "text" && candidateScore < currentScore) {
+              // Preserve f.latex
+            } else {
+              f.latex = candidateLatex;
+            }
+          } else {
+            f.latex = candidateLatex;
+          }
 
           if (
             (!f.variables || f.variables.length === 0) &&
@@ -1752,6 +1675,7 @@ export function mapSynthesisSection(
   sec: SynthesisSection,
   index: number,
   ledger?: FormulaLedgerEntry[],
+  acceptedFormulas?: AcceptedFormula[],
 ): NoteSection {
   const sequentialLetter = String.fromCharCode(65 + index);
   const strippedTitle = sec.titleVi.trim().replace(/^[A-Z0-9]+\.\s+/i, "");
@@ -1841,7 +1765,7 @@ export function mapSynthesisSection(
   };
 
   if (ledger && ledger.length > 0) {
-    const res = injectLedgerFormulasById([noteSection], ledger);
+    const res = injectLedgerFormulasById([noteSection], ledger, acceptedFormulas);
     noteSection = res.sections[0];
   }
 
@@ -2019,6 +1943,250 @@ function sectionHasSubstantiveContent(section: NoteSection): boolean {
   return hasTopLevel || hasSubContent || hasTakeaways;
 }
 
+/**
+ * Safely applies first-use symbol definitions strictly in reading order across sections,
+ * only modifying variables when symbolBindings matches and preserving existing variables
+ * for any formulas whose variables are not defined in symbolBindings.
+ */
+function applyScopedSymbolBindingsSafely(
+  sections: NoteSection[],
+  acceptedFormulas: AcceptedFormula[],
+  symbolBindings: SymbolBinding[],
+): NoteSection[] {
+  if (!symbolBindings || symbolBindings.length === 0) {
+    return sections;
+  }
+
+  const hasBindingsWithMeanings = symbolBindings.some(
+    (b) => b.meaning && b.meaning.trim() !== "",
+  );
+  if (!hasBindingsWithMeanings) {
+    return sections;
+  }
+
+  const { sections: withSymbols } = applyFirstUseSymbolBindingsToSections(
+    sections,
+    acceptedFormulas,
+    symbolBindings,
+  );
+
+  const boundGlyphs = new Set(
+    symbolBindings
+      .filter((b) => b.meaning && b.meaning.trim() !== "")
+      .map((b) => b.symbolLatex.trim()),
+  );
+
+  return withSymbols.map((sec, secIdx) => {
+    const origSec = sections[secIdx];
+    const formulas = sec.formulas.map((f, fIdx) => {
+      const origF = origSec?.formulas?.[fIdx];
+      if (
+        f.variables.length === 0 &&
+        origF &&
+        origF.variables &&
+        origF.variables.length > 0
+      ) {
+        const hasAnyBound = origF.variables.some((v) =>
+          boundGlyphs.has(v.symbol.trim()),
+        );
+        if (!hasAnyBound) {
+          return { ...f, variables: [...origF.variables] };
+        }
+      }
+      return f;
+    });
+
+    const subSections = (sec.subSections || []).map((sub, subIdx) => {
+      const origSub = origSec?.subSections?.[subIdx];
+      const subFormulas = sub.formulas.map((f, fIdx) => {
+        const origF = origSub?.formulas?.[fIdx];
+        if (
+          f.variables.length === 0 &&
+          origF &&
+          origF.variables &&
+          origF.variables.length > 0
+        ) {
+          const hasAnyBound = origF.variables.some((v) =>
+            boundGlyphs.has(v.symbol.trim()),
+          );
+          if (!hasAnyBound) {
+            return { ...f, variables: [...origF.variables] };
+          }
+        }
+        return f;
+      });
+      return { ...sub, formulas: subFormulas };
+    });
+
+    return { ...sec, formulas, subSections };
+  });
+}
+
+/**
+ * Compiles a lecture slide deck into a structured ClutchNote and PublishedHandout
+ * using the v2 Compiler Pipeline:
+ * triageSlideDeck -> formula inventory / adjudication -> planDocumentBlueprint ->
+ * writeSectionDraftsParallel -> compileNoteDocument.
+ */
+export async function compileClutchNoteV2(
+  options: GenerateClutchNoteOptions,
+): Promise<CompiledNoteOutput> {
+  const summarizerTier = options.tier || "pro";
+  const isFreeTier =
+    summarizerTier === "contender" ||
+    summarizerTier === "guest" ||
+    summarizerTier === "free";
+
+  let model: LanguageModel | undefined = options.modelOverride;
+  if (!model) {
+    try {
+      model = getNoteSummarizerModel(isFreeTier ? "contender" : "pro");
+    } catch {
+      model = undefined;
+    }
+  }
+
+  let accumulatedTokens = 0;
+  let accumulatedCostUsd = 0;
+  let lastServedModel: string | null = (model as any)?.modelId ?? null;
+  const trackUsage = (info: {
+    totalTokens?: number;
+    costUsd?: number;
+    servedModel?: string;
+  }) => {
+    if (typeof info.totalTokens === "number" && Number.isFinite(info.totalTokens)) {
+      accumulatedTokens += info.totalTokens;
+    }
+    if (typeof info.costUsd === "number" && Number.isFinite(info.costUsd)) {
+      accumulatedCostUsd += info.costUsd;
+    }
+    if (info.servedModel) {
+      lastServedModel = info.servedModel;
+    }
+  };
+
+  // Step 1: Slide Triage
+  const triageResult = triageSlideDeck(options.sources);
+
+  // Step 2: Formula Inventory & Adjudication
+  let ledger: FormulaLedgerEntry[] = [];
+  if (options.formulaLedger && options.formulaLedger.length > 0) {
+    ledger = options.formulaLedger;
+  } else if (!options.skipChunkExtraction && model) {
+    try {
+      const mergedResult = await buildMergedFormulaLedger({
+        sources: options.sources,
+        ommlEquations: options.ommlEquations,
+        ocrEquations: options.ocrEquations,
+        model,
+        signal: options.signal,
+      });
+      ledger = mergedResult.ledger;
+    } catch (err) {
+      console.warn(
+        "[compileClutchNoteV2] buildMergedFormulaLedger failed, falling back to deterministic inventory:",
+        err,
+      );
+      const deterministicInventory =
+        options.formulaInventory ??
+        buildFormulaInventory({
+          sources: options.sources,
+          ommlEquations: options.ommlEquations,
+          ocrEquations: options.ocrEquations,
+        });
+      ledger = mergeFormulaLedger({
+        deterministicInventory,
+        sources: options.sources,
+      });
+    }
+  } else {
+    const deterministicInventory =
+      options.formulaInventory ??
+      buildFormulaInventory({
+        sources: options.sources,
+        ommlEquations: options.ommlEquations,
+        ocrEquations: options.ocrEquations,
+      });
+    ledger = mergeFormulaLedger({
+      deterministicInventory,
+      sources: options.sources,
+    });
+  }
+
+  const adjudication = adjudicateFormulaCandidates({
+    ledger,
+    sources: options.sources,
+  });
+
+  // Step 3: Plan Document Blueprint
+  const isShortNote = isFreeTier || Boolean(options.isShortNote);
+  const totalSlideCount = options.slideCount || options.sources.length || 1;
+
+  const blueprint = await planDocumentBlueprint({
+    fileName: options.fileName,
+    totalSlideCount,
+    includedSlides: triageResult.includedSlides,
+    planningSignalSlides: triageResult.planningSignalSlides,
+    acceptedFormulas: adjudication.acceptedFormulas,
+    atoms: triageResult.extractedAtoms,
+    focus: options.focus,
+    isShortNote,
+    model,
+    signal: options.signal,
+    onUsage: trackUsage,
+  });
+
+  // Step 4: Write Section Drafts in Parallel
+  const slidesForDrafting = triageResult.includedSlides.map((s) => ({
+    slide: s.slide,
+    label: s.label,
+    text: s.cleanedText,
+  }));
+
+  const sectionDrafts = await writeSectionDraftsParallel({
+    fileName: options.fileName,
+    blueprint,
+    slides:
+      slidesForDrafting.length > 0
+        ? slidesForDrafting
+        : options.sources.map((s, idx) => ({
+            slide: idx + 1,
+            label: s.label,
+            text: s.text,
+          })),
+    acceptedFormulas: adjudication.acceptedFormulas,
+    atoms: triageResult.extractedAtoms,
+    symbolBindings: adjudication.symbolBindings,
+    financialConventions: extractFinancialConventions(options.sources),
+    model,
+    signal: options.signal,
+    onUsage: trackUsage,
+  });
+
+  // Step 5: Compile Note Document
+  const compiledOutput = compileNoteDocument({
+    fileName: options.fileName,
+    blueprint,
+    sectionDrafts,
+    acceptedFormulas: adjudication.acceptedFormulas,
+    atoms: triageResult.extractedAtoms,
+    symbolBindings: adjudication.symbolBindings,
+    financialConventions: extractFinancialConventions(options.sources),
+    excludedCandidates: adjudication.excludedCandidates,
+    totalSlideCount,
+  });
+
+  if (options.onTelemetry) {
+    options.onTelemetry({
+      totalTokens: accumulatedTokens,
+      costUsd: accumulatedCostUsd,
+      servedModel: lastServedModel,
+    });
+  }
+
+  return compiledOutput;
+}
+
 export async function generateClutchNote(
   options: GenerateClutchNoteOptions,
 ): Promise<ClutchNote> {
@@ -2069,7 +2237,92 @@ export async function generateClutchNote(
     );
   }
 
-  // Step 1: Obtain ledger and extractedClaims
+  // v2 Compiler Pipeline delegation (runs before legacy triage/ledger to avoid redundant work)
+  if (options.useCompilerV2) {
+    let v2TotalTokens = 0;
+    let v2CostUsd = 0;
+    let v2ServedModel: string | null = (model as any)?.modelId ?? null;
+
+    const compiledOutput = await compileClutchNoteV2({
+      ...options,
+      modelOverride: options.modelOverride ?? model,
+      onTelemetry: (t) => {
+        v2TotalTokens += t.totalTokens || 0;
+        v2CostUsd += t.costUsd || 0;
+        if (t.servedModel) v2ServedModel = t.servedModel;
+      },
+    });
+
+    let resolvedVerifierModel = options.verifierModel;
+    if (!resolvedVerifierModel && Boolean(process.env.OPENROUTER_API_KEY?.trim())) {
+      try {
+        resolvedVerifierModel = getVerifierModel({
+          generatorSlug: (model as any)?.modelId,
+          allowSameFamily: true,
+        });
+      } catch {
+        resolvedVerifierModel = undefined;
+      }
+    }
+
+    let resolvedRepairModel = options.repairModel;
+    if (!resolvedRepairModel && !options.repairFn && (options.maxRepairAttempts ?? 1) > 0) {
+      resolvedRepairModel = model ?? resolvedVerifierModel;
+    }
+
+    const rawOmitted = (compiledOutput.clutchNote.omitted ?? []).map((o) => ({
+      formulaId: o.formulaId,
+      reason: o.reason,
+    }));
+
+    const gateResult = await runVerificationGate({
+      sections: compiledOutput.clutchNote.sections,
+      sources: options.sources,
+      ledger: compiledOutput.clutchNote.formulaLedger ?? [],
+      omitted: rawOmitted,
+      blueprint: compiledOutput.blueprint,
+      sectionDrafts: compiledOutput.sectionDrafts,
+      acceptedFormulas: compiledOutput.acceptedFormulas,
+      atoms: compiledOutput.atoms,
+      symbolBindings: compiledOutput.symbolBindings,
+      excludedCandidates: compiledOutput.excludedCandidates,
+      options: {
+        enableVerifierLlm: options.enableVerifierLlm,
+        verifierModel: resolvedVerifierModel,
+        repairModel: resolvedRepairModel,
+        repairFn: options.repairFn,
+        skipVerifierLlm: options.skipVerifierLlm,
+        maxRepairAttempts: options.maxRepairAttempts ?? 1,
+        throwOnContradictedFormula: options.throwOnContradictedFormula ?? true,
+        signal: options.signal,
+      },
+    });
+
+    const effectiveCompiled = gateResult.compiledOutput ?? compiledOutput;
+    const finalNote: ClutchNote = {
+      ...effectiveCompiled.clutchNote,
+      sections: gateResult.sections,
+      verification: gateResult.verification,
+    };
+    finalNote.rawMarkdown = buildMarkdownNote(finalNote);
+
+    options.onCompiledHandout?.(effectiveCompiled);
+
+    if (options.onTelemetry) {
+      options.onTelemetry({
+        totalTokens: v2TotalTokens,
+        costUsd: v2CostUsd,
+        servedModel: v2ServedModel,
+      });
+    }
+
+    return finalNote;
+  }
+
+  // Step 1: Slide Triage
+  const triageResult = triageSlideDeck(options.sources);
+
+  // Step 2: Obtain ledger and extractedClaims, and adjudicate formula candidates
   let ledger: FormulaLedgerEntry[] = [];
   let extractedClaims: ExtractedSlideClaim[] = [];
 
@@ -2107,7 +2360,12 @@ export async function generateClutchNote(
     }
   }
 
-  // Step 2: Build the prompt (one prompt template, one schema per tier)
+  const adjudication = adjudicateFormulaCandidates({
+    ledger,
+    sources: options.sources,
+  });
+
+  // Step 3 (Default Path): Build the prompt (one prompt template, one schema per tier)
   const isShortNote = isFreeTier || Boolean(options.isShortNote);
   const prompt = buildNotesPrompt({
     fileName: options.fileName,
@@ -2212,7 +2470,7 @@ export async function generateClutchNote(
     );
 
     const mapped = normalizedSections
-      .map((sec, idx) => mapSynthesisSection(sec, idx, ledger))
+      .map((sec, idx) => mapSynthesisSection(sec, idx, ledger, adjudication.acceptedFormulas))
       .filter(sectionHasSubstantiveContent)
       .map((sec, idx) => {
         const seqLetter = String.fromCharCode(65 + idx);
@@ -2291,16 +2549,23 @@ export async function generateClutchNote(
     noiseRate = Math.min(98, Math.max(20, Math.round(noiseRate)));
   }
 
-  // Step 4: Run injectLedgerFormulasById, applyHallucinationShield, and re-verify injectLedgerFormulasById
+  // Step 4: Run injectLedgerFormulasById, applyHallucinationShield, and applyScopedSymbolBindingsSafely
   const { sections: initialInjected } = injectLedgerFormulasById(
     populatedSections,
     ledger,
+    adjudication.acceptedFormulas,
   );
   const rawSlideText = options.sources.map((s) => s.text).join("\n");
   const shieldedSections = applyHallucinationShield(initialInjected, rawSlideText);
   const { sections: preGateSections } = injectLedgerFormulasById(
     shieldedSections,
     ledger,
+    adjudication.acceptedFormulas,
+  );
+  const sectionsWithSymbols = applyScopedSymbolBindingsSafely(
+    preGateSections,
+    adjudication.acceptedFormulas,
+    adjudication.symbolBindings,
   );
 
   const rawOmitted: SynthesisOmittedFormula[] = Array.isArray(meta?.omitted)
@@ -2327,7 +2592,7 @@ export async function generateClutchNote(
   }
 
   const gateResult = await runVerificationGate({
-    sections: preGateSections,
+    sections: sectionsWithSymbols,
     sources: options.sources,
     ledger,
     omitted: rawOmitted,

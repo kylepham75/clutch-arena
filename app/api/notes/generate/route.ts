@@ -33,10 +33,15 @@ import {
   MAX_PDF_PAGES,
 } from "@/lib/ingestion/limits";
 import type { SourceBlock } from "@/lib/schemas/ingestion";
+import {
+  computeNotesV2DeckCogsUsd,
+  getNotesV2RoutingBundle,
+} from "@/lib/ai/provider";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
-const NOTES_SHARED_CACHE_PIPELINE_VERSION = "notes-v1";
+// Typed as `never` so Next.js .next/types App Router route-export validation allows importing it in unit tests
+export const NOTES_SHARED_CACHE_PIPELINE_VERSION: never = "notes-v2" as never;
 
 function getQuotaExceededMessage(reason?: string): string {
   switch (reason) {
@@ -142,8 +147,8 @@ export async function POST(request: NextRequest) {
       `ip:${getClientIp(request)}`;
     const isTest = process.env.NODE_ENV === "test" && !request.headers.get("x-enforce-rate-limit");
     const effectiveTier = (proAuth.tier as any) || "pro";
-    const notesPipelineVersion = isPaidTier(effectiveTier)
-      ? NOTES_SHARED_CACHE_PIPELINE_VERSION
+    const notesPipelineVersion: string = isPaidTier(effectiveTier)
+      ? (NOTES_SHARED_CACHE_PIPELINE_VERSION as string)
       : "notes-free-v1";
     const enforceQuota =
       !isTest || Boolean(request.headers.get("x-enforce-quota"));
@@ -584,22 +589,32 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 6. Generate Clutch Note via Academic Synthesis Engine
+    // 6. Generate Clutch Note via v2 Compiler Academic Synthesis Engine
+    const notesRoutingBundle = getNotesV2RoutingBundle();
     const jsonFormulaInventory =
       !parsedDeck && !cachedFormulaInventory
         ? buildFormulaInventory({ sources })
         : undefined;
 
     let telemetryCostUsd = 0;
+    let telemetryTotalTokens = 0;
     const note = await generateClutchNote({
       fileName,
       slideCount,
       sources,
       focus,
       tier: effectiveTier,
+      useCompilerV2: true,
+      modelOverride: notesRoutingBundle.writer.model,
+      verifierModel: notesRoutingBundle.critic.model,
       throwOnContradictedFormula: false,
       onTelemetry: (t) => {
-        telemetryCostUsd = t.costUsd;
+        if (typeof t.costUsd === "number" && Number.isFinite(t.costUsd) && t.costUsd > 0) {
+          telemetryCostUsd = t.costUsd;
+        }
+        if (typeof t.totalTokens === "number" && Number.isFinite(t.totalTokens) && t.totalTokens > 0) {
+          telemetryTotalTokens = t.totalTokens;
+        }
       },
       ...(parsedDeck
         ? {
@@ -623,9 +638,12 @@ export async function POST(request: NextRequest) {
         sum + (typeof entry?.costUsd === "number" && Number.isFinite(entry.costUsd) ? entry.costUsd : 0),
       0,
     );
-    const actualCostUsd = Number(
-      ((telemetryCostUsd > 0 ? telemetryCostUsd : reservedCost) + visionCostUsd).toFixed(6),
-    );
+    const actualCostUsd = computeNotesV2DeckCogsUsd({
+      telemetryCostUsd,
+      totalTokens: telemetryTotalTokens,
+      visionCostUsd,
+      reservedCostUsd: reservedCost,
+    });
 
     const validFileSha256 =
       typeof parsedDeck?.fileSha256 === "string" && parsedDeck.fileSha256.trim().length > 0

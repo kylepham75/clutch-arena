@@ -846,10 +846,10 @@ describe("multi ingestion HTTP handler", () => {
     const userId = "user-multi-ocr-gated";
     const actorKey = `user:${userId}`;
     const ledger = await getUserQuotaLedger(actorKey, "cram_pass", "ROW");
-    // $0.58 spent out of $0.60 ROW budget (>90% utilization -> mode: 'hard', allowVisionOcr: false)
-    ledger.windowSpentUsd = 0.58;
-    ledger.weeklySpentUsd = 0.58;
-    ledger.cogsSpentUsd = 0.58;
+    // $0.33 spent out of unified $0.35 budget (>90% utilization -> mode: 'hard', allowVisionOcr: false)
+    ledger.windowSpentUsd = 0.33;
+    ledger.weeklySpentUsd = 0.33;
+    ledger.cogsSpentUsd = 0.33;
     await saveUserQuotaLedger(ledger);
 
     const generate = vi.fn().mockResolvedValue(mockResult);
