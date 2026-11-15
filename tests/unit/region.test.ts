@@ -445,27 +445,30 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
     describe("formatRegionalPrice", () => {
       it("formats VN prices with dot thousands separators and trailing đ", () => {
         expect(formatRegionalPrice(0, "VN")).toBe("0đ");
-        expect(formatRegionalPrice(69000, "VN")).toBe("69.000đ");
-        expect(formatRegionalPrice(109000, "VN")).toBe("109.000đ");
-        expect(formatRegionalPrice(299000, "VN")).toBe("299.000đ");
-        expect(formatRegionalPrice(399000, "VN")).toBe("399.000đ");
+        expect(formatRegionalPrice(49000, "VN")).toBe("49.000đ");
+        expect(formatRegionalPrice(99000, "VN")).toBe("99.000đ");
+        expect(formatRegionalPrice(119000, "VN")).toBe("119.000đ");
+        expect(formatRegionalPrice(149000, "VN")).toBe("149.000đ");
+        expect(formatRegionalPrice(349000, "VN")).toBe("349.000đ");
         expect(formatRegionalPrice(1500000, "VN")).toBe("1.500.000đ");
       });
 
       it("handles negative VN amounts", () => {
-        expect(formatRegionalPrice(-69000, "VN")).toBe("-69.000đ");
+        expect(formatRegionalPrice(-49000, "VN")).toBe("-49.000đ");
       });
 
       it("formats ROW prices with $ prefix, whole integers without decimals, and decimals with two places", () => {
         expect(formatRegionalPrice(0, "ROW")).toBe("$0");
         expect(formatRegionalPrice(29, "ROW")).toBe("$29");
-        expect(formatRegionalPrice(4.99, "ROW")).toBe("$4.99");
-        expect(formatRegionalPrice(9.99, "ROW")).toBe("$9.99");
-        expect(formatRegionalPrice(24.99, "ROW")).toBe("$24.99");
+        expect(formatRegionalPrice(3.99, "ROW")).toBe("$3.99");
+        expect(formatRegionalPrice(7.99, "ROW")).toBe("$7.99");
+        expect(formatRegionalPrice(8.99, "ROW")).toBe("$8.99");
+        expect(formatRegionalPrice(11.99, "ROW")).toBe("$11.99");
+        expect(formatRegionalPrice(19.99, "ROW")).toBe("$19.99");
       });
 
       it("handles negative ROW amounts", () => {
-        expect(formatRegionalPrice(-4.99, "ROW")).toBe("-$4.99");
+        expect(formatRegionalPrice(-3.99, "ROW")).toBe("-$3.99");
         expect(formatRegionalPrice(-29, "ROW")).toBe("-$29");
       });
     });
@@ -490,32 +493,48 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
       it("retrieves accurate pricing and currency for cram_pass", () => {
         const vn = getPlanRegionalPrice("cram_pass", "VN");
         expect(vn).toEqual({
-          amount: 69000,
+          amount: 49000,
           currency: "VND",
-          formatted: "69.000đ",
+          formatted: "49.000đ",
         });
 
         const row = getPlanRegionalPrice("cram_pass", "ROW");
         expect(row).toEqual({
-          amount: 4.99,
+          amount: 3.99,
           currency: "USD",
-          formatted: "$4.99",
+          formatted: "$3.99",
+        });
+      });
+
+      it("retrieves accurate pricing and currency for cram_squad_3", () => {
+        const vn = getPlanRegionalPrice("cram_squad_3", "VN");
+        expect(vn).toEqual({
+          amount: 119000,
+          currency: "VND",
+          formatted: "119.000đ",
+        });
+
+        const row = getPlanRegionalPrice("cram_squad_3", "ROW");
+        expect(row).toEqual({
+          amount: 8.99,
+          currency: "USD",
+          formatted: "$8.99",
         });
       });
 
       it("retrieves accurate pricing and currency for pro_monthly", () => {
         const vn = getPlanRegionalPrice("pro_monthly", "VN");
         expect(vn).toEqual({
-          amount: 109000,
+          amount: 99000,
           currency: "VND",
-          formatted: "109.000đ/tháng",
+          formatted: "99.000đ/tháng",
         });
 
         const row = getPlanRegionalPrice("pro_monthly", "ROW");
         expect(row).toEqual({
-          amount: 9.99,
+          amount: 7.99,
           currency: "USD",
-          formatted: "$9.99/mo",
+          formatted: "$7.99/mo",
         });
       });
 
@@ -523,18 +542,18 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
         const vnPro = getPlanRegionalPrice("pro", "VN");
         const vnSemester = getPlanRegionalPrice("pro_semester", "VN");
         expect(vnPro).toEqual({
-          amount: 299000,
+          amount: 149000,
           currency: "VND",
-          formatted: "299.000đ/kỳ",
+          formatted: "149.000đ/kỳ",
         });
         expect(vnSemester).toEqual(vnPro);
 
         const rowPro = getPlanRegionalPrice("pro", "ROW");
         const rowSemester = getPlanRegionalPrice("pro_semester", "ROW");
         expect(rowPro).toEqual({
-          amount: 29.0,
+          amount: 11.99,
           currency: "USD",
-          formatted: "$29.00/sem",
+          formatted: "$11.99/sem",
         });
         expect(rowSemester).toEqual(rowPro);
       });
@@ -543,18 +562,18 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
         const vnTutor = getPlanRegionalPrice("tutor", "VN");
         const vnGuild = getPlanRegionalPrice("tutor_guild", "VN");
         expect(vnTutor).toEqual({
-          amount: 399000,
+          amount: 349000,
           currency: "VND",
-          formatted: "399.000đ/tháng",
+          formatted: "349.000đ/tháng",
         });
         expect(vnGuild).toEqual(vnTutor);
 
         const rowTutor = getPlanRegionalPrice("tutor", "ROW");
         const rowGuild = getPlanRegionalPrice("tutor_guild", "ROW");
         expect(rowTutor).toEqual({
-          amount: 24.99,
+          amount: 19.99,
           currency: "USD",
-          formatted: "$24.99/mo",
+          formatted: "$19.99/mo",
         });
         expect(rowGuild).toEqual(rowTutor);
       });
@@ -586,7 +605,7 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
 
       const cramPrice = getPlanRegionalPrice("cram_pass", resolvedRegion);
       expect(cramPrice.currency).toBe("VND");
-      expect(cramPrice.formatted).toBe("69.000đ");
+      expect(cramPrice.formatted).toBe("49.000đ");
     });
 
     it("Scenario B: Vietnamese student studying abroad (locale = 'vi', country = 'US') resolves to 'ROW' (USD)", () => {
@@ -604,7 +623,7 @@ describe("Geo-IP Billing Region & Regional Pricing Test Suite", () => {
 
       const cramPrice = getPlanRegionalPrice("cram_pass", resolvedRegion);
       expect(cramPrice.currency).toBe("USD");
-      expect(cramPrice.formatted).toBe("$4.99");
+      expect(cramPrice.formatted).toBe("$3.99");
     });
 
     it("guarantees toggling UI language ('vi' <-> 'en') has strictly zero impact on resolved billing region", () => {

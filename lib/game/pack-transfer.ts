@@ -1,10 +1,13 @@
 import { studyPackSchema, isPrototypePollutionKey, type StudyPack } from "@/lib/schemas/question";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
+import { isPaidTier, TIER_LIMITS, type UserTier, type PlanId } from "@/lib/pricing/tiers";
 
 /** Hard ceiling for pack JSON (raw file or decompressed share payload). */
 export const MAX_PACK_BYTES = 1_000_000;
 /** Above this length some chat apps truncate links; the UI warns the user. */
 export const LONG_LINK_THRESHOLD = 8_000;
+/** Free and unauthenticated preview limit for shared pack links. */
+export const FREE_SHARED_PACK_PREVIEW_LIMIT = TIER_LIMITS.contender.maxQuestionsPerRun;
 
 const SHARE_HASH_KEY = "pack";
 const LETTERS = ["A", "B", "C", "D"] as const;
@@ -63,6 +66,59 @@ export function filterQuestions(pack: StudyPack, questionIds?: string[]) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Pack Slicing & Preview Gate                                                */
+/* -------------------------------------------------------------------------- */
+
+export function slicePackForPreview(
+  pack: StudyPack,
+  limit: number = FREE_SHARED_PACK_PREVIEW_LIMIT,
+  options?: { recipientTier?: UserTier | PlanId | string | null; isPaidRecipient?: boolean },
+): StudyPack {
+  if (
+    options?.isPaidRecipient === true ||
+    (options?.recipientTier && isPaidTier(String(options.recipientTier)))
+  ) {
+    return {
+      ...pack,
+      questions: [...pack.questions],
+      metadata: { ...pack.metadata },
+    };
+  }
+
+  const effectiveLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.floor(limit))
+    : FREE_SHARED_PACK_PREVIEW_LIMIT;
+
+  if (pack.questions.length <= effectiveLimit) {
+    return {
+      ...pack,
+      questions: [...pack.questions],
+      metadata: { ...pack.metadata },
+    };
+  }
+
+  const questions = pack.questions.slice(0, effectiveLimit);
+  const metadata: Record<string, StudyPack["metadata"][string]> = {};
+  if (pack.metadata && typeof pack.metadata === "object") {
+    for (const q of questions) {
+      if (isPrototypePollutionKey(q.id)) continue;
+      if (
+        Object.prototype.hasOwnProperty.call(pack.metadata, q.id) &&
+        pack.metadata[q.id]
+      ) {
+        metadata[q.id] = pack.metadata[q.id];
+      }
+    }
+  }
+
+  return {
+    ...pack,
+    questions,
+    metadata,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /*  JSON (lossless, re-importable)                                             */
 /* -------------------------------------------------------------------------- */
 
@@ -94,6 +150,9 @@ export function packToJson(pack: StudyPack, questionIds?: string[]): string {
 export interface ImportPackOptions {
   existingIds?: string[] | Set<string>;
   overwrite?: boolean;
+  recipientTier?: UserTier | PlanId | string | null;
+  isPaidRecipient?: boolean;
+  previewLimit?: number;
 }
 
 /**
@@ -598,10 +657,27 @@ export async function decodeSharedPack(
     throw new PackTransferError("This share link is corrupted or incomplete.");
   }
   const pack = validatePack(data);
-  if (options?.existingIds) {
-    return resolveImportPackId(pack, options.existingIds, { overwrite: options.overwrite });
+  const resolvedPack = options?.existingIds
+    ? resolveImportPackId(pack, options.existingIds, { overwrite: options.overwrite })
+    : pack;
+
+  if (
+    options &&
+    (options.isPaidRecipient !== undefined ||
+      options.recipientTier !== undefined ||
+      typeof options.previewLimit === "number")
+  ) {
+    return slicePackForPreview(
+      resolvedPack,
+      options.previewLimit ?? FREE_SHARED_PACK_PREVIEW_LIMIT,
+      {
+        recipientTier: options.recipientTier,
+        isPaidRecipient: options.isPaidRecipient,
+      },
+    );
   }
-  return pack;
+
+  return resolvedPack;
 }
 
 export function buildShareUrl(origin: string, token: string): string {

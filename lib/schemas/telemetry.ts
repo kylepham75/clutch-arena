@@ -35,7 +35,7 @@ export type FeedbackSubmission = z.infer<typeof feedbackSubmissionSchema>;
 
 export const smokeTestIntentSchema = z.strictObject({
   kind: z.literal("smoke_test_intent"),
-  planId: z.enum(["cram_pass", "pro", "tutor"]),
+  planId: z.enum(["cram_pass", "cram_squad_3", "pro_monthly", "pro", "tutor"]),
   currency: z.enum(["vnd", "usd"]),
   action: z.enum(["plan_selected", "verify_clicked", "early_access_requested"]),
   contact: z.string().trim().max(160).optional(),

@@ -27,6 +27,7 @@ export function Button({
   const Component = asChild ? Slot : "button";
   return (
     <Component
+      data-slot="button"
       className={cn(buttonVariants({ variant, size }), className)}
       {...props}
     />

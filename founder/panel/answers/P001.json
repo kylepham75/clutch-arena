@@ -1,0 +1,13 @@
+{
+  "id": "P001",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "timing",
+  "reason": "I only start cramming 48 hours before midterms, so in a normal week I'm not pulling out VietQR or Apple Pay to pre-buy an exam pass—even if the 7-day clock stays paused. Since there's a free 1-file preview anyway, I'd scroll past for now rather than pay upfront before I'm actually in exam panic.",
+  "objection": "Even with the untimed cram toggle, leading with 'Clutch Arena' and a 15-second sprint mode still sounds stressful, and I don't trust an app not to mess up subscripts or Vietnamese/English wording on messy 150-slide PDFs—a refund doesn't give back wasted cramming hours or save me if I share wrong math in our group chat.",
+  "would_change_my_mind": "Testing one of my professor's messy English/Vietnamese past-exam PDFs in the free preview 48 hours before a real midterm and seeing every worked step come back right.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 2,
+  "price_expensive": 6,
+  "price_too_expensive": 10
+}

@@ -1,0 +1,13 @@
+{
+  "id": "P010",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "In a normal week I already rely on free campus Drive exam banks, NotebookLM, and ChatGPT while classmates drop past midterms in our Zalo group, so I'm not sending 49,000 VND via VietQR right now for a new site I just scrolled past. Even with the 7-day clock paused, I'd just stick to the free 5-question preview or join a friend's room for $0 instead of paying upfront.",
+  "objection": "Free ChatGPT, NotebookLM, and our campus Drive exam banks already cost nothing, and I don't know if a tool I just saw will actually nail my professor's exact formulas on messy Vietnamese/English slides without me wasting 49,000 VND or having to chase a refund.",
+  "would_change_my_mind": "If I'm 48 hours before a quant midterm, run our actual past exam through the free 5-question preview, and see it nail the worked steps that free ChatGPT messed up—then I'd split the 119,000 VND 3-student Zalo pack with two classmates.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.2,
+  "price_expensive": 2.5,
+  "price_too_expensive": 4.0
+}

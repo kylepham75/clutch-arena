@@ -1,0 +1,173 @@
+{
+ "business": "Clutch Arena",
+ "seed": 7,
+ "dealt": 20,
+ "answered": 20,
+ "skipped": [],
+ "buys": 0,
+ "passes": 20,
+ "buy_rate": 0.0,
+ "by_segment": [
+  [
+   "University TA / peer study leader / part-time tutor (VN & Global)",
+   3,
+   0.0
+  ],
+  [
+   "Global / Western university student (US, UK, EU, AU)",
+   5,
+   0.0
+  ],
+  [
+   "Vietnam international-program student (RMIT, VinUni, ISB)",
+   5,
+   0.0
+  ],
+  [
+   "Vietnam public-university crammer (UEH, FTU, HUST)",
+   7,
+   0.0
+  ]
+ ],
+ "by_behaviour": [
+  [
+   "48-hour panic crammer",
+   6,
+   0.0
+  ],
+  [
+   "Deal hunter / one-time pass buyer",
+   2,
+   0.0
+  ],
+  [
+   "Social group studier",
+   4,
+   0.0
+  ],
+  [
+   "Free-tool stacker",
+   5,
+   0.0
+  ],
+  [
+   "Formula-skeptical quant student",
+   3,
+   0.0
+  ]
+ ],
+ "by_income": [
+  [
+   "$11,000 and up",
+   7,
+   0.0
+  ],
+  [
+   "$3,000 to $11,000",
+   11,
+   0.0
+  ],
+  [
+   "under $3,000",
+   2,
+   0.0
+  ]
+ ],
+ "why_not": [
+  [
+   "habit",
+   7,
+   [
+    "I'm not going to pay for a 7-day cram pass in a normal week when I only start studying 48 hours before midterms and usually just skim past exams my classmates drop in Zalo and Discord. Plus, a 15-second quiz timer and 4-second reading lock sounds stressful when I'm drowning in 150+ quantitative slides and just want fast answers.",
+    "I already get slide-cited summaries, flashcards, and past papers for free by stacking NotebookLM, ChatGPT, Knowt, and campus Google Drive banks, so I don't see why I'd pay for a 7-day cram pass. On top of that, a 15-second timer and 4-second reading lock sounds stressful when my midterm is in 48 hours and I just want fast answers."
+   ],
+   [
+    "P001",
+    "P004"
+   ]
+  ],
+  [
+   "trust",
+   4,
+   [
+    "I already drop my lecture PDFs into free NotebookLM and ChatGPT, and in a normal week I'm not paying $4.99 for a 7-day cram pass I haven't tested yet. Even with Apple Pay and no auto-renewal, I don't trust an unfamiliar AI tool not to mess up finance and math formulas until I test the free starter deck myself.",
+    "Free NotebookLM already cites slides, our group chat has free campus Drive past midterms, and in a normal week I have no reason to pay upfront when there's a free starter deck. On top of that, generic AI has burned me with wrong quant math too many times to pay for AI-generated formula-remix problems without verifying every step myself."
+   ],
+   [
+    "P002",
+    "P007"
+   ]
+  ],
+  [
+   "timing",
+   3,
+   [
+    "I'm a 48-hour panic crammer, so in a normal week I'm not paying for a 7-day pass that will run out before I even start studying. Plus I already paste my lecture PDFs into free ChatGPT and NotebookLM, and there's a free starter deck here if I ever want to test it first.",
+    "I'm scrolling past this in a normal week and I only cram 48–72 hours before midterms and finals, so I'm not spending $4.99 on a 7-day pass right now. I already drop my lecture PDFs into free ChatGPT and NotebookLM, so there's zero urgency to pay today."
+   ],
+   [
+    "P005",
+    "P013"
+   ]
+  ],
+  [
+   "price",
+   3,
+   [
+    "Free NotebookLM, ChatGPT, Knowt, and our campus Zalo and Google Drive exam banks already cost $0, so on a $3,000/year student budget I'm not paying $2.67 (69,000 VND) for a 7-day pass in a normal week. At most I'd test the 10 free starter questions or join a classmate's free /arena room.",
+    "On around $3,000 a year, paying 69,000 VND ($2.67) for a 7-day pass in a normal week makes no sense when free ChatGPT, NotebookLM, and our campus Drive exam banks already cost $0. Plus, I can join classmates' live /arena quiz rooms for free and our Zalo group already shares summarized PDFs."
+   ],
+   [
+    "P006",
+    "P010"
+   ]
+  ],
+  [
+   "need",
+   2,
+   [
+    "In a normal week I'm not even touching my slides yet, and once midterm panic hits, someone in my class group chat always drops study links or hosts a review anyway. Since I can join classmates' /arena rooms and try a starter deck for free, I don't see why I need to pay 69k VND myself.",
+    "I love that it's a one-time pass with no sneaky auto-renewal, but on a $15k student budget in a normal week I don't really need to pay $4.99 when I can join /arena rooms for free and my Discord group already swaps summarized PDFs."
+   ],
+   [
+    "P011",
+    "P018"
+   ]
+  ],
+  [
+   "convenience",
+   1,
+   [
+    "In a normal week I already share summarized PDFs in Zalo and Discord with classmates, and a 15-second timer with a 4-second reading lock sounds stressful when I'm studying late at night and just want fast answers. Since joining friends' /arena quiz rooms and trying a solo deck are free anyway, I wouldn't pay for a 7-day pass right now."
+   ],
+   [
+    "P003"
+   ]
+  ]
+ ],
+ "why_yes": [],
+ "flip": [
+  "An untimed mode that lets me turn off the 15-second timer and reading lock so I can jump straight to the 2-page cheat sheet and worked answers right before an exam.",
+  "Testing the free starter deck on my own finance or math PDFs and seeing every formula and worked answer come out 100% right with exact slide citations.",
+  "An untimed mode without the 4-second reading lock so I can get fast answers and formula cheat sheets during late-night review.",
+  "Seeing the free starter deck nail tough Corporate Finance formula problems without forcing a 15-second timer and 4-second reading lock.",
+  "Seeing this 48 hours before a tough quantitative midterm after the free starter deck proves it handles my bilingual formula slides better than free ChatGPT or NotebookLM.",
+  "Only if I were cramming 48 hours before a tough quantitative final where our campus Drive banks lacked worked solutions, and the free starter deck proved its formula-remix drills were noticeably better than NotebookLM and ChatGPT.",
+  "Testing the free starter deck on a messy formula-heavy PDF right before a midterm and seeing every calculation step and symbol come out completely accurate.",
+  "Trying the free 1-file starter deck on my hardest lecture slides (or seeing a classmate's /arena room) and seeing the applied formula questions genuinely match our midterm problem style so 69,000 VND clearly saves me hours across all 150+ slides.",
+  "Seeing the free starter deck nail my own Corporate Finance calculations step-by-step with zero math errors so I could actually trust it 48 hours before an exam.",
+  "If the 7-day Vietnam pass were around $1 (about 25,000 VND) or allowed a Zalo study group to split one pass during finals week.",
+  "If I'm 48 hours out from a Finance or Accounting midterm with 150+ English/Vietnamese slides across five files, nobody in my class has shared a pack, and paying is the only way to get the 5-file 2-page Clutch Notes cheat sheet and formula-remix drills.",
+  "If testing the free starter deck on my Corporate Finance slides actually produced accurate, exam-style formula calculation problems and saved me real time over wrangling NotebookLM, ChatGPT, and our Zalo exam banks myself.",
+  "Running across this 48 hours before a brutal quant midterm when ChatGPT or NotebookLM is messing up my formulas, or being able to buy the $4.99 pass on a deal now without the 7-day clock starting until exam week.",
+  "Seeing classmates in a live /arena room on our actual lecture slides confirm that the formula-remix answers and 2-page cheat sheet match our professor's solution steps without math errors.",
+  "Running the free starter deck on one of my messy quant past-midterm PDFs right before an exam and seeing its formula-remix solutions come out completely verified step by step without me needing to double-check the math.",
+  "An untimed cram mode that skips the 15-second timer and 4-second reading lock so I can get direct answers and the 2-page cheat sheet fast during exam week.",
+  "Pricing the 7-day pass around 20,000–25,000 VND (~$0.80–$1.00)—about the cost of one campus coffee or printing my slides—so it feels like an easy impulse add-on during exam week.",
+  "Seeing the free starter deck nail a dense quantitative slide deck during actual midterm week, or having cram credits that don't start a 7-day expiration clock until I activate them.",
+  "Testing the free starter deck on my hardest finance or calculus PDF right before finals and seeing every equation, subscript, and step-by-step remix calculation come out 100% accurate with exact slide screenshots.",
+  "If a classmate dropped a Clutch Arena cheat sheet or live /arena room into our group chat 48 hours before a midterm and it clearly handled our messy bilingual slides and past-exam formulas."
+ ],
+ "purchases_first_month_per_buyer": null,
+ "price_answers": 20
+}

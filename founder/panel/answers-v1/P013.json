@@ -1,0 +1,13 @@
+{
+  "id": "P013",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "timing",
+  "reason": "I'm scrolling past this in a normal week and I only cram 48–72 hours before midterms and finals, so I'm not spending $4.99 on a 7-day pass right now. I already drop my lecture PDFs into free ChatGPT and NotebookLM, so there's zero urgency to pay today.",
+  "objection": "Even with no auto-renewal and Apple Pay, I already get decent study help from free ChatGPT and NotebookLM for $0, and testing just 1 free file isn't enough to prove the formula questions and 2-page cheat sheet are worth $4.99 on a $16k-a-year budget.",
+  "would_change_my_mind": "Running across this 48 hours before a brutal quant midterm when ChatGPT or NotebookLM is messing up my formulas, or being able to buy the $4.99 pass on a deal now without the 7-day clock starting until exam week.",
+  "price_too_cheap": 1,
+  "price_cheap": 3,
+  "price_expensive": 5,
+  "price_too_expensive": 10
+}

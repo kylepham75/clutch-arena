@@ -1,0 +1,13 @@
+{
+  "id": "P013",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I already paste my lecture slides into free ChatGPT and NotebookLM, and in a normal week when I'm not 48 hours out from an exam I'm not going to pre-buy a study pass even if the timer pauses. Free tools feel good enough for $0 until I actually hit an urgent cram.",
+  "objection": "I'm skeptical this will actually handle my professor's messy slides and specific exam style noticeably better than free ChatGPT and NotebookLM—and the 15-second 'Arena' game framing makes me wonder if it's more gimmick than serious quant prep.",
+  "would_change_my_mind": "Actually hitting a 48-hour crunch before a tough quant midterm and watching the free 5-question preview nail tricky slide equations that free ChatGPT botched.",
+  "price_too_cheap": 0.99,
+  "price_cheap": 1.99,
+  "price_expensive": 3.99,
+  "price_too_expensive": 6.99
+}

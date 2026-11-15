@@ -1,0 +1,90 @@
+{
+ "n": 20,
+ "seed": 7,
+ "customer": {
+  "business": "Clutch Arena",
+  "target": "University students (19 to 23) in quantitative courses (Finance, Economics, Accounting, STEM) across Vietnam (UEH, RMIT, FTU, VinUni, HUST) and Global universities cramming 48-72 hours before midterms and finals",
+  "where": "Vietnam (Ho Chi Minh City & Hanoi) and Global (US, UK, EU, AU, Asia) university campuses",
+  "age": [
+   19,
+   23
+  ],
+  "segments": [
+   {
+    "name": "Vietnam public-university crammer (UEH, FTU, HUST)",
+    "share": 0.35,
+    "income": [
+     2000,
+     4000
+    ]
+   },
+   {
+    "name": "Vietnam international-program student (RMIT, VinUni, ISB)",
+    "share": 0.25,
+    "income": [
+     4000,
+     8000
+    ]
+   },
+   {
+    "name": "Global / Western university student (US, UK, EU, AU)",
+    "share": 0.25,
+    "income": [
+     8000,
+     18000
+    ]
+   },
+   {
+    "name": "University TA / peer study leader / part-time tutor (VN & Global)",
+    "share": 0.15,
+    "income": [
+     10000,
+     24000
+    ]
+   }
+  ],
+  "behaviours": [
+   {
+    "name": "48-hour panic crammer",
+    "share": 0.3,
+    "how": "Starts studying 2-3 days before midterms, overwhelmed by 150+ English/Vietnamese slides, wants the fastest path to passing."
+   },
+   {
+    "name": "Free-tool stacker",
+    "share": 0.25,
+    "how": "Uses free ChatGPT, NotebookLM, Knowt, and campus Zalo/Google Drive exam banks before ever paying."
+   },
+   {
+    "name": "Social group studier",
+    "share": 0.2,
+    "how": "Studies with classmates in Zalo/Messenger/Discord groups, shares summarized PDFs, and competes in quiz rooms."
+   },
+   {
+    "name": "Formula-skeptical quant student",
+    "share": 0.15,
+    "how": "Double-checks every calculation and formula because generic AI tools gave them wrong math before."
+   },
+   {
+    "name": "Deal hunter / one-time pass buyer",
+    "share": 0.1,
+    "how": "Only buys if there is zero auto-renewal risk and convenient local payment (VietQR in VN or Apple Pay globally)."
+   }
+  ],
+  "objections": [
+   "Free ChatGPT, NotebookLM, or campus Drive exam banks already cost $0",
+   "AI always hallucinates finance, math, and economics formulas and gives wrong answers",
+   "I hate study subscriptions that silently auto-renew after my exam ends",
+   "I only cram 48-72 hours before midterms and finals, not every single week",
+   "A 15-second timer and 4-second reading lock sounds stressful when I just want fast answers",
+   "If a classmate shares a free #pack= link or hosts an /arena room, why should I pay?",
+   "In Vietnam I only pay with VietQR/MoMo; globally I don't want another $20/month recurring charge"
+  ],
+  "habits": [
+   "your Corporate Finance or Microeconomics midterm is in 48 hours and you have 150+ lecture slides to review",
+   "your classmates drop past midterms and messy PDFs into a Zalo, Messenger, or Discord group chat",
+   "you study late at night in a dorm or campus cafe with your laptop and phone",
+   "you already tried pasting lecture PDFs into free ChatGPT or NotebookLM"
+  ]
+ },
+ "pitch": "Clutch Arena — The 48-Hour Quant Exam Rescue Pack: upload up to 5 messy English/Vietnamese lecture or past-exam PDFs (150+ slides) and get step-by-step worked formula-remix problems plus a clean 2-page KaTeX exam cheat sheet in 60 seconds, with a 1-click toggle between Untimed Instant-Answer Cram Mode (no 15s timer, no 4s reading lock) and 15-second Arena Sprint Mode.\nBefore paying $0, upload one real Finance, Economics, or Calculus PDF to run our free 5-question Formula Proof Preview—seeing our Dual-Model Math Verifier check every equation subscript, worked calculation step, and exact slide screenshot crop, backed by a 100% Verified Math & Slide Guarantee (instant full refund plus a free extra Exam Pass if any formula or worked step is wrong).\nFree Contender accounts get that 1-file 5-question proof preview and free joins in friends' live /arena rooms, while an active Exam Pass unlocks full 30-question worked formula-remix decks, 5-file synthesis, printable 2-page PDF cheat sheets, and shareable #pack= answer keys.\nBuy the 7-Day Exam Cram Pass once for $1.90 in Vietnam (49,000 VND via VietQR—or $1.54/student at 119,000 VND for a 3-student Zalo Study-Group Pack) or $3.99 Globally via Apple Pay/card ($3.00/student at $8.99 for a 3-student Group Pack): zero auto-renewal, your 7-day clock stays 100% paused until the day you click Activate Exam Week, and Dec 1–7 Finals Launch buyers get a 2nd 7-Day Finals Pass banked free.\n(Full 4-month Clutch Pro Semester Passes covering up to 5 courses cost $5.78 / 149,000 VND in Vietnam or $11.99 Globally; when giving your four price numbers in USD below, price a single 7-Day Exam Cram Pass.)"
+}

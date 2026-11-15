@@ -2,7 +2,7 @@ export type UserTier = "contender" | "cram_pass" | "pro_monthly" | "pro" | "tuto
 
 export type TierKey = UserTier;
 
-export type PlanId = TierKey | "pro_semester" | "tutor_guild";
+export type PlanId = TierKey | "cram_squad_3" | "pro_semester" | "tutor_guild";
 
 export type BillingCycle = "free" | "one_time" | "monthly" | "semester";
 
@@ -110,7 +110,7 @@ export const TIER_LIMITS: Record<
   contender: {
     tier: "contender",
     maxFilesPerUpload: 1,
-    maxQuestionsPerRun: 10,
+    maxQuestionsPerRun: 5,
     canUseConceptRemix: false,
     canDebriefWithCoach: true,
     canExportCheatSheet: false,
@@ -438,7 +438,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     priceUsdFormatted: "$0",
     featuresEn: [
       "Unified starter AI quota (resets automatically every 3 days; 0% on shared cache)",
-      "Standard AI Decks (10 questions/pack), concise 1-section Clutch Notes & AI Coach inside quota",
+      "Standard AI Decks (5 questions/pack), concise 1-section Clutch Notes & AI Coach inside quota",
       "1 free regeneration per unlocked deck",
       "Cross-family blind AI verification ON",
       "Unlimited joining of friend /arena rooms (100% free)",
@@ -446,7 +446,7 @@ export const PRICING_PLANS: PlanPricing[] = [
     ],
     featuresVi: [
       "Hạn mức AI khởi đầu dùng chung (tự làm mới mỗi 3 ngày; 0% với kho đề chung)",
-      "Bộ đề AI chuẩn (10 câu/bộ), tóm tắt Clutch Notes 1 phần & Gia sư AI trong hạn mức",
+      "Bộ đề AI chuẩn (5 câu/bộ), tóm tắt Clutch Notes 1 phần & Gia sư AI trong hạn mức",
       "1 lần tạo lại miễn phí cho mỗi bộ đề đã mở",
       "Hệ thống kiểm định chéo AI độc lập bật 100%",
       "Tham gia phòng đấu /arena của bạn bè không giới hạn (100% miễn phí)",
@@ -464,13 +464,13 @@ export const PRICING_PLANS: PlanPricing[] = [
     badgeVi: "Nước rút 48h",
     recommended: false,
     pricing: {
-      VN: { amount: 69_000, currency: "VND", formatted: "69.000đ" },
-      ROW: { amount: 4.99, currency: "USD", formatted: "$4.99" },
+      VN: { amount: 49_000, currency: "VND", formatted: "49.000đ" },
+      ROW: { amount: 3.99, currency: "USD", formatted: "$3.99" },
     },
-    priceVnd: 69_000,
-    priceVndFormatted: "69.000đ",
-    priceUsd: 4.99,
-    priceUsdFormatted: "$4.99",
+    priceVnd: 49_000,
+    priceVndFormatted: "49.000đ",
+    priceUsd: 3.99,
+    priceUsdFormatted: "$3.99",
     featuresEn: [
       "7 days full Pro access (one-time purchase)",
       "High-capacity 24h rolling AI quota (resets daily) + Priority Sonnet & Eco mode (up to 30 questions/pack + 0% shared cache)",
@@ -493,6 +493,41 @@ export const PRICING_PLANS: PlanPricing[] = [
     ],
   },
   {
+    id: "cram_squad_3",
+    cycle: "one_time",
+    nameEn: "7-Day Exam Squad (3-Pack)",
+    nameVi: "Combo Nhóm Ôn Thi (3 Vé x 7 Ngày)",
+    taglineEn: "Split with 2 study partners (~$3.00/student). Zero subscription",
+    taglineVi: "Chia sẻ cùng 2 bạn học (~39.700đ/sinh viên). Không gia hạn tự động",
+    badgeEn: "Squad 3-Pack",
+    badgeVi: "Nhóm 3 Người",
+    recommended: false,
+    pricing: {
+      VN: { amount: 119_000, currency: "VND", formatted: "119.000đ" },
+      ROW: { amount: 8.99, currency: "USD", formatted: "$8.99" },
+    },
+    priceVnd: 119_000,
+    priceVndFormatted: "119.000đ",
+    priceUsd: 8.99,
+    priceUsdFormatted: "$8.99",
+    featuresEn: [
+      "3 independent 7-day Cram Pass seats (one-time purchase, no auto-renew)",
+      "High-capacity 24h rolling AI quota + shared course deck cache",
+      "Full Concept Remix up to 30 questions/pack & distractor rationale",
+      "Full Clutch Notes synthesis + 1-Click PDF Cheat Sheet",
+      "3 free regenerations per deck & AI Coach deep debriefs",
+      "Multi-document synthesis up to 5 files (15MB)",
+    ],
+    featuresVi: [
+      "3 suất Vé Ôn Thi Cấp Tốc 7 ngày độc lập (mua 1 lần, không tự động gia hạn)",
+      "Hạn mức AI 24h dung lượng lớn + dùng chung bộ nhớ đệm kho đề",
+      "Biến thể Concept Remix tối đa 30 câu/bộ & giải thích bẫy đáp án",
+      "Clutch Notes đầy đủ + xuất PDF Cheat Sheet 1 chạm",
+      "3 lần tạo lại miễn phí cho mỗi bộ đề & Gia sư AI phân tích sâu",
+      "Tổng hợp đa tài liệu cùng lúc (tối đa 5 tệp / 15MB)",
+    ],
+  },
+  {
     id: "pro_monthly",
     cycle: "monthly",
     nameEn: "Clutch Pro (Monthly)",
@@ -500,13 +535,13 @@ export const PRICING_PLANS: PlanPricing[] = [
     taglineEn: "Flexible month-to-month access for active terms",
     taglineVi: "Đăng ký theo tháng linh hoạt cho kỳ học",
     pricing: {
-      VN: { amount: 109_000, currency: "VND", formatted: "109.000đ/tháng" },
-      ROW: { amount: 9.99, currency: "USD", formatted: "$9.99/mo" },
+      VN: { amount: 99_000, currency: "VND", formatted: "99.000đ/tháng" },
+      ROW: { amount: 7.99, currency: "USD", formatted: "$7.99/mo" },
     },
-    priceVnd: 109_000,
-    priceVndFormatted: "109.000đ",
-    priceUsd: 9.99,
-    priceUsdFormatted: "$9.99",
+    priceVnd: 99_000,
+    priceVndFormatted: "99.000đ",
+    priceUsd: 7.99,
+    priceUsdFormatted: "$7.99",
     featuresEn: [
       "Full access for 1 month (auto-renews or cancel anytime)",
       "Sustained 24h daily & 7d weekly rolling AI quota + Priority Sonnet & Eco mode (up to 30 questions/pack + 0% shared cache)",
@@ -538,16 +573,16 @@ export const PRICING_PLANS: PlanPricing[] = [
     taglineEn: "Continuous mastery with host privileges all semester",
     taglineVi: "Đặc quyền Chủ phòng & làm chủ toàn bộ học kỳ không gián đoạn",
     recommended: true,
-    badgeEn: "Best Value (Save 27–31%)",
-    badgeVi: "Tiết kiệm nhất (Giảm 27–31%)",
+    badgeEn: "Best Value (3x Cram Pass)",
+    badgeVi: "Tiết kiệm nhất (Bằng 3 vé lẻ)",
     pricing: {
-      VN: { amount: 299_000, currency: "VND", formatted: "299.000đ/kỳ" },
-      ROW: { amount: 29.0, currency: "USD", formatted: "$29.00/sem" },
+      VN: { amount: 149_000, currency: "VND", formatted: "149.000đ/kỳ" },
+      ROW: { amount: 11.99, currency: "USD", formatted: "$11.99/sem" },
     },
-    priceVnd: 299_000,
-    priceVndFormatted: "299.000đ",
-    priceUsd: 29.0,
-    priceUsdFormatted: "$29",
+    priceVnd: 149_000,
+    priceVndFormatted: "149.000đ",
+    priceUsd: 11.99,
+    priceUsdFormatted: "$11.99",
     featuresEn: [
       "Full access for entire 4-month semester",
       "Extra-large 24h daily & 7d weekly rolling AI quota + Priority Sonnet & Eco mode (up to 30 questions/pack + 0% shared cache)",
@@ -560,7 +595,7 @@ export const PRICING_PLANS: PlanPricing[] = [
       "1-Click PDF Cheat Sheet with verbatim citations",
     ],
     featuresVi: [
-      "Toàn quyền suốt 4 tháng học kỳ (tương đương 74.750đ/tháng)",
+      "Toàn quyền suốt 4 tháng học kỳ (tương đương 37.250đ/tháng)",
       "Hạn mức AI xoay vòng 24h & 7 ngày dung lượng lớn + Sonnet ưu tiên & chế độ tiết kiệm (tối đa 30 câu/bộ + 0% kho đề chung)",
       "Giải thích bẫy đáp án nhiễu ('vì sao các đáp án khác sai')",
       "Tạo Clutch Notes phân mục đầy đủ, dùng chung cho Bộ đề, Ghi chú, OCR & Gia sư",
@@ -583,13 +618,13 @@ export const PRICING_PLANS: PlanPricing[] = [
     badgeVi: "Dành cho Trợ Giảng & CLB",
     comingSoon: false,
     pricing: {
-      VN: { amount: 399_000, currency: "VND", formatted: "399.000đ/tháng" },
-      ROW: { amount: 24.99, currency: "USD", formatted: "$24.99/mo" },
+      VN: { amount: 349_000, currency: "VND", formatted: "349.000đ/tháng" },
+      ROW: { amount: 19.99, currency: "USD", formatted: "$19.99/mo" },
     },
-    priceVnd: 399_000,
-    priceVndFormatted: "399.000đ",
-    priceUsd: 24.99,
-    priceUsdFormatted: "$24.99",
+    priceVnd: 349_000,
+    priceVndFormatted: "349.000đ",
+    priceUsd: 19.99,
+    priceUsdFormatted: "$19.99",
     featuresEn: [
       "Maximum 24h & 7d rolling AI quota across Decks, Notes, Vision OCR & Coach (0% on shared cache)",
       "Priority Sonnet 5.5 + automatic Eco fallback (up to 30 questions/pack & full sectioned Clutch Notes)",
@@ -636,7 +671,7 @@ export interface ReferralState {
  */
 export function calculateTierExpiration(tier: UserTier | PlanId | string): string | null {
   const now = Date.now();
-  if (tier === "cram_pass") {
+  if (tier === "cram_pass" || tier === "cram_squad_3" || tier === "cram-squad-3") {
     return new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString();
   }
   if (tier === "pro_monthly") {
@@ -657,7 +692,14 @@ export function calculateTierExpiration(tier: UserTier | PlanId | string): strin
 export function normalizeTier(raw: unknown): UserTier {
   if (typeof raw !== "string") return "contender";
   const t = raw.toLowerCase().trim();
-  if (t === "cram_pass" || t === "crampass" || t === "cram-pass") return "cram_pass";
+  if (
+    t === "cram_pass" ||
+    t === "crampass" ||
+    t === "cram-pass" ||
+    t === "cram_squad_3" ||
+    t === "cram-squad-3"
+  )
+    return "cram_pass";
   if (t === "pro_monthly" || t === "pro-monthly" || t === "monthly") return "pro_monthly";
   if (t === "pro" || t === "pro_semester" || t === "pro-semester" || t === "semester") return "pro";
   if (t === "tutor" || t === "tutor_guild" || t === "tutor-guild") return "tutor";

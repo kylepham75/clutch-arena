@@ -13,6 +13,7 @@ import { invalidateUserQuotaLedgerCache } from "@/lib/rate-limit";
 
 export type UsdPlanId =
   | "cram_pass"
+  | "cram_squad_3"
   | "pro_monthly"
   | "pro"
   | "pro_semester"
@@ -22,27 +23,29 @@ export type UsdPlanId =
 export type UsdProvider = "polar" | "lemonsqueezy";
 
 export const EXPECTED_PLAN_AMOUNTS_USD: Record<UsdPlanId, number> = {
-  cram_pass: 4.99,
-  pro_monthly: 9.99,
-  pro: 29.0,
-  pro_semester: 29.0,
-  tutor: 24.99,
-  tutor_guild: 24.99,
+  cram_pass: 3.99,
+  cram_squad_3: 8.99,
+  pro_monthly: 7.99,
+  pro: 11.99,
+  pro_semester: 11.99,
+  tutor: 19.99,
+  tutor_guild: 19.99,
 };
 
 export const EXPECTED_PLAN_AMOUNTS_CENTS: Record<UsdPlanId, number> = {
-  cram_pass: 499,
-  pro_monthly: 999,
-  pro: 2900,
-  pro_semester: 2900,
-  tutor: 2499,
-  tutor_guild: 2499,
+  cram_pass: 399,
+  cram_squad_3: 899,
+  pro_monthly: 799,
+  pro: 1199,
+  pro_semester: 1199,
+  tutor: 1999,
+  tutor_guild: 1999,
 };
 
 export function mapUsdPlanToUserTier(
   planId: UsdPlanId,
 ): "cram_pass" | "pro_monthly" | "pro" | "tutor" {
-  if (planId === "cram_pass") return "cram_pass";
+  if (planId === "cram_pass" || planId === "cram_squad_3") return "cram_pass";
   if (planId === "pro_monthly") return "pro_monthly";
   if (planId === "tutor" || planId === "tutor_guild") return "tutor";
   return "pro";
@@ -51,7 +54,7 @@ export function mapUsdPlanToUserTier(
 export function mapUsdPlanToCycle(
   planId: UsdPlanId,
 ): "one_time" | "monthly" | "semester" {
-  if (planId === "cram_pass") return "one_time";
+  if (planId === "cram_pass" || planId === "cram_squad_3") return "one_time";
   if (planId === "pro_monthly" || planId === "tutor" || planId === "tutor_guild") {
     return "monthly";
   }
@@ -153,7 +156,9 @@ export async function createUsdCheckoutSession(
     const planKey = input.planId.toUpperCase();
     let productId = process.env[`POLAR_PRODUCT_ID_${planKey}`]?.trim();
     if (!productId) {
-      if (input.planId === "pro_semester") {
+      if (input.planId === "cram_squad_3") {
+        productId = process.env.POLAR_PRODUCT_ID_CRAM_PASS?.trim();
+      } else if (input.planId === "pro_semester") {
         productId = process.env.POLAR_PRODUCT_ID_PRO?.trim();
       } else if (input.planId === "tutor_guild") {
         productId = process.env.POLAR_PRODUCT_ID_TUTOR?.trim();

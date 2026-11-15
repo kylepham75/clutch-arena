@@ -1,0 +1,13 @@
+{
+  "id": "P008",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "Zero auto-renewal via VietQR fixes my biggest annoyance with study apps so I'd check out the free 1-file starter deck, but I wouldn't pay 69,000 VND right away. On ~$2,000 a year, my classmates and I already pool summarized PDFs in Zalo and stick to past exam prep, plus I can join live /arena rooms for free.",
+  "objection": "With only 48 hours before my Corporate Finance midterm, a verbatim citation guarantee doesn't tell me whether the AI's formula-remix questions actually match my professor's exam style—and if one classmate generates and shares the 2-page PDF in our group chat, there's no reason for me to buy my own pass.",
+  "would_change_my_mind": "Trying the free 1-file starter deck on my hardest lecture slides (or seeing a classmate's /arena room) and seeing the applied formula questions genuinely match our midterm problem style so 69,000 VND clearly saves me hours across all 150+ slides.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 2.5,
+  "price_too_expensive": 4
+}

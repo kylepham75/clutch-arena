@@ -1,0 +1,13 @@
+{
+  "id": "P012",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I always stack free NotebookLM, ChatGPT, Knowt, and the past-exam Google Drives from our class Zalo group before ever spending 69,000 VND on a study tool. Even if I clicked this 48 hours before a midterm, I'd just test the free 1-file starter deck rather than paying right off a scroll.",
+  "objection": "NotebookLM already cites my lecture PDFs for free and our Zalo groups have real past exams, so I doubt a 7-day pass is worth paying repeatedly every midterm and final—especially when I don't know if it handles messy Finance or Micro formula slides accurately.",
+  "would_change_my_mind": "If testing the free starter deck on my Corporate Finance slides actually produced accurate, exam-style formula calculation problems and saved me real time over wrangling NotebookLM, ChatGPT, and our Zalo exam banks myself.",
+  "price_too_cheap": 0.4,
+  "price_cheap": 1.2,
+  "price_expensive": 2.0,
+  "price_too_expensive": 3.5
+}

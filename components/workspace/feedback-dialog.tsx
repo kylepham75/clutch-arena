@@ -20,6 +20,7 @@ export interface FeedbackDialogProps {
     packTitle?: string;
     questionId?: string;
     citation?: string;
+    slideContext?: string;
     tier?: string;
   };
 }
@@ -30,7 +31,11 @@ const CATEGORY_OPTIONS: {
   labelVi: string;
 }[] = [
   { id: "general", labelEn: "General", labelVi: "Góp ý chung" },
-  { id: "citation_mismatch", labelEn: "Citation Mismatch", labelVi: "Lỗi trích dẫn" },
+  {
+    id: "citation_mismatch",
+    labelEn: "Hallucination / Math Issue",
+    labelVi: "Báo lỗi Toán / Trích dẫn",
+  },
   { id: "gameplay_bug", labelEn: "Gameplay / UI Bug", labelVi: "Lỗi trận đấu / UI" },
   { id: "parser_edge_case", labelEn: "Parser Edge Case", labelVi: "Lỗi trích xuất đề" },
   { id: "smoke_test_intent", labelEn: "Feature / Pilot", labelVi: "Tính năng / Thử nghiệm" },
@@ -68,9 +73,11 @@ export function FeedbackDialog({
       if (nextCat === "citation_mismatch") {
         setMessage((prev) => {
           if (!prev.trim()) {
+            const qStr = context?.questionId ? ` [Question: ${context.questionId}]` : "";
+            const cStr = context?.citation ? ` [Citation: ${context.citation}]` : "";
             return isVi
-              ? "Trích dẫn tài liệu này có điểm chưa khớp với nội dung bài học: "
-              : "This citation does not match the course material or page content: ";
+              ? `Báo lỗi Toán / Trích dẫn: Câu hỏi có công thức Toán, số liệu hoặc trích dẫn slide chưa chính xác.${qStr}${cStr} Vui lòng kiểm tra và sửa lại.`
+              : `Hallucination / Math Issue: This question contains incorrect math, calculation, or mismatched slide citations.${qStr}${cStr} Please review and verify.`;
           }
           return prev;
         });
@@ -79,7 +86,7 @@ export function FeedbackDialog({
       }
     }
     prevOpenRef.current = open;
-  }, [open, initialCategory, isVi]);
+  }, [open, initialCategory, isVi, context?.questionId, context?.citation]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,7 +106,10 @@ export function FeedbackDialog({
     const payloadContext: FeedbackContext = {};
     if (context?.packTitle) payloadContext.packTitle = context.packTitle.slice(0, 200);
     if (context?.questionId) payloadContext.questionId = context.questionId.slice(0, 100);
-    if (context?.citation) payloadContext.citation = context.citation.slice(0, 300);
+    const combinedCitation = [context?.citation, context?.slideContext]
+      .filter(Boolean)
+      .join(" | ");
+    if (combinedCitation) payloadContext.citation = combinedCitation.slice(0, 300);
     if (context?.tier) payloadContext.tier = context.tier.slice(0, 40);
     if (language === "vi" || language === "en") payloadContext.language = language;
     if (typeof navigator !== "undefined" && navigator.userAgent) {
@@ -185,23 +195,39 @@ export function FeedbackDialog({
       ) : (
         <form onSubmit={handleSubmit} className="space-y-4 text-stone-900 dark:text-stone-100 mt-2">
           {/* Context Chip (if present) */}
-          {(context?.packTitle || context?.citation) && (
+          {Boolean(context?.packTitle || context?.questionId || context?.citation || context?.slideContext) && (
             <div className="rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 p-2.5 text-xs space-y-1">
               <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-300">
                 <Sparkles size={13} className="text-amber-600" />
                 <span>{isVi ? "Ngữ cảnh báo cáo" : "Attached Context"}</span>
               </div>
-              {context.packTitle && (
+              {context?.questionId && (
+                <div className="text-stone-700 dark:text-stone-300 truncate">
+                  <span className="text-stone-500 font-medium">{isVi ? "Mã câu hỏi: " : "Question ID: "}</span>
+                  <span className="font-mono font-semibold text-[11px] text-stone-800 dark:text-stone-200">
+                    {context.questionId}
+                  </span>
+                </div>
+              )}
+              {context?.citation && (
+                <div className="text-stone-700 dark:text-stone-300 line-clamp-2">
+                  <span className="text-stone-500 font-medium">{isVi ? "Trích dẫn: " : "Citation: "}</span>
+                  <span className="font-mono text-[11px] text-amber-700 dark:text-amber-400">
+                    {context.citation}
+                  </span>
+                </div>
+              )}
+              {context?.packTitle && (
                 <div className="text-stone-700 dark:text-stone-300 truncate">
                   <span className="text-stone-500 font-medium">{isVi ? "Bộ đề: " : "Pack: "}</span>
                   <span className="font-semibold">{context.packTitle}</span>
                 </div>
               )}
-              {context.citation && (
+              {context?.slideContext && (
                 <div className="text-stone-700 dark:text-stone-300 line-clamp-2">
-                  <span className="text-stone-500 font-medium">{isVi ? "Trích dẫn: " : "Citation: "}</span>
-                  <span className="font-mono text-[11px] text-amber-700 dark:text-amber-400">
-                    {context.citation}
+                  <span className="text-stone-500 font-medium">{isVi ? "Chuyên đề / Slide: " : "Slide Context: "}</span>
+                  <span className="font-medium text-stone-800 dark:text-stone-200">
+                    {context.slideContext}
                   </span>
                 </div>
               )}

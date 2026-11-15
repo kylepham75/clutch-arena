@@ -1,0 +1,13 @@
+{
+  "id": "P004",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I already have a free stack that works—NotebookLM eats 150+ lecture slides in seconds, free ChatGPT walks me through Corporate Finance formulas step by step, and our campus Zalo and Google Drive banks have actual past midterms from my professors. Even with an untimed mode toggle and a $1.90 or $3.99 price tag, I'm not paying for an AI quiz wrapper when my free tabs already cover my 48-hour cram.",
+  "objection": "Even if I can toggle off the 15-second timer and 4-second reading lock, the whole thing still feels like a gamified quiz wrapper around PDF study help I already get free in NotebookLM and ChatGPT—and 48 hours before a midterm, a refund guarantee doesn't give back lost cram time if AI-remixed problems miss what my professor actually tests.",
+  "would_change_my_mind": "Let me generate one real 2-page KaTeX cheat sheet from my messy past-exam PDFs in the free preview—if it cleanly catches scanned equations that free ChatGPT and NotebookLM botch, I'd pay $2 to $4 to save formatting hours before finals.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 4,
+  "price_too_expensive": 7
+}

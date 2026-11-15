@@ -139,11 +139,12 @@ describe("PPP Tier Architecture & Limits", () => {
     mockServerSupabase = null;
   });
 
-  it("defines the 5 plans with accurate dual-market pricing and feature caps", () => {
-    expect(PRICING_PLANS).toHaveLength(5);
+  it("defines the 6 plans with accurate dual-market pricing and feature caps", () => {
+    expect(PRICING_PLANS).toHaveLength(6);
     expect(PRICING_PLANS.map((p) => p.id)).toEqual([
       "contender",
       "cram_pass",
+      "cram_squad_3",
       "pro_monthly",
       "pro",
       "tutor",
@@ -156,7 +157,7 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(contender.pricing.ROW.formatted).toBe("$0");
     expect(contender.priceVndFormatted).toBe("0đ");
     expect(contender.priceUsdFormatted).toBe("$0");
-    expect(TIER_LIMITS.contender.maxQuestionsPerRun).toBe(10);
+    expect(TIER_LIMITS.contender.maxQuestionsPerRun).toBe(5);
     expect(TIER_LIMITS.contender.maxFilesPerUpload).toBe(1);
     expect(TIER_LIMITS.contender.freeRegenerationsPerDeck).toBe(1);
     expect(TIER_LIMITS.contender.canUseConceptRemix).toBe(false);
@@ -176,12 +177,12 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(TIER_LIMITS.contender.rollingQuota.cycleCeilingApplies).toBe(false);
 
     const cramPass = PRICING_PLANS.find((p) => p.id === "cram_pass")!;
-    expect(cramPass.pricing.VN.amount).toBe(69_000);
-    expect(cramPass.pricing.VN.formatted).toBe("69.000đ");
-    expect(cramPass.pricing.ROW.amount).toBe(4.99);
-    expect(cramPass.pricing.ROW.formatted).toBe("$4.99");
-    expect(cramPass.priceVndFormatted).toBe("69.000đ");
-    expect(cramPass.priceUsdFormatted).toBe("$4.99");
+    expect(cramPass.pricing.VN.amount).toBe(49_000);
+    expect(cramPass.pricing.VN.formatted).toBe("49.000đ");
+    expect(cramPass.pricing.ROW.amount).toBe(3.99);
+    expect(cramPass.pricing.ROW.formatted).toBe("$3.99");
+    expect(cramPass.priceVndFormatted).toBe("49.000đ");
+    expect(cramPass.priceUsdFormatted).toBe("$3.99");
     expect(cramPass.cycle).toBe("one_time");
     expect(cramPass.recommended).toBe(false);
     expect(cramPass.badgeEn).toBe("48h Exam Sprint");
@@ -202,13 +203,23 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(TIER_LIMITS.cram_pass.rollingQuota.guardBudgetUsd.ROW).toBe(0.85);
     expect(TIER_LIMITS.cram_pass.rollingQuota.cycleCeilingApplies).toBe(true);
 
+    const cramSquad = PRICING_PLANS.find((p) => p.id === "cram_squad_3")!;
+    expect(cramSquad.pricing.VN.amount).toBe(119_000);
+    expect(cramSquad.pricing.VN.formatted).toBe("119.000đ");
+    expect(cramSquad.pricing.ROW.amount).toBe(8.99);
+    expect(cramSquad.pricing.ROW.formatted).toBe("$8.99");
+    expect(cramSquad.priceVndFormatted).toBe("119.000đ");
+    expect(cramSquad.priceUsdFormatted).toBe("$8.99");
+    expect(cramSquad.cycle).toBe("one_time");
+    expect(cramSquad.badgeEn).toBe("Squad 3-Pack");
+
     const proMonthly = PRICING_PLANS.find((p) => p.id === "pro_monthly")!;
-    expect(proMonthly.pricing.VN.amount).toBe(109_000);
-    expect(proMonthly.pricing.VN.formatted).toBe("109.000đ/tháng");
-    expect(proMonthly.pricing.ROW.amount).toBe(9.99);
-    expect(proMonthly.pricing.ROW.formatted).toBe("$9.99/mo");
-    expect(proMonthly.priceVndFormatted).toBe("109.000đ");
-    expect(proMonthly.priceUsdFormatted).toBe("$9.99");
+    expect(proMonthly.pricing.VN.amount).toBe(99_000);
+    expect(proMonthly.pricing.VN.formatted).toBe("99.000đ/tháng");
+    expect(proMonthly.pricing.ROW.amount).toBe(7.99);
+    expect(proMonthly.pricing.ROW.formatted).toBe("$7.99/mo");
+    expect(proMonthly.priceVndFormatted).toBe("99.000đ");
+    expect(proMonthly.priceUsdFormatted).toBe("$7.99");
     expect(proMonthly.cycle).toBe("monthly");
     expect(TIER_LIMITS.pro_monthly.maxQuestionsPerRun).toBe(30);
     expect(TIER_LIMITS.pro_monthly.maxFilesPerUpload).toBe(10);
@@ -228,15 +239,15 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(TIER_LIMITS.pro_monthly.rollingQuota.cycleCeilingApplies).toBe(true);
 
     const pro = PRICING_PLANS.find((p) => p.id === "pro")!;
-    expect(pro.pricing.VN.amount).toBe(299_000);
-    expect(pro.pricing.VN.formatted).toContain("299.000đ");
-    expect(pro.pricing.ROW.amount).toBe(29.0);
-    expect(pro.pricing.ROW.formatted).toContain("$29");
-    expect(pro.priceVndFormatted).toBe("299.000đ");
-    expect(pro.priceUsdFormatted).toBe("$29");
+    expect(pro.pricing.VN.amount).toBe(149_000);
+    expect(pro.pricing.VN.formatted).toBe("149.000đ/kỳ");
+    expect(pro.pricing.ROW.amount).toBe(11.99);
+    expect(pro.pricing.ROW.formatted).toBe("$11.99/sem");
+    expect(pro.priceVndFormatted).toBe("149.000đ");
+    expect(pro.priceUsdFormatted).toBe("$11.99");
     expect(pro.cycle).toBe("semester");
     expect(pro.recommended).toBe(true);
-    expect(pro.badgeEn).toBe("Best Value (Save 27–31%)");
+    expect(pro.badgeEn).toBe("Best Value (3x Cram Pass)");
     expect(TIER_LIMITS.pro.maxQuestionsPerRun).toBe(30);
     expect(TIER_LIMITS.pro.maxFilesPerUpload).toBe(10);
     expect(TIER_LIMITS.pro.freeRegenerationsPerDeck).toBe(5);
@@ -253,12 +264,12 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(TIER_LIMITS.pro.rollingQuota.cycleCeilingApplies).toBe(true);
 
     const tutor = PRICING_PLANS.find((p) => p.id === "tutor")!;
-    expect(tutor.pricing.VN.amount).toBe(399_000);
-    expect(tutor.pricing.VN.formatted).toBe("399.000đ/tháng");
-    expect(tutor.pricing.ROW.amount).toBe(24.99);
-    expect(tutor.pricing.ROW.formatted).toBe("$24.99/mo");
-    expect(tutor.priceVndFormatted).toBe("399.000đ");
-    expect(tutor.priceUsdFormatted).toBe("$24.99");
+    expect(tutor.pricing.VN.amount).toBe(349_000);
+    expect(tutor.pricing.VN.formatted).toBe("349.000đ/tháng");
+    expect(tutor.pricing.ROW.amount).toBe(19.99);
+    expect(tutor.pricing.ROW.formatted).toBe("$19.99/mo");
+    expect(tutor.priceVndFormatted).toBe("349.000đ");
+    expect(tutor.priceUsdFormatted).toBe("$19.99");
     expect(tutor.comingSoon).toBe(false);
     expect(tutor.badgeEn).toBe("For TAs & Study Guilds");
     expect(TIER_LIMITS.tutor.maxQuestionsPerRun).toBe(30);
@@ -309,6 +320,13 @@ describe("PPP Tier Architecture & Limits", () => {
       (new Date(cramExpires!).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
     );
     expect(cramDiffDays).toBe(7);
+
+    const cramSquadExpires = calculateTierExpiration("cram_squad_3");
+    expect(cramSquadExpires).not.toBeNull();
+    const cramSquadDiffDays = Math.round(
+      (new Date(cramSquadExpires!).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+    );
+    expect(cramSquadDiffDays).toBe(7);
 
     const proMonthlyExpires = calculateTierExpiration("pro_monthly");
     expect(proMonthlyExpires).not.toBeNull();
@@ -365,6 +383,8 @@ describe("PPP Tier Architecture & Limits", () => {
     expect(normalizeTier("pro-monthly")).toBe("pro_monthly");
     expect(normalizeTier("monthly")).toBe("pro_monthly");
     expect(normalizeTier("pro_monthly")).not.toBe("pro");
+    expect(normalizeTier("cram_squad_3")).toBe("cram_pass");
+    expect(normalizeTier("cram-squad-3")).toBe("cram_pass");
 
     const futureDate = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString();
     expect(

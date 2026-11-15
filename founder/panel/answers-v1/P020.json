@@ -1,0 +1,13 @@
+{
+  "id": "P020",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "timing",
+  "reason": "In a normal week I'm nowhere near study mode—I only start cramming 48 hours before midterms, so buying a 7-day pass now means it expires before I even open my slides. I'd scroll past or at most save the free starter deck for later instead of paying upfront.",
+  "objection": "Even when exam week hits, I rely on past midterms from our Zalo or Discord chat and doubt an unfamiliar site can parse messy 150-slide English/Vietnamese PDFs and real quantitative exam formulas without wasting my cram hours.",
+  "would_change_my_mind": "If a classmate dropped a Clutch Arena cheat sheet or live /arena room into our group chat 48 hours before a midterm and it clearly handled our messy bilingual slides and past-exam formulas.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 2,
+  "price_expensive": 4.5,
+  "price_too_expensive": 8
+}

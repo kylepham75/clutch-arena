@@ -1,0 +1,13 @@
+{
+  "id": "P020",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "timing",
+  "reason": "In a normal week I'm nowhere near exam panic yet—I don't touch my slides until two or three days before midterms, so I'm not opening my banking app right now to prepay 49,000 VND even if the timer stays paused. At most I'd scroll past or save the free preview link for when I'm actually cramming.",
+  "objection": "Beyond having zero urgency today, Clutch Arena sounds more like a timed quiz game than something I can trust to handle messy mixed English/Vietnamese past midterms without giving me a subtle formula mistake I don't have time to catch during a 48-hour cram.",
+  "would_change_my_mind": "A classmate dropping a solved past-midterm pack from it into our Zalo group chat 48 hours before an exam and confirming the worked steps actually match our lecturer's style.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 3.5,
+  "price_too_expensive": 6.5
+}

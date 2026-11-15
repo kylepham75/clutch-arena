@@ -1,0 +1,13 @@
+{
+  "id": "P011",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "need",
+  "reason": "In a normal week I'm not even touching my slides yet, and once midterm panic hits, someone in my class group chat always drops study links or hosts a review anyway. Since I can join classmates' /arena rooms and try a starter deck for free, I don't see why I need to pay 69k VND myself.",
+  "objection": "If a classmate shares a free #pack= link or hosts an /arena room, paying for my own 7-day pass feels redundant—I'd rather see what the group chat shares or use the free tier first before spending money.",
+  "would_change_my_mind": "If I'm 48 hours out from a Finance or Accounting midterm with 150+ English/Vietnamese slides across five files, nobody in my class has shared a pack, and paying is the only way to get the 5-file 2-page Clutch Notes cheat sheet and formula-remix drills.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 3.5,
+  "price_too_expensive": 5
+}

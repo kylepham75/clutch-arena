@@ -1,0 +1,70 @@
+{
+  "business": "Clutch Arena",
+  "target": "University students (19 to 23) in quantitative courses (Finance, Economics, Accounting, STEM) across Vietnam (UEH, RMIT, FTU, VinUni, HUST) and Global universities cramming 48-72 hours before midterms and finals",
+  "where": "Vietnam (Ho Chi Minh City & Hanoi) and Global (US, UK, EU, AU, Asia) university campuses",
+  "age": [19, 23],
+  "segments": [
+    {
+      "name": "Vietnam public-university crammer (UEH, FTU, HUST)",
+      "share": 0.35,
+      "income": [2000, 4000]
+    },
+    {
+      "name": "Vietnam international-program student (RMIT, VinUni, ISB)",
+      "share": 0.25,
+      "income": [4000, 8000]
+    },
+    {
+      "name": "Global / Western university student (US, UK, EU, AU)",
+      "share": 0.25,
+      "income": [8000, 18000]
+    },
+    {
+      "name": "University TA / peer study leader / part-time tutor (VN & Global)",
+      "share": 0.15,
+      "income": [10000, 24000]
+    }
+  ],
+  "behaviours": [
+    {
+      "name": "48-hour panic crammer",
+      "share": 0.30,
+      "how": "Starts studying 2-3 days before midterms, overwhelmed by 150+ English/Vietnamese slides, wants the fastest path to passing."
+    },
+    {
+      "name": "Free-tool stacker",
+      "share": 0.25,
+      "how": "Uses free ChatGPT, NotebookLM, Knowt, and campus Zalo/Google Drive exam banks before ever paying."
+    },
+    {
+      "name": "Social group studier",
+      "share": 0.20,
+      "how": "Studies with classmates in Zalo/Messenger/Discord groups, shares summarized PDFs, and competes in quiz rooms."
+    },
+    {
+      "name": "Formula-skeptical quant student",
+      "share": 0.15,
+      "how": "Double-checks every calculation and formula because generic AI tools gave them wrong math before."
+    },
+    {
+      "name": "Deal hunter / one-time pass buyer",
+      "share": 0.10,
+      "how": "Only buys if there is zero auto-renewal risk and convenient local payment (VietQR in VN or Apple Pay globally)."
+    }
+  ],
+  "objections": [
+    "Free ChatGPT, NotebookLM, or campus Drive exam banks already cost $0",
+    "AI always hallucinates finance, math, and economics formulas and gives wrong answers",
+    "I hate study subscriptions that silently auto-renew after my exam ends",
+    "I only cram 48-72 hours before midterms and finals, not every single week",
+    "A 15-second timer and 4-second reading lock sounds stressful when I just want fast answers",
+    "If a classmate shares a free #pack= link or hosts an /arena room, why should I pay?",
+    "In Vietnam I only pay with VietQR/MoMo; globally I don't want another $20/month recurring charge"
+  ],
+  "habits": [
+    "your Corporate Finance or Microeconomics midterm is in 48 hours and you have 150+ lecture slides to review",
+    "your classmates drop past midterms and messy PDFs into a Zalo, Messenger, or Discord group chat",
+    "you study late at night in a dorm or campus cafe with your laptop and phone",
+    "you already tried pasting lecture PDFs into free ChatGPT or NotebookLM"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "P014",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "trust",
+  "reason": "With my midterm in 48 hours, I'm not paying for an AI tool that could hallucinate a finance or microeconomics step when I already have NotebookLM, free ChatGPT, Knowt, and our campus Zalo/Drive exam banks for $0. Calling it a 'Dual-Model Math Verifier' doesn't convince me two AIs won't agree on the same wrong formula.",
+  "objection": "Getting a 49,000 VND refund and an extra pass after the fact doesn't fix a ruined midterm grade if a remixed problem or cheat-sheet formula has a subtle sign or subscript error.",
+  "would_change_my_mind": "Trusted classmates in my campus Zalo group confirming it solved our actual past-exam formulas without errors.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1,
+  "price_expensive": 3,
+  "price_too_expensive": 5
+}

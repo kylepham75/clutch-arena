@@ -1,0 +1,13 @@
+{
+  "id": "P018",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "In a normal week I'm not buying a solo cram pass off a random scroll when my Discord group already swaps summarized PDFs and quizzes for free. Since joining friends' Arena rooms and testing one file costs nothing anyway, I have zero urgency to pull out Apple Pay.",
+  "objection": "Even with the zero auto-renewal promise, the pitch is packed with dense jargon and mixed local payment info that makes me wary of trusting an unproven site with my card or betting my exam grade on its worked math.",
+  "would_change_my_mind": "Having classmates in my Discord study group vouch that the worked math is accurate on our actual lecture PDFs and split the $8.99 3-student pack with me before an exam.",
+  "price_too_cheap": 1,
+  "price_cheap": 3,
+  "price_expensive": 6,
+  "price_too_expensive": 10
+}

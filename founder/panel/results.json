@@ -1,0 +1,168 @@
+{
+ "business": "Clutch Arena",
+ "seed": 7,
+ "dealt": 20,
+ "answered": 20,
+ "skipped": [],
+ "buys": 2,
+ "passes": 18,
+ "buy_rate": 0.1,
+ "by_segment": [
+  [
+   "Vietnam international-program student (RMIT, VinUni, ISB)",
+   5,
+   0.2
+  ],
+  [
+   "Vietnam public-university crammer (UEH, FTU, HUST)",
+   7,
+   0.14285714285714285
+  ],
+  [
+   "University TA / peer study leader / part-time tutor (VN & Global)",
+   3,
+   0.0
+  ],
+  [
+   "Global / Western university student (US, UK, EU, AU)",
+   5,
+   0.0
+  ]
+ ],
+ "by_behaviour": [
+  [
+   "Social group studier",
+   4,
+   0.25
+  ],
+  [
+   "48-hour panic crammer",
+   6,
+   0.16666666666666666
+  ],
+  [
+   "Deal hunter / one-time pass buyer",
+   2,
+   0.0
+  ],
+  [
+   "Free-tool stacker",
+   5,
+   0.0
+  ],
+  [
+   "Formula-skeptical quant student",
+   3,
+   0.0
+  ]
+ ],
+ "by_income": [
+  [
+   "under $3,000",
+   2,
+   0.5
+  ],
+  [
+   "$3,000 to $11,000",
+   11,
+   0.09090909090909091
+  ],
+  [
+   "$11,000 and up",
+   7,
+   0.0
+  ]
+ ],
+ "why_not": [
+  [
+   "habit",
+   9,
+   [
+    "I already drop slides into ChatGPT or NotebookLM and share past-exam summaries in my Zalo study group for free, so in a normal week I wouldn't pay for a new cram site, especially when joining friends' Arena rooms and testing one PDF are free anyway.",
+    "I already have a free stack that works—NotebookLM eats 150+ lecture slides in seconds, free ChatGPT walks me through Corporate Finance formulas step by step, and our campus Zalo and Google Drive banks have actual past midterms from my professors. Even with an untimed mode toggle and a $1.90 or $3.99 price tag, I'm not paying for an AI quiz wrapper when my free tabs already cover my 48-hour cram."
+   ],
+   [
+    "P003",
+    "P004"
+   ]
+  ],
+  [
+   "trust",
+   6,
+   [
+    "I appreciate the one-time Apple Pay setup with zero auto-renewal, but I'm not paying $3.99 in a normal week for a cram pass when I already use free ChatGPT and NotebookLM. A 'Dual-Model Math Verifier' still sounds like two AIs that can both miss a finance or calculus subscript, and a $3.99 refund doesn't save my grade if I study the wrong formula.",
+    "Free ChatGPT, NotebookLM, and campus Drive exam banks already cost $0, and since AI tools have burned me on quant formulas before, I'd still end up checking every step myself. As a TA and tutor in a normal week, I'd rather stick to the Drive past papers and my own worked notes than pay for another PDF cram tool."
+   ],
+   [
+    "P002",
+    "P007"
+   ]
+  ],
+  [
+   "timing",
+   2,
+   [
+    "I only start cramming 48 hours before midterms, so in a normal week I'm not pulling out VietQR or Apple Pay to pre-buy an exam pass—even if the 7-day clock stays paused. Since there's a free 1-file preview anyway, I'd scroll past for now rather than pay upfront before I'm actually in exam panic.",
+    "In a normal week I'm nowhere near exam panic yet—I don't touch my slides until two or three days before midterms, so I'm not opening my banking app right now to prepay 49,000 VND even if the timer stays paused. At most I'd scroll past or save the free preview link for when I'm actually cramming."
+   ],
+   [
+    "P001",
+    "P020"
+   ]
+  ],
+  [
+   "need",
+   1,
+   [
+    "In a normal week I'm not studying for midterms yet, and when I do panic-cram 48 hours before an exam, I expect a classmate will just drop a #pack= link, the 2-page PDF cheat sheet, or a free /arena room invite. Paying 49,000 VND upfront feels unnecessary when free accounts already get the 5-question preview and free joins in friends' rooms."
+   ],
+   [
+    "P011"
+   ]
+  ]
+ ],
+ "why_yes": [
+  [
+   "price",
+   1,
+   [
+    "Free ChatGPT and NotebookLM already struggle with my 150-slide decks, so paying 49,000 VND ($1.90) once via VietQR—with no $20/month auto-renewal and a timer that stays paused until Exam Week—is cheap enough for me to try right after testing one real PDF for free."
+   ],
+   [
+    "P005"
+   ]
+  ],
+  [
+   "need",
+   1,
+   [
+    "With my Corporate Finance midterm 48 hours away and 150+ messy slides to review, I'd test the $0 preview on my real PDF first and then pay 49,000 VND once via VietQR—or split the 119,000 VND Zalo 3-pack with two classmates—because there's zero auto-renewal and the 2-page cheat sheet plus 30 worked problems save a whole night of cramming."
+   ],
+   [
+    "P008"
+   ]
+  ]
+ ],
+ "flip": [
+  "Testing one of my professor's messy English/Vietnamese past-exam PDFs in the free preview 48 hours before a real midterm and seeing every worked step come back right.",
+  "Testing the free 5-question preview on my hardest Finance or Calculus past-exam PDF during finals week and seeing every formula and step proven with an actual deterministic math solver rather than just two AIs.",
+  "If I had a brutal quant exam in 48 hours and testing the free preview on our actual past paper nailed my professor's exact steps cleaner and faster than ChatGPT.",
+  "Let me generate one real 2-page KaTeX cheat sheet from my messy past-exam PDFs in the free preview—if it cleanly catches scanned equations that free ChatGPT and NotebookLM botch, I'd pay $2 to $4 to save formatting hours before finals.",
+  "Running the free 5-question preview on one of my actual messy Vietnamese-English past exam PDFs right before a final with no solved Drive key and seeing it nail every formula step that ChatGPT gets wrong.",
+  "Running the free 5-question preview on one of our hardest messy past-exam PDFs and seeing zero formula or subscript errors—ideally backed by transparent calculation checks rather than just LLM guesses—so it actually saves me review-prep time.",
+  "If the free 5-question preview nailed a tricky multi-step calculation from my actual past exam PDF with exact slide proof where free ChatGPT messed up the math.",
+  "If I'm 48 hours before a quant midterm, run our actual past exam through the free 5-question preview, and see it nail the worked steps that free ChatGPT messed up—then I'd split the 119,000 VND 3-student Zalo pack with two classmates.",
+  "Actually being 48 hours out from a tough quant midterm with no classmate sharing a solved #pack= or cheat sheet, and seeing the free 5-question preview get my exact lecture slides right.",
+  "If I tried the free 5-question preview on a real past-exam PDF from my course and saw it handle messy Vietnamese and English math accurately right after free ChatGPT cut off my uploads.",
+  "Actually hitting a 48-hour crunch before a tough quant midterm and watching the free 5-question preview nail tricky slide equations that free ChatGPT botched.",
+  "Trusted classmates in my campus Zalo group confirming it solved our actual past-exam formulas without errors.",
+  "Running the free 5-question preview right before a real midterm on my professor's hardest past-exam PDF and seeing deterministic math verification—not just two AI models—get every subscript, sign, and calculation step right.",
+  "Seeing a classmate in my Zalo study group prove the free preview actually nails our specific messy English-Vietnamese past-exam PDF right before a midterm with zero broken formulas.",
+  "If I hit a wall 48 hours before a hard quant midterm, ran the free 5-question preview on my actual course PDF, and saw it nail worked steps cleanly where free ChatGPT got the math wrong or blocked my uploads.",
+  "Having classmates in my Discord study group vouch that the worked math is accurate on our actual lecture PDFs and split the $8.99 3-student pack with me before an exam.",
+  "Testing one of my hardest scanned past-exam PDFs in the free 5-question preview right before exam week and seeing every subscript, formula convention, and slide crop come out completely accurate.",
+  "A classmate dropping a solved past-midterm pack from it into our Zalo group chat 48 hours before an exam and confirming the worked steps actually match our lecturer's style."
+ ],
+ "purchases_first_month_per_buyer": 1.0,
+ "price_answers": 20
+}

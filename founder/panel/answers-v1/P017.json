@@ -1,0 +1,13 @@
+{
+  "id": "P017",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "price",
+  "reason": "On my student budget, 69,000 VND ($2.67) for seven days is tough to justify when free ChatGPT, NotebookLM, and our campus Drive exam banks already cost $0. Passing by in a normal week, I'd at most bookmark the free starter deck for exam week instead of scanning VietQR today.",
+  "objection": "I'm skeptical it will cleanly handle 150+ mixed English-Vietnamese quantitative slides and match what my lecturers actually test, and if it misses the mark 48 hours before a midterm, a full refund won't give me those wasted hours back.",
+  "would_change_my_mind": "Pricing the 7-day pass around 20,000–25,000 VND (~$0.80–$1.00)—about the cost of one campus coffee or printing my slides—so it feels like an easy impulse add-on during exam week.",
+  "price_too_cheap": 0.4,
+  "price_cheap": 0.8,
+  "price_expensive": 1.5,
+  "price_too_expensive": 2.3
+}

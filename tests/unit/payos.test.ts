@@ -169,6 +169,19 @@ describe("PayOS Gateway Utilities", () => {
     process.env = originalEnv;
   });
 
+  describe("EXPECTED_PLAN_AMOUNTS_VND", () => {
+    it("exports canonical VND pricing for all plans including cram_squad_3", () => {
+      expect(EXPECTED_PLAN_AMOUNTS_VND.trial_24h).toBe(5000);
+      expect(EXPECTED_PLAN_AMOUNTS_VND.cram_pass).toBe(49000);
+      expect(EXPECTED_PLAN_AMOUNTS_VND.cram_squad_3).toBe(119000);
+      expect(EXPECTED_PLAN_AMOUNTS_VND.pro_monthly).toBe(99000);
+      expect(EXPECTED_PLAN_AMOUNTS_VND.pro).toBe(149000);
+      expect(EXPECTED_PLAN_AMOUNTS_VND.pro_semester).toBe(149000);
+      expect(EXPECTED_PLAN_AMOUNTS_VND.tutor).toBe(349000);
+      expect(EXPECTED_PLAN_AMOUNTS_VND.tutor_guild).toBe(349000);
+    });
+  });
+
   describe("isPayosConfigured", () => {
     it("returns true when all required environment variables are set and non-empty", () => {
       process.env.PAYOS_CLIENT_ID = "client_id_123";
@@ -267,6 +280,15 @@ describe("PayOS Gateway Utilities", () => {
       expect(decodePlanFromOrderCode(code)).toBe("tutor");
     });
 
+    it("generates a valid safe integer for cram_squad_3 ending in 6 and decodes it", () => {
+      const code = generatePayosOrderCode("cram_squad_3");
+
+      expect(Number.isSafeInteger(code)).toBe(true);
+      expect(code).toBeGreaterThan(0);
+      expect(code % 10).toBe(6);
+      expect(decodePlanFromOrderCode(code)).toBe("cram_squad_3");
+    });
+
     it("generates distinct order codes on successive rapid calls", () => {
       const code1 = generatePayosOrderCode("cram_pass");
       const code2 = generatePayosOrderCode("cram_pass");
@@ -278,23 +300,29 @@ describe("PayOS Gateway Utilities", () => {
       expect(code3).toBeGreaterThan(code2);
     });
 
-    it("decodes plan from amount fallback for all 4 primary pricing tiers when orderCode last digit is neutral", () => {
+    it("decodes plan from amount fallback for canonical and legacy pricing tiers when orderCode last digit is neutral", () => {
       const neutralCode = 9876543210; // ends in 0
       expect(neutralCode % 10).toBe(0);
 
-      // Cram pass (69k VND, and legacy 39k, sandbox 5k)
+      // Cram pass (canonical 49k VND, legacy 69k & 39k, sandbox 5k)
       expect(decodePlanFromOrderCode(neutralCode, 5000)).toBe("cram_pass");
       expect(decodePlanFromOrderCode(neutralCode, 39000)).toBe("cram_pass");
+      expect(decodePlanFromOrderCode(neutralCode, 49000)).toBe("cram_pass");
       expect(decodePlanFromOrderCode(neutralCode, 69000)).toBe("cram_pass");
 
-      // Pro monthly (109k VND)
+      // Cram Squad 3-Pack (canonical 119k VND)
+      expect(decodePlanFromOrderCode(neutralCode, 119000)).toBe("cram_squad_3");
+
+      // Pro monthly (canonical 99k VND, legacy 109k)
+      expect(decodePlanFromOrderCode(neutralCode, 99000)).toBe("pro_monthly");
       expect(decodePlanFromOrderCode(neutralCode, 109000)).toBe("pro_monthly");
 
-      // Pro semester (299k VND, and legacy 149k)
+      // Pro semester (canonical 149k VND, legacy 299k)
       expect(decodePlanFromOrderCode(neutralCode, 149000)).toBe("pro");
       expect(decodePlanFromOrderCode(neutralCode, 299000)).toBe("pro");
 
-      // Tutor (399k VND)
+      // Tutor (canonical 349k VND, legacy 399k)
+      expect(decodePlanFromOrderCode(neutralCode, 349000)).toBe("tutor");
       expect(decodePlanFromOrderCode(neutralCode, 399000)).toBe("tutor");
 
       // Unsupported or missing amounts
@@ -359,10 +387,20 @@ describe("PayOS Gateway Utilities", () => {
       expect(/^[A-Z0-9 ]+$/.test(desc)).toBe(true);
     });
 
+    it("builds a clean uppercase string <= 25 characters for cram_squad_3 with CLUTCH SQUAD prefix", () => {
+      const orderCode = 17300000077776;
+      const desc = buildPayosDescription("cram_squad_3", orderCode);
+
+      expect(desc).toBe("CLUTCH SQUAD 077776");
+      expect(desc.length).toBeLessThanOrEqual(25);
+      expect(/^[A-Z0-9 ]+$/.test(desc)).toBe(true);
+    });
+
     it("never exceeds 25 characters regardless of code length across all plan variants", () => {
       const hugeCode = Number.MAX_SAFE_INTEGER;
       const plans: PayosPlanId[] = [
         "cram_pass",
+        "cram_squad_3",
         "pro",
         "pro_semester",
         "pro_monthly",
@@ -660,7 +698,7 @@ describe("PayOS Gateway Utilities", () => {
 
       const result = await fulfillPayosOrder({
         orderCode: 17300000012341,
-        amount: 69000,
+        amount: 49000,
         fallbackUserId: "attacker_user_999",
       });
 
@@ -695,7 +733,7 @@ describe("PayOS Gateway Utilities", () => {
 
       const result = await fulfillPayosOrder({
         orderCode: 17300000056782,
-        amount: 299000,
+        amount: 149000,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -709,7 +747,7 @@ describe("PayOS Gateway Utilities", () => {
 
       const result = await fulfillPayosOrder({
         orderCode: 17300000056782,
-        amount: 299000,
+        amount: 149000,
         fallbackUserId: "authenticated_user_789",
         userToken: "valid_token",
       });
@@ -727,7 +765,7 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = null;
       const result = await fulfillPayosOrder({
         orderCode: 17300000056782,
-        amount: 299000,
+        amount: 149000,
         fallbackUserId: "victim_user_123",
         userToken: "attacker_token",
       });
@@ -742,7 +780,7 @@ describe("PayOS Gateway Utilities", () => {
 
       const result = await fulfillPayosOrder({
         orderCode: 17300000056782,
-        amount: 299000,
+        amount: 149000,
         fallbackUserId: "unauthenticated_guest",
       });
 
@@ -756,7 +794,7 @@ describe("PayOS Gateway Utilities", () => {
 
       const result = await fulfillPayosOrder({
         orderCode: 17300000056782,
-        amount: 299000,
+        amount: 149000,
       });
 
       expect(result.fulfilled).toBe(false);
@@ -767,12 +805,12 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = {
         user_id: "recorded_owner_123",
         tier: "pro",
-        amount: 299000,
+        amount: 149000,
       };
 
       const result = await fulfillPayosOrder({
         orderCode: 17300000056782,
-        amount: 69000, // Tampered underpayment
+        amount: 49000, // Tampered underpayment
       });
 
       expect(result.fulfilled).toBe(false);
@@ -784,8 +822,8 @@ describe("PayOS Gateway Utilities", () => {
     it("refuses fulfillment when params.expectedAmount does not match params.amount", async () => {
       const result = await fulfillPayosOrder({
         orderCode: 17300000056782,
-        amount: 69000,
-        expectedAmount: 299000,
+        amount: 49000,
+        expectedAmount: 149000,
       });
 
       expect(result.fulfilled).toBe(false);
@@ -798,13 +836,13 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = {
         user_id: "recorded_owner_123",
         tier: "pro",
-        amount: 299000,
+        amount: 149000,
       };
 
       const result = await fulfillPayosOrder({
         orderCode: 17300000056782,
-        amount: 299000,
-        expectedAmount: 109000, // Parameter claims 109k, but DB recorded 299k
+        amount: 149000,
+        expectedAmount: 99000, // Parameter claims 99k, but DB recorded 149k
       });
 
       expect(result.fulfilled).toBe(false);
@@ -817,12 +855,12 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = {
         user_id: "recorded_owner_123",
         tier: "pro",
-        amount: 299000,
+        amount: 149000,
       };
 
       const result = await fulfillPayosOrder({
         orderCode: 17300000056782,
-        amount: 299000,
+        amount: 149000,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -832,8 +870,40 @@ describe("PayOS Gateway Utilities", () => {
         expect.objectContaining({
           id: "payos_17300000056782",
           user_id: "recorded_owner_123",
-          amount: 299000,
+          amount: 149000,
           status: "active",
+        }),
+      );
+    });
+
+    it("successfully fulfills cram_squad_3 order at 119000 VND and maps profile tier to cram_pass", async () => {
+      mockSubRecord = {
+        user_id: "squad_owner_123",
+        tier: "cram_squad_3",
+        amount: 119000,
+      };
+
+      const result = await fulfillPayosOrder({
+        orderCode: 17300000077776,
+        amount: 119000,
+      });
+
+      expect(result.fulfilled).toBe(true);
+      expect(result.userId).toBe("squad_owner_123");
+      expect(result.tier).toBe("cram_squad_3");
+      expect(mockUpsertSubSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "payos_17300000077776",
+          user_id: "squad_owner_123",
+          tier: "cram_squad_3",
+          amount: 119000,
+          status: "active",
+        }),
+      );
+      expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "squad_owner_123",
+          tier: "cram_pass",
         }),
       );
     });
@@ -888,8 +958,8 @@ describe("PayOS Gateway Utilities", () => {
               data: {
                 orderCode: 17300000012341,
                 status: "PAID",
-                amount: 69000,
-                amountPaid: 69000,
+                amount: 49000,
+                amountPaid: 49000,
                 transactions: [],
               },
             }),
@@ -1045,7 +1115,7 @@ describe("PayOS Gateway Utilities", () => {
             data: {
               orderCode: 17300000012341,
               status: "PENDING",
-              amount: 69000,
+              amount: 49000,
               amountPaid: 0,
               transactions: [],
             },
@@ -1075,7 +1145,7 @@ describe("PayOS Gateway Utilities", () => {
         ok: true,
         paid: false,
         status: "PENDING",
-        amount: 69000,
+        amount: 49000,
       });
     });
 
@@ -1103,11 +1173,11 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = {
         user_id: "recorded_owner_123",
         tier: "pro",
-        amount: 299000, // DB expects 299k
+        amount: 149000, // DB expects 149k
       };
       mockAuthUser = { id: "recorded_owner_123" };
 
-      // global.fetch returns amountPaid: 69000 (attacker underpaid)
+      // global.fetch returns amountPaid: 49000 (attacker underpaid)
       const req = new Request(
         "http://localhost:3000/api/payments/payos/verify",
         {
@@ -1135,7 +1205,7 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = {
         user_id: "recorded_owner_123",
         tier: "cram_pass",
-        amount: 69000,
+        amount: 49000,
       };
       mockAuthUser = { id: "recorded_owner_123" };
 
@@ -1464,12 +1534,12 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = {
         user_id: "pro_upgrade_user_1",
         tier: "pro_semester",
-        amount: 299000,
+        amount: 149000,
       };
 
       const result = await fulfillPayosOrder({
         orderCode: 1730000011112,
-        amount: 299000,
+        amount: 149000,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -1502,7 +1572,7 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = {
         user_id: "migration_fallback_user",
         tier: "pro_monthly",
-        amount: 109000,
+        amount: 99000,
       };
       mockUpsertQuotaLedgerErrorOnce = {
         message: 'column "window_started_at" of relation "user_quota_ledgers" does not exist',
@@ -1510,7 +1580,7 @@ describe("PayOS Gateway Utilities", () => {
 
       const result = await fulfillPayosOrder({
         orderCode: 1730000022223,
-        amount: 109000,
+        amount: 99000,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -1542,7 +1612,7 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = {
         user_id: userId,
         tier: "cram_pass",
-        amount: 69000,
+        amount: 49000,
       };
       mockAuthUser = {
         id: userId,
@@ -1565,8 +1635,8 @@ describe("PayOS Gateway Utilities", () => {
       // 2. Execute fulfillment for same-tier repurchase
       const result = await fulfillPayosOrder({
         orderCode: 1730000077771, // ends in 1 -> cram_pass
-        amount: 69000,
-        expectedAmount: 69000,
+        amount: 49000,
+        expectedAmount: 49000,
         fallbackUserId: userId,
         userToken: "valid_token",
       });
@@ -1604,14 +1674,14 @@ describe("PayOS Gateway Utilities", () => {
         id: "payos_17300000012341",
         user_id: "user_already_active",
         tier: "cram_pass",
-        amount: 69000,
+        amount: 49000,
         status: "active",
         expires_at: fixedExpiresAt,
       };
 
       const result = await fulfillPayosOrder({
         orderCode: 17300000012341,
-        amount: 69000,
+        amount: 49000,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -1634,7 +1704,7 @@ describe("PayOS Gateway Utilities", () => {
 
       const firstResult = await fulfillPayosOrder({
         orderCode: 17300000099991,
-        amount: 69000,
+        amount: 49000,
         fallbackUserId: "replay_test_user",
         userToken: "valid_token",
       });
@@ -1647,7 +1717,7 @@ describe("PayOS Gateway Utilities", () => {
 
       const secondResult = await fulfillPayosOrder({
         orderCode: 17300000099991,
-        amount: 69000,
+        amount: 49000,
         fallbackUserId: "replay_test_user",
         userToken: "valid_token",
       });
@@ -1671,7 +1741,7 @@ describe("PayOS Gateway Utilities", () => {
         id: "payos_17300000088881",
         user_id: "verify_replay_user",
         tier: "cram_pass",
-        amount: 69000,
+        amount: 49000,
       };
       mockAuthUser = { id: "verify_replay_user" };
 
@@ -1685,8 +1755,8 @@ describe("PayOS Gateway Utilities", () => {
           data: {
             orderCode: 17300000088881,
             status: "PAID",
-            amount: 69000,
-            amountPaid: 69000,
+            amount: 49000,
+            amountPaid: 49000,
             transactions: [],
           },
         }),
@@ -1754,7 +1824,7 @@ describe("PayOS Gateway Utilities", () => {
             desc: "success",
             data: {
               orderCode: parsedBody.orderCode ?? 17300000012341,
-              amount: parsedBody.amount ?? 69000,
+              amount: parsedBody.amount ?? 49000,
               description: parsedBody.description ?? "CLUTCH CRAM",
               bin: "970415",
               accountNumber: "11336699",
@@ -1871,8 +1941,8 @@ describe("PayOS Gateway Utilities", () => {
         userEmail: "buyer@clutcharena.vn",
       });
 
-      expect(directResult.amount).toBe(299000);
-      expect(directResult.vietQrImageUrl).toContain("amount=299000");
+      expect(directResult.amount).toBe(149000);
+      expect(directResult.vietQrImageUrl).toContain("amount=149000");
 
       // 2. HTTP POST route call with non-5000 client amount
       const req = new Request(
@@ -1899,7 +1969,7 @@ describe("PayOS Gateway Utilities", () => {
       expect(mockUpsertSubSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           tier: "pro",
-          amount: 299000,
+          amount: 149000,
         }),
       );
 
@@ -1907,8 +1977,48 @@ describe("PayOS Gateway Utilities", () => {
       const fetchCall = fetchCalls[fetchCalls.length - 1];
       expect(fetchCall).toBeDefined();
       const sentPayload = JSON.parse(String(fetchCall[1]?.body));
-      expect(sentPayload.amount).toBe(299000);
-      expect(sentPayload.items[0].price).toBe(299000);
+      expect(sentPayload.amount).toBe(149000);
+      expect(sentPayload.items[0].price).toBe(149000);
+    });
+
+    it("succeeds in POST /api/payments/payos/create for cram_squad_3 at 119000 VND", async () => {
+      const req = new Request(
+        "http://localhost:3000/api/payments/payos/create",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+          },
+          body: JSON.stringify({
+            planId: "cram_squad_3",
+          }),
+        },
+      );
+
+      const res = await createPostRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.payment.amount).toBe(119000);
+      expect(json.payment.orderCode % 10).toBe(6);
+
+      expect(mockUpsertSubSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tier: "cram_squad_3",
+          cycle: "one_time",
+          amount: 119000,
+        }),
+      );
+
+      const fetchCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls;
+      const fetchCall = fetchCalls[fetchCalls.length - 1];
+      expect(fetchCall).toBeDefined();
+      const sentPayload = JSON.parse(String(fetchCall[1]?.body));
+      expect(sentPayload.amount).toBe(119000);
+      expect(sentPayload.description).toMatch(/^CLUTCH SQUAD /);
+      expect(sentPayload.items[0].price).toBe(119000);
     });
   });
 
@@ -1932,12 +2042,12 @@ describe("PayOS Gateway Utilities", () => {
       mockSubRecord = {
         user_id: "recorded_owner_123",
         tier: "pro",
-        amount: 299000,
+        amount: 149000,
       };
 
       const webhookData: Record<string, unknown> = {
         orderCode: 17300000056782,
-        amount: 69000, // Attacker manipulated amount to 69k
+        amount: 49000, // Attacker manipulated amount to 49k
         description: "CLUTCH PRO 056782",
       };
 

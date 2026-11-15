@@ -307,6 +307,11 @@ export default function PrivacyPolicyPage() {
                     <td className="px-3 py-2.5">{isVi ? "Việt Nam · Tuân thủ quy định NHNN & NĐ 13" : "Vietnam · SBV licensed intermediary"}</td>
                   </tr>
                   <tr>
+                    <td className="px-3 py-2.5 font-semibold text-stone-900 dark:text-stone-100">Polar.sh / Lemon Squeezy (Merchant of Record)</td>
+                    <td className="px-3 py-2.5">{isVi ? "Thanh toán quốc tế (USD) & Thuế bán hàng/VAT toàn cầu" : "International USD checkout & global sales tax/VAT compliance"}</td>
+                    <td className="px-3 py-2.5">{isVi ? "PCI-DSS Level 1 · Không lưu trữ thẻ tại máy chủ nội bộ" : "PCI-DSS Level 1 · Zero local card storage"}</td>
+                  </tr>
+                  <tr>
                     <td className="px-3 py-2.5 font-semibold text-stone-900 dark:text-stone-100">Upstash Inc.</td>
                     <td className="px-3 py-2.5">{isVi ? "Bộ đệm giới hạn tần suất & Phòng đấu WebSocket" : "Rate limiting & live room state"}</td>
                     <td className="px-3 py-2.5">{isVi ? "Lưu trữ ngắn hạn, tự hủy sau phiên đấu" : "In-memory cache with strict TTL expiration"}</td>
@@ -398,6 +403,38 @@ export default function PrivacyPolicyPage() {
                 ? "Tất cả đường truyền kết nối đều bắt buộc sử dụng HTTPS / TLS 1.3 và chữ ký điện tử an toàn cho các webhook thanh toán PayOS."
                 : "All client-server communications are encrypted via HTTPS / TLS 1.3, with cryptographic signature verification enforced on PayOS payment webhooks."}
             </p>
+            <div className="p-4 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/70 dark:border-emerald-800/40 space-y-2 mt-3">
+              <div className="flex items-center gap-2 font-semibold text-emerald-900 dark:text-emerald-300 text-xs sm:text-sm">
+                <Globe size={16} />
+                <span>
+                  {isVi
+                    ? "Tuân Thủ Chuyển Giao Dữ Liệu Xuyên Biên Giới & Nghị Định 13/2023/NĐ-CP"
+                    : "Cross-Border & Decree 13/2023/ND-CP Regulatory Compliance"}
+                </span>
+              </div>
+              <ul className="list-disc pl-5 space-y-1.5 text-xs sm:text-sm text-stone-700 dark:text-stone-300">
+                <li>
+                  <strong className="text-stone-900 dark:text-stone-100">
+                    {isVi
+                      ? "Đánh giá tác động xử lý (DPIA) & Chuyển dữ liệu ra nước ngoài (T-DPIA): "
+                      : "Data Protection Impact Assessment (DPIA) & Cross-Border Transfer Impact Assessment (T-DPIA): "}
+                  </strong>
+                  {isVi
+                    ? "Theo Nghị định 13/2023/NĐ-CP, Clutch Arena lập và duy trì hồ sơ Đánh giá tác động xử lý dữ liệu cá nhân (DPIA) cùng Đánh giá tác động chuyển dữ liệu cá nhân ra nước ngoài (T-DPIA — nộp trong vòng 60 ngày kể từ ngày tiến hành xử lý) đối với luồng suy luận AI tạm thời không lưu vết qua OpenRouter (`zdr: true`) và hạ tầng đám mây quốc tế."
+                    : "Under Vietnam Decree 13/2023/ND-CP, Clutch Arena maintains a Data Protection Impact Assessment (DPIA) and prepares Cross-Border Transfer Impact Assessment (T-DPIA) filings within 60 days of processing for ephemeral OpenRouter (`zdr: true`) AI inference and international cloud infrastructure."}
+                </li>
+                <li>
+                  <strong className="text-stone-900 dark:text-stone-100">
+                    {isVi
+                      ? "Thông báo vi phạm dữ liệu trong 72 giờ (Bộ Công an - MPS): "
+                      : "72-Hour Ministry of Public Security (MPS) Breach Notification: "}
+                  </strong>
+                  {isVi
+                    ? "Trong trường hợp xảy ra sự cố vi phạm dữ liệu cá nhân, chúng tôi cam kết thông báo tới Bộ Công an (MPS) trong vòng 72 giờ kể từ khi phát hiện sự cố theo đúng quy định pháp luật hiện hành."
+                    : "In the event of any confirmed personal data breach, we notify Vietnam's Ministry of Public Security (MPS) within 72 hours of discovery in compliance with statutory reporting duties."}
+                </li>
+              </ul>
+            </div>
           </section>
 
           <hr className="border-stone-100 dark:border-stone-800" />

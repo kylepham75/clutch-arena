@@ -298,9 +298,9 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
   });
 
   describe("3. Caps (Free vs Paid Tier Benefit & Rolling Quota)", () => {
-    it("configures free tier (contender) caps: 72h/30d rolling quota, 10 items, 1 regen, notes enabled", () => {
+    it("configures free tier (contender) caps: 72h/30d rolling quota, 5 items, 1 regen, notes enabled", () => {
       const free = TIER_LIMITS.contender;
-      expect(free.maxQuestionsPerRun).toBe(10);
+      expect(free.maxQuestionsPerRun).toBe(5);
       expect(free.maxFilesPerUpload).toBe(1);
       expect(free.freeRegenerationsPerDeck).toBe(1);
       expect(free.canUseClutchNotes).toBe(true);
@@ -361,7 +361,7 @@ describe("Free vs Paid Tier Benefit & Model Routing Specification", () => {
 
     it("presents distinct rolling quota tier benefits in PRICING_PLANS", () => {
       const contenderPlan = PRICING_PLANS.find((p) => p.id === "contender")!;
-      expect(contenderPlan.featuresEn.some((f) => f.includes("10 questions/pack"))).toBe(true);
+      expect(contenderPlan.featuresEn.some((f) => f.includes("5 questions/pack"))).toBe(true);
       expect(contenderPlan.featuresEn.some((f) => f.includes("every 3 days; 0% on shared cache"))).toBe(true);
       expect(contenderPlan.featuresEn.some((f) => f.includes("1-section Clutch Notes & AI Coach inside quota"))).toBe(true);
       expect(contenderPlan.featuresEn.some((f) => f.includes("no distractor rationale"))).toBe(true);

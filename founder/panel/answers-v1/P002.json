@@ -1,0 +1,13 @@
+{
+  "id": "P002",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "trust",
+  "reason": "I already drop my lecture PDFs into free NotebookLM and ChatGPT, and in a normal week I'm not paying $4.99 for a 7-day cram pass I haven't tested yet. Even with Apple Pay and no auto-renewal, I don't trust an unfamiliar AI tool not to mess up finance and math formulas until I test the free starter deck myself.",
+  "objection": "In quantitative classes, AI easily misreads slide equations or botches formula-remix steps, and getting a $4.99 refund later doesn't fix learning the wrong formula before an exam.",
+  "would_change_my_mind": "Testing the free starter deck on my own finance or math PDFs and seeing every formula and worked answer come out 100% right with exact slide citations.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 2.5,
+  "price_expensive": 5,
+  "price_too_expensive": 8
+}

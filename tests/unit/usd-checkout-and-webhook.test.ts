@@ -35,25 +35,28 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
 
   describe("Plan Constants & Mappers", () => {
     it("exports exact expected plan amounts in USD", () => {
-      expect(EXPECTED_PLAN_AMOUNTS_USD.cram_pass).toBe(4.99);
-      expect(EXPECTED_PLAN_AMOUNTS_USD.pro_monthly).toBe(9.99);
-      expect(EXPECTED_PLAN_AMOUNTS_USD.pro).toBe(29.0);
-      expect(EXPECTED_PLAN_AMOUNTS_USD.pro_semester).toBe(29.0);
-      expect(EXPECTED_PLAN_AMOUNTS_USD.tutor).toBe(24.99);
-      expect(EXPECTED_PLAN_AMOUNTS_USD.tutor_guild).toBe(24.99);
+      expect(EXPECTED_PLAN_AMOUNTS_USD.cram_pass).toBe(3.99);
+      expect(EXPECTED_PLAN_AMOUNTS_USD.cram_squad_3).toBe(8.99);
+      expect(EXPECTED_PLAN_AMOUNTS_USD.pro_monthly).toBe(7.99);
+      expect(EXPECTED_PLAN_AMOUNTS_USD.pro).toBe(11.99);
+      expect(EXPECTED_PLAN_AMOUNTS_USD.pro_semester).toBe(11.99);
+      expect(EXPECTED_PLAN_AMOUNTS_USD.tutor).toBe(19.99);
+      expect(EXPECTED_PLAN_AMOUNTS_USD.tutor_guild).toBe(19.99);
     });
 
     it("exports exact expected plan amounts in cents", () => {
-      expect(EXPECTED_PLAN_AMOUNTS_CENTS.cram_pass).toBe(499);
-      expect(EXPECTED_PLAN_AMOUNTS_CENTS.pro_monthly).toBe(999);
-      expect(EXPECTED_PLAN_AMOUNTS_CENTS.pro).toBe(2900);
-      expect(EXPECTED_PLAN_AMOUNTS_CENTS.pro_semester).toBe(2900);
-      expect(EXPECTED_PLAN_AMOUNTS_CENTS.tutor).toBe(2499);
-      expect(EXPECTED_PLAN_AMOUNTS_CENTS.tutor_guild).toBe(2499);
+      expect(EXPECTED_PLAN_AMOUNTS_CENTS.cram_pass).toBe(399);
+      expect(EXPECTED_PLAN_AMOUNTS_CENTS.cram_squad_3).toBe(899);
+      expect(EXPECTED_PLAN_AMOUNTS_CENTS.pro_monthly).toBe(799);
+      expect(EXPECTED_PLAN_AMOUNTS_CENTS.pro).toBe(1199);
+      expect(EXPECTED_PLAN_AMOUNTS_CENTS.pro_semester).toBe(1199);
+      expect(EXPECTED_PLAN_AMOUNTS_CENTS.tutor).toBe(1999);
+      expect(EXPECTED_PLAN_AMOUNTS_CENTS.tutor_guild).toBe(1999);
     });
 
     it("maps USD plan IDs to canonical UserTier", () => {
       expect(mapUsdPlanToUserTier("cram_pass")).toBe("cram_pass");
+      expect(mapUsdPlanToUserTier("cram_squad_3")).toBe("cram_pass");
       expect(mapUsdPlanToUserTier("pro_monthly")).toBe("pro_monthly");
       expect(mapUsdPlanToUserTier("pro")).toBe("pro");
       expect(mapUsdPlanToUserTier("pro_semester")).toBe("pro");
@@ -63,6 +66,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
 
     it("maps USD plan IDs to correct billing cycles", () => {
       expect(mapUsdPlanToCycle("cram_pass")).toBe("one_time");
+      expect(mapUsdPlanToCycle("cram_squad_3")).toBe("one_time");
       expect(mapUsdPlanToCycle("pro_monthly")).toBe("monthly");
       expect(mapUsdPlanToCycle("pro")).toBe("semester");
       expect(mapUsdPlanToCycle("pro_semester")).toBe("semester");
@@ -125,11 +129,28 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
       expect(result.checkoutId).toMatch(/^polar_chk_/);
       expect(result.provider).toBe("polar");
       expect(result.planId).toBe("cram_pass");
-      expect(result.amountUsd).toBe(4.99);
+      expect(result.amountUsd).toBe(3.99);
       expect(result.currency).toBe("USD");
       expect(result.checkoutUrl).toContain(result.checkoutId);
       expect(result.checkoutUrl).toContain("user_test_1");
       expect(result.checkoutUrl).toContain("student%40example.edu");
+    });
+
+    it("creates a checkout session for cram_squad_3 at $8.99", async () => {
+      const result = await createUsdCheckoutSession({
+        planId: "cram_squad_3",
+        userId: "user_squad_1",
+        userEmail: "squad@example.edu",
+        origin: "http://localhost:3000",
+      });
+
+      expect(result.checkoutId).toMatch(/^polar_chk_/);
+      expect(result.provider).toBe("polar");
+      expect(result.planId).toBe("cram_squad_3");
+      expect(result.amountUsd).toBe(8.99);
+      expect(result.currency).toBe("USD");
+      expect(result.checkoutUrl).toContain("plan_id=cram_squad_3");
+      expect(result.checkoutUrl).toContain("amount=8.99");
     });
 
     it("creates a checkout session using configured direct checkout URL", async () => {
@@ -144,7 +165,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
 
       expect(result.provider).toBe("polar");
       expect(result.planId).toBe("tutor");
-      expect(result.amountUsd).toBe(24.99);
+      expect(result.amountUsd).toBe(19.99);
       expect(result.checkoutUrl).toContain("https://polar.sh/checkout/tutor-guild");
       expect(result.checkoutUrl).toContain("checkout%5Bcustom%5D%5Buser_id%5D=tutor_user_99");
       expect(result.checkoutUrl).toContain("checkout%5Bcustom%5D%5Bplan_id%5D=tutor");
@@ -164,7 +185,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
 
       expect(result.provider).toBe("lemonsqueezy");
       expect(result.planId).toBe("pro");
-      expect(result.amountUsd).toBe(29.0);
+      expect(result.amountUsd).toBe(11.99);
       expect(result.checkoutUrl).toContain("https://clutch.lemonsqueezy.com/buy/pro");
     });
   });
@@ -213,7 +234,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         checkoutId: "chk_test_cram_1",
         userId: "user_cram_1",
         planId: "cram_pass",
-        amountUsd: 4.99,
+        amountUsd: 3.99,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -227,12 +248,27 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
       expect(expectedDays).toBeLessThan(7.5);
     });
 
+    it("fulfills a cram_squad_3 order at $8.99 and maps to cram_pass tier", async () => {
+      const result = await fulfillUsdOrder({
+        checkoutId: "chk_test_squad_1",
+        userId: "user_squad_1",
+        planId: "cram_squad_3",
+        amountUsd: 8.99,
+      });
+
+      expect(result.fulfilled).toBe(true);
+      expect(result.alreadyFulfilled).toBe(false);
+      expect(result.userId).toBe("user_squad_1");
+      expect(result.tier).toBe("cram_pass");
+      expect(Date.parse(result.expiresAt)).toBeGreaterThan(Date.now());
+    });
+
     it("fulfills a pro_monthly order and calculates 30-day expiration", async () => {
       const result = await fulfillUsdOrder({
         checkoutId: "chk_test_monthly_1",
         userId: "user_monthly_1",
         planId: "pro_monthly",
-        amountUsd: 9.99,
+        amountUsd: 7.99,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -250,7 +286,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         checkoutId: "chk_test_pro_1",
         userId: "user_pro_1",
         planId: "pro",
-        amountUsd: 29.0,
+        amountUsd: 11.99,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -268,7 +304,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         checkoutId: "chk_test_tutor_1",
         userId: "user_tutor_1",
         planId: "tutor",
-        amountUsd: 24.99,
+        amountUsd: 19.99,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -281,12 +317,12 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
       expect(expectedDays).toBeLessThan(31);
     });
 
-    it("accepts amounts given in cents (e.g. 2900 for pro plan)", async () => {
+    it("accepts amounts given in cents (e.g. 1199 for pro plan)", async () => {
       const result = await fulfillUsdOrder({
         checkoutId: "chk_test_cents_1",
         userId: "user_cents_1",
         planId: "pro",
-        amountUsd: 2900,
+        amountUsd: 1199,
       });
 
       expect(result.fulfilled).toBe(true);
@@ -298,7 +334,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         checkoutId: "chk_test_tamper_1",
         userId: "user_tamper_1",
         planId: "pro",
-        amountUsd: 1.0, // Should be 29.0 or 2900
+        amountUsd: 1.0, // Should be 11.99 or 1199
       });
 
       expect(result.fulfilled).toBe(false);
@@ -309,7 +345,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         checkoutId: "chk_idempotent_1",
         userId: "user_idem_1",
         planId: "cram_pass",
-        amountUsd: 4.99,
+        amountUsd: 3.99,
       });
 
       expect(first.fulfilled).toBe(true);
@@ -319,7 +355,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         checkoutId: "chk_idempotent_1",
         userId: "user_idem_1",
         planId: "cram_pass",
-        amountUsd: 4.99,
+        amountUsd: 3.99,
       });
 
       expect(second.fulfilled).toBe(true);
@@ -332,7 +368,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         checkoutId: "chk_cache_clear_1",
         userId: "user_cache_1",
         planId: "cram_pass",
-        amountUsd: 4.99,
+        amountUsd: 3.99,
       });
 
       clearFulfilledUsdOrderCache();
@@ -441,7 +477,13 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         tierExpiresAt: null,
       });
 
-      const tiersToTest: UsdPlanId[] = ["cram_pass", "pro_monthly", "pro", "tutor"];
+      const tiersToTest: UsdPlanId[] = [
+        "cram_pass",
+        "cram_squad_3",
+        "pro_monthly",
+        "pro",
+        "tutor",
+      ];
 
       for (const planId of tiersToTest) {
         const req = new Request("http://localhost:3000/api/payments/usd/create", {
@@ -488,7 +530,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         type: "order.paid",
         data: {
           id: "polar_order_webhook_1",
-          amount: 29.0,
+          amount: 11.99,
           customer_email: "student_polar@example.com",
           metadata: {
             userId: "user_polar_order_1",
@@ -526,6 +568,50 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
       expect(idempotentCheck.tier).toBe("pro");
     });
 
+    it("processes Polar order.paid webhook for cram_squad_3 at $8.99 and fulfills as cram_pass tier", async () => {
+      process.env.POLAR_WEBHOOK_SECRET = TEST_SECRET;
+
+      const payload = {
+        type: "order.paid",
+        data: {
+          id: "polar_order_squad_1",
+          amount: 8.99,
+          customer_email: "squad_polar@example.com",
+          metadata: {
+            userId: "user_polar_squad_1",
+            planId: "cram_squad_3",
+            checkoutId: "polar_chk_squad_1",
+          },
+        },
+      };
+
+      const rawBody = JSON.stringify(payload);
+      const signature = createHmac("sha256", TEST_SECRET).update(rawBody).digest("hex");
+
+      const req = new Request("http://localhost:3000/api/webhooks/polar", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "webhook-signature": signature,
+        },
+        body: rawBody,
+      });
+
+      const res = await polarWebhookRoute(req);
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.ok).toBe(true);
+      expect(json.received).toBe(true);
+
+      const idempotentCheck = await fulfillUsdOrder({
+        checkoutId: "polar_chk_squad_1",
+        userId: "user_polar_squad_1",
+        planId: "cram_squad_3",
+      });
+      expect(idempotentCheck.alreadyFulfilled).toBe(true);
+      expect(idempotentCheck.tier).toBe("cram_pass");
+    });
+
     it("processes Lemon Squeezy order_created webhook and fulfills subscription", async () => {
       process.env.LEMONSQUEEZY_WEBHOOK_SECRET = TEST_SECRET;
 
@@ -541,7 +627,7 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
         data: {
           id: "order_ls_123",
           attributes: {
-            total_usd: 24.99,
+            total_usd: 19.99,
             user_email: "tutor_ls@guild.edu",
           },
         },

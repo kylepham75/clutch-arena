@@ -1,0 +1,13 @@
+{
+  "id": "P016",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "In a normal week I'm not cramming yet, and even 48 hours before an exam a 15-second timer, 4-second reading lock, and Socratic coaching sound stressful when I just need fast answers to pass. I'd rather test the free 1-file starter or skim my slides late at night than pay 69,000 VND for a 7-day pass right now.",
+  "objection": "The 15-second timer and 4-second reading lock feel like annoying friction that will slow me down and stress me out late at night when I'm overwhelmed by 150+ English and Vietnamese slides and just want fast answers.",
+  "would_change_my_mind": "An untimed cram mode that skips the 15-second timer and 4-second reading lock so I can get direct answers and the 2-page cheat sheet fast during exam week.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 2.5,
+  "price_too_expensive": 4.0
+}

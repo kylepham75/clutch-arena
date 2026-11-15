@@ -1,0 +1,13 @@
+{
+  "id": "P015",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "trust",
+  "reason": "In a normal week I'm not cramming yet so I wouldn't start a 7-day clock now, and even during exam week I've been burned too many times by AI getting quant math wrong. A verbatim slide citation doesn't prove the AI's remixed calculations or parsing of messy Discord PDFs will actually be accurate.",
+  "objection": "Linking a formula back to a slide doesn't stop the AI from getting the actual step-by-step math wrong on a formula-remix question or misreading equations from messy PDFs, and 48 hours before a midterm a $4.99 refund won't give me back the time I wasted checking its numbers.",
+  "would_change_my_mind": "Running the free starter deck on one of my messy quant past-midterm PDFs right before an exam and seeing its formula-remix solutions come out completely verified step by step without me needing to double-check the math.",
+  "price_too_cheap": 1,
+  "price_cheap": 3,
+  "price_expensive": 7,
+  "price_too_expensive": 10
+}

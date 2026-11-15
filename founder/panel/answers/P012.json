@@ -1,0 +1,13 @@
+{
+  "id": "P012",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I already cram for Corporate Finance and Micro midterms for free by stacking NotebookLM, free ChatGPT, Knowt, and our campus Zalo and Google Drive past-exam banks. Even at 49,000 VND with a paused 7-day pass, I'm not paying for a study pack when my free tools already handle the slides.",
+  "objection": "I doubt a new app I just saw while scrolling will handle messy Vietnamese and English lecture or past-exam PDFs without messing up notation, and when I'm cramming 48 hours before an exam, a refund guarantee doesn't fix lost study time if the AI gets a formula step wrong.",
+  "would_change_my_mind": "If I tried the free 5-question preview on a real past-exam PDF from my course and saw it handle messy Vietnamese and English math accurately right after free ChatGPT cut off my uploads.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.0,
+  "price_expensive": 2.0,
+  "price_too_expensive": 4.0
+}

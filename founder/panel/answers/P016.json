@@ -1,0 +1,13 @@
+{
+  "id": "P016",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "In a normal week I'm not paying ahead of time for an exam cram pass because I never start studying until 48 hours before a midterm. When panic actually hits, I already dump my slides into free AI tools and grab past-exam PDFs from upperclassmen on Zalo instead of spending 49,000 VND on a new app.",
+  "objection": "Even with an untimed toggle, the whole Clutch Arena sprint-timer and live-room vibe feels stressful and overcomplicated when I'm tired at midnight and just want fast answers—plus I doubt it handles messy mixed English-Vietnamese lecture slides better than free ChatGPT well enough to justify paying.",
+  "would_change_my_mind": "Seeing a classmate in my Zalo study group prove the free preview actually nails our specific messy English-Vietnamese past-exam PDF right before a midterm with zero broken formulas.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.0,
+  "price_expensive": 2.0,
+  "price_too_expensive": 3.5
+}

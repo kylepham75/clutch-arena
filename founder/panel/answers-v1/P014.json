@@ -1,0 +1,13 @@
+{
+  "id": "P014",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I always exhaust free ChatGPT, NotebookLM, Knowt, and our campus Zalo/Google Drive exam banks before paying for anything, and there is already a 10-question free starter deck here. Forty-eight hours before my Corporate Finance midterm, I'm not paying 69,000 VND for an untested AI cram pass when my free stack already covers slide review and real past papers.",
+  "objection": "Even with a Verbatim Citation Guarantee linking formulas back to my slides, AI still hallucinates finance and economics math when remixing numbers or solving applied questions, and a refund won't fix my grade if I learn the wrong calculation two days before the exam.",
+  "would_change_my_mind": "Seeing classmates in a live /arena room on our actual lecture slides confirm that the formula-remix answers and 2-page cheat sheet match our professor's solution steps without math errors.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 3.5,
+  "price_too_expensive": 5
+}

@@ -1,0 +1,222 @@
+[
+ {
+  "id": "P001",
+  "name": "Omar",
+  "age": 19,
+  "segment": "University TA / peer study leader / part-time tutor (VN & Global)",
+  "income": 17000,
+  "behaviour": "48-hour panic crammer",
+  "behaviour_how": "Starts studying 2-3 days before midterms, overwhelmed by 150+ English/Vietnamese slides, wants the fastest path to passing.",
+  "objection": "A 15-second timer and 4-second reading lock sounds stressful when I just want fast answers",
+  "habit": "your classmates drop past midterms and messy PDFs into a Zalo, Messenger, or Discord group chat"
+ },
+ {
+  "id": "P002",
+  "name": "Raj",
+  "age": 21,
+  "segment": "Global / Western university student (US, UK, EU, AU)",
+  "income": 11000,
+  "behaviour": "Deal hunter / one-time pass buyer",
+  "behaviour_how": "Only buys if there is zero auto-renewal risk and convenient local payment (VietQR in VN or Apple Pay globally).",
+  "objection": "AI always hallucinates finance, math, and economics formulas and gives wrong answers",
+  "habit": "you already tried pasting lecture PDFs into free ChatGPT or NotebookLM"
+ },
+ {
+  "id": "P003",
+  "name": "Emil",
+  "age": 23,
+  "segment": "Vietnam international-program student (RMIT, VinUni, ISB)",
+  "income": 5000,
+  "behaviour": "Social group studier",
+  "behaviour_how": "Studies with classmates in Zalo/Messenger/Discord groups, shares summarized PDFs, and competes in quiz rooms.",
+  "objection": "A 15-second timer and 4-second reading lock sounds stressful when I just want fast answers",
+  "habit": "you study late at night in a dorm or campus cafe with your laptop and phone"
+ },
+ {
+  "id": "P004",
+  "name": "Owen",
+  "age": 20,
+  "segment": "University TA / peer study leader / part-time tutor (VN & Global)",
+  "income": 20000,
+  "behaviour": "Free-tool stacker",
+  "behaviour_how": "Uses free ChatGPT, NotebookLM, Knowt, and campus Zalo/Google Drive exam banks before ever paying.",
+  "objection": "A 15-second timer and 4-second reading lock sounds stressful when I just want fast answers",
+  "habit": "your Corporate Finance or Microeconomics midterm is in 48 hours and you have 150+ lecture slides to review"
+ },
+ {
+  "id": "P005",
+  "name": "Sana",
+  "age": 22,
+  "segment": "Vietnam international-program student (RMIT, VinUni, ISB)",
+  "income": 8000,
+  "behaviour": "48-hour panic crammer",
+  "behaviour_how": "Starts studying 2-3 days before midterms, overwhelmed by 150+ English/Vietnamese slides, wants the fastest path to passing.",
+  "objection": "In Vietnam I only pay with VietQR/MoMo; globally I don't want another $20/month recurring charge",
+  "habit": "you already tried pasting lecture PDFs into free ChatGPT or NotebookLM"
+ },
+ {
+  "id": "P006",
+  "name": "Maya",
+  "age": 22,
+  "segment": "Vietnam public-university crammer (UEH, FTU, HUST)",
+  "income": 3000,
+  "behaviour": "Free-tool stacker",
+  "behaviour_how": "Uses free ChatGPT, NotebookLM, Knowt, and campus Zalo/Google Drive exam banks before ever paying.",
+  "objection": "Free ChatGPT, NotebookLM, or campus Drive exam banks already cost $0",
+  "habit": "you already tried pasting lecture PDFs into free ChatGPT or NotebookLM"
+ },
+ {
+  "id": "P007",
+  "name": "Selin",
+  "age": 22,
+  "segment": "University TA / peer study leader / part-time tutor (VN & Global)",
+  "income": 11000,
+  "behaviour": "Formula-skeptical quant student",
+  "behaviour_how": "Double-checks every calculation and formula because generic AI tools gave them wrong math before.",
+  "objection": "Free ChatGPT, NotebookLM, or campus Drive exam banks already cost $0",
+  "habit": "your classmates drop past midterms and messy PDFs into a Zalo, Messenger, or Discord group chat"
+ },
+ {
+  "id": "P008",
+  "name": "Ruby",
+  "age": 22,
+  "segment": "Vietnam public-university crammer (UEH, FTU, HUST)",
+  "income": 2000,
+  "behaviour": "Social group studier",
+  "behaviour_how": "Studies with classmates in Zalo/Messenger/Discord groups, shares summarized PDFs, and competes in quiz rooms.",
+  "objection": "I hate study subscriptions that silently auto-renew after my exam ends",
+  "habit": "your Corporate Finance or Microeconomics midterm is in 48 hours and you have 150+ lecture slides to review"
+ },
+ {
+  "id": "P009",
+  "name": "Nora",
+  "age": 19,
+  "segment": "Global / Western university student (US, UK, EU, AU)",
+  "income": 8000,
+  "behaviour": "Free-tool stacker",
+  "behaviour_how": "Uses free ChatGPT, NotebookLM, Knowt, and campus Zalo/Google Drive exam banks before ever paying.",
+  "objection": "AI always hallucinates finance, math, and economics formulas and gives wrong answers",
+  "habit": "your Corporate Finance or Microeconomics midterm is in 48 hours and you have 150+ lecture slides to review"
+ },
+ {
+  "id": "P010",
+  "name": "Fatima",
+  "age": 21,
+  "segment": "Vietnam public-university crammer (UEH, FTU, HUST)",
+  "income": 3000,
+  "behaviour": "Social group studier",
+  "behaviour_how": "Studies with classmates in Zalo/Messenger/Discord groups, shares summarized PDFs, and competes in quiz rooms.",
+  "objection": "Free ChatGPT, NotebookLM, or campus Drive exam banks already cost $0",
+  "habit": "your classmates drop past midterms and messy PDFs into a Zalo, Messenger, or Discord group chat"
+ },
+ {
+  "id": "P011",
+  "name": "Tariq",
+  "age": 23,
+  "segment": "Vietnam international-program student (RMIT, VinUni, ISB)",
+  "income": 6000,
+  "behaviour": "48-hour panic crammer",
+  "behaviour_how": "Starts studying 2-3 days before midterms, overwhelmed by 150+ English/Vietnamese slides, wants the fastest path to passing.",
+  "objection": "If a classmate shares a free #pack= link or hosts an /arena room, why should I pay?",
+  "habit": "you study late at night in a dorm or campus cafe with your laptop and phone"
+ },
+ {
+  "id": "P012",
+  "name": "Felix",
+  "age": 21,
+  "segment": "Vietnam public-university crammer (UEH, FTU, HUST)",
+  "income": 3000,
+  "behaviour": "Free-tool stacker",
+  "behaviour_how": "Uses free ChatGPT, NotebookLM, Knowt, and campus Zalo/Google Drive exam banks before ever paying.",
+  "objection": "I only cram 48-72 hours before midterms and finals, not every single week",
+  "habit": "your Corporate Finance or Microeconomics midterm is in 48 hours and you have 150+ lecture slides to review"
+ },
+ {
+  "id": "P013",
+  "name": "Zoe",
+  "age": 19,
+  "segment": "Global / Western university student (US, UK, EU, AU)",
+  "income": 16000,
+  "behaviour": "Deal hunter / one-time pass buyer",
+  "behaviour_how": "Only buys if there is zero auto-renewal risk and convenient local payment (VietQR in VN or Apple Pay globally).",
+  "objection": "I only cram 48-72 hours before midterms and finals, not every single week",
+  "habit": "you already tried pasting lecture PDFs into free ChatGPT or NotebookLM"
+ },
+ {
+  "id": "P014",
+  "name": "Dev",
+  "age": 22,
+  "segment": "Vietnam international-program student (RMIT, VinUni, ISB)",
+  "income": 5000,
+  "behaviour": "Free-tool stacker",
+  "behaviour_how": "Uses free ChatGPT, NotebookLM, Knowt, and campus Zalo/Google Drive exam banks before ever paying.",
+  "objection": "AI always hallucinates finance, math, and economics formulas and gives wrong answers",
+  "habit": "your Corporate Finance or Microeconomics midterm is in 48 hours and you have 150+ lecture slides to review"
+ },
+ {
+  "id": "P015",
+  "name": "Yusuf",
+  "age": 21,
+  "segment": "Global / Western university student (US, UK, EU, AU)",
+  "income": 15000,
+  "behaviour": "Formula-skeptical quant student",
+  "behaviour_how": "Double-checks every calculation and formula because generic AI tools gave them wrong math before.",
+  "objection": "I only cram 48-72 hours before midterms and finals, not every single week",
+  "habit": "your classmates drop past midterms and messy PDFs into a Zalo, Messenger, or Discord group chat"
+ },
+ {
+  "id": "P016",
+  "name": "Theo",
+  "age": 23,
+  "segment": "Vietnam public-university crammer (UEH, FTU, HUST)",
+  "income": 2000,
+  "behaviour": "48-hour panic crammer",
+  "behaviour_how": "Starts studying 2-3 days before midterms, overwhelmed by 150+ English/Vietnamese slides, wants the fastest path to passing.",
+  "objection": "A 15-second timer and 4-second reading lock sounds stressful when I just want fast answers",
+  "habit": "you study late at night in a dorm or campus cafe with your laptop and phone"
+ },
+ {
+  "id": "P017",
+  "name": "Alma",
+  "age": 20,
+  "segment": "Vietnam public-university crammer (UEH, FTU, HUST)",
+  "income": 3000,
+  "behaviour": "48-hour panic crammer",
+  "behaviour_how": "Starts studying 2-3 days before midterms, overwhelmed by 150+ English/Vietnamese slides, wants the fastest path to passing.",
+  "objection": "Free ChatGPT, NotebookLM, or campus Drive exam banks already cost $0",
+  "habit": "you study late at night in a dorm or campus cafe with your laptop and phone"
+ },
+ {
+  "id": "P018",
+  "name": "Freya",
+  "age": 19,
+  "segment": "Global / Western university student (US, UK, EU, AU)",
+  "income": 15000,
+  "behaviour": "Social group studier",
+  "behaviour_how": "Studies with classmates in Zalo/Messenger/Discord groups, shares summarized PDFs, and competes in quiz rooms.",
+  "objection": "I hate study subscriptions that silently auto-renew after my exam ends",
+  "habit": "you study late at night in a dorm or campus cafe with your laptop and phone"
+ },
+ {
+  "id": "P019",
+  "name": "Harper",
+  "age": 20,
+  "segment": "Vietnam public-university crammer (UEH, FTU, HUST)",
+  "income": 3000,
+  "behaviour": "Formula-skeptical quant student",
+  "behaviour_how": "Double-checks every calculation and formula because generic AI tools gave them wrong math before.",
+  "objection": "AI always hallucinates finance, math, and economics formulas and gives wrong answers",
+  "habit": "you study late at night in a dorm or campus cafe with your laptop and phone"
+ },
+ {
+  "id": "P020",
+  "name": "Emma",
+  "age": 20,
+  "segment": "Vietnam international-program student (RMIT, VinUni, ISB)",
+  "income": 6000,
+  "behaviour": "48-hour panic crammer",
+  "behaviour_how": "Starts studying 2-3 days before midterms, overwhelmed by 150+ English/Vietnamese slides, wants the fastest path to passing.",
+  "objection": "In Vietnam I only pay with VietQR/MoMo; globally I don't want another $20/month recurring charge",
+  "habit": "your classmates drop past midterms and messy PDFs into a Zalo, Messenger, or Discord group chat"
+ }
+]

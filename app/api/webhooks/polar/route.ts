@@ -10,6 +10,7 @@ export const runtime = "nodejs";
 
 const VALID_USD_PLANS = new Set<string>([
   "cram_pass",
+  "cram_squad_3",
   "pro_monthly",
   "pro",
   "pro_semester",

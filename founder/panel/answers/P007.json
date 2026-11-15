@@ -1,0 +1,13 @@
+{
+  "id": "P007",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "trust",
+  "reason": "Free ChatGPT, NotebookLM, and campus Drive exam banks already cost $0, and since AI tools have burned me on quant formulas before, I'd still end up checking every step myself. As a TA and tutor in a normal week, I'd rather stick to the Drive past papers and my own worked notes than pay for another PDF cram tool.",
+  "objection": "'Dual-Model Math Verifier' sounds like two AIs checking each other, and a refund guarantee doesn't pay back lost cram hours or embarrassment in front of tutees if a subscript or derivation step is wrong.",
+  "would_change_my_mind": "Running the free 5-question preview on one of our hardest messy past-exam PDFs and seeing zero formula or subscript errors—ideally backed by transparent calculation checks rather than just LLM guesses—so it actually saves me review-prep time.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 4,
+  "price_too_expensive": 7
+}

@@ -1,0 +1,13 @@
+{
+  "id": "P002",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "trust",
+  "reason": "I appreciate the one-time Apple Pay setup with zero auto-renewal, but I'm not paying $3.99 in a normal week for a cram pass when I already use free ChatGPT and NotebookLM. A 'Dual-Model Math Verifier' still sounds like two AIs that can both miss a finance or calculus subscript, and a $3.99 refund doesn't save my grade if I study the wrong formula.",
+  "objection": "I don't trust AI not to hallucinate finance, econ, or math formulas—two AI models checking each other can still agree on a sign error or misread a messy slide subscript, so I'd still have to check every step myself instead of saving time over free NotebookLM.",
+  "would_change_my_mind": "Testing the free 5-question preview on my hardest Finance or Calculus past-exam PDF during finals week and seeing every formula and step proven with an actual deterministic math solver rather than just two AIs.",
+  "price_too_cheap": 1,
+  "price_cheap": 2,
+  "price_expensive": 5,
+  "price_too_expensive": 8
+}

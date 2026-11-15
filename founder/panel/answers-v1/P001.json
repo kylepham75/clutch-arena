@@ -1,0 +1,13 @@
+{
+  "id": "P001",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I'm not going to pay for a 7-day cram pass in a normal week when I only start studying 48 hours before midterms and usually just skim past exams my classmates drop in Zalo and Discord. Plus, a 15-second quiz timer and 4-second reading lock sounds stressful when I'm drowning in 150+ quantitative slides and just want fast answers.",
+  "objection": "A 15-second timer and 4-second reading lock stresses me out and slows me down when I need to work through quantitative formulas across messy English/Vietnamese slides and just want fast answers and the cheat sheet.",
+  "would_change_my_mind": "An untimed mode that lets me turn off the 15-second timer and reading lock so I can jump straight to the 2-page cheat sheet and worked answers right before an exam.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 2,
+  "price_expensive": 6,
+  "price_too_expensive": 10
+}

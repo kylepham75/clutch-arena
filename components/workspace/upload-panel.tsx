@@ -211,6 +211,7 @@ export function UploadPanel({
     }
   }, [files, onSourceFileChanged]);
   const [focus, setFocus] = useState("");
+  const [copyrightConfirmed, setCopyrightConfirmed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [progressMsg, setProgressMsg] = useState("");
   const [error, setError] = useState<{
@@ -297,6 +298,17 @@ export function UploadPanel({
   const handleSubmit = async (overrideOperation?: "generate" | "preview") => {
     if (files.length === 0) {
       setError({ code: "NO_FILE", message: t.upload.noFileSelected });
+      return;
+    }
+
+    if (!copyrightConfirmed) {
+      setError({
+        code: "COPYRIGHT_CONFIRM_REQUIRED",
+        message:
+          siteLang === "vi"
+            ? "Vui lòng xác nhận tài liệu chỉ dùng cho mục đích tự ôn thi cá nhân trước khi tiếp tục."
+            : "Please confirm these slides are for your personal exam study before continuing.",
+      });
       return;
     }
 
@@ -826,6 +838,28 @@ export function UploadPanel({
         );
       })()}
 
+      {/* Copyright confirmation */}
+      <label
+        htmlFor="upload-copyright-confirm"
+        data-testid="upload-copyright-checkbox"
+        data-copy="These slides are for my personal exam study; I will not redistribute copyrighted course decks publicly."
+        className="mt-3 flex items-start gap-2.5 rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-stone-900/50 p-3 text-xs text-stone-700 dark:text-stone-300 cursor-pointer"
+      >
+        <input
+          id="upload-copyright-confirm"
+          type="checkbox"
+          required
+          checked={copyrightConfirmed}
+          onChange={(e) => setCopyrightConfirmed(e.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-stone-300 accent-[#c2410c] cursor-pointer"
+        />
+        <span>
+          {siteLang === "vi"
+            ? "Tài liệu slide này chỉ phục vụ việc tự ôn thi cá nhân của tôi; tôi cam kết không phát tán công khai bộ đề học phần có bản quyền."
+            : "These slides are for my personal exam study; I will not redistribute copyrighted course decks publicly."}
+        </span>
+      </label>
+
       {/* Actions */}
       <div className="upload-actions">
         {loading ? (
@@ -840,7 +874,7 @@ export function UploadPanel({
         ) : (
           <Button
             className="w-full start-button"
-            disabled={files.length === 0}
+            disabled={files.length === 0 || !copyrightConfirmed}
             onClick={() => handleSubmit()}
           >
             {operation === "generate" ? (

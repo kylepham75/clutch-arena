@@ -1,0 +1,13 @@
+{
+  "id": "P010",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "price",
+  "reason": "On around $3,000 a year, paying 69,000 VND ($2.67) for a 7-day pass in a normal week makes no sense when free ChatGPT, NotebookLM, and our campus Drive exam banks already cost $0. Plus, I can join classmates' live /arena quiz rooms for free and our Zalo group already shares summarized PDFs.",
+  "objection": "Free NotebookLM already gives source-cited answers across multiple PDFs and campus Drives have real past midterms, whereas this focuses on clean lecture slides and may not even handle the messy PDFs and past exams my friends drop in Zalo.",
+  "would_change_my_mind": "If the 7-day Vietnam pass were around $1 (about 25,000 VND) or allowed a Zalo study group to split one pass during finals week.",
+  "price_too_cheap": 0.4,
+  "price_cheap": 1.0,
+  "price_expensive": 1.8,
+  "price_too_expensive": 2.5
+}

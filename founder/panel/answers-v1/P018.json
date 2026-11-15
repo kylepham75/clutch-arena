@@ -1,0 +1,13 @@
+{
+  "id": "P018",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "need",
+  "reason": "I love that it's a one-time pass with no sneaky auto-renewal, but on a $15k student budget in a normal week I don't really need to pay $4.99 when I can join /arena rooms for free and my Discord group already swaps summarized PDFs.",
+  "objection": "Buying a 7-day pass during a normal week just wastes the timer before exams hit, and I'm skeptical a 60-second AI generator won't mangle messy quantitative formulas even if it quotes the slides verbatim.",
+  "would_change_my_mind": "Seeing the free starter deck nail a dense quantitative slide deck during actual midterm week, or having cram credits that don't start a 7-day expiration clock until I activate them.",
+  "price_too_cheap": 1,
+  "price_cheap": 3,
+  "price_expensive": 7,
+  "price_too_expensive": 10
+}

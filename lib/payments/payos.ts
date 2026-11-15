@@ -13,6 +13,7 @@ import { invalidateUserQuotaLedgerCache } from "@/lib/rate-limit";
 export type PayosPlanId =
   | "trial_24h"
   | "cram_pass"
+  | "cram_squad_3"
   | "pro"
   | "pro_monthly"
   | "tutor"
@@ -162,18 +163,23 @@ export function isAdminTestEmail(email?: string | null): boolean {
 
 export const EXPECTED_PLAN_AMOUNTS_VND: Record<PayosPlanId, number> = {
   trial_24h: 5_000,
-  cram_pass: 69_000,
-  pro: 299_000,
-  pro_semester: 299_000,
-  pro_monthly: 109_000,
-  tutor: 399_000,
-  tutor_guild: 399_000,
+  cram_pass: 49_000,
+  cram_squad_3: 119_000,
+  pro_monthly: 99_000,
+  pro: 149_000,
+  pro_semester: 149_000,
+  tutor: 349_000,
+  tutor_guild: 349_000,
 };
 
 export function getPlanBillingCycle(
   planId: PayosPlanId,
 ): "one_time" | "semester" | "monthly" {
-  if (planId === "cram_pass" || planId === "trial_24h") {
+  if (
+    planId === "cram_pass" ||
+    planId === "cram_squad_3" ||
+    planId === "trial_24h"
+  ) {
     return "one_time";
   }
   if (planId === "pro" || planId === "pro_semester") {
@@ -192,7 +198,11 @@ export function getPlanBillingCycle(
 export function mapPlanToUserTier(
   planId: PayosPlanId,
 ): "cram_pass" | "pro" | "tutor" {
-  if (planId === "cram_pass" || planId === "trial_24h") {
+  if (
+    planId === "cram_pass" ||
+    planId === "cram_squad_3" ||
+    planId === "trial_24h"
+  ) {
     return "cram_pass";
   }
   if (planId === "tutor" || planId === "tutor_guild") {
@@ -280,6 +290,8 @@ let lastGeneratedTimestamp = 0;
  * - 2 for pro or pro_semester
  * - 3 for pro_monthly
  * - 4 for tutor or tutor_guild
+ * - 5 for trial_24h
+ * - 6 for cram_squad_3
  * Safe within Number.MAX_SAFE_INTEGER (14-digit integer).
  */
 export function generatePayosOrderCode(planId: PayosPlanId): number {
@@ -298,6 +310,8 @@ export function generatePayosOrderCode(planId: PayosPlanId): number {
     planSuffix = 4;
   } else if (planId === "trial_24h") {
     planSuffix = 5;
+  } else if (planId === "cram_squad_3") {
+    planSuffix = 6;
   } else {
     planSuffix = 1;
   }
@@ -312,10 +326,12 @@ export function generatePayosOrderCode(planId: PayosPlanId): number {
  * - orderCode % 10 === 3 -> "pro_monthly"
  * - orderCode % 10 === 4 -> "tutor"
  * - orderCode % 10 === 5 -> "trial_24h"
- * - amount === 5000 or 39000 or 69000 -> "cram_pass"
- * - amount === 109000 -> "pro_monthly"
+ * - orderCode % 10 === 6 -> "cram_squad_3"
+ * - amount === 5000, 39000, 49000, or 69000 -> "cram_pass"
+ * - amount === 119000 -> "cram_squad_3"
+ * - amount === 99000 or 109000 -> "pro_monthly"
  * - amount === 149000 or 299000 -> "pro"
- * - amount === 399000 -> "tutor"
+ * - amount === 349000 or 399000 -> "tutor"
  */
 export function decodePlanFromOrderCode(
   orderCode: number,
@@ -337,16 +353,27 @@ export function decodePlanFromOrderCode(
   if (lastDigit === 5) {
     return "trial_24h";
   }
-  if (amount === 5000 || amount === 39000 || amount === 69000) {
+  if (lastDigit === 6) {
+    return "cram_squad_3";
+  }
+  if (
+    amount === 5000 ||
+    amount === 39000 ||
+    amount === 49000 ||
+    amount === 69000
+  ) {
     return "cram_pass";
   }
-  if (amount === 109000) {
+  if (amount === 119000) {
+    return "cram_squad_3";
+  }
+  if (amount === 99000 || amount === 109000) {
     return "pro_monthly";
   }
   if (amount === 149000 || amount === 299000) {
     return "pro";
   }
-  if (amount === 399000) {
+  if (amount === 349000 || amount === 399000) {
     return "tutor";
   }
   return null;
@@ -361,7 +388,9 @@ export function buildPayosDescription(
 ): string {
   const suffix = String(Math.abs(orderCode)).slice(-6);
   let prefix = "CLUTCH CRAM";
-  if (planId === "pro" || planId === "pro_semester") {
+  if (planId === "cram_squad_3") {
+    prefix = "CLUTCH SQUAD";
+  } else if (planId === "pro" || planId === "pro_semester") {
     prefix = "CLUTCH PRO";
   } else if (planId === "pro_monthly") {
     prefix = "CLUTCH MONTHLY";
@@ -764,6 +793,7 @@ export async function fulfillPayosOrder(
       if (
         sub?.tier === "trial_24h" ||
         sub?.tier === "cram_pass" ||
+        sub?.tier === "cram_squad_3" ||
         sub?.tier === "pro" ||
         sub?.tier === "pro_monthly" ||
         sub?.tier === "tutor" ||
@@ -977,7 +1007,7 @@ export async function fulfillPayosOrder(
   const defaultPlanAmount =
     resolvedTier && EXPECTED_PLAN_AMOUNTS_VND[resolvedTier]
       ? EXPECTED_PLAN_AMOUNTS_VND[resolvedTier]
-      : 69000;
+      : 49000;
   const finalAmount =
     typeof params.amount === "number" && params.amount > 0
       ? params.amount

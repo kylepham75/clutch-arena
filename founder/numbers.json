@@ -1,0 +1,55 @@
+{
+  "business": "Clutch Arena",
+  "unit": "paid order",
+  "price": 4.85,
+  "variable": [
+    {
+      "label": "OpenRouter AI generation & SymPy verifier (w/ 50% squad/course cache hit)",
+      "cost": 0.16
+    },
+    {
+      "label": "Free 5-question proof preview subsidy (8 free previews per paid order)",
+      "cost": 0.14
+    },
+    {
+      "label": "Verified Math Guarantee reserve (modeled at 3% claim rate + bonus pass AI cost)",
+      "cost": 0.12
+    },
+    {
+      "label": "Blended payment gateway fee (60% PayOS VietQR ~$0.05 + 40% ROW MoR 5%+$0.50)",
+      "cost": 0.33
+    },
+    {
+      "label": "Supabase DB, storage & SSE relay bandwidth per paid cycle",
+      "cost": 0.05
+    }
+  ],
+  "fixed_monthly": [
+    {
+      "label": "Vercel Pro + Supabase Pro base infrastructure (Roadmap model)",
+      "cost": 45.0
+    },
+    {
+      "label": "Google One Pro (120,000 VND = $4.65 actual) + domain & telemetry reserve",
+      "cost": 25.0
+    },
+    {
+      "label": "Campus creator & TA study-room seeding pool (Roadmap model)",
+      "cost": 300.0
+    }
+  ],
+  "startup": [
+    {
+      "label": "OpenRouter AI credit consumed during pre-launch build & testing",
+      "cost": 20.0
+    },
+    {
+      "label": "Pre-launch Google One Pro (1 month @ 120,000 VND / 25,800 FX)",
+      "cost": 4.65
+    }
+  ],
+  "days_per_month": 30,
+  "capacity_per_day": 200,
+  "plan_per_day": 5.0,
+  "ramp_per_day": [1.8, 2.4, 1.4, 3.5, 5.0, 6.8, 4.0, 2.2, 4.0, 6.2, 7.2, 8.5]
+}

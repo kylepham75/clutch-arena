@@ -14,6 +14,7 @@ export const runtime = "nodejs";
 const VALID_PAYOS_PLANS = new Set<PayosPlanId>([
   "trial_24h",
   "cram_pass",
+  "cram_squad_3",
   "pro",
   "pro_monthly",
   "tutor",

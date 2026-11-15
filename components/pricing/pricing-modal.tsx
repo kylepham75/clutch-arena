@@ -73,6 +73,7 @@ export function PricingModal({
     getEffectiveCurrency(getBillingRegionClient()).toLowerCase() as "vnd" | "usd",
   );
   const [selectedPlan, setSelectedPlan] = useState<PlanPricing | null>(null);
+  const [pricingTab, setPricingTab] = useState<"student" | "tutor">("student");
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [simulating, setSimulating] = useState(false);
@@ -99,6 +100,7 @@ export function PricingModal({
       if (user?.email && !earlyContact) {
         setEarlyContact(user.email);
       }
+      setPricingTab("student");
     }
   }, [open, user?.email]);
 
@@ -139,6 +141,7 @@ export function PricingModal({
     async (plan: PlanPricing) => {
       if (
         plan.id !== "cram_pass" &&
+        plan.id !== "cram_squad_3" &&
         plan.id !== "pro" &&
         plan.id !== "pro_monthly" &&
         plan.id !== "tutor" &&
@@ -218,6 +221,7 @@ export function PricingModal({
     const isPayosPlan =
       selectedPlan &&
       (selectedPlan.id === "cram_pass" ||
+        selectedPlan.id === "cram_squad_3" ||
         selectedPlan.id === "pro" ||
         selectedPlan.id === "pro_monthly" ||
         selectedPlan.id === "tutor" ||
@@ -305,7 +309,7 @@ export function PricingModal({
       return;
     }
     if (
-      (plan.id === "cram_pass" || plan.id === "pro_monthly") &&
+      (plan.id === "cram_pass" || plan.id === "cram_squad_3" || plan.id === "pro_monthly") &&
       (tier === "pro" || tier === "tutor")
     ) {
       return;
@@ -315,11 +319,14 @@ export function PricingModal({
     }
     if (
       plan.id === "cram_pass" ||
+      plan.id === "cram_squad_3" ||
       plan.id === "pro" ||
       plan.id === "pro_monthly" ||
       plan.id === "tutor"
     ) {
-      sendSmokeTestTelemetry(plan.id, "plan_selected");
+      const telemetryId: "cram_pass" | "pro" | "pro_monthly" | "tutor" =
+        plan.id === "cram_squad_3" ? "cram_pass" : plan.id;
+      sendSmokeTestTelemetry(telemetryId, "plan_selected");
     }
     setSelectedPlan(plan);
     setPayosOrder(null);
@@ -345,11 +352,14 @@ export function PricingModal({
     if (!selectedPlan) return;
     if (
       selectedPlan.id === "cram_pass" ||
+      selectedPlan.id === "cram_squad_3" ||
       selectedPlan.id === "pro" ||
       selectedPlan.id === "pro_monthly" ||
       selectedPlan.id === "tutor"
     ) {
-      sendSmokeTestTelemetry(selectedPlan.id, "verify_clicked");
+      const telemetryId: "cram_pass" | "pro" | "pro_monthly" | "tutor" =
+        selectedPlan.id === "cram_squad_3" ? "cram_pass" : selectedPlan.id;
+      sendSmokeTestTelemetry(telemetryId, "verify_clicked");
     }
     setSimulating(true);
     setVerificationError(null);
@@ -404,6 +414,7 @@ export function PricingModal({
       const updated = await refreshTier();
       if (
         updated === selectedPlan.id ||
+        (selectedPlan.id === "cram_squad_3" && updated === "cram_pass") ||
         updated === "pro" ||
         updated === "cram_pass"
       ) {
@@ -501,6 +512,252 @@ export function PricingModal({
   const displayAccountNumber = payosOrder?.accountNumber || "";
   const displayAccountName = payosOrder?.accountName || "PayOS VietQR";
   const displayTransferNote = payosOrder?.description || "";
+
+  const renderPlanCard = (plan: PlanPricing) => {
+    const isCurrent = tier === plan.id;
+    const isRecommended = plan.id === "pro";
+    const isIncluded =
+      (plan.id === "contender" && tier !== "contender") ||
+      (tier === "tutor" &&
+        (plan.id === "cram_pass" ||
+          plan.id === "cram_squad_3" ||
+          plan.id === "pro_monthly" ||
+          plan.id === "pro")) ||
+      (tier === "pro" &&
+        (plan.id === "cram_pass" ||
+          plan.id === "cram_squad_3" ||
+          plan.id === "pro_monthly"));
+    const isButtonDisabled = isCurrent || Boolean(plan.comingSoon) || isIncluded;
+
+    const buttonLabel = plan.comingSoon
+      ? isVi
+        ? "Sắp ra mắt"
+        : "Coming Soon"
+      : isCurrent
+        ? isVi
+          ? "Đang sử dụng"
+          : "Current Tier"
+        : plan.id === "contender"
+          ? isVi
+            ? "Gói cơ bản"
+            : "Included"
+          : tier === "tutor" &&
+              (plan.id === "cram_pass" ||
+                plan.id === "cram_squad_3" ||
+                plan.id === "pro_monthly" ||
+                plan.id === "pro")
+            ? isVi
+              ? "Đã có trong gói Giảng Viên"
+              : "Included in Tutor"
+            : tier === "pro" &&
+                (plan.id === "cram_pass" ||
+                  plan.id === "cram_squad_3" ||
+                  plan.id === "pro_monthly")
+              ? isVi
+                ? "Đã có trong gói Pro"
+                : "Included in Pro"
+              : isVi
+                ? "Mở khóa ngay"
+                : "Unlock Now";
+
+    let badgeLabel: string | null = null;
+    if (plan.id === "cram_pass") {
+      badgeLabel = isVi ? "Nước rút 48h" : "48h Exam Sprint";
+    } else if (plan.id === "cram_squad_3") {
+      badgeLabel = isVi ? "Nhóm 3 Người" : "Squad 3-Pack";
+    } else if (plan.id === "pro") {
+      badgeLabel = isVi ? "Tiết kiệm nhất" : "Best Value";
+    } else if (plan.comingSoon) {
+      badgeLabel = isVi ? plan.badgeVi ?? "Sắp ra mắt" : plan.badgeEn ?? "Coming Soon";
+    } else if (plan.badgeEn) {
+      badgeLabel = isVi ? plan.badgeVi ?? plan.badgeEn : plan.badgeEn;
+    }
+
+    const regionalPrice = getPlanRegionalPrice(plan.id, billingRegion);
+    const priceRaw = regionalPrice.formatted;
+    const displayPrice = priceRaw.includes("/")
+      ? priceRaw.split("/")[0]
+      : priceRaw;
+    const displayUnit =
+      plan.cycle === "free"
+        ? isVi
+          ? "/ Vĩnh viễn"
+          : "/ Forever"
+        : plan.cycle === "one_time"
+          ? isVi
+            ? "/ 7 ngày"
+            : "/ 7 days"
+          : plan.cycle === "semester"
+            ? isVi
+              ? "/ Kỳ"
+              : "/ Sem"
+            : isVi
+              ? "/ Tháng"
+              : "/ Mo";
+
+    const isHighlighted =
+      (isRecommended || (pricingTab === "tutor" && plan.id === "tutor")) &&
+      !isButtonDisabled;
+
+    const cardTagline =
+      plan.id === "cram_squad_3"
+        ? billingRegion === "VN"
+          ? isVi
+            ? "Chia sẻ cùng 2 bạn học (~39.700đ/sinh viên). Không gia hạn tự động"
+            : "Split with 2 study partners (~39.700đ/student). Zero subscription"
+          : isVi
+            ? "Chia sẻ cùng 2 bạn học (~$3.00/sinh viên). Không gia hạn tự động"
+            : "Split with 2 study partners (~$3.00/student). Zero subscription"
+        : isVi
+          ? plan.taglineVi
+          : plan.taglineEn;
+
+    const rawFeatures = isVi ? plan.featuresVi : plan.featuresEn;
+    const cardFeatures = rawFeatures.map((feat) => {
+      if (billingRegion === "ROW") {
+        return feat.replace(" (tương đương 37.250đ/tháng)", " (equivalent to $3.00/mo)");
+      }
+      if (billingRegion === "VN") {
+        return feat.replace("$0", "0đ");
+      }
+      return feat;
+    });
+
+    return (
+      <div
+        key={plan.id}
+        className={`tier-card relative flex flex-col justify-between p-3.5 sm:p-4 2xl:p-5 rounded-2xl border transition-all min-w-0 overflow-hidden ${
+          isRecommended
+            ? "border-amber-400 dark:border-amber-500/70 bg-gradient-to-b from-amber-50/70 to-white dark:from-amber-950/20 dark:to-stone-900 shadow-md ring-1 ring-amber-300 dark:ring-amber-500/30"
+            : pricingTab === "tutor" && plan.id === "tutor"
+              ? "border-amber-300 dark:border-amber-700/80 bg-gradient-to-b from-amber-50/40 to-white dark:from-amber-950/15 dark:to-stone-900 shadow-md"
+              : "border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/60 shadow-xs"
+        }`}
+      >
+        <div>
+          {/* Top row: badge & icon */}
+          <div className="flex items-center justify-between h-6 mb-2">
+            {badgeLabel ? (
+              <span className="inline-flex items-center text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500 text-stone-950 shadow-xs whitespace-nowrap">
+                {badgeLabel}
+              </span>
+            ) : (
+              <span />
+            )}
+            <div className="text-stone-400 dark:text-stone-500 shrink-0">
+              {plan.id === "tutor" ? (
+                <Users size={17} />
+              ) : plan.id === "pro" ? (
+                <Zap size={17} className="text-amber-500 fill-amber-500/20" />
+              ) : plan.id === "pro_monthly" ? (
+                <Sparkles size={17} className="text-amber-500" />
+              ) : plan.id === "cram_squad_3" ? (
+                <Users size={17} className="text-amber-600" />
+              ) : plan.id === "cram_pass" ? (
+                <Flame size={17} className="text-amber-600 fill-amber-600/20" />
+              ) : (
+                <Layers3 size={17} />
+              )}
+            </div>
+          </div>
+
+          <h3 className="font-extrabold text-base sm:text-[17px] 2xl:text-lg text-stone-900 dark:text-stone-100 tracking-tight leading-snug">
+            {isVi ? plan.nameVi : plan.nameEn}
+          </h3>
+
+          <p className="text-xs text-stone-500 dark:text-stone-400 min-h-[36px] line-clamp-2 leading-relaxed mt-1">
+            {cardTagline}
+          </p>
+
+          {/* Price Tag Box */}
+          <div className="my-3 py-2 px-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/40 border border-stone-200/70 dark:border-stone-800">
+            <div className="flex items-baseline gap-1.5 flex-wrap">
+              <span className="text-xl sm:text-2xl font-black text-stone-900 dark:text-stone-50 tracking-tight whitespace-nowrap">
+                {displayPrice}
+              </span>
+              <span className="text-[10px] sm:text-[11px] font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wide whitespace-nowrap">
+                {displayUnit}
+              </span>
+            </div>
+
+            {plan.id === "pro" && (
+              <div className="mt-1">
+                <span className="inline-flex items-center text-[10px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 px-1.5 py-0.5 rounded">
+                  {isVi ? "Bằng 3 vé lẻ" : "3x Solo Cram Pass"}
+                </span>
+              </div>
+            )}
+
+            {plan.id === "cram_squad_3" && (
+              <div className="mt-1">
+                <span className="inline-flex items-center text-[10px] font-bold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 px-1.5 py-0.5 rounded">
+                  {billingRegion === "VN"
+                    ? (isVi ? "~39.700đ / SV" : "~39.700đ / student")
+                    : (isVi ? "~$3.00 / SV" : "~$3.00 / student")}
+                </span>
+              </div>
+            )}
+
+            <div className="text-[10px] text-stone-500 dark:text-stone-400 font-medium mt-0.5">
+              {plan.id === "pro"
+                ? isVi
+                  ? "Trọn kỳ học 4 tháng"
+                  : "Full 4-month semester"
+                : plan.cycle === "free"
+                  ? isVi
+                    ? "Không cần tài khoản thẻ"
+                    : "No credit card required"
+                  : plan.id === "cram_squad_3"
+                    ? isVi
+                      ? "3 suất độc lập · Mua 1 lần"
+                      : "3 independent passes · One-time"
+                    : plan.cycle === "one_time"
+                      ? isVi
+                        ? "Mua 1 lần · Không gia hạn"
+                        : "One-time pass · No renew"
+                      : plan.id === "pro_monthly"
+                        ? isVi
+                          ? "Hủy đăng ký bất cứ lúc nào"
+                          : "Cancel anytime"
+                        : isVi
+                          ? "Hủy đăng ký bất cứ lúc nào"
+                          : "Cancel anytime"}
+            </div>
+          </div>
+
+          {/* Features list */}
+          <ul className="space-y-2 text-xs text-stone-600 dark:text-stone-300 mb-4">
+            {cardFeatures.map((feat, i) => (
+              <li key={i} className="flex items-start gap-1.5 leading-snug">
+                <Check
+                  size={14}
+                  className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5"
+                />
+                <span>{feat}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <Button
+          onClick={() => handleSelectPlan(plan)}
+          disabled={isButtonDisabled}
+          variant={isHighlighted ? "dark" : "outline"}
+          className={`w-full text-xs font-bold py-2.5 rounded-xl mt-2 transition-all shadow-xs ${
+            isButtonDisabled
+              ? "opacity-60 cursor-not-allowed bg-stone-100 dark:bg-stone-800 text-stone-500 border-stone-200 dark:border-stone-700"
+              : "cursor-pointer"
+          } ${
+            isHighlighted
+              ? "bg-amber-600 hover:bg-amber-700 text-white shadow-sm"
+              : ""
+          }`}
+        >
+          {buttonLabel}
+        </Button>
+      </div>
+    );
+  };
 
   return (
     <Dialog
@@ -947,12 +1204,15 @@ export function PricingModal({
                         const contact = earlyContact.trim() || user?.email || "";
                         if (
                           selectedPlan.id === "cram_pass" ||
+                          selectedPlan.id === "cram_squad_3" ||
                           selectedPlan.id === "pro" ||
                           selectedPlan.id === "pro_monthly" ||
                           selectedPlan.id === "tutor"
                         ) {
+                          const telemetryId: "cram_pass" | "pro" | "pro_monthly" | "tutor" =
+                            selectedPlan.id === "cram_squad_3" ? "cram_pass" : selectedPlan.id;
                           sendSmokeTestTelemetry(
-                            selectedPlan.id,
+                            telemetryId,
                             "early_access_requested",
                             contact,
                           );
@@ -1050,11 +1310,15 @@ export function PricingModal({
                           onClick={() => {
                             if (
                               selectedPlan.id === "cram_pass" ||
+                              selectedPlan.id === "cram_squad_3" ||
                               selectedPlan.id === "pro" ||
-                              selectedPlan.id === "pro_monthly"
+                              selectedPlan.id === "pro_monthly" ||
+                              selectedPlan.id === "tutor"
                             ) {
+                              const telemetryId: "cram_pass" | "pro" | "pro_monthly" | "tutor" =
+                                selectedPlan.id === "cram_squad_3" ? "cram_pass" : selectedPlan.id;
                               sendSmokeTestTelemetry(
-                                selectedPlan.id,
+                                telemetryId,
                                 "early_access_requested",
                                 earlyContact,
                               );
@@ -1073,201 +1337,49 @@ export function PricingModal({
             )}
           </div>
         ) : (
-          /* 5-Plan Comparison Grid */
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 xl:gap-3.5 2xl:gap-4">
-            {PRICING_PLANS.map((plan) => {
-              const isCurrent = tier === plan.id;
-              const isRecommended = plan.id === "pro";
-              const isIncluded =
-                (plan.id === "contender" && tier !== "contender") ||
-                (tier === "tutor" &&
-                  (plan.id === "cram_pass" || plan.id === "pro_monthly" || plan.id === "pro")) ||
-                (tier === "pro" &&
-                  (plan.id === "cram_pass" || plan.id === "pro_monthly"));
-              const isButtonDisabled = isCurrent || Boolean(plan.comingSoon) || isIncluded;
-
-              const buttonLabel = plan.comingSoon
-                ? isVi
-                  ? "Sắp ra mắt"
-                  : "Coming Soon"
-                : isCurrent
-                  ? isVi
-                    ? "Đang sử dụng"
-                    : "Current Tier"
-                  : plan.id === "contender"
-                    ? isVi
-                      ? "Gói cơ bản"
-                      : "Included"
-                    : tier === "tutor" &&
-                        (plan.id === "cram_pass" || plan.id === "pro_monthly" || plan.id === "pro")
-                      ? isVi
-                        ? "Đã có trong gói Giảng Viên"
-                        : "Included in Tutor"
-                      : tier === "pro" &&
-                          (plan.id === "cram_pass" || plan.id === "pro_monthly")
-                        ? isVi
-                          ? "Đã có trong gói Pro"
-                          : "Included in Pro"
-                        : isVi
-                          ? "Mở khóa ngay"
-                          : "Unlock Now";
-
-              let badgeLabel: string | null = null;
-              if (plan.id === "cram_pass") {
-                badgeLabel = isVi ? "Nước rút 48h" : "48h Exam Sprint";
-              } else if (plan.id === "pro") {
-                badgeLabel = "Best Value";
-              } else if (plan.comingSoon) {
-                badgeLabel = isVi ? plan.badgeVi ?? "Sắp ra mắt" : plan.badgeEn ?? "Coming Soon";
-              } else if (plan.badgeEn) {
-                badgeLabel = isVi ? plan.badgeVi ?? plan.badgeEn : plan.badgeEn;
-              }
-
-              const regionalPrice = getPlanRegionalPrice(plan.id, billingRegion);
-              const priceRaw = regionalPrice.formatted;
-              const displayPrice = priceRaw.includes("/")
-                ? priceRaw.split("/")[0]
-                : priceRaw;
-              const displayUnit =
-                plan.cycle === "free"
-                  ? isVi
-                    ? "/ Vĩnh viễn"
-                    : "/ Forever"
-                  : plan.cycle === "one_time"
-                    ? isVi
-                      ? "/ 7 ngày"
-                      : "/ 7 days"
-                    : plan.cycle === "semester"
-                      ? isVi
-                        ? "/ Kỳ"
-                        : "/ Sem"
-                      : isVi
-                        ? "/ Tháng"
-                        : "/ Mo";
-
-              return (
-                <div
-                  key={plan.id}
-                  className={`tier-card relative flex flex-col justify-between p-3.5 sm:p-4 2xl:p-5 rounded-2xl border transition-all min-w-0 overflow-hidden ${
-                    isRecommended
-                      ? "border-amber-400 dark:border-amber-500/70 bg-gradient-to-b from-amber-50/70 to-white dark:from-amber-950/20 dark:to-stone-900 shadow-md ring-1 ring-amber-300 dark:ring-amber-500/30"
-                      : "border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/60 shadow-xs"
+          <div className="tier-comparison-wrapper">
+            {/* Audience 2-Tab Pill Switcher */}
+            <div className="flex items-center justify-center mb-5">
+              <div className="inline-flex p-1 rounded-xl bg-stone-100 dark:bg-stone-800/80 border border-stone-200 dark:border-stone-700/80 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setPricingTab("student")}
+                  className={`px-3.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                    pricingTab === "student"
+                      ? "bg-white dark:bg-stone-900 text-amber-700 dark:text-amber-400 font-bold shadow-xs"
+                      : "text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
                   }`}
                 >
-                  <div>
-                    {/* Top row: badge & icon */}
-                    <div className="flex items-center justify-between h-6 mb-2">
-                      {badgeLabel ? (
-                        <span className="inline-flex items-center text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500 text-stone-950 shadow-xs whitespace-nowrap">
-                          {badgeLabel}
-                        </span>
-                      ) : (
-                        <span />
-                      )}
-                      <div className="text-stone-400 dark:text-stone-500 shrink-0">
-                        {plan.id === "tutor" ? (
-                          <Users size={17} />
-                        ) : plan.id === "pro" ? (
-                          <Zap size={17} className="text-amber-500 fill-amber-500/20" />
-                        ) : plan.id === "pro_monthly" ? (
-                          <Sparkles size={17} className="text-amber-500" />
-                        ) : plan.id === "cram_pass" ? (
-                          <Flame size={17} className="text-amber-600 fill-amber-600/20" />
-                        ) : (
-                          <Layers3 size={17} />
-                        )}
-                      </div>
-                    </div>
+                  {isVi ? "Gói Sinh Viên & Nhóm Ôn Thi" : "Student & Squad Passes"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPricingTab("tutor")}
+                  className={`px-3.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                    pricingTab === "tutor"
+                      ? "bg-white dark:bg-stone-900 text-amber-700 dark:text-amber-400 font-bold shadow-xs"
+                      : "text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
+                  }`}
+                >
+                  {isVi ? "Dành cho Trợ Giảng & CLB" : "For TAs & Study Guilds"}
+                </button>
+              </div>
+            </div>
 
-                    <h3 className="font-extrabold text-base sm:text-[17px] 2xl:text-lg text-stone-900 dark:text-stone-100 tracking-tight leading-snug">
-                      {isVi ? plan.nameVi : plan.nameEn}
-                    </h3>
-
-                    <p className="text-xs text-stone-500 dark:text-stone-400 min-h-[36px] line-clamp-2 leading-relaxed mt-1">
-                      {isVi ? plan.taglineVi : plan.taglineEn}
-                    </p>
-
-                    {/* Price Tag Box */}
-                    <div className="my-3 py-2 px-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/40 border border-stone-200/70 dark:border-stone-800">
-                      <div className="flex items-baseline gap-1.5 flex-wrap">
-                        <span className="text-xl sm:text-2xl font-black text-stone-900 dark:text-stone-50 tracking-tight whitespace-nowrap">
-                          {displayPrice}
-                        </span>
-                        <span className="text-[10px] sm:text-[11px] font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wide whitespace-nowrap">
-                          {displayUnit}
-                        </span>
-                      </div>
-
-                      {plan.id === "pro" && (
-                        <div className="mt-1">
-                          <span className="inline-flex items-center text-[10px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 px-1.5 py-0.5 rounded">
-                            {billingRegion === "VN"
-                              ? isVi
-                                ? "Tiết kiệm 31%"
-                                : "Save 31%"
-                              : isVi
-                                ? "Tiết kiệm 27%"
-                                : "Save 27%"}
-                          </span>
-                        </div>
-                      )}
-
-                      <div className="text-[10px] text-stone-500 dark:text-stone-400 font-medium mt-0.5">
-                        {plan.id === "pro"
-                          ? isVi
-                            ? "Trọn kỳ học 4 tháng"
-                            : "Full 4-month semester"
-                          : plan.cycle === "free"
-                            ? isVi
-                              ? "Không cần tài khoản thẻ"
-                              : "No credit card required"
-                            : plan.cycle === "one_time"
-                              ? isVi
-                                ? "Mua 1 lần · Không gia hạn"
-                                : "One-time pass · No renew"
-                              : plan.id === "pro_monthly"
-                                ? isVi
-                                  ? "Hủy đăng ký bất cứ lúc nào"
-                                  : "Cancel anytime"
-                                : isVi
-                                  ? "Hủy đăng ký bất cứ lúc nào"
-                                  : "Cancel anytime"}
-                      </div>
-                    </div>
-
-                    {/* Features list */}
-                    <ul className="space-y-2 text-xs text-stone-600 dark:text-stone-300 mb-4">
-                      {(isVi ? plan.featuresVi : plan.featuresEn).map((feat, i) => (
-                        <li key={i} className="flex items-start gap-1.5 leading-snug">
-                          <Check
-                            size={14}
-                            className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5"
-                          />
-                          <span>{feat}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <Button
-                    onClick={() => handleSelectPlan(plan)}
-                    disabled={isButtonDisabled}
-                    variant={isRecommended && !isButtonDisabled ? "dark" : "outline"}
-                    className={`w-full text-xs font-bold py-2.5 rounded-xl mt-2 transition-all shadow-xs ${
-                      isButtonDisabled
-                        ? "opacity-60 cursor-not-allowed bg-stone-100 dark:bg-stone-800 text-stone-500 border-stone-200 dark:border-stone-700"
-                        : "cursor-pointer"
-                    } ${
-                      isRecommended && !isButtonDisabled
-                        ? "bg-amber-600 hover:bg-amber-700 text-white shadow-sm"
-                        : ""
-                    }`}
-                  >
-                    {buttonLabel}
-                  </Button>
-                </div>
-              );
-            })}
+            {/* Plans Display */}
+            {pricingTab === "student" ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 xl:gap-3.5 2xl:gap-4">
+                {PRICING_PLANS.filter((p) => p.id !== "tutor").map((plan) =>
+                  renderPlanCard(plan),
+                )}
+              </div>
+            ) : (
+              <div className="max-w-md sm:max-w-lg mx-auto w-full">
+                {PRICING_PLANS.filter((p) => p.id === "tutor").map((plan) =>
+                  renderPlanCard(plan),
+                )}
+              </div>
+            )}
           </div>
         )}
 

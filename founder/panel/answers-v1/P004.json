@@ -1,0 +1,13 @@
+{
+  "id": "P004",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I already get slide-cited summaries, flashcards, and past papers for free by stacking NotebookLM, ChatGPT, Knowt, and campus Google Drive banks, so I don't see why I'd pay for a 7-day cram pass. On top of that, a 15-second timer and 4-second reading lock sounds stressful when my midterm is in 48 hours and I just want fast answers.",
+  "objection": "Forcing a 15-second timer and 4-second reading lock slows me down when I need to look up a formula fast or work through Corporate Finance math, and free NotebookLM already links answers back to my slides.",
+  "would_change_my_mind": "Seeing the free starter deck nail tough Corporate Finance formula problems without forcing a 15-second timer and 4-second reading lock.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 3,
+  "price_too_expensive": 5
+}

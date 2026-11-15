@@ -1,0 +1,13 @@
+{
+  "id": "P006",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I already paste my lecture PDFs into free ChatGPT and NotebookLM and pull past finals from our campus Zalo and Google Drive banks for 0 VND, so paying 49,000 VND in a normal week feels unnecessary. I might test the free 5-question preview out of curiosity, or wait to see if someone in my study chat drops the cheat sheet PDF, before ever spending my own money.",
+  "objection": "I've already seen free ChatGPT and NotebookLM struggle with messy Vietnamese-English slides and past exam notation, so I doubt this is worth 49,000 VND when our senior Drive exam banks already have real solved papers for free.",
+  "would_change_my_mind": "Running the free 5-question preview on one of my actual messy Vietnamese-English past exam PDFs right before a final with no solved Drive key and seeing it nail every formula step that ChatGPT gets wrong.",
+  "price_too_cheap": 0.35,
+  "price_cheap": 0.8,
+  "price_expensive": 1.5,
+  "price_too_expensive": 2.5
+}

@@ -614,6 +614,8 @@ export function ClutchNotesPanel({
         )}
         <NoteRenderer
           note={note}
+          sources={noteSources}
+          onNoteUpdated={(updated) => setNote(updated as ClutchNote)}
           onReset={() => {
             setNote(null);
             setCurrentSourceFile(null);

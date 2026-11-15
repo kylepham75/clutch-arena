@@ -526,4 +526,61 @@ describe("i18n Vietnamese & English translations", () => {
       expect(viHtml).toContain("Rời Đấu trường");
     });
   });
+
+  describe("Past-Exam & Formula Studio hero positioning & currency separation", () => {
+    it("uses Past-Exam & Formula Studio positioning in EN", () => {
+      expect(translations.en.brand.tagline).toContain("Past-Exam & Formula Studio");
+      expect(translations.en.run.welcomeTitle).toContain("Past-Exam & Formula Studio");
+      expect(translations.en.headings.clutchRunReady).toContain(
+        "Drop 1 Exam PDF Free -> Get 5 Verified Past-Exam Problems + 2-Page Cheat Sheet in 60s",
+      );
+      expect(translations.en.run.welcomeDesc).toContain(
+        "Drop 1 Exam PDF Free -> Get 5 Verified Past-Exam Problems + 2-Page Cheat Sheet in 60s",
+      );
+      expect(translations.en.run.welcomeDesc).toContain(
+        "Step-by-step math & slide-page citations",
+      );
+    });
+
+    it("does not contain Dual-Model in EN or VI hero strings", () => {
+      const heroStrings = [
+        translations.en.brand.tagline,
+        translations.en.brand.subspace,
+        ...Object.values(translations.en.headings),
+        translations.en.run.welcomeTitle,
+        translations.en.run.welcomeDesc,
+        translations.vi.brand.tagline,
+        translations.vi.brand.subspace,
+        ...Object.values(translations.vi.headings),
+        translations.vi.run.welcomeTitle,
+        translations.vi.run.welcomeDesc,
+      ];
+
+      for (const value of heroStrings) {
+        expect(value).not.toContain("Dual-Model");
+      }
+    });
+
+    it("enforces single-currency separation between EN (USD) and VI (VND)", () => {
+      const enScopedStrings = [
+        ...Object.values(translations.en.headings),
+        ...Object.values(translations.en.run),
+        translations.en.notes.modalUpgradeBtn,
+      ];
+      for (const value of enScopedStrings) {
+        expect(value).not.toContain("VND");
+        expect(value).not.toContain("đ");
+      }
+
+      const viScopedStrings = [
+        ...Object.values(translations.vi.headings),
+        ...Object.values(translations.vi.run),
+        translations.vi.notes.modalUpgradeBtn,
+      ];
+      for (const value of viScopedStrings) {
+        expect(value).not.toContain("$3.99");
+        expect(value).not.toContain("USD");
+      }
+    });
+  });
 });

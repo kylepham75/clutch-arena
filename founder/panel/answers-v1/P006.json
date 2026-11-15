@@ -1,0 +1,13 @@
+{
+  "id": "P006",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "price",
+  "reason": "Free NotebookLM, ChatGPT, Knowt, and our campus Zalo and Google Drive exam banks already cost $0, so on a $3,000/year student budget I'm not paying $2.67 (69,000 VND) for a 7-day pass in a normal week. At most I'd test the 10 free starter questions or join a classmate's free /arena room.",
+  "objection": "NotebookLM already links answers back to my uploaded PDFs for free, and seniors' Drive folders have actual past exam questions from our lecturers, so I doubt a 7-day AI pass over lecture slides justifies spending 69,000 VND.",
+  "would_change_my_mind": "Only if I were cramming 48 hours before a tough quantitative final where our campus Drive banks lacked worked solutions, and the free starter deck proved its formula-remix drills were noticeably better than NotebookLM and ChatGPT.",
+  "price_too_cheap": 0.4,
+  "price_cheap": 1.0,
+  "price_expensive": 1.5,
+  "price_too_expensive": 2.0
+}

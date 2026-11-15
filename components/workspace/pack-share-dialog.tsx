@@ -43,7 +43,7 @@ export function PackShareDialog({
   pack: StudyPack;
   missedIds?: string[];
 }) {
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
   const [link, setLink] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -255,13 +255,19 @@ export function PackShareDialog({
           <div className="mt-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200">
             <strong className="flex items-center gap-1 font-bold text-amber-900 dark:text-amber-100">
               <Zap size={13} className="text-amber-600" />
-              {t.share.zeroCostTitle}
+              {language === "vi"
+                ? "Bản xem trước 5 câu miễn phí & Tham gia phòng /arena $0"
+                : "Free 5-Question Preview & $0 /arena Joining"}
             </strong>
             <p className="mt-1 text-stone-600 dark:text-stone-300">
-              {t.share.zeroCostDesc}
+              {language === "vi"
+                ? "Bạn học mở liên kết #pack= sẽ được xem trước 5 câu hỏi đầu tiên hoàn toàn miễn phí, hoặc mở khóa trọn bộ 30 câu hỏi với Vé Ôn Thi Cấp Tốc 7 Ngày hay Combo Nhóm 3 Người. Tham gia phòng đấu /arena trực tiếp luôn miễn phí 100% cho tất cả mọi người."
+                : "Classmates opening this #pack= link preview the first 5 questions free or redeem a 7-Day Cram Pass / 3-Student Squad Pack to unlock all 30 questions, while joining live /arena multiplayer lobbies remains 100% free for everyone."}
             </p>
             <p className="mt-1 font-semibold text-emerald-700 dark:text-emerald-400">
-              {t.share.earnPassNote}
+              {language === "vi"
+                ? "Mẹo: Mở phòng /arena để cùng bạn bè thi đấu ôn tập tương tác không giới hạn!"
+                : "Tip: Host live /arena lobbies to challenge your study squad with zero friction!"}
             </p>
           </div>
         </section>

@@ -5,12 +5,12 @@
 :root {
   --background: #fafbf9;
   --foreground: #1c211a;
-  --primary: #e96943;
-  --primary-foreground: #fff;
+  --primary: #e85d2a;
+  --primary-foreground: #18181b;
   --muted: #eef0e9;
   --muted-foreground: #81857b;
   --border: #e2e5dc;
-  --ring: #e96943;
+  --ring: #e85d2a;
   --radius: 0.75rem;
   --font-heading: var(--font-space-grotesk), "Space Grotesk", "Be Vietnam Pro", sans-serif;
   --font-body: var(--font-be-vietnam-pro), "Be Vietnam Pro", Arial, Helvetica, sans-serif;
@@ -331,7 +331,7 @@ svg {
   stroke-width: 1.65;
 }
 .nav-item.active {
-  background: #e96943;
+  background: #c2410c;
   color: #fff;
   font-weight: 600;
   box-shadow: 0 4px 14px rgba(233, 105, 67, 0.28);
@@ -915,12 +915,14 @@ svg {
   transition: all 0.15s ease;
 }
 .btn-primary {
-  background: #e96943;
-  color: #ffffff;
+  background: #e85d2a;
+  color: #18181b;
+  font-weight: 700;
   box-shadow: 0 4px 12px rgba(233, 105, 67, 0.28);
 }
-.btn-primary:hover {
-  background: #d85933;
+.btn-primary:hover:not(:disabled) {
+  background: #c2410c;
+  color: #ffffff;
   transform: translateY(-1px);
   box-shadow: 0 6px 16px rgba(233, 105, 67, 0.35);
 }
@@ -973,14 +975,16 @@ svg {
   letter-spacing: -0.01em;
   padding: 16px 24px;
   border-radius: 12px;
-  background: #e96943;
-  color: #ffffff;
+  background: #e85d2a;
+  color: #18181b;
+  font-weight: 700;
   gap: 10px;
   box-shadow: 0 4px 16px rgba(233, 105, 67, 0.35);
   transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .start-button:hover:not(:disabled) {
-  background: #d85832;
+  background: #c2410c;
+  color: #ffffff;
   transform: translateY(-1px);
   box-shadow: 0 6px 20px rgba(233, 105, 67, 0.45);
 }

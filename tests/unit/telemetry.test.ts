@@ -142,7 +142,20 @@ describe("Telemetry Schemas", () => {
       language: "en",
     };
 
-    expect(smokeTestIntentSchema.safeParse(validSmoke).success).toBe(true);
+    for (const planId of [
+      "cram_pass",
+      "cram_squad_3",
+      "pro_monthly",
+      "pro",
+      "tutor",
+    ] as const) {
+      expect(
+        smokeTestIntentSchema.safeParse({
+          ...validSmoke,
+          planId,
+        }).success,
+      ).toBe(true);
+    }
 
     // Invalid planId
     expect(

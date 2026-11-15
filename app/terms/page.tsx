@@ -255,28 +255,36 @@ export default function TermsOfServicePage() {
           <section className="space-y-3">
             <h2 className="text-lg font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
               <span className="text-amber-600 dark:text-amber-400">5.</span>
-              {isVi ? "Điều Khoản Thanh Toán & Cổng PayOS VietQR" : "Payment Terms & PayOS VietQR Checkout"}
+              {isVi ? "Điều Khoản Thanh Toán, Thương Mại Điện Tử & Thuế" : "Payment Terms, Commercial Checkout & Tax Compliance"}
             </h2>
             <p>
               {isVi
-                ? "Các giao dịch thanh toán trên Clutch Arena được thực hiện minh bạch theo các nguyên tắc sau:"
-                : "Payments on Clutch Arena are conducted transparently under the following rules:"}
+                ? "Các giao dịch thanh toán trong nước và quốc tế trên Clutch Arena được thực hiện minh bạch theo các nguyên tắc và khung pháp lý sau:"
+                : "Domestic and international payments on Clutch Arena are conducted transparently under the following checkout and tax compliance frameworks:"}
             </p>
             <ul className="list-disc pl-5 space-y-2">
               <li>
                 <strong className="text-stone-900 dark:text-stone-100">
-                  {isVi ? "Cổng thanh toán VietQR PayOS: " : "PayOS VietQR Gateway: "}
+                  {isVi ? "Thanh toán nội địa VND qua PayOS VietQR & Tuân thủ pháp luật Việt Nam: " : "Domestic VND Checkout (PayOS VietQR) & Vietnam Regulatory Framework: "}
                 </strong>
                 {isVi
-                  ? "Thanh toán bằng Việt Nam Đồng (VND) được xử lý an toàn qua cổng PayOS và mạng lưới Napas 24/7, tuân thủ Thông tư của Ngân hàng Nhà nước Việt Nam và Nghị định 13/2023/NĐ-CP về bảo vệ dữ liệu cá nhân."
-                  : "VND payments are processed securely via PayOS over the Napas 24/7 VietQR banking network, in strict adherence to State Bank of Vietnam regulations and Vietnam Decree 13/2023/ND-CP."}
+                  ? "Đơn hàng bằng Việt Nam Đồng (VND) được xử lý an toàn qua cổng PayOS và mạng lưới Napas 24/7, tuân thủ quy định của Ngân hàng Nhà nước Việt Nam và Nghị định 13/2023/NĐ-CP. Hoạt động đăng ký kinh doanh, kê khai thuế điện tử và thương mại điện tử tuân theo hệ thống Cổng thông tin quốc gia về đăng ký doanh nghiệp (dangkykinhdoanh.gov.vn), Cổng Thuế điện tử Tổng cục Thuế (thuedientu.gdt.gov.vn) và khung pháp lý Luật Thương mại điện tử số 122/2025/QH15 của Bộ Công Thương (online.gov.vn)."
+                  : "Domestic VND orders are processed securely via PayOS over the Napas 24/7 VietQR banking network, in strict adherence to State Bank of Vietnam regulations and Decree 13/2023/ND-CP. Domestic commercial operations align with Vietnam's MPI business registration portal (dangkykinhdoanh.gov.vn), General Department of Taxation eTax portal (thuedientu.gdt.gov.vn), and the Ministry of Industry and Trade (MOIT) E-Commerce Law No. 122/2025/QH15 (online.gov.vn) notification framework."}
+              </li>
+              <li>
+                <strong className="text-stone-900 dark:text-stone-100">
+                  {isVi ? "Thanh toán quốc tế USD qua Polar.sh (Merchant of Record): " : "Global USD Checkout & Tax Collection (Polar.sh Merchant of Record): "}
+                </strong>
+                {isVi
+                  ? "Đơn hàng quốc tế bằng Đô la Mỹ (USD) được xử lý thông qua Polar.sh (hoặc đơn vị dự phòng Lemon Squeezy) với vai trò Nhà phân phối chịu trách nhiệm pháp lý (Merchant of Record — MoR), tự động tính toán, thu và nộp thuế bán hàng/VAT/GST theo quy định tại từng quốc gia."
+                  : "International USD orders are processed via Polar.sh (with Lemon Squeezy as backup) acting as our authorized Merchant of Record (MoR), handling global card/Apple Pay checkout as well as automated US sales tax, EU/UK VAT, and AU GST collection and remittance."}
               </li>
               <li>
                 <strong className="text-stone-900 dark:text-stone-100">
                   {isVi ? "Không tự động gia hạn đối với Vé Ôn Thi Cấp Tốc (Cram Pass): " : "No Auto-Renewal on Cram Passes: "}
                 </strong>
                 {isVi
-                  ? "Các gói Vé Ôn Thi Cấp Tốc (24 Giờ hoặc 7 Ngày) là khoản thanh toán một lần, TUYỆT ĐỐI KHÔNG tự động trừ tiền trong tài khoản ngân hàng của bạn ở kỳ tiếp theo."
+                  ? "Các gói Vé Ôn Thi Cấp Tốc (24 Giờ hoặc 7 Ngày) là khoản thanh toán một lần, TUYỆT ĐỐI KHÔNG tự động trừ tiền trong tài khoản ngân hàng hoặc thẻ của bạn ở kỳ tiếp theo."
                   : "One-time Cram Passes (24-Hour & 7-Day passes) do NOT auto-renew. You will never encounter surprise recurring charges on single passes."}
               </li>
               <li>
@@ -332,6 +340,11 @@ export default function TermsOfServicePage() {
                     <td className="px-3 py-2.5">{isVi ? "Tuân thủ chuẩn bảo mật NHNN & NĐ 13/2023/NĐ-CP" : "Licensed SBV intermediary, Decree 13 compliant"}</td>
                   </tr>
                   <tr>
+                    <td className="px-3 py-2.5 font-semibold text-stone-900 dark:text-stone-100">Polar.sh / Lemon Squeezy (Merchant of Record)</td>
+                    <td className="px-3 py-2.5">{isVi ? "Thanh toán quốc tế USD & Thuế bán hàng/VAT toàn cầu" : "Global USD checkout & sales tax/VAT remittance"}</td>
+                    <td className="px-3 py-2.5">{isVi ? "PCI-DSS Level 1 · Không lưu trữ thẻ tại máy chủ nội bộ" : "PCI-DSS Level 1 · Zero local card storage"}</td>
+                  </tr>
+                  <tr>
                     <td className="px-3 py-2.5 font-semibold text-stone-900 dark:text-stone-100">Upstash Inc.</td>
                     <td className="px-3 py-2.5">{isVi ? "Giới hạn tần suất & Trạng thái phòng đấu ngắn hạn" : "Rate limiting & ephemeral room state"}</td>
                     <td className="px-3 py-2.5">{isVi ? "Dữ liệu tự hủy (TTL) trong bộ nhớ tạm" : "In-memory store with auto-expiring TTL"}</td>
@@ -353,6 +366,11 @@ export default function TermsOfServicePage() {
               {isVi
                 ? "Dịch vụ được cung cấp trên nguyên tắc 'nguyên trạng' (as-is). Clutch Arena không đảm bảo việc sử dụng nền tảng sẽ giúp người học đạt được một điểm số cụ thể trong các kỳ thi chính thức. Người học chịu trách nhiệm kiểm tra lại kiến thức với giáo trình chính thống của cơ sở đào tạo."
                 : "The service is provided on an 'as-is' basis. While Clutch Arena employs strict active recall methodologies and verbatim citation extraction, we do not guarantee specific academic exam scores. Students are expected to cross-verify all study points against their syllabus."}
+            </p>
+            <p>
+              {isVi
+                ? "Công Cụ Hỗ Trợ Tự Học & Giới Hạn Trách Nhiệm Tối Đa: Clutch Arena chỉ là công cụ hỗ trợ tự ôn thi cá nhân (study aid only) — chúng tôi không chịu trách nhiệm về điểm thi thực tế hay kết quả học tập. Trong phạm vi tối đa pháp luật cho phép, tổng trách nhiệm pháp lý tối đa của Clutch Arena đối với mọi khiếu nại liên quan đến dịch vụ được giới hạn nghiêm ngặt ở mức giá vé đã thanh toán hoặc hoàn lại (capped at the pass price paid/refunded)."
+                : "Study Aid Only & Maximum Liability Cap: Clutch Arena is provided strictly as a personal exam study aid only — we are not responsible for actual exam grades or academic outcomes. To the maximum extent permitted by law, Clutch Arena's maximum aggregate liability for any claim arising from or related to the service is strictly capped at the pass price paid/refunded for your active study pass."}
             </p>
           </section>
 

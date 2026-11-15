@@ -1,0 +1,13 @@
+{
+  "id": "P009",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I already stack free NotebookLM, Knowt, ChatGPT, and campus Google Drive exam banks before ever paying for study tools, especially on an $8,000-a-year budget. With my midterm in 48 hours, I'm not spending $4.99 on an unfamiliar AI cram pass when I can stick to my free setup or just test the free 10-question deck.",
+  "objection": "AI constantly hallucinates finance, math, and economics formulas and gets calculations wrong. A verbatim link to my slide only shows where the base formula came from, not that the AI solved an applied formula-remix problem accurately—and a $4.99 refund won't rescue my midterm grade.",
+  "would_change_my_mind": "Seeing the free starter deck nail my own Corporate Finance calculations step-by-step with zero math errors so I could actually trust it 48 hours before an exam.",
+  "price_too_cheap": 0.99,
+  "price_cheap": 1.99,
+  "price_expensive": 3.49,
+  "price_too_expensive": 5.99
+}

@@ -74,7 +74,10 @@ import {
   decodeSharedPack,
   documentFromPack,
   printStudyGuide,
+  slicePackForPreview,
+  FREE_SHARED_PACK_PREVIEW_LIMIT,
 } from "@/lib/game/pack-transfer";
+import { getStoredUserTier, isPaidTier } from "@/lib/pricing/tiers";
 import {
   readMasteryStore,
   recordRunMastery,
@@ -128,6 +131,7 @@ export function SoloEngine({
     category?: FeedbackCategory;
     questionId?: string;
     citation?: string;
+    slideContext?: string;
   } | null>(null);
   const [activePdfFile, setActivePdfFile] = useState<File | null>(null);
   const [rescanningPages, setRescanningPages] = useState<number[]>([]);
@@ -137,6 +141,9 @@ export function SoloEngine({
     synced: boolean;
     syncing?: boolean;
     error?: string;
+    previewSliced?: boolean;
+    totalSharedQuestions?: number;
+    lockedQuestionCount?: number;
   } | null>(null);
 
   const handleSaveSharedDeckToCloud = useCallback(async () => {
@@ -223,27 +230,38 @@ export function SoloEngine({
 
     const existingIds = new Set(readLibrary().map((i) => i.id));
     void decodeSharedPack(token, { existingIds })
-      .then((sharedPack) => {
+      .then((decodedPack) => {
+        const totalQuestions = decodedPack.questions.length;
+        const recipientIsPaid = isPaidTier(getStoredUserTier());
+        const effectivePack = slicePackForPreview(
+          decodedPack,
+          FREE_SHARED_PACK_PREVIEW_LIMIT,
+          { isPaidRecipient: recipientIsPaid },
+        );
+
         const uniqueImportId = `shared-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`}`;
-        sharedPack.id = uniqueImportId;
-        setPack(sharedPack);
-        const doc = documentFromPack(sharedPack);
+        effectivePack.id = uniqueImportId;
+        setPack(effectivePack);
+        const doc = documentFromPack(effectivePack);
         setDocument(doc);
         const savedItem: SavedStudyItem = {
           id: uniqueImportId,
-          title: sharedPack.title,
+          title: effectivePack.title,
           createdAt: new Date().toISOString(),
-          questionCount: sharedPack.questions.length,
+          questionCount: effectivePack.questions.length,
           format: "txt",
-          fileName: `${sharedPack.title}.clutch.json`,
-          pack: sharedPack,
+          fileName: `${effectivePack.title}.clutch.json`,
+          pack: effectivePack,
           document: doc,
         };
         saveStudyItem(savedItem, { skipCloudSync: true });
         setSharedImportBanner({
           id: uniqueImportId,
-          title: sharedPack.title,
+          title: effectivePack.title,
           synced: false,
+          previewSliced: !recipientIsPaid && totalQuestions > effectivePack.questions.length,
+          totalSharedQuestions: totalQuestions,
+          lockedQuestionCount: Math.max(0, totalQuestions - effectivePack.questions.length),
         });
 
         const searchParams = new URLSearchParams(window.location.search);
@@ -260,7 +278,7 @@ export function SoloEngine({
       });
   }, []);
 
-  const { state, dispatch, answer, next } = useSoloGame(pack ? pack.questions : []);
+  const { state, dispatch, answer, next, toggleUntimed } = useSoloGame(pack ? pack.questions : []);
   const audio = useGameAudio();
   const reducedMotion = useReducedMotion();
   const [mode, setMode] = useState<"exact" | "variants">("exact");
@@ -286,7 +304,15 @@ export function SoloEngine({
   }, [initialPack, initialDoc]);
 
   const pendingSprintStart = useRef(false);
+  const untimedRef = useRef(state.untimed);
+  untimedRef.current = state.untimed;
+  const skipNextPackLoadRef = useRef(false);
+
   useEffect(() => {
+    if (skipNextPackLoadRef.current) {
+      skipNextPackLoadRef.current = false;
+      return;
+    }
     if (pack) {
       dispatch({ type: "LOAD_PACK", questions: pack.questions });
       soundAttempt.current = 0;
@@ -297,7 +323,12 @@ export function SoloEngine({
         audio.play("start");
         runId.current = crypto.randomUUID();
         setCoachDebriefRunId(null);
-        dispatch({ type: "START", mode: "exact", now: Date.now() });
+        dispatch({
+          type: "START",
+          mode: "exact",
+          untimed: untimedRef.current,
+          now: Date.now(),
+        });
         window.scrollTo(0, 0);
       }
     } else {
@@ -463,7 +494,7 @@ export function SoloEngine({
     audio.play("start");
     runId.current = crypto.randomUUID();
     setCoachDebriefRunId(null);
-    dispatch({ type: "START", mode, now: Date.now() });
+    dispatch({ type: "START", mode, untimed: state.untimed, now: Date.now() });
     window.scrollTo(0, 0);
   };
 
@@ -541,6 +572,74 @@ export function SoloEngine({
       excerpt: meta?.citation || (sourceBlock ? sourceBlock.text.slice(0, 300) : undefined),
     });
   }, [current, attempt, pack, document, handleAskCoach]);
+
+  const handleVerifyAndFixQuestion = useCallback(async () => {
+    if (!current || !pack) return;
+    const canonicalQuestion = pack.questions.find((q) => q.id === current.id);
+    if (!canonicalQuestion) return;
+
+    const meta = pack.metadata ? pack.metadata[current.id] : undefined;
+    const sourceBlock = findSourceBlockByCitation(
+      document?.sources,
+      meta?.citation,
+      meta?.rule || canonicalQuestion.question,
+    );
+
+    const res = await fetch("/api/repair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "question",
+        question: canonicalQuestion,
+        metadata: meta,
+        sourceText: sourceBlock?.text,
+      }),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok || !data.question) {
+      throw new Error(data?.error || "Failed to verify and repair question.");
+    }
+
+    dispatch({
+      type: "UPDATE_QUESTION",
+      question: data.question,
+      now: Date.now(),
+    });
+
+    const updatedQuestions = pack.questions.map((q) =>
+      q.id === data.question.id ? data.question : q,
+    );
+    const updatedMetadata = { ...pack.metadata };
+    if (data.metadata) {
+      updatedMetadata[current.id] = data.metadata;
+    }
+    const updatedPack: StudyPack = {
+      ...pack,
+      questions: updatedQuestions,
+      metadata: updatedMetadata,
+    };
+
+    skipNextPackLoadRef.current = true;
+    setPack(updatedPack);
+
+    const existing = getStudyItem(updatedPack.id);
+    if (existing) {
+      saveStudyItem(
+        {
+          ...existing,
+          pack: updatedPack,
+          questionCount: updatedPack.questions.length,
+        },
+        { overwrite: true },
+      );
+    }
+
+    return {
+      hallucinationDetected: Boolean(data.hallucinationDetected),
+      summary: typeof data.summary === "string" ? data.summary : undefined,
+    };
+  }, [current, pack, document, dispatch]);
 
   const handleDebriefCoach = useCallback(() => {
     if (!pack) return;
@@ -909,6 +1008,7 @@ export function SoloEngine({
             {!inRun && (
               <div className="page-heading">
                 <div>
+                  <div className="eyebrow">{t.headings.eyebrow}</div>
                   <h1>
                     {activeTab === "arena"
                       ? t.headings.arenaTitle
@@ -977,6 +1077,29 @@ export function SoloEngine({
                         ? "This shared deck has been backed up to your Cloud study packs library."
                         : "Opened via share link. Saved to this device only to prevent unprompted cloud overwrite."}
                     </p>
+                    {sharedImportBanner.previewSliced && (sharedImportBanner.lockedQuestionCount ?? 0) > 0 && (
+                      <div className="mt-2.5 p-3 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs text-amber-900 dark:text-amber-200">
+                        <p className="font-medium text-amber-950 dark:text-amber-100">
+                          {`Free Preview: Showing first 5 of ${sharedImportBanner.totalSharedQuestions} questions (+${sharedImportBanner.lockedQuestionCount} locked). Live /arena rooms remain 100% free.`}
+                        </p>
+                        <div className="mt-2">
+                          <Button
+                            size="sm"
+                            type="button"
+                            onClick={() => {
+                              setPricingReason(
+                                "Unlock all shared pack questions with a 7-Day Cram Pass or 3-Student Squad Pack.",
+                              );
+                              setPricingOpen(true);
+                            }}
+                            className="bg-amber-600 hover:bg-amber-700 text-white text-xs h-7 px-3 rounded-md font-semibold inline-flex items-center gap-1.5 shadow-sm"
+                          >
+                            <Zap size={13} />
+                            Unlock Full Deck / Squad 3-Pack
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                     {sharedImportBanner.error && (
                       <p className="text-xs text-rose-600 dark:text-rose-400 font-medium mt-1">
                         {sharedImportBanner.error}
@@ -1123,19 +1246,22 @@ export function SoloEngine({
                               <div className="space-y-1.5 text-center md:text-left">
                                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#fde8dc] text-[#d9532f] text-xs font-bold uppercase tracking-wider">
                                   <Zap size={14} fill="currentColor" />
-                                  <span>{t.nav.clutchRun}</span>
+                                  <span>{t.brand.tagline}</span>
                                 </span>
                                 <h3 className="text-xl sm:text-2xl font-extrabold text-[#1a2118] tracking-tight">
-                                  {t.run.welcomeSampleTitle}
+                                  {t.headings.clutchRunReady}
                                 </h3>
                                 <p className="text-xs sm:text-sm text-[#5d6754] max-w-lg leading-relaxed">
-                                  {t.run.welcomeSampleDesc}
+                                  {t.headings.playDesc}
+                                </p>
+                                <p className="text-xs text-[#6b7562] max-w-lg leading-relaxed">
+                                  {t.run.welcomeSampleTitle}: {t.run.welcomeSampleDesc}
                                 </p>
                               </div>
                               <div className="flex items-center gap-3 w-full md:w-auto">
                                 <Button
                                   onClick={handleLoadSamplePack}
-                                  className="flex-1 md:flex-none px-6 py-3 bg-[#e96943] hover:bg-[#d85833] text-white font-bold text-sm rounded-xl shadow-sm hover:scale-[1.01] transition-all cursor-pointer flex items-center justify-center gap-2"
+                                  className="flex-1 md:flex-none px-6 py-3 bg-[#e85d2a] hover:bg-[#c2410c] text-[#18181b] hover:text-white font-bold text-sm rounded-xl shadow-sm hover:scale-[1.01] transition-all cursor-pointer flex items-center justify-center gap-2"
                                 >
                                   <Play size={16} fill="currentColor" />
                                   <span>{t.run.startRun}</span>
@@ -1504,6 +1630,85 @@ export function SoloEngine({
                                 </div>
                               </div>
 
+                              {/* Untimed Cram / Instant Answer Toggle */}
+                              <div className="control-section">
+                                <div className="flex items-center justify-between mb-2">
+                                  <label className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                                    {language === "vi" ? "Tốc độ làm bài & Giới hạn giờ" : "Pacing & Timers"}
+                                  </label>
+                                  <span className="text-[11px] font-medium text-stone-500">
+                                    {state.untimed
+                                      ? language === "vi"
+                                        ? "Đang bật: Không giới hạn"
+                                        : "Active: Untimed Cram"
+                                      : language === "vi"
+                                        ? "Đang bật: Đếm ngược 15s"
+                                        : "Active: 15s Countdown"}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  data-testid="setup-untimed-toggle"
+                                  aria-pressed={Boolean(state.untimed)}
+                                  onClick={() => toggleUntimed()}
+                                  className={`w-full flex items-center justify-between gap-3 p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                                    state.untimed
+                                      ? "border-amber-500 bg-amber-50/40 dark:bg-amber-950/20 ring-1 ring-amber-500"
+                                      : "border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 hover:border-stone-300 hover:bg-stone-50/50"
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <div
+                                      className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border ${
+                                        state.untimed
+                                          ? "bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700"
+                                          : "bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 border-stone-200 dark:border-stone-700"
+                                      }`}
+                                    >
+                                      <Clock3 size={18} />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <strong className="text-[13.5px] font-bold text-stone-900 dark:text-stone-100">
+                                          {language === "vi"
+                                            ? "Ôn Cấp Tốc Không Giới Hạn · Mở đáp án ngay"
+                                            : "Untimed Cram / Instant Answer"}
+                                        </strong>
+                                        <span
+                                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
+                                            state.untimed
+                                              ? "bg-amber-600 text-white"
+                                              : "bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 border border-stone-200/60"
+                                          }`}
+                                        >
+                                          {state.untimed
+                                            ? language === "vi"
+                                              ? "ĐANG BẬT"
+                                              : "ACTIVE"
+                                            : language === "vi"
+                                              ? "TÙY CHỌN"
+                                              : "OPTIONAL"}
+                                        </span>
+                                      </div>
+                                      <p className="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
+                                        {language === "vi"
+                                          ? "Bỏ giới hạn đếm ngược 15s và gỡ khóa 4s đọc giải thích khi chọn sai để mở khóa đáp án tức thì."
+                                          : "Removes the 15s timer per question and skips the 4s wrong-answer lock for instant explanations."}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <div
+                                    className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
+                                      state.untimed
+                                        ? "bg-amber-600 border-amber-600 text-white"
+                                        : "border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-950"
+                                    }`}
+                                  >
+                                    {state.untimed && <Check size={14} strokeWidth={3} />}
+                                  </div>
+                                </button>
+                              </div>
+
                               {/* Launch Command Area */}
                               <div className="launch-section pt-5 border-t border-stone-100">
                                 <div className="flex items-center gap-3">
@@ -1705,14 +1910,39 @@ export function SoloEngine({
                       </Button>
                     </div>
                   </div>
-                  <GameHud state={state} />
+                  <GameHud state={state} onToggleUntimed={() => toggleUntimed()} />
                   <div className="quiz-card surface">
-                    <TimerBar
-                      key={`${state.index}-${state.deadline}`}
-                      deadline={state.deadline}
-                      running={state.phase === "answering"}
-                      frozenRemaining={state.pausedRemaining}
-                    />
+                    {!state.untimed ? (
+                      <TimerBar
+                        key={`${state.index}-${state.deadline}`}
+                        deadline={state.deadline}
+                        running={state.phase === "answering"}
+                        frozenRemaining={state.pausedRemaining}
+                      />
+                    ) : (
+                      <div
+                        role="status"
+                        aria-live="polite"
+                        data-testid="untimed-cram-banner"
+                        className="mb-3 px-3 py-2 rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 text-amber-900 dark:text-amber-200 text-xs font-medium flex items-center justify-between gap-2 shadow-2xs"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <Clock3 size={14} className="text-amber-600 shrink-0" />
+                          <span className="truncate">
+                            {language === "vi"
+                              ? "Chế độ Ôn Cấp Tốc Không Giới Hạn — Bỏ đếm ngược 15s, mở đáp án ngay"
+                              : "Untimed Cram Mode — No 15s timer, instant answer unlock"}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => toggleUntimed()}
+                          className="text-[11px] font-semibold text-amber-700 dark:text-amber-300 underline hover:text-amber-900 dark:hover:text-amber-100 shrink-0 cursor-pointer"
+                        >
+                          {language === "vi" ? "Bật lại 15s" : "Switch to 15s"}
+                        </button>
+                      </div>
+                    )}
                     <AnimatePresence mode="wait">
                       {current && (
                         <QuestionCard
@@ -1742,11 +1972,14 @@ export function SoloEngine({
                         onNext={next}
                         onAskCoach={handleExplainMissWithCoach}
                         onCitationClick={handleCitationClick}
+                        onVerifyAndFix={handleVerifyAndFixQuestion}
                         onReportCitation={() => {
+                          const meta = pack?.metadata[current.id];
                           setFeedbackSeed({
                             category: "citation_mismatch",
                             questionId: current.id,
-                            citation: pack?.metadata[current.id]?.citation,
+                            citation: meta?.citation,
+                            slideContext: [meta?.chapter, meta?.topic, meta?.rule].filter(Boolean).join(" • ") || undefined,
                           });
                           setFeedbackOpen(true);
                         }}
@@ -1824,7 +2057,13 @@ export function SoloEngine({
                     <div className="session-mode">
                       <Layers3 size={14} />
                       {mode === "variants" ? t.run.conceptRemix : t.run.classicRecall}
-                      <span>{t.run.perQuestion15s}</span>
+                      <span>
+                        {state.untimed
+                          ? language === "vi"
+                            ? "Không giới hạn"
+                            : "Untimed Cram"
+                          : t.run.perQuestion15s}
+                      </span>
                     </div>
                   </section>
                   <Button
@@ -1868,6 +2107,7 @@ export function SoloEngine({
             packTitle: pack?.title,
             questionId: feedbackSeed?.questionId,
             citation: feedbackSeed?.citation,
+            slideContext: feedbackSeed?.slideContext,
             tier,
           }}
         />

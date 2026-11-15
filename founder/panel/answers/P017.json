@@ -1,0 +1,13 @@
+{
+  "id": "P017",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "habit",
+  "reason": "I already cram right before exams using free ChatGPT, NotebookLM, and campus Drive exam banks, so in a normal week I am not going to pay 49,000 VND upfront for another study tool. Even with a paused timer, paying for something when $0 tools already help me pass feels unnecessary on my budget.",
+  "objection": "I doubt it handles messy Vietnamese/English lecturer slides and scanned past-exam PDFs reliably enough to beat what I already get for $0 from NotebookLM, ChatGPT, and senior students' Drive notes, and the 15-second Arena Sprint framing makes it feel a bit like a quiz game rather than real exam prep.",
+  "would_change_my_mind": "If I hit a wall 48 hours before a hard quant midterm, ran the free 5-question preview on my actual course PDF, and saw it nail worked steps cleanly where free ChatGPT got the math wrong or blocked my uploads.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1,
+  "price_expensive": 2,
+  "price_too_expensive": 4
+}

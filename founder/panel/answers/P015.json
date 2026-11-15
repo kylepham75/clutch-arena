@@ -1,0 +1,13 @@
+{
+  "id": "P015",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "trust",
+  "reason": "In a normal week I'm not cramming yet, and my classmates already drop real past midterms into our Discord chat. Even at $3.99 with a paused clock, I've seen AI mess up quant math too many times to rely on generated remix problems I'd still have to double-check line by line.",
+  "objection": "Calling it a 'Dual-Model Math Verifier' still sounds like two AIs checking each other rather than exact math, and if a subscript or worked step is wrong during a 48-hour cram, getting a $3.99 refund afterward doesn't undo losing points on the exam.",
+  "would_change_my_mind": "Running the free 5-question preview right before a real midterm on my professor's hardest past-exam PDF and seeing deterministic math verification—not just two AI models—get every subscript, sign, and calculation step right.",
+  "price_too_cheap": 1,
+  "price_cheap": 3,
+  "price_expensive": 6,
+  "price_too_expensive": 10
+}

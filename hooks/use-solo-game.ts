@@ -6,7 +6,7 @@ import { createGame, gameReducer } from "@/lib/game/reducer";
 export function useSoloGame(questions: QuestionItem[]) {
   const [state, dispatch] = useReducer(gameReducer, questions, createGame);
   useEffect(() => {
-    if (state.phase !== "answering") return;
+    if (state.phase !== "answering" || state.untimed) return;
     const expire = () =>
       dispatch({
         type: "ANSWER",
@@ -26,7 +26,7 @@ export function useSoloGame(questions: QuestionItem[]) {
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [state.phase, state.deadline, state.index]);
+  }, [state.phase, state.deadline, state.index, state.untimed]);
   const answer = useCallback(
     (choice: number) =>
       dispatch({ type: "ANSWER", choice, now: Date.now(), index: state.index }),
@@ -36,5 +36,10 @@ export function useSoloGame(questions: QuestionItem[]) {
     () => dispatch({ type: "NEXT", now: Date.now() }),
     [],
   );
-  return { state, dispatch, answer, next };
+  const toggleUntimed = useCallback(
+    (untimed?: boolean) =>
+      dispatch({ type: "TOGGLE_UNTIMED", untimed, now: Date.now() }),
+    [],
+  );
+  return { state, dispatch, answer, next, toggleUntimed };
 }

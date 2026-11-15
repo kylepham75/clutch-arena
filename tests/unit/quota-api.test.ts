@@ -127,7 +127,7 @@ describe("GET /api/quota & Core Rolling % Credit Quota Behavior", () => {
         limits: {
           canUseNotes: true,
           canExportPdf: false,
-          maxQuestionsPerRun: 10,
+          maxQuestionsPerRun: 5,
           maxFilesPerUpload: 1,
           freeRegenerationsPerDeck: 1,
         },

@@ -1,0 +1,13 @@
+{
+  "id": "P011",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "need",
+  "reason": "In a normal week I'm not studying for midterms yet, and when I do panic-cram 48 hours before an exam, I expect a classmate will just drop a #pack= link, the 2-page PDF cheat sheet, or a free /arena room invite. Paying 49,000 VND upfront feels unnecessary when free accounts already get the 5-question preview and free joins in friends' rooms.",
+  "objection": "If free accounts can join friends' live /arena rooms and paid users get shareable #pack= answer keys and printable 2-page PDF cheat sheets, it feels like only one person in my class needs to buy a pass and everyone else can just use what they share.",
+  "would_change_my_mind": "Actually being 48 hours out from a tough quant midterm with no classmate sharing a solved #pack= or cheat sheet, and seeing the free 5-question preview get my exact lecture slides right.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 3.5,
+  "price_too_expensive": 6
+}

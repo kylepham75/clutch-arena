@@ -1,0 +1,13 @@
+{
+  "id": "P008",
+  "buys": true,
+  "purchases_first_month": 1,
+  "reason_code": "need",
+  "reason": "With my Corporate Finance midterm 48 hours away and 150+ messy slides to review, I'd test the $0 preview on my real PDF first and then pay 49,000 VND once via VietQR—or split the 119,000 VND Zalo 3-pack with two classmates—because there's zero auto-renewal and the 2-page cheat sheet plus 30 worked problems save a whole night of cramming.",
+  "objection": "On $2,000 a year I still hesitate to spend 49,000 VND on an unfamiliar tool when my Zalo group already swaps free review notes, and I worry it might misread messy mixed Vietnamese-English slides or generate questions that don't match my lecturer's actual exam.",
+  "would_change_my_mind": "If the free 5-question preview got a formula or Vietnamese slide crop wrong, or if it required a card subscription instead of a one-time VietQR pass.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 1.5,
+  "price_expensive": 3,
+  "price_too_expensive": 4
+}

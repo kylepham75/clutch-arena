@@ -1,0 +1,13 @@
+{
+  "id": "P005",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "timing",
+  "reason": "I'm a 48-hour panic crammer, so in a normal week I'm not paying for a 7-day pass that will run out before I even start studying. Plus I already paste my lecture PDFs into free ChatGPT and NotebookLM, and there's a free starter deck here if I ever want to test it first.",
+  "objection": "Even at 69,000 VND via VietQR, buying a 7-day countdown when I have no exam this week wastes the pass, and I'm skeptical it handles messy bilingual English/Vietnamese slides and quantitative formulas without missing details.",
+  "would_change_my_mind": "Seeing this 48 hours before a tough quantitative midterm after the free starter deck proves it handles my bilingual formula slides better than free ChatGPT or NotebookLM.",
+  "price_too_cheap": 0.75,
+  "price_cheap": 2,
+  "price_expensive": 5,
+  "price_too_expensive": 8
+}

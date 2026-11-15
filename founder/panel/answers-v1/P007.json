@@ -1,0 +1,13 @@
+{
+  "id": "P007",
+  "buys": false,
+  "purchases_first_month": 0,
+  "reason_code": "trust",
+  "reason": "Free NotebookLM already cites slides, our group chat has free campus Drive past midterms, and in a normal week I have no reason to pay upfront when there's a free starter deck. On top of that, generic AI has burned me with wrong quant math too many times to pay for AI-generated formula-remix problems without verifying every step myself.",
+  "objection": "A verbatim slide guarantee only stops made-up formulas—it doesn't prove the AI won't botch signs, units, or messy PDF notation inside applied calculation remixes, and if I still have to double-check every answer myself it saves zero time.",
+  "would_change_my_mind": "Testing the free starter deck on a messy formula-heavy PDF right before a midterm and seeing every calculation step and symbol come out completely accurate.",
+  "price_too_cheap": 0.5,
+  "price_cheap": 2,
+  "price_expensive": 5,
+  "price_too_expensive": 8
+}

@@ -30,15 +30,18 @@ export type GameState = {
   missed: string[];
   mastery: Record<string, number>;
   mode: "exact" | "variants";
+  untimed: boolean;
 };
 export type GameAction =
-  | { type: "START"; now: number; mode: "exact" | "variants" }
+  | { type: "START"; now: number; mode: "exact" | "variants"; untimed?: boolean }
   | { type: "ANSWER"; choice: number | null; now: number; index: number }
   | { type: "NEXT"; now: number }
   | { type: "PAUSE"; now: number }
   | { type: "RESUME"; now: number }
   | { type: "RESET" }
-  | { type: "LOAD_PACK"; questions: QuestionItem[] };
+  | { type: "LOAD_PACK"; questions: QuestionItem[] }
+  | { type: "TOGGLE_UNTIMED"; now?: number; untimed?: boolean }
+  | { type: "UPDATE_QUESTION"; question: QuestionItem; now?: number };
 
 export function createGame(questions: QuestionItem[]): GameState {
   return {
@@ -57,6 +60,7 @@ export function createGame(questions: QuestionItem[]): GameState {
     missed: [],
     mastery: {},
     mode: "exact",
+    untimed: false,
   };
 }
 
@@ -75,8 +79,10 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
   switch (action.type) {
     case "START": {
       if (state.phase !== "ready" || !state.questions.length) return state;
+      const untimed = Boolean(action.untimed ?? state.untimed);
       return {
         ...createGame(state.questions),
+        untimed,
         mode: action.mode,
         phase: "answering",
         queue: state.questions.map((q) => ({
@@ -100,8 +106,10 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       const current = activeQuestion(state);
       if (!current) return state;
       // A late input is a timeout, even if the browser throttled its timer.
-      const selected = action.now >= state.deadline ? null : action.choice;
-      if (selected === null && action.now < state.deadline) return state;
+      const selected =
+        !state.untimed && action.now >= state.deadline ? null : action.choice;
+      if (selected === null && (state.untimed || action.now < state.deadline))
+        return state;
       const correct = selected === current.correctIndex;
       const streak = correct ? state.streak + 1 : 0;
       const points = correct ? pointsForStreak(streak) : 0;
@@ -132,7 +140,8 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         score: state.score + points,
         lives: correct ? state.lives : state.lives - 1,
         pausedRemaining: Math.max(0, state.deadline - action.now),
-        unlockAt: action.now + (correct ? 0 : WRONG_ANSWER_PAUSE_MS),
+        unlockAt:
+          action.now + (correct || state.untimed ? 0 : WRONG_ANSWER_PAUSE_MS),
         attempts: [
           ...state.attempts,
           {
@@ -159,7 +168,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
     }
     case "PAUSE": {
       if (state.phase !== "answering") return state;
-      if (action.now >= state.deadline)
+      if (!state.untimed && action.now >= state.deadline)
         return gameReducer(state, {
           type: "ANSWER",
           choice: null,
@@ -169,7 +178,9 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       return {
         ...state,
         phase: "paused",
-        pausedRemaining: state.deadline - action.now,
+        pausedRemaining: state.untimed
+          ? QUESTION_DURATION_MS
+          : state.deadline - action.now,
       };
     }
     case "RESUME":
@@ -180,10 +191,100 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
             deadline: action.now + state.pausedRemaining,
           }
         : state;
+    case "TOGGLE_UNTIMED": {
+      const nextUntimed =
+        action.untimed !== undefined ? action.untimed : !state.untimed;
+      const now = action.now ?? Date.now();
+      let deadline = state.deadline;
+      let unlockAt = state.unlockAt;
+      if (state.untimed && !nextUntimed && state.phase === "answering") {
+        deadline = now + QUESTION_DURATION_MS;
+      }
+      if (nextUntimed && state.phase === "feedback") {
+        unlockAt = Math.min(state.unlockAt, now);
+      }
+      return {
+        ...state,
+        untimed: nextUntimed,
+        deadline,
+        unlockAt,
+      };
+    }
     case "RESET":
-      return createGame(state.questions);
+      return { ...createGame(state.questions), untimed: state.untimed };
     case "LOAD_PACK":
       return createGame(action.questions);
+    case "UPDATE_QUESTION": {
+      const qIndex = state.questions.findIndex(
+        (q) => q.id === action.question.id,
+      );
+      if (qIndex === -1) return state;
+
+      const questions = [...state.questions];
+      questions[qIndex] = action.question;
+
+      if (state.phase === "feedback") {
+        const latest = state.attempts.at(-1);
+        if (latest && latest.id === action.question.id) {
+          const effectiveCorrect = latest.variant
+            ? action.question.conceptVariant.correctIndex
+            : action.question.correctIndex;
+
+          if (
+            !latest.correct &&
+            latest.selected !== null &&
+            latest.selected === effectiveCorrect
+          ) {
+            const streak = state.streak + 1;
+            const points = pointsForStreak(streak);
+
+            const updatedAttempts = [
+              ...state.attempts.slice(0, -1),
+              { ...latest, correct: true, points },
+            ];
+
+            const hasEarlierWrong = state.attempts
+              .slice(0, -1)
+              .some((att) => att.id === action.question.id && !att.correct);
+            const missed = hasEarlierWrong
+              ? state.missed
+              : state.missed.filter((id) => id !== action.question.id);
+
+            const queue = [...state.queue];
+            let retryIndex = -1;
+            for (let i = queue.length - 1; i > state.index; i--) {
+              if (queue[i].id === action.question.id && queue[i].review) {
+                retryIndex = i;
+                break;
+              }
+            }
+            if (retryIndex !== -1) {
+              queue.splice(retryIndex, 1);
+            }
+
+            const now = action.now ?? Date.now();
+
+            return {
+              ...state,
+              questions,
+              attempts: updatedAttempts,
+              score: state.score + points,
+              streak,
+              bestStreak: Math.max(state.bestStreak, streak),
+              lives: Math.min(STARTING_LIVES, state.lives + 1),
+              unlockAt: Math.min(state.unlockAt, now),
+              missed,
+              queue,
+            };
+          }
+        }
+      }
+
+      return {
+        ...state,
+        questions,
+      };
+    }
     default:
       return state;
   }

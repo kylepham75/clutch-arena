@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Printer,
   Copy,
@@ -33,6 +33,7 @@ import type {
   GroundedBullet,
   TextbookDivergenceNotice,
 } from "@/lib/schemas/notes";
+import type { SourceBlock } from "@/lib/schemas/ingestion";
 
 let realUseLanguage:
   | (() => { language: Language; setLanguage: (lang: Language) => void; t: TranslationDict })
@@ -93,6 +94,8 @@ function useSafeUserTier() {
 
 export interface NoteRendererProps {
   note: ClutchNote | PublishedHandout;
+  sources?: SourceBlock[];
+  onNoteUpdated?: (updatedNote: ClutchNote | PublishedHandout) => void;
   onReset: () => void;
   onCreateQuiz?: (questionCount?: number) => void;
   isCreatingQuiz?: boolean;
@@ -359,8 +362,21 @@ export function TextbookDivergenceCard({
   );
 }
 
-export function FormulaBlock({ formula }: { formula: NoteFormula }) {
-  const { t } = useLanguage();
+export function FormulaBlock({
+  formula,
+  onVerifyAndFixFormula,
+}: {
+  formula: NoteFormula;
+  onVerifyAndFixFormula?: () => Promise<{ hallucinationDetected?: boolean; summary?: string } | void>;
+}) {
+  const { t, language } = useLanguage();
+  const isVi = language === "vi";
+  const [verifying, setVerifying] = useState(false);
+  const [repairStatus, setRepairStatus] = useState<{
+    success: boolean;
+    summary?: string;
+  } | null>(null);
+
   const isDerived =
     formula.status === "derived" ||
     formula.origin === "derived" ||
@@ -373,10 +389,30 @@ export function FormulaBlock({ formula }: { formula: NoteFormula }) {
     isDerived
   );
 
+  const handleVerifyClick = async () => {
+    if (!onVerifyAndFixFormula || verifying) return;
+    setVerifying(true);
+    setRepairStatus(null);
+    try {
+      const res = await onVerifyAndFixFormula();
+      setRepairStatus({
+        success: true,
+        summary: res?.summary,
+      });
+    } catch (err) {
+      setRepairStatus({
+        success: false,
+        summary: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
   return (
     <div className="pdf-formula-block my-3">
       {/* Top row: leadText / name + Slide chip & Verification badge */}
-      {(formula.leadText || formula.name || hasStatusOrChip) && (
+      {(formula.leadText || formula.name || hasStatusOrChip || onVerifyAndFixFormula) && (
         <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2">
           <div className="flex-1 min-w-[200px]">
             {formula.leadText ? (
@@ -393,6 +429,68 @@ export function FormulaBlock({ formula }: { formula: NoteFormula }) {
           <div className="flex flex-wrap items-center gap-1.5 self-start">
             {formula.slide && <SlideChip slide={formula.slide} />}
             <FormulaStatusBadge formula={formula} />
+            {onVerifyAndFixFormula && (
+              <button
+                type="button"
+                data-testid="verify-fix-formula-btn"
+                disabled={verifying}
+                onClick={handleVerifyClick}
+                className="print:hidden inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-sans font-semibold bg-emerald-50 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-100 disabled:opacity-60 transition-colors cursor-pointer select-none"
+              >
+                {verifying ? (
+                  <RefreshCw size={11} className="animate-spin text-emerald-600 shrink-0" />
+                ) : repairStatus?.success ? (
+                  <Check size={11} className="text-emerald-600 shrink-0 stroke-[2.5]" />
+                ) : (
+                  <Sparkles size={11} className="text-emerald-600 shrink-0" />
+                )}
+                <span>
+                  {verifying
+                    ? isVi
+                      ? "Đang kiểm tra..."
+                      : "Checking..."
+                    : repairStatus?.success
+                      ? isVi
+                        ? "Đã kiểm tra & sửa"
+                        : "Verified & Fixed"
+                      : isVi
+                        ? "Kiểm tra & Sửa Toán"
+                        : "Verify & Fix Math"}
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Inline status callout when completed or errored */}
+      {repairStatus && (
+        <div
+          data-testid="formula-repair-status"
+          className={`print:hidden text-xs rounded-lg p-2.5 mb-2 font-sans flex items-start gap-2 border ${
+            repairStatus.success
+              ? "bg-emerald-50 text-emerald-900 border-emerald-200"
+              : "bg-red-50 text-red-900 border-red-200"
+          }`}
+        >
+          {repairStatus.success ? (
+            <Check size={14} className="mt-0.5 shrink-0 text-emerald-600 stroke-[2.5]" />
+          ) : (
+            <AlertOctagon size={14} className="mt-0.5 shrink-0 text-red-600" />
+          )}
+          <div className="flex-1 leading-relaxed">
+            <span className="font-semibold">
+              {repairStatus.success
+                ? isVi
+                  ? "Đã kiểm tra & sửa công thức"
+                  : "Verified & Fixed Formula"
+                : isVi
+                  ? "Lỗi kiểm tra công thức"
+                  : "Formula Verification Failed"}
+            </span>
+            {repairStatus.summary && (
+              <p className="text-[11.5px] mt-0.5 opacity-90">{repairStatus.summary}</p>
+            )}
           </div>
         </div>
       )}
@@ -917,13 +1015,19 @@ export function notesToMarkdown(
 
 export function NoteRenderer({
   note: rawNote,
+  sources,
+  onNoteUpdated,
   onReset,
   onCreateQuiz,
   isCreatingQuiz = false,
   canExportPdf,
   onUpgradeClick,
 }: NoteRendererProps) {
-  const note = useMemo(() => toPublishedHandout(rawNote), [rawNote]);
+  const [localNote, setLocalNote] = useState<ClutchNote | PublishedHandout>(rawNote);
+  useEffect(() => {
+    setLocalNote(rawNote);
+  }, [rawNote]);
+  const note = useMemo(() => toPublishedHandout(localNote), [localNote]);
   const { language, t } = useLanguage();
   const userTier = useSafeUserTier();
   const canExportCheatSheet =
@@ -934,6 +1038,115 @@ export function NoteRenderer({
   const [copied, setCopied] = useState(false);
   const [quizCount, setQuizCount] = useState<number>(15);
   const [showPdfUpgradePrompt, setShowPdfUpgradePrompt] = useState(false);
+
+  const handleVerifyAndFixFormula = useCallback(
+    async (
+      sectionId: string,
+      formulaIndex: number,
+      formula: NoteFormula,
+      sectionTitle?: string,
+      sourceSlides?: number[],
+      subSectionIndex?: number,
+    ) => {
+      let sourceText: string | undefined;
+      if (sources && sources.length > 0) {
+        const targetSlides = formula.slide ? [formula.slide] : sourceSlides || [];
+        if (targetSlides.length > 0) {
+          const matchedBlocks = sources.filter((src) => {
+            return targetSlides.some((sl) => {
+              const slNum = String(sl);
+              const idMatches =
+                src.id === slNum ||
+                src.id === `slide-${slNum}` ||
+                src.id === `page-${slNum}` ||
+                src.id.endsWith(`-${slNum}`);
+              const labelMatches =
+                src.label.toLowerCase().includes(`slide ${slNum}`) ||
+                src.label.toLowerCase().includes(`page ${slNum}`) ||
+                src.label.trim() === slNum;
+              return idMatches || labelMatches;
+            });
+          });
+          if (matchedBlocks.length > 0) {
+            sourceText = matchedBlocks
+              .map((b) => `[${b.label || b.id}]\n${b.text}`)
+              .join("\n\n")
+              .slice(0, 8000);
+          }
+        }
+        if (!sourceText) {
+          const matchedByText = sources.filter((src) =>
+            formula.name ? src.text.toLowerCase().includes(formula.name.toLowerCase()) : false,
+          );
+          if (matchedByText.length > 0) {
+            sourceText = matchedByText.map((b) => b.text).join("\n\n").slice(0, 8000);
+          }
+        }
+      }
+
+      const payload: Record<string, unknown> = {
+        kind: "note_formula",
+        sectionId,
+        formulaIndex,
+        formula,
+        ...(typeof subSectionIndex === "number" ? { subSectionIndex } : {}),
+        ...(sectionTitle ? { sectionTitle } : {}),
+        ...(sourceText ? { sourceText } : {}),
+      };
+
+      const res = await fetch("/api/repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok || !data.formula) {
+        throw new Error(data?.error || "Failed to verify and repair formula.");
+      }
+
+      const updatedSections = localNote.sections.map((sec) => {
+        if (sec.id !== sectionId) return sec;
+
+        if (typeof subSectionIndex === "number") {
+          const updatedSubs = (sec.subSections || []).map((sub, sIdx) => {
+            if (sIdx !== subSectionIndex) return sub;
+            const updatedFormulas = [...(sub.formulas || [])];
+            updatedFormulas[formulaIndex] = data.formula;
+            return {
+              ...sub,
+              formulas: updatedFormulas,
+            };
+          });
+          return {
+            ...sec,
+            subSections: updatedSubs,
+          };
+        } else {
+          const updatedFormulas = [...(sec.formulas || [])];
+          updatedFormulas[formulaIndex] = data.formula;
+          return {
+            ...sec,
+            formulas: updatedFormulas,
+          };
+        }
+      });
+
+      const updatedNote: ClutchNote | PublishedHandout = {
+        ...localNote,
+        sections: updatedSections,
+      };
+
+      setLocalNote(updatedNote);
+      onNoteUpdated?.(updatedNote);
+
+      return {
+        hallucinationDetected: Boolean(data.hallucinationDetected),
+        summary: typeof data.summary === "string" ? data.summary : undefined,
+      };
+    },
+    [sources, localNote, onNoteUpdated],
+  );
 
   const displayNoiseRate =
     note.noiseReductionRate > 0 && note.noiseReductionRate <= 1
@@ -1213,7 +1426,20 @@ export function NoteRenderer({
                   {formulasIntroduceBullets ? (
                     <>
                       {section.formulas.map((f, fIdx) => (
-                        <FormulaBlock key={fIdx} formula={f} />
+                        <FormulaBlock
+                          key={fIdx}
+                          formula={f}
+                          onVerifyAndFixFormula={() =>
+                            handleVerifyAndFixFormula(
+                              section.id,
+                              fIdx,
+                              f,
+                              section.titleVi,
+                              section.sourceSlides,
+                              undefined,
+                            )
+                          }
+                        />
                       ))}
                       <BulletsBlock
                         groundedBullets={section.groundedBullets}
@@ -1227,7 +1453,20 @@ export function NoteRenderer({
                         bulletPoints={section.bulletPoints}
                       />
                       {section.formulas.map((f, fIdx) => (
-                        <FormulaBlock key={fIdx} formula={f} />
+                        <FormulaBlock
+                          key={fIdx}
+                          formula={f}
+                          onVerifyAndFixFormula={() =>
+                            handleVerifyAndFixFormula(
+                              section.id,
+                              fIdx,
+                              f,
+                              section.titleVi,
+                              section.sourceSlides,
+                              undefined,
+                            )
+                          }
+                        />
                       ))}
                     </>
                   )}
@@ -1289,7 +1528,20 @@ export function NoteRenderer({
                                 </ol>
                               )}
                               {sub.formulas.map((f, fIdx) => (
-                                <FormulaBlock key={fIdx} formula={f} />
+                                <FormulaBlock
+                                  key={fIdx}
+                                  formula={f}
+                                  onVerifyAndFixFormula={() =>
+                                    handleVerifyAndFixFormula(
+                                      section.id,
+                                      fIdx,
+                                      f,
+                                      section.titleVi,
+                                      section.sourceSlides,
+                                      sIdx,
+                                    )
+                                  }
+                                />
                               ))}
                             </div>
                           );
@@ -1312,7 +1564,20 @@ export function NoteRenderer({
                               bulletPoints={sub.bulletPoints}
                             />
                             {sub.formulas.map((f, fIdx) => (
-                              <FormulaBlock key={fIdx} formula={f} />
+                              <FormulaBlock
+                                key={fIdx}
+                                formula={f}
+                                onVerifyAndFixFormula={() =>
+                                  handleVerifyAndFixFormula(
+                                    section.id,
+                                    fIdx,
+                                    f,
+                                    section.titleVi,
+                                    section.sourceSlides,
+                                    sIdx,
+                                  )
+                                }
+                              />
                             ))}
                           </div>
                         );

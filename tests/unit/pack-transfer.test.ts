@@ -8,6 +8,8 @@ import {
   packToQuizlet,
   encodePackForShare,
   decodeSharedPack,
+  slicePackForPreview,
+  FREE_SHARED_PACK_PREVIEW_LIMIT,
   readShareToken,
   sanitizeShareToken,
   copyTextWithFallback,
@@ -898,4 +900,193 @@ describe("Import Collision Prevention and Silent Overwrite Protection (NV-03)", 
     });
   });
 });
+
+describe("Stage 2.2 #pack= 5-Question Free Preview Gate & Paid Full Deck Preservation", () => {
+  const tenQuestionPack: StudyPack = {
+    id: "pack-10q-preview",
+    title: "10-Question Biology Preview Deck",
+    subtitle: "Preview test deck",
+    questions: Array.from({ length: 10 }, (_, i) => {
+      const idx = i + 1;
+      return {
+        id: `q-${idx}`,
+        question: `Question ${idx}: What is concept ${idx}?`,
+        options: [`Option ${idx}-A`, `Option ${idx}-B`, `Option ${idx}-C`, `Option ${idx}-D`],
+        correctIndex: 0,
+        explanation: `Explanation for question ${idx}.`,
+        conceptVariant: {
+          question: `Concept variant question ${idx}?`,
+          options: [`Option ${idx}-A`, `Option ${idx}-B`, `Option ${idx}-C`, `Option ${idx}-D`],
+          correctIndex: 0,
+          explanation: `Concept variant explanation ${idx}.`,
+        },
+      };
+    }),
+    metadata: Object.fromEntries(
+      Array.from({ length: 10 }, (_, i) => {
+        const idx = i + 1;
+        return [
+          `q-${idx}`,
+          {
+            topic: `Topic ${idx}`,
+            chapter: `Chapter ${idx}`,
+            citation: `Page ${idx}`,
+            rule: `Rule ${idx}`,
+          },
+        ];
+      }),
+    ),
+  };
+
+  it("asserts FREE_SHARED_PACK_PREVIEW_LIMIT equals 5", () => {
+    expect(FREE_SHARED_PACK_PREVIEW_LIMIT).toBe(5);
+  });
+
+  it("slices pack to first 5 questions and filters metadata keys without mutating original pack for contender tier", () => {
+    const preview = slicePackForPreview(tenQuestionPack, 5, { recipientTier: "contender" });
+
+    expect(preview.questions).toHaveLength(5);
+    expect(preview.questions.map((q) => q.id)).toEqual(["q-1", "q-2", "q-3", "q-4", "q-5"]);
+    expect(Object.keys(preview.metadata)).toEqual(["q-1", "q-2", "q-3", "q-4", "q-5"]);
+
+    // Verify non-mutation of original pack fixture
+    expect(tenQuestionPack.questions).toHaveLength(10);
+    expect(Object.keys(tenQuestionPack.metadata)).toHaveLength(10);
+    expect(tenQuestionPack.questions.map((q) => q.id)).toEqual([
+      "q-1",
+      "q-2",
+      "q-3",
+      "q-4",
+      "q-5",
+      "q-6",
+      "q-7",
+      "q-8",
+      "q-9",
+      "q-10",
+    ]);
+  });
+
+  it("slices pack to default 5 questions for unauthenticated / free default call", () => {
+    const preview = slicePackForPreview(tenQuestionPack);
+
+    expect(preview.questions).toHaveLength(5);
+    expect(preview.questions.map((q) => q.id)).toEqual(["q-1", "q-2", "q-3", "q-4", "q-5"]);
+    expect(Object.keys(preview.metadata)).toEqual(["q-1", "q-2", "q-3", "q-4", "q-5"]);
+  });
+
+  it("preserves all 10 questions and all 10 metadata keys for paid recipient tiers and flags", () => {
+    const paidTiers = [
+      { recipientTier: "cram_pass" as const },
+      { recipientTier: "cram_squad_3" as const },
+      { recipientTier: "pro" as const },
+      { isPaidRecipient: true },
+    ];
+
+    for (const option of paidTiers) {
+      const fullPack = slicePackForPreview(tenQuestionPack, 5, option);
+      expect(fullPack.questions).toHaveLength(10);
+      expect(fullPack.questions.map((q) => q.id)).toEqual([
+        "q-1",
+        "q-2",
+        "q-3",
+        "q-4",
+        "q-5",
+        "q-6",
+        "q-7",
+        "q-8",
+        "q-9",
+        "q-10",
+      ]);
+      expect(Object.keys(fullPack.metadata)).toHaveLength(10);
+      expect(Object.keys(fullPack.metadata)).toEqual([
+        "q-1",
+        "q-2",
+        "q-3",
+        "q-4",
+        "q-5",
+        "q-6",
+        "q-7",
+        "q-8",
+        "q-9",
+        "q-10",
+      ]);
+    }
+  });
+
+  it("round-trips encodePackForShare and enforces preview slicing vs paid preservation on decodeSharedPack", async () => {
+    const token = await encodePackForShare(tenQuestionPack);
+    expect(typeof token).toBe("string");
+    expect(token.length).toBeGreaterThan(0);
+
+    // Contender preview gate: exactly 5 questions and 5 metadata keys with valid Base64url decoding
+    const contenderDecoded = await decodeSharedPack(token, { recipientTier: "contender" });
+    expect(contenderDecoded.questions).toHaveLength(5);
+    expect(contenderDecoded.questions.map((q) => q.id)).toEqual([
+      "q-1",
+      "q-2",
+      "q-3",
+      "q-4",
+      "q-5",
+    ]);
+    expect(Object.keys(contenderDecoded.metadata)).toEqual([
+      "q-1",
+      "q-2",
+      "q-3",
+      "q-4",
+      "q-5",
+    ]);
+
+    // Paid recipient: cram_pass preserves all 10 questions and 10 metadata keys
+    const cramPassDecoded = await decodeSharedPack(token, { recipientTier: "cram_pass" });
+    expect(cramPassDecoded.questions).toHaveLength(10);
+    expect(cramPassDecoded.questions.map((q) => q.id)).toEqual([
+      "q-1",
+      "q-2",
+      "q-3",
+      "q-4",
+      "q-5",
+      "q-6",
+      "q-7",
+      "q-8",
+      "q-9",
+      "q-10",
+    ]);
+    expect(Object.keys(cramPassDecoded.metadata)).toHaveLength(10);
+
+    // Paid recipient: cram_squad_3 preserves all 10 questions and 10 metadata keys
+    const cramSquadDecoded = await decodeSharedPack(token, { recipientTier: "cram_squad_3" });
+    expect(cramSquadDecoded.questions).toHaveLength(10);
+    expect(cramSquadDecoded.questions.map((q) => q.id)).toEqual([
+      "q-1",
+      "q-2",
+      "q-3",
+      "q-4",
+      "q-5",
+      "q-6",
+      "q-7",
+      "q-8",
+      "q-9",
+      "q-10",
+    ]);
+    expect(Object.keys(cramSquadDecoded.metadata)).toHaveLength(10);
+
+    // Default backwards-compatible decodeSharedPack preserves all 10 questions and 10 metadata keys
+    const defaultDecoded = await decodeSharedPack(token);
+    expect(defaultDecoded.questions).toHaveLength(10);
+    expect(defaultDecoded.questions.map((q) => q.id)).toEqual([
+      "q-1",
+      "q-2",
+      "q-3",
+      "q-4",
+      "q-5",
+      "q-6",
+      "q-7",
+      "q-8",
+      "q-9",
+      "q-10",
+    ]);
+    expect(Object.keys(defaultDecoded.metadata)).toHaveLength(10);
+  });
+});
+
 
