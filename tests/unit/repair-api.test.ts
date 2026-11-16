@@ -7,11 +7,11 @@ vi.mock("ai", () => ({
   generateObject: (...args: unknown[]) => mockGenerateObject(...args),
 }));
 
+import { POST } from "@/app/api/repair/route";
 import {
-  POST,
   deterministicRepairQuestion,
   deterministicRepairFormula,
-} from "@/app/api/repair/route";
+} from "@/app/api/repair/helpers";
 import type { QuestionItem, QuestionMetadata } from "@/lib/schemas/question";
 import type { NoteFormula } from "@/lib/schemas/notes";
 
