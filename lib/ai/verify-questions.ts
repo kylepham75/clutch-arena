@@ -1,4 +1,4 @@
-import { generateObject, type LanguageModel } from "ai";
+import { asSchema, generateObject, jsonSchema, type LanguageModel } from "ai";
 import * as Sentry from "@sentry/nextjs";
 import { z } from "zod";
 import {
@@ -94,6 +94,26 @@ export type BlindVerificationVerdict = {
 export type BlindVerificationBatch = z.infer<
   typeof blindVerificationBatchSchema
 >;
+
+const baseVerificationJsonSchema = structuredClone(
+  asSchema(blindVerificationBatchSchema).jsonSchema,
+) as Record<string, any>;
+
+if (baseVerificationJsonSchema?.properties?.verdicts?.items?.properties) {
+  baseVerificationJsonSchema.properties.verdicts.items.required = Object.keys(
+    baseVerificationJsonSchema.properties.verdicts.items.properties,
+  );
+}
+
+export const strictBlindVerificationBatchSchema =
+  jsonSchema<BlindVerificationBatch>(baseVerificationJsonSchema, {
+    validate: (value) => {
+      const parsed = blindVerificationBatchSchema.safeParse(value);
+      return parsed.success
+        ? { success: true, value: parsed.data }
+        : { success: false, error: parsed.error };
+    },
+  });
 
 // ============================================================================
 // Keyless Payload Builder
@@ -602,13 +622,13 @@ export async function verifyQuestionsBlindly<
     });
 
     let rawResult: Awaited<
-      ReturnType<typeof generateObject<typeof blindVerificationBatchSchema>>
+      ReturnType<typeof generateObject<typeof strictBlindVerificationBatchSchema>>
     >;
 
     try {
       rawResult = await generateObject({
         model: activeModel,
-        schema: blindVerificationBatchSchema,
+        schema: strictBlindVerificationBatchSchema,
         temperature: 0.0,
         maxOutputTokens: 8_192,
         prompt,
@@ -656,7 +676,7 @@ export async function verifyQuestionsBlindly<
       activeModel = fallbackModel;
       rawResult = await generateObject({
         model: fallbackModel,
-        schema: blindVerificationBatchSchema,
+        schema: strictBlindVerificationBatchSchema,
         temperature: 0.0,
         maxOutputTokens: 8_192,
         prompt,

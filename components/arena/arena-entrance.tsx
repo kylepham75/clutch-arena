@@ -14,8 +14,6 @@ import {
   FileCheck,
   Heart,
   Clock3,
-  Bot,
-  Trophy,
   ArrowUpRight,
 } from "lucide-react";
 import { AVATAR_OPTIONS, type ArenaRoomState } from "@/lib/schemas/multiplayer";
@@ -543,41 +541,23 @@ export function ArenaEntrance({
             )}
           </section>
 
-          {/* Card 2: Luật đấu trường & Cơ chế thi đấu */}
+          {/* Card 2: Luật đấu trường */}
           <section className="how-card deck-intel-card rounded-2xl bg-white border border-stone-200/80 p-5 shadow-xs">
             <div className="text-xs font-semibold text-stone-600 mb-2.5">
-              Luật đấu trường & Cơ chế thi đấu
+              Luật đấu trường
             </div>
             <div className="arena-rules-grid grid grid-cols-3 gap-2">
-              <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+              <div className="rule-tile py-2.5 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-1">
                 <Heart size={14} className="text-rose-500" />
-                <strong className="text-xs font-bold text-stone-800">{t.run.livesCount}</strong>
-                <span className="text-[10px] text-stone-400">Trượt 3 lần</span>
+                <strong className="text-xs font-semibold text-stone-800">{t.run.livesCount}</strong>
               </div>
-              <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+              <div className="rule-tile py-2.5 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-1">
                 <Clock3 size={14} className="text-amber-500" />
-                <strong className="text-xs font-bold text-stone-800">{t.run.timerCount}</strong>
-                <span className="text-[10px] text-stone-400">15s/câu</span>
+                <strong className="text-xs font-semibold text-stone-800">{t.run.timerCount}</strong>
               </div>
-              <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+              <div className="rule-tile py-2.5 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-1">
                 <Flame size={14} className="text-orange-500" />
-                <strong className="text-xs font-bold text-stone-800">{t.run.streakBonus}</strong>
-                <span className="text-[10px] text-stone-400">Nhân điểm</span>
-              </div>
-            </div>
-
-            <div className="mt-3.5 space-y-2 pt-3 border-t border-stone-100 text-[11.5px] text-stone-600">
-              <div className="flex items-center gap-2">
-                <ShieldCheck size={14} className="text-emerald-600 shrink-0" />
-                <span>Chấm điểm máy chủ chống gian lận thời gian thực</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Bot size={14} className="text-amber-600 shrink-0" />
-                <span>Tự động thêm Bot AI khi luyện tập solo</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Trophy size={14} className="text-[#ea580c] shrink-0" />
-                <span>Thưởng +50 XP khi trả lời đúng dưới 5 giây</span>
+                <strong className="text-xs font-semibold text-stone-800">{t.run.streakBonus}</strong>
               </div>
             </div>
 

@@ -422,6 +422,19 @@ export function getOpenRouterApiKey(): string | null {
   return null;
 }
 
+export function modelSupportsOpenRouterReasoning(modelId: string): boolean {
+  const normalized = (modelId || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (
+    normalized.includes("gpt-4o") ||
+    normalized.includes("gpt-4-turbo") ||
+    normalized.includes("gpt-3.5")
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function getOpenRouterModel(
   modelId: string,
   options?: {
@@ -446,11 +459,15 @@ export function getOpenRouterModel(
     ...(options?.allowFallbacks === false ? { allow_fallbacks: false } : {}),
   };
 
-  const extraBody = {
+  const extraBody: Record<string, unknown> = {
     provider: providerConfig,
-    reasoning: {
-      effort: options?.reasoningEffort ?? "low",
-    },
+    ...(modelSupportsOpenRouterReasoning(modelId)
+      ? {
+          reasoning: {
+            effort: options?.reasoningEffort ?? "low",
+          },
+        }
+      : {}),
   };
 
   const openrouter = createOpenRouter({
@@ -779,7 +796,13 @@ export function getVerifierModel(options?: {
   const openRouterKey = getOpenRouterApiKey();
   if (openRouterKey) {
     // verifier: allow_fallbacks = false (fallback into Anthropic destroys independence silently)
-    return getOpenRouterModel(verifierSlug, { allowFallbacks: false });
+    const verifierReasoningEffort = /\bo[134](?:-|$)/i.test(verifierSlug)
+      ? "low"
+      : "none";
+    return getOpenRouterModel(verifierSlug, {
+      allowFallbacks: false,
+      reasoningEffort: verifierReasoningEffort,
+    });
   }
 
   throw new IngestionError(

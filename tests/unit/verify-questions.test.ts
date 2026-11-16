@@ -35,6 +35,7 @@ import {
   CONCEPT_VARIANT_ID_SUFFIX,
   filterBlindVerifiedQuestions,
   getConceptVariantBlindId,
+  strictBlindVerificationBatchSchema,
   stripAnswerKeyForBlindSolve,
   verifyQuestionsBlindly,
   type VerifiableQuestionInput,
@@ -247,6 +248,46 @@ describe("Cross-Family Blind MCQ Verification (lib/ai/verify-questions.ts)", () 
       expect(parsed.verdicts[0].confidence).toBe("high");
       expect(parsed.verdicts[1].selectedIndex).toBe(-1);
       expect(parsed.verdicts[1].isAmbiguous).toBe(true);
+    });
+
+    it("enforces all item properties as required in strictBlindVerificationBatchSchema while defaulting omitted optional fields", async () => {
+      const itemSchema = (strictBlindVerificationBatchSchema as any).jsonSchema
+        .properties.verdicts.items;
+      expect(itemSchema.additionalProperties).toBe(false);
+      expect(itemSchema.required).toEqual(
+        expect.arrayContaining([
+          "id",
+          "selectedIndex",
+          "isAmbiguous",
+          "confidence",
+          "reason",
+          "isGrounded",
+          "duplicateOfId",
+        ]),
+      );
+      expect(itemSchema.required).toHaveLength(
+        Object.keys(itemSchema.properties).length,
+      );
+
+      const validation = await strictBlindVerificationBatchSchema.validate!({
+        verdicts: [
+          {
+            id: "q-1",
+            selectedIndex: 0,
+            isAmbiguous: false,
+            reason: "Option A matches directly.",
+          },
+        ],
+      });
+      expect(validation.success).toBe(true);
+      if (validation.success) {
+        expect(validation.value.verdicts[0]).toMatchObject({
+          id: "q-1",
+          confidence: "high",
+          isGrounded: true,
+          duplicateOfId: null,
+        });
+      }
     });
   });
 

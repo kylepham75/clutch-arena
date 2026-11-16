@@ -803,14 +803,15 @@ describe("Rolling % Quota Windows, Guards, Shared Pool & Regeneration Allowances
     expect(blockedByWeekly.quota.bottleneckScope).toBe("weekly");
     expect(blockedByWeekly.quota.remainingPct).toBe(0);
 
-    // After 7d (168h), weekly guard resets and cycle ceiling ($0.95 / $1.50 = 63%) becomes bottleneck
+    // After 7d (168h), weekly guard resets ($0.55) and 24h window ($0.28) replenishes to 100% since cycleRemainingUsd ($0.95) >= $0.55
     const after7d = BASE_NOW + 168 * 3_600_000 + 5000;
     const snap7d = await getRollingQuotaSnapshot(userId, "pro_monthly", "VN", after7d);
     expect(snap7d.windowRemainingUsd).toBe(0.28);
     expect(snap7d.guardRemainingUsd).toBe(0.55);
     expect(snap7d.cycleRemainingUsd).toBe(0.95);
-    expect(snap7d.bottleneckScope).toBe("cycle");
-    expect(snap7d.remainingPct).toBe(63);
+    expect(snap7d.bottleneckScope).toBe("window");
+    expect(snap7d.remainingPct).toBe(100);
+    expect(snap7d.weeklyRemainingPct).toBe(100);
   });
 
   it("enforces finite cycle cogsCeilingUsd backstop across rolling windows on paid tiers", async () => {

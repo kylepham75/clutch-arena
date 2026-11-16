@@ -123,6 +123,10 @@ describe("GET /api/quota & Core Rolling % Credit Quota Behavior", () => {
           windowHours: 72,
           bottleneckScope: "window",
           mode: "full",
+          weeklyRemainingPct: 100,
+          weeklyUsedPct: 0,
+          weeklyResetsAt: expect.any(String),
+          weeklyWindowHours: 720,
         },
         limits: {
           canUseNotes: true,
@@ -253,13 +257,16 @@ describe("GET /api/quota & Core Rolling % Credit Quota Behavior", () => {
       expect(at0h.remainingPct).toBe(0);
       expect(at0h.mode).toBe("halted");
 
-      // After 24h: 24h window resets ($0.40 remaining), 7d guard has $0.45 left ($0.85 - $0.40)
+      // After 24h: 24h window resets ($0.40 remaining), 7d guard has $0.45 left ($0.85 - $0.40 = 53%)
+      // Because $0.45 >= $0.40, primary 24h bar replenishes to 100% while weekly bar tracks 53%
       const at24h = await getRollingQuotaSnapshot(userId, "pro", "VN", BASE_NOW + 24 * 3_600_000 + 1000);
       expect(at24h.windowRemainingUsd).toBe(0.40);
       expect(at24h.guardRemainingUsd).toBe(0.45);
-      expect(at24h.remainingPct).toBe(53); // 0.45 / 0.85 = 52.94% -> 53%
-      expect(at24h.bottleneckScope).toBe("weekly");
-      expect(at24h.windowHours).toBe(168);
+      expect(at24h.remainingPct).toBe(100);
+      expect(at24h.bottleneckScope).toBe("window");
+      expect(at24h.windowHours).toBe(24);
+      expect(at24h.weeklyRemainingPct).toBe(53);
+      expect(at24h.weeklyWindowHours).toBe(168);
 
       // Spend another $0.40 on day 2
       await checkAndReserveDeckQuota(userId, "pro", "d2", {
@@ -269,19 +276,43 @@ describe("GET /api/quota & Core Rolling % Credit Quota Behavior", () => {
       });
       await recordDeckGenerationCogs(userId, "pro", 0.40, 0.40, "VN", BASE_NOW + 24 * 3_600_000 + 2000);
 
-      // On day 3 (48h): 24h window resets, but weekly guard only has $0.05 left out of $0.85 (~6%)
+      // On day 3 (48h): 24h window resets, but weekly guard only has $0.05 left (< $0.40) -> caps primary 24h bar at 13% and weekly at 6%
       const at48h = await getRollingQuotaSnapshot(userId, "pro", "VN", BASE_NOW + 48 * 3_600_000 + 3000);
       expect(at48h.guardRemainingUsd).toBe(0.05);
-      expect(at48h.remainingPct).toBe(6);
+      expect(at48h.remainingPct).toBe(13);
       expect(at48h.bottleneckScope).toBe("weekly");
+      expect(at48h.weeklyRemainingPct).toBe(6);
 
-      // After 168h (7d): weekly guard rolls over, cycle ceiling ($3.00 / $3.80 = 79%) is tightest scope
+      // After 168h (7d): weekly guard rolls over ($0.85), cycle ceiling ($3.00 > $0.85) does not throttle 24h/weekly bars
       const at7d = await getRollingQuotaSnapshot(userId, "pro", "VN", BASE_NOW + 168 * 3_600_000 + 5000);
       expect(at7d.windowRemainingUsd).toBe(0.40);
       expect(at7d.guardRemainingUsd).toBe(0.85);
       expect(at7d.cycleRemainingUsd).toBe(3.0);
-      expect(at7d.bottleneckScope).toBe("cycle");
-      expect(at7d.remainingPct).toBe(79);
+      expect(at7d.bottleneckScope).toBe("window");
+      expect(at7d.remainingPct).toBe(100);
+      expect(at7d.weeklyRemainingPct).toBe(100);
+    });
+
+    it("replenishes 24h and weekly bars to 100% even when lifetime cycle spend is 33% (67% cycle remaining)", async () => {
+      const userId = "pro-cycle-replenish-user";
+      const ledger = await getUserQuotaLedger(userId, "pro", "VN", BASE_NOW);
+      // Simulate historical cycle spend of $1.25 out of $3.80 (67% cycle left), with prior 24h & 7d windows expired
+      ledger.cogsSpentUsd = 1.254;
+      ledger.windowSpentUsd = 0.40;
+      ledger.weeklySpentUsd = 0.85;
+      ledger.windowStartedAt = new Date(BASE_NOW - 25 * 3_600_000).toISOString();
+      ledger.weeklyStartedAt = new Date(BASE_NOW - 169 * 3_600_000).toISOString();
+      await saveUserQuotaLedger(ledger);
+
+      const snap = await getRollingQuotaSnapshot(userId, "pro", "VN", BASE_NOW);
+      expect(snap.remainingPct).toBe(100);
+      expect(snap.usedPct).toBe(0);
+      expect(snap.bottleneckScope).toBe("window");
+      expect(snap.windowHours).toBe(24);
+      expect(snap.resetsAt).toEqual(expect.any(String));
+      expect(snap.weeklyRemainingPct).toBe(100);
+      expect(snap.weeklyWindowHours).toBe(168);
+      expect(snap.weeklyResetsAt).toEqual(expect.any(String));
     });
 
     it("rolls over free 72h window while capping 30d (720h) anti-abuse guard at $0.32", async () => {
@@ -301,9 +332,11 @@ describe("GET /api/quota & Core Rolling % Credit Quota Behavior", () => {
       const at72h = await getRollingQuotaSnapshot(userId, "contender", "VN", BASE_NOW + 72 * 3_600_000 + 1000);
       expect(at72h.windowRemainingUsd).toBe(0.08);
       expect(at72h.guardRemainingUsd).toBe(0.24);
-      expect(at72h.bottleneckScope).toBe("weekly");
-      expect(at72h.windowHours).toBe(720);
-      expect(at72h.remainingPct).toBe(75);
+      expect(at72h.bottleneckScope).toBe("window");
+      expect(at72h.windowHours).toBe(72);
+      expect(at72h.remainingPct).toBe(100);
+      expect(at72h.weeklyRemainingPct).toBe(75);
+      expect(at72h.weeklyWindowHours).toBe(720);
     });
   });
 

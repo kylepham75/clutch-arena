@@ -20,6 +20,7 @@ import {
   useUserTier,
   formatPassCountdown,
   computeProfileQuotaSummary,
+  computeProfileWeeklyQuotaSummary,
   type ProfileQuotaSummary,
 } from "@/hooks/use-user-tier";
 import { useLanguage } from "@/lib/i18n/context";
@@ -28,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { clearSessionLibrary } from "@/lib/game/library";
 import { clearSessionHistory } from "@/lib/game/history";
 import { clearSessionMastery } from "@/lib/game/concept-mastery";
-import { clearStoredUserTier, type BillingRegion } from "@/lib/pricing/tiers";
+import { clearStoredUserTier, TIER_LIMITS, type BillingRegion } from "@/lib/pricing/tiers";
 import { getBillingRegionClient, getPlanRegionalPrice } from "@/lib/pricing/region";
 import { PricingModal } from "@/components/pricing/pricing-modal";
 
@@ -95,8 +96,25 @@ export function AuthDialog() {
   }, [authModalOpen, refreshTier, refreshQuota]);
 
   const quotaSummary = computeProfileQuotaSummary(userTier, quotaState, isVi);
+  const weeklySummary = computeProfileWeeklyQuotaSummary(userTier, quotaState, isVi);
   const quotaTone = getQuotaToneStyle(quotaSummary.statusTone);
+  const weeklyTone = getQuotaToneStyle(weeklySummary.statusTone);
   const remainingPct = Math.max(0, Math.min(100, quotaSummary.remainingPct));
+  const weeklyRemainingPct = Math.max(0, Math.min(100, weeklySummary.remainingPct));
+  const primaryWindowHours =
+    TIER_LIMITS[userTier]?.rollingQuota.primaryWindowHours ?? 24;
+  const primaryWindowLabel = isVi
+    ? `Hạn mức AI (${primaryWindowHours} giờ)`
+    : `AI Quota (${primaryWindowHours}h)`;
+  const weeklyWindowDays = Math.max(1, Math.round(weeklySummary.windowHours / 24));
+  const weeklyWindowLabel =
+    weeklyWindowDays === 7
+      ? isVi
+        ? "Hạn mức tuần (7 ngày)"
+        : "Weekly Limit (7d)"
+      : isVi
+        ? `Hạn mức (${weeklyWindowDays} ngày)`
+        : `Rolling Limit (${weeklyWindowDays}d)`;
   const countdownText = formatPassCountdown(tierExpiresAt, isVi);
   const formattedExpDate = tierExpiresAt
     ? new Date(tierExpiresAt).toLocaleDateString(isVi ? "vi-VN" : "en-US", {
@@ -403,96 +421,166 @@ export function AuthDialog() {
               </div>
             )}
 
-            {/* Antigravity-style Rolling AI Quota Meter */}
+            {/* Rolling AI Quota Meters: Primary (24h) + Weekly (Profile only) */}
             <div
               style={{
                 display: "flex",
                 flexDirection: "column",
-                gap: "0.625rem",
+                gap: "0.75rem",
                 padding: "0.875rem 1rem",
                 borderRadius: "0.75rem",
                 background: "var(--muted, #eef0e9)",
                 border: "1px solid var(--border, #e2e5dc)",
               }}
             >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: "0.5rem",
-                  fontSize: "0.75rem",
-                  flexWrap: "wrap",
-                }}
-              >
-                <div style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem" }}>
-                  <span style={{ fontWeight: 700, color: "var(--foreground, #292c28)" }}>
-                    {isVi ? "Hạn mức AI" : "AI Quota"}
-                  </span>
-                  {quotaSummary.isDegraded && (
-                    <span
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "0.2rem",
-                        fontSize: "0.6875rem",
-                        fontWeight: 600,
-                        padding: "0.1rem 0.45rem",
-                        borderRadius: "9999px",
-                        background: "rgba(217, 119, 6, 0.14)",
-                        color: "#b45309",
-                      }}
-                    >
-                      <Zap size={11} />
-                      {isVi ? "Chế độ Tiết kiệm" : "Eco Mode"}
-                    </span>
-                  )}
-                </div>
-                <span
-                  style={{ fontWeight: 700, color: quotaTone.textColor }}
-                  title={quotaSummary.quotaLabel}
-                >
-                  {isVi ? `Còn ${remainingPct}%` : `${remainingPct}% remaining`}
-                </span>
-              </div>
-              <div
-                role="progressbar"
-                aria-label={quotaSummary.quotaLabel}
-                aria-valuenow={remainingPct}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                style={{
-                  width: "100%",
-                  height: "8px",
-                  borderRadius: "9999px",
-                  background: "rgba(0, 0, 0, 0.08)",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    width: `${remainingPct}%`,
-                    height: "100%",
-                    background: quotaTone.barGradient,
-                    borderRadius: "9999px",
-                    transition: "width 0.3s ease",
-                  }}
-                />
-              </div>
-              {quotaSummary.resetCountdown && (
+              {/* Primary 24h Quota Bar */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
                 <div
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: "0.35rem",
+                    justifyContent: "space-between",
+                    gap: "0.5rem",
                     fontSize: "0.75rem",
-                    color: "var(--muted-foreground, #666)",
+                    flexWrap: "wrap",
                   }}
                 >
-                  <Clock size={12} style={{ flexShrink: 0 }} />
-                  <span>{quotaSummary.resetCountdown}</span>
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem" }}>
+                    <span style={{ fontWeight: 700, color: "var(--foreground, #292c28)" }}>
+                      {primaryWindowLabel}
+                    </span>
+                    {quotaSummary.isDegraded && (
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "0.2rem",
+                          fontSize: "0.6875rem",
+                          fontWeight: 600,
+                          padding: "0.1rem 0.45rem",
+                          borderRadius: "9999px",
+                          background: "rgba(217, 119, 6, 0.14)",
+                          color: "#b45309",
+                        }}
+                      >
+                        <Zap size={11} />
+                        {isVi ? "Chế độ Tiết kiệm" : "Eco Mode"}
+                      </span>
+                    )}
+                  </div>
+                  <span
+                    style={{ fontWeight: 700, color: quotaTone.textColor }}
+                    title={quotaSummary.quotaLabel}
+                  >
+                    {isVi ? `Còn ${remainingPct}%` : `${remainingPct}% remaining`}
+                  </span>
                 </div>
-              )}
+                <div
+                  role="progressbar"
+                  aria-label={primaryWindowLabel}
+                  aria-valuenow={remainingPct}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  style={{
+                    width: "100%",
+                    height: "8px",
+                    borderRadius: "9999px",
+                    background: "rgba(0, 0, 0, 0.08)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${remainingPct}%`,
+                      height: "100%",
+                      background: quotaTone.barGradient,
+                      borderRadius: "9999px",
+                      transition: "width 0.3s ease",
+                    }}
+                  />
+                </div>
+                {quotaSummary.resetCountdown && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.35rem",
+                      fontSize: "0.75rem",
+                      color: "var(--muted-foreground, #666)",
+                    }}
+                  >
+                    <Clock size={12} style={{ flexShrink: 0 }} />
+                    <span>{quotaSummary.resetCountdown}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Weekly Quota Bar (Profile Only) */}
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.45rem",
+                  paddingTop: "0.75rem",
+                  borderTop: "1px solid rgba(0, 0, 0, 0.06)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "0.5rem",
+                    fontSize: "0.75rem",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span style={{ fontWeight: 700, color: "var(--foreground, #292c28)" }}>
+                    {weeklyWindowLabel}
+                  </span>
+                  <span style={{ fontWeight: 700, color: weeklyTone.textColor }}>
+                    {isVi ? `Còn ${weeklyRemainingPct}%` : `${weeklyRemainingPct}% remaining`}
+                  </span>
+                </div>
+                <div
+                  role="progressbar"
+                  aria-label={weeklyWindowLabel}
+                  aria-valuenow={weeklyRemainingPct}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  style={{
+                    width: "100%",
+                    height: "6px",
+                    borderRadius: "9999px",
+                    background: "rgba(0, 0, 0, 0.08)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${weeklyRemainingPct}%`,
+                      height: "100%",
+                      background: weeklyTone.barGradient,
+                      borderRadius: "9999px",
+                      transition: "width 0.3s ease",
+                    }}
+                  />
+                </div>
+                {weeklySummary.resetCountdown && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.35rem",
+                      fontSize: "0.75rem",
+                      color: "var(--muted-foreground, #666)",
+                    }}
+                  >
+                    <Clock size={12} style={{ flexShrink: 0 }} />
+                    <span>{weeklySummary.resetCountdown}</span>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* 1-Click Upgrade to Semester Pro CTA Button */}

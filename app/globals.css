@@ -560,7 +560,7 @@ svg {
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 .eyebrow {
   font-size: 11px;
@@ -576,19 +576,19 @@ svg {
   display: none;
 }
 .page-heading h1 {
-  font-size: 32px;
-  letter-spacing: -0.035em;
+  font-size: 26px;
+  letter-spacing: -0.03em;
   font-weight: 800;
   margin-top: 0;
-  line-height: 1.15;
+  line-height: 1.2;
   color: #151a10;
 }
 .page-heading p {
-  font-size: 14.5px;
+  font-size: 14px;
   color: #4e5a45;
-  margin-top: 8px;
-  line-height: 1.55;
-  max-width: 680px;
+  margin-top: 4px;
+  line-height: 1.5;
+  max-width: 640px;
 }
 .session-pill {
   display: flex;

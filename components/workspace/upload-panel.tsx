@@ -523,14 +523,13 @@ export function UploadPanel({
 
   return (
     <div className="upload-panel surface" aria-label={t.upload.title}>
-      <div className="section-top flex items-start justify-between flex-wrap gap-2">
-        <div className="flex items-start gap-3">
+      <div className="section-top flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-3">
           <div className="section-icon">
             <UploadCloud size={20} />
           </div>
           <div>
             <h2>{t.upload.title}</h2>
-            <p>{t.upload.desc}</p>
           </div>
         </div>
         <button
@@ -539,17 +538,32 @@ export function UploadPanel({
             setPricingReason(null);
             setPricingOpen(true);
           }}
-          className={`text-xs font-semibold px-2.5 py-1 rounded-full border flex items-center gap-1.5 cursor-pointer ${
+          className={`text-xs font-semibold px-3 py-1 rounded-full border flex items-center gap-2 cursor-pointer ${
             quotaState && quotaState.remainingPct <= 10
               ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300 border-red-300 dark:border-red-700"
               : quotaState && quotaState.remainingPct <= 30
                 ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-amber-300 dark:border-amber-700"
                 : "bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700"
           }`}
+          title={quotaState ? formatQuotaPercentBadge(quotaState.remainingPct, isVi) : undefined}
         >
+          {quotaState && (
+            <span className="w-8 h-1.5 rounded-full bg-black/10 overflow-hidden inline-block" aria-hidden="true">
+              <span
+                className={`block h-full rounded-full ${
+                  quotaState.remainingPct <= 10
+                    ? "bg-red-600"
+                    : quotaState.remainingPct <= 30
+                      ? "bg-amber-600"
+                      : "bg-emerald-600"
+                }`}
+                style={{ width: `${Math.max(0, Math.min(100, Math.round(quotaState.remainingPct)))}%` }}
+              />
+            </span>
+          )}
           <span>
             {quotaState
-              ? `${tier === "contender" ? "Contender" : tier.toUpperCase()} · ${formatQuotaPercentBadge(quotaState.remainingPct, isVi)} (${limits.maxFilesPerUpload} ${isVi ? "tệp" : limits.maxFilesPerUpload === 1 ? "file" : "files"})`
+              ? `${Math.max(0, Math.min(100, Math.round(quotaState.remainingPct)))}% AI (${limits.rollingQuota.primaryWindowHours}h) · ${limits.maxFilesPerUpload} ${isVi ? "tệp" : limits.maxFilesPerUpload === 1 ? "file" : "files"}`
               : tier === "contender"
                 ? t.upload.contenderBadge
                 : `${tier.toUpperCase()}: ${t.upload.paidBadgeSuffix}`}
@@ -855,8 +869,8 @@ export function UploadPanel({
         />
         <span>
           {siteLang === "vi"
-            ? "Tài liệu slide này chỉ phục vụ việc tự ôn thi cá nhân của tôi; tôi cam kết không phát tán công khai bộ đề học phần có bản quyền."
-            : "These slides are for my personal exam study; I will not redistribute copyrighted course decks publicly."}
+            ? "Chỉ dùng để ôn tập cá nhân, không phát tán tài liệu bản quyền."
+            : "For personal study only; I will not redistribute copyrighted material."}
         </span>
       </label>
 

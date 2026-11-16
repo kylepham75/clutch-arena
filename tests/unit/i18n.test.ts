@@ -527,18 +527,16 @@ describe("i18n Vietnamese & English translations", () => {
     });
   });
 
-  describe("Past-Exam & Formula Studio hero positioning & currency separation", () => {
-    it("uses Past-Exam & Formula Studio positioning in EN", () => {
-      expect(translations.en.brand.tagline).toContain("Past-Exam & Formula Studio");
-      expect(translations.en.run.welcomeTitle).toContain("Past-Exam & Formula Studio");
-      expect(translations.en.headings.clutchRunReady).toContain(
-        "Drop 1 Exam PDF Free -> Get 5 Verified Past-Exam Problems + 2-Page Cheat Sheet in 60s",
+  describe("Minimalist hero positioning & currency separation", () => {
+    it("uses concise Exam Studio positioning in EN", () => {
+      expect(translations.en.brand.tagline).toBe("Exam Studio");
+      expect(translations.en.run.welcomeTitle).toBe("Welcome to Clutch Arena");
+      expect(translations.en.headings.clutchRunReady).toBe("Clutch Run");
+      expect(translations.en.run.welcomeDesc).toBe(
+        "Upload a PDF or start with the sample deck.",
       );
-      expect(translations.en.run.welcomeDesc).toContain(
-        "Drop 1 Exam PDF Free -> Get 5 Verified Past-Exam Problems + 2-Page Cheat Sheet in 60s",
-      );
-      expect(translations.en.run.welcomeDesc).toContain(
-        "Step-by-step math & slide-page citations",
+      expect(translations.en.headings.playDesc).toBe(
+        "Timed recall with step-by-step citations.",
       );
     });
 

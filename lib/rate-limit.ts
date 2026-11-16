@@ -1019,11 +1019,24 @@ export interface ClientQuotaSummary {
   windowHours: number;
   bottleneckScope: QuotaBottleneckScope;
   mode: CogsBudgetStatus["mode"];
+  weeklyRemainingPct?: number;
+  weeklyUsedPct?: number;
+  weeklyResetsAt?: string | null;
+  weeklyWindowHours?: number;
 }
 
 export function toClientQuota(
   snapshot: ClientQuotaSummary | RollingQuotaSnapshot,
 ): ClientQuotaSummary {
+  const weeklyRemainingPct =
+    typeof snapshot.weeklyRemainingPct === "number"
+      ? Math.max(0, Math.min(100, Math.round(snapshot.weeklyRemainingPct)))
+      : 100;
+  const weeklyUsedPct =
+    typeof snapshot.weeklyUsedPct === "number"
+      ? Math.max(0, Math.min(100, Math.round(snapshot.weeklyUsedPct)))
+      : 100 - weeklyRemainingPct;
+
   return {
     remainingPct: Math.max(0, Math.min(100, Math.round(snapshot.remainingPct))),
     usedPct: Math.max(0, Math.min(100, Math.round(snapshot.usedPct))),
@@ -1031,6 +1044,10 @@ export function toClientQuota(
     windowHours: snapshot.windowHours,
     bottleneckScope: snapshot.bottleneckScope,
     mode: snapshot.mode,
+    weeklyRemainingPct,
+    weeklyUsedPct,
+    weeklyResetsAt: snapshot.weeklyResetsAt ?? null,
+    weeklyWindowHours: snapshot.weeklyWindowHours ?? 168,
   };
 }
 
@@ -1244,9 +1261,13 @@ export function computeRollingQuotaSnapshot(
 
   let bottleneck = candidates[0];
   for (const cand of candidates.slice(1)) {
-    if (cand.ratio < bottleneck.ratio - 1e-6) {
+    if (cand.remainingUsd < bottleneck.remainingUsd - 1e-6) {
       bottleneck = cand;
-    } else if (Math.abs(cand.ratio - bottleneck.ratio) <= 1e-6 && cand.scope === "cycle" && cand.ratio <= 0) {
+    } else if (
+      Math.abs(cand.remainingUsd - bottleneck.remainingUsd) <= 1e-6 &&
+      cand.scope === "cycle" &&
+      cand.remainingUsd <= 0
+    ) {
       bottleneck = cand;
     }
   }
@@ -1259,12 +1280,29 @@ export function computeRollingQuotaSnapshot(
     ).toFixed(6),
   );
 
-  const rawRemainingPct = Math.round(bottleneck.ratio * 100);
+  // Primary bar tracks the 24h window (or 72h for free contender), capped by weekly/cycle only when their remaining USD is tighter than the 24h window
+  const primaryRatio = windowBudgetUsd > 0 ? effectiveRemainingUsd / windowBudgetUsd : 0;
+  const rawRemainingPct = Math.round(primaryRatio * 100);
   const remainingPct =
     effectiveRemainingUsd <= 0.0005
       ? 0
       : Math.max(1, Math.min(100, rawRemainingPct));
   const usedPct = 100 - remainingPct;
+
+  // Weekly/guard bar tracks the 7d (168h) paid / 30d (720h) free limit, shown in the Profile dialog
+  const weeklyEffectiveRemainingUsd =
+    cycleRemainingUsd !== null
+      ? Number(Math.min(guardRemainingUsd, cycleRemainingUsd).toFixed(6))
+      : guardRemainingUsd;
+  const weeklyRatio = guardBudgetUsd > 0 ? weeklyEffectiveRemainingUsd / guardBudgetUsd : 0;
+  const weeklyRawRemainingPct = Math.round(weeklyRatio * 100);
+  const weeklyRemainingPct =
+    weeklyEffectiveRemainingUsd <= 0.0005
+      ? 0
+      : Math.max(1, Math.min(100, weeklyRawRemainingPct));
+  const weeklyUsedPct = 100 - weeklyRemainingPct;
+  const weeklyResetsAt = new Date(effectiveWeeklyResetMs).toISOString();
+  const weeklyWindowHours = cfg.guardWindowHours;
 
   let degradationStatus = evaluateCogsDegradation(
     bottleneck.spentUsd,
@@ -1294,6 +1332,10 @@ export function computeRollingQuotaSnapshot(
     windowHours: bottleneck.windowHours,
     bottleneckScope: bottleneck.scope,
     mode: degradationStatus.mode,
+    weeklyRemainingPct,
+    weeklyUsedPct,
+    weeklyResetsAt,
+    weeklyWindowHours,
     windowBudgetUsd,
     windowRemainingUsd,
     guardBudgetUsd,

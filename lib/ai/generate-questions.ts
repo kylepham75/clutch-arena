@@ -1594,6 +1594,37 @@ function isLanguageModelInstance(val: unknown): val is LanguageModel {
   );
 }
 
+function extractUpstreamErrorDetail(error: any): string {
+  const rawMsg = typeof error?.message === "string" ? error.message : "";
+  let enriched = rawMsg;
+  if (
+    (!rawMsg || rawMsg === "Provider returned error") &&
+    typeof error?.responseBody === "string"
+  ) {
+    try {
+      const parsed = JSON.parse(error.responseBody);
+      const providerName = parsed?.error?.metadata?.provider_name;
+      const rawInner = parsed?.error?.metadata?.raw;
+      if (typeof rawInner === "string") {
+        try {
+          const innerParsed = JSON.parse(rawInner);
+          const innerMsg = innerParsed?.error?.message || innerParsed?.message;
+          if (typeof innerMsg === "string" && innerMsg.trim()) {
+            enriched = providerName
+              ? `${rawMsg} [${providerName}]: ${innerMsg.trim()}`
+              : `${rawMsg}: ${innerMsg.trim()}`;
+          }
+        } catch {
+          // ignore inner parse error
+        }
+      }
+    } catch {
+      // ignore outer parse error
+    }
+  }
+  return enriched.replace(/https?:\/\/[^\s]+/g, "").slice(0, 150);
+}
+
 export async function generateQuestions(
   document: ParsedDocument,
   options: IngestionOptions & { verifierModel?: LanguageModel | false; tier?: string },
@@ -2128,9 +2159,7 @@ export async function generateQuestions(
         503,
       );
 
-    const detail = error?.message
-      ?.replace(/https?:\/\/[^\s]+/g, "")
-      ?.slice(0, 150);
+    const detail = extractUpstreamErrorDetail(error);
     throw new IngestionError(
       "AI_UNAVAILABLE",
       detail

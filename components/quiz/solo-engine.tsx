@@ -1008,7 +1008,6 @@ export function SoloEngine({
             {!inRun && (
               <div className="page-heading">
                 <div>
-                  <div className="eyebrow">{t.headings.eyebrow}</div>
                   <h1>
                     {activeTab === "arena"
                       ? t.headings.arenaTitle
@@ -1230,32 +1229,14 @@ export function SoloEngine({
                       !pack ? (
                         <div className="setup-grid">
                           <section className="setup-card surface empty-study-card">
-                            <div className="section-top mb-3">
-                              <div className="section-icon">
-                                <BookOpen size={20} className="text-amber-700" />
-                              </div>
-                              <div>
-                                <h2>{t.run.welcomeTitle}</h2>
-                                <p>{t.run.welcomeDesc}</p>
-                              </div>
-                              <span className="tag tag-amber">{t.run.gettingStartedTag}</span>
-                            </div>
-
-                            {/* Prominent Quick-Action Launchpad Banner */}
+                            {/* Quick-Start Launchpad Banner */}
                             <div className="hero-quick-start mb-6 p-6 sm:p-7 rounded-2xl bg-[#fff8f4] border border-[#f5d2c2] flex flex-col md:flex-row items-center justify-between gap-5 shadow-xs">
-                              <div className="space-y-1.5 text-center md:text-left">
-                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#fde8dc] text-[#d9532f] text-xs font-bold uppercase tracking-wider">
-                                  <Zap size={14} fill="currentColor" />
-                                  <span>{t.brand.tagline}</span>
-                                </span>
-                                <h3 className="text-xl sm:text-2xl font-extrabold text-[#1a2118] tracking-tight">
-                                  {t.headings.clutchRunReady}
-                                </h3>
+                              <div className="space-y-1 text-center md:text-left">
+                                <h2 className="text-xl sm:text-2xl font-extrabold text-[#1a2118] tracking-tight">
+                                  {t.run.welcomeTitle}
+                                </h2>
                                 <p className="text-xs sm:text-sm text-[#5d6754] max-w-lg leading-relaxed">
-                                  {t.headings.playDesc}
-                                </p>
-                                <p className="text-xs text-[#6b7562] max-w-lg leading-relaxed">
-                                  {t.run.welcomeSampleTitle}: {t.run.welcomeSampleDesc}
+                                  {t.run.welcomeDesc}
                                 </p>
                               </div>
                               <div className="flex items-center gap-3 w-full md:w-auto">
@@ -1425,7 +1406,7 @@ export function SoloEngine({
                                   <div className="flex items-center gap-2 pt-2 border-t border-stone-100" role="region" aria-label="Quick deck switcher">
                                     <span className="text-stone-400 font-medium shrink-0 flex items-center gap-1 text-[11px]">
                                       <Layers3 size={12} className="text-stone-400" />
-                                      <span>{t.run.quickSwitch}:</span>
+                                      <span>{t.run.quickSwitch}</span>
                                     </span>
                                     <div className="flex items-center gap-1.5 flex-wrap">
                                       {availablePacks.map((item) => {
@@ -1563,7 +1544,6 @@ export function SoloEngine({
                                     <div className="flex-1 min-w-0">
                                       <div className="flex items-center gap-1.5">
                                         <strong className="text-[13.5px] font-bold text-stone-900">{t.run.classicRecall}</strong>
-                                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-stone-100 text-stone-600 border border-stone-200/60">Nền tảng</span>
                                       </div>
                                       <p className="text-xs text-stone-500 mt-0.5 truncate">{t.run.classicRecallDesc}</p>
                                     </div>
@@ -1634,16 +1614,16 @@ export function SoloEngine({
                               <div className="control-section">
                                 <div className="flex items-center justify-between mb-2">
                                   <label className="text-xs font-semibold text-stone-700 dark:text-stone-300">
-                                    {language === "vi" ? "Tốc độ làm bài & Giới hạn giờ" : "Pacing & Timers"}
+                                    {language === "vi" ? "Tốc độ" : "Pacing"}
                                   </label>
                                   <span className="text-[11px] font-medium text-stone-500">
                                     {state.untimed
                                       ? language === "vi"
-                                        ? "Đang bật: Không giới hạn"
-                                        : "Active: Untimed Cram"
+                                        ? "Không giới hạn"
+                                        : "Untimed"
                                       : language === "vi"
-                                        ? "Đang bật: Đếm ngược 15s"
-                                        : "Active: 15s Countdown"}
+                                        ? "15s / câu"
+                                        : "15s / question"}
                                   </span>
                                 </div>
                                 <button
@@ -1671,29 +1651,19 @@ export function SoloEngine({
                                       <div className="flex items-center gap-2 flex-wrap">
                                         <strong className="text-[13.5px] font-bold text-stone-900 dark:text-stone-100">
                                           {language === "vi"
-                                            ? "Ôn Cấp Tốc Không Giới Hạn · Mở đáp án ngay"
-                                            : "Untimed Cram / Instant Answer"}
+                                            ? "Ôn không giới hạn thời gian"
+                                            : "Untimed mode"}
                                         </strong>
-                                        <span
-                                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
-                                            state.untimed
-                                              ? "bg-amber-600 text-white"
-                                              : "bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 border border-stone-200/60"
-                                          }`}
-                                        >
-                                          {state.untimed
-                                            ? language === "vi"
-                                              ? "ĐANG BẬT"
-                                              : "ACTIVE"
-                                            : language === "vi"
-                                              ? "TÙY CHỌN"
-                                              : "OPTIONAL"}
-                                        </span>
+                                        {state.untimed && (
+                                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-600 text-white">
+                                            {language === "vi" ? "BẬT" : "ON"}
+                                          </span>
+                                        )}
                                       </div>
                                       <p className="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
                                         {language === "vi"
-                                          ? "Bỏ giới hạn đếm ngược 15s và gỡ khóa 4s đọc giải thích khi chọn sai để mở khóa đáp án tức thì."
-                                          : "Removes the 15s timer per question and skips the 4s wrong-answer lock for instant explanations."}
+                                          ? "Bỏ đếm ngược 15s, xem đáp án ngay."
+                                          : "No 15s timer, instant explanations."}
                                       </p>
                                     </div>
                                   </div>
@@ -1732,13 +1702,6 @@ export function SoloEngine({
                                     <Layers3 size={15} />
                                     <span>{t.run.flashcards}</span>
                                   </Button>
-                                </div>
-                                <div className="flex items-center justify-center gap-2 text-xs text-stone-400 mt-3 font-medium">
-                                  <span>{t.run.about2Minutes}</span>
-                                  <span className="text-stone-300">•</span>
-                                  <span>{t.run.smartRetry}</span>
-                                  <span className="text-stone-300">•</span>
-                                  <span>{t.run.keyboardReady}</span>
                                 </div>
                               </div>
                             </section>
@@ -1840,20 +1803,17 @@ export function SoloEngine({
                                     Luật đấu trường
                                   </div>
                                   <div className="arena-rules-grid grid grid-cols-3 gap-2">
-                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+                                    <div className="rule-tile py-2.5 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-1">
                                       <Heart size={14} className="text-rose-500" />
-                                      <strong className="text-xs font-bold text-stone-800">{t.run.livesCount}</strong>
-                                      <span className="text-[10px] text-stone-400">Trượt 3 lần</span>
+                                      <strong className="text-xs font-semibold text-stone-800">{t.run.livesCount}</strong>
                                     </div>
-                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+                                    <div className="rule-tile py-2.5 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-1">
                                       <Clock3 size={14} className="text-amber-500" />
-                                      <strong className="text-xs font-bold text-stone-800">{t.run.timerCount}</strong>
-                                      <span className="text-[10px] text-stone-400">15s/câu</span>
+                                      <strong className="text-xs font-semibold text-stone-800">{t.run.timerCount}</strong>
                                     </div>
-                                    <div className="rule-tile py-2 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-0.5">
+                                    <div className="rule-tile py-2.5 px-1 rounded-lg bg-stone-50 border border-stone-200/60 text-center flex flex-col items-center gap-1">
                                       <Flame size={14} className="text-orange-500" />
-                                      <strong className="text-xs font-bold text-stone-800">{t.run.streakBonus}</strong>
-                                      <span className="text-[10px] text-stone-400">Nhân điểm</span>
+                                      <strong className="text-xs font-semibold text-stone-800">{t.run.streakBonus}</strong>
                                     </div>
                                   </div>
                                   <button

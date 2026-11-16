@@ -9,12 +9,13 @@ import {
 } from "@/hooks/use-user-tier";
 import { useLanguage } from "@/lib/i18n/context";
 import { Button } from "@/components/ui/button";
-import type { UserTier } from "@/lib/pricing/tiers";
+import { TIER_LIMITS, type UserTier } from "@/lib/pricing/tiers";
 
 function getQuotaToneStyle(tone: ProfileQuotaSummary["statusTone"]) {
   if (tone === "critical") {
     return {
       color: "#b91c1c",
+      barColor: "#dc2626",
       background: "rgba(220, 38, 38, 0.12)",
       border: "1px solid rgba(220, 38, 38, 0.25)",
     };
@@ -22,12 +23,14 @@ function getQuotaToneStyle(tone: ProfileQuotaSummary["statusTone"]) {
   if (tone === "caution") {
     return {
       color: "#b45309",
+      barColor: "#d97706",
       background: "rgba(217, 119, 6, 0.14)",
       border: "1px solid rgba(217, 119, 6, 0.28)",
     };
   }
   return {
     color: "#15803d",
+    barColor: "#16a34a",
     background: "rgba(22, 163, 74, 0.12)",
     border: "1px solid rgba(22, 163, 74, 0.25)",
   };
@@ -36,12 +39,17 @@ function getQuotaToneStyle(tone: ProfileQuotaSummary["statusTone"]) {
 function QuotaStatusBadges({
   quota,
   isVi,
+  windowHours,
 }: {
   quota: ProfileQuotaSummary;
   isVi: boolean;
+  windowHours: number;
 }) {
   const toneStyle = getQuotaToneStyle(quota.statusTone);
-  const tooltip = [quota.quotaLabel, quota.resetCountdown].filter(Boolean).join(" • ");
+  const pct = Math.max(0, Math.min(100, quota.remainingPct));
+  const tooltip = [`${quota.quotaLabel} (${windowHours}h)`, quota.resetCountdown]
+    .filter(Boolean)
+    .join(" • ");
 
   return (
     <>
@@ -52,12 +60,36 @@ function QuotaStatusBadges({
           color: toneStyle.color,
           border: toneStyle.border,
           fontWeight: 700,
-          padding: "0.1rem 0.35rem",
+          padding: "0.1rem 0.4rem",
           borderRadius: "4px",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "0.35rem",
         }}
         title={tooltip}
       >
-        {quota.remainingPct}% AI
+        <span
+          aria-hidden="true"
+          style={{
+            width: "24px",
+            height: "5px",
+            borderRadius: "9999px",
+            background: "rgba(0, 0, 0, 0.1)",
+            overflow: "hidden",
+            display: "inline-block",
+          }}
+        >
+          <span
+            style={{
+              display: "block",
+              width: `${pct}%`,
+              height: "100%",
+              background: toneStyle.barColor,
+              borderRadius: "9999px",
+            }}
+          />
+        </span>
+        <span>{pct}% ({windowHours}h)</span>
       </span>
       {quota.isDegraded && (
         <span
@@ -111,6 +143,8 @@ export function UserProfileButton({
 
   const quotaSummary = computeProfileQuotaSummary(userTier, quotaState, isVi);
   const quota = quotaSummary;
+  const primaryWindowHours =
+    TIER_LIMITS[userTier]?.rollingQuota.primaryWindowHours ?? 24;
   const tierBadgeLabel = getTierBadgeText(userTier, isVi);
   const compactCountdown = getCompactCountdown(hoursRemaining, isVi);
 
@@ -190,7 +224,7 @@ export function UserProfileButton({
                     {compactCountdown}
                   </span>
                 )}
-                <QuotaStatusBadges quota={quota} isVi={isVi} />
+                <QuotaStatusBadges quota={quota} isVi={isVi} windowHours={primaryWindowHours} />
               </div>
               {quota.resetCountdown && (
                 <div
@@ -224,7 +258,7 @@ export function UserProfileButton({
                 >
                   {t.auth.guestBadge}
                 </span>
-                <QuotaStatusBadges quota={quotaSummary} isVi={isVi} />
+                <QuotaStatusBadges quota={quotaSummary} isVi={isVi} windowHours={primaryWindowHours} />
               </div>
               {quotaSummary.resetCountdown && (
                 <div
@@ -334,13 +368,13 @@ export function UserProfileButton({
               {compactCountdown}
             </span>
           )}
-          <QuotaStatusBadges quota={quota} isVi={isVi} />
+          <QuotaStatusBadges quota={quota} isVi={isVi} windowHours={primaryWindowHours} />
         </>
       ) : (
         <>
           <LogIn size={14} style={{ color: "#b83811" }} />
           <span>{t.auth.signInTab}</span>
-          <QuotaStatusBadges quota={quotaSummary} isVi={isVi} />
+          <QuotaStatusBadges quota={quotaSummary} isVi={isVi} windowHours={primaryWindowHours} />
         </>
       )}
     </Button>

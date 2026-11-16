@@ -38,6 +38,10 @@ export interface ClientQuotaSummary {
   windowHours: number;
   bottleneckScope: QuotaBottleneckScope;
   mode: ClientQuotaMode;
+  weeklyRemainingPct?: number;
+  weeklyUsedPct?: number;
+  weeklyResetsAt?: string | null;
+  weeklyWindowHours?: number;
 }
 
 export type QuotaState = ClientQuotaSummary;
@@ -98,7 +102,11 @@ function isSameQuota(
     a.resetsAt === b.resetsAt &&
     a.windowHours === b.windowHours &&
     a.bottleneckScope === b.bottleneckScope &&
-    a.mode === b.mode
+    a.mode === b.mode &&
+    a.weeklyRemainingPct === b.weeklyRemainingPct &&
+    a.weeklyUsedPct === b.weeklyUsedPct &&
+    a.weeklyResetsAt === b.weeklyResetsAt &&
+    a.weeklyWindowHours === b.weeklyWindowHours
   );
 }
 
@@ -227,6 +235,60 @@ export function computeProfileQuotaSummary(
     isDegraded,
     tierLabel,
     showUpgradeToSemesterPro,
+  };
+}
+
+export interface ProfileWeeklyQuotaSummary {
+  remainingPct: number;
+  usedPct: number;
+  resetCountdown: string | null;
+  statusTone: QuotaStatusTone;
+  windowHours: number;
+}
+
+export function computeProfileWeeklyQuotaSummary(
+  tier: UserTier,
+  quotaState?: ClientQuotaSummary | null,
+  isVi: boolean = false,
+  nowMs?: number,
+): ProfileWeeklyQuotaSummary {
+  const defaultGuardHours = TIER_LIMITS[tier]?.rollingQuota.guardWindowHours ?? 168;
+  const windowHours =
+    typeof quotaState?.weeklyWindowHours === "number" && Number.isFinite(quotaState.weeklyWindowHours)
+      ? quotaState.weeklyWindowHours
+      : defaultGuardHours;
+
+  const hasValidWeekly =
+    quotaState !== null &&
+    quotaState !== undefined &&
+    typeof quotaState.weeklyRemainingPct === "number" &&
+    Number.isFinite(quotaState.weeklyRemainingPct);
+
+  const remainingPct = hasValidWeekly
+    ? Math.max(0, Math.min(100, Math.round(quotaState.weeklyRemainingPct!)))
+    : 100;
+
+  const usedPct =
+    hasValidWeekly &&
+    typeof quotaState.weeklyUsedPct === "number" &&
+    Number.isFinite(quotaState.weeklyUsedPct)
+      ? Math.max(0, Math.min(100, Math.round(quotaState.weeklyUsedPct!)))
+      : 100 - remainingPct;
+
+  const statusTone: QuotaStatusTone =
+    remainingPct > 30 ? "healthy" : remainingPct > 10 ? "caution" : "critical";
+
+  const shouldShowReset = Boolean(quotaState?.weeklyResetsAt) || usedPct > 0;
+  const resetCountdown = shouldShowReset
+    ? formatQuotaResetCountdown(quotaState?.weeklyResetsAt, isVi, nowMs)
+    : null;
+
+  return {
+    remainingPct,
+    usedPct,
+    resetCountdown,
+    statusTone,
+    windowHours,
   };
 }
 

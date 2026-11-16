@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   formatPassCountdown,
   computeProfileQuotaSummary,
+  computeProfileWeeklyQuotaSummary,
   type ClientQuotaSummary,
 } from "@/hooks/use-user-tier";
 import {
@@ -367,6 +368,60 @@ describe("Profile Quota & Pass Expiry UI (Stage 4.1 Rolling % Quota)", () => {
       expect(clampedLow.usedPct).toBe(100);
       expect(clampedLow.statusTone).toBe("critical");
       expect(clampedLow.isDegraded).toBe(true);
+    });
+  });
+
+  describe("computeProfileWeeklyQuotaSummary (Profile weekly bar)", () => {
+    it("computes weekly 168h bar summary for paid tiers and 720h guard bar for contender", () => {
+      const weeklyReset = new Date(BASE_NOW + (4 * 24 + 3) * 3_600_000).toISOString();
+      const proWeekly = computeProfileWeeklyQuotaSummary(
+        "pro",
+        makeQuota({
+          remainingPct: 100,
+          usedPct: 0,
+          weeklyRemainingPct: 53,
+          weeklyUsedPct: 47,
+          weeklyResetsAt: weeklyReset,
+          weeklyWindowHours: 168,
+        }),
+        false,
+        BASE_NOW,
+      );
+      expect(proWeekly).toEqual({
+        remainingPct: 53,
+        usedPct: 47,
+        resetCountdown: "Resets in 4d 3h",
+        statusTone: "healthy",
+        windowHours: 168,
+      });
+
+      const viWeekly = computeProfileWeeklyQuotaSummary(
+        "pro",
+        makeQuota({
+          weeklyRemainingPct: 18,
+          weeklyUsedPct: 82,
+          weeklyResetsAt: weeklyReset,
+          weeklyWindowHours: 168,
+        }),
+        true,
+        BASE_NOW,
+      );
+      expect(viWeekly).toEqual({
+        remainingPct: 18,
+        usedPct: 82,
+        resetCountdown: "Làm mới sau 4 ngày 3 giờ",
+        statusTone: "caution",
+        windowHours: 168,
+      });
+
+      const defaultContender = computeProfileWeeklyQuotaSummary("contender", null, false, BASE_NOW);
+      expect(defaultContender).toEqual({
+        remainingPct: 100,
+        usedPct: 0,
+        resetCountdown: null,
+        statusTone: "healthy",
+        windowHours: 720,
+      });
     });
   });
 });

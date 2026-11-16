@@ -639,10 +639,10 @@ export function ClutchNotesPanel({
   }
 
   return (
-    <div className="w-full max-w-4xl mx-auto space-y-6 animate-in fade-in duration-300 pb-16">
-      {/* Header Introduction Card */}
-      <div className="bg-white border border-[#e2e6db] rounded-2xl p-6 sm:p-7 shadow-sm relative overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+    <div className="w-full max-w-4xl mx-auto space-y-4 animate-in fade-in duration-300 pb-12">
+      {/* Compact Status Strip */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+        <div className="flex flex-wrap items-center gap-2">
           {isPaidTier ? (
             <span className="badge-pro">{quotaSummary.tierLabel}</span>
           ) : (
@@ -650,71 +650,64 @@ export function ClutchNotesPanel({
               {quotaSummary.tierLabel}
             </span>
           )}
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div
-              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-bold ${quotaToneClasses}`}
-              title={quotaSummary.quotaLabel}
-            >
-              <Zap size={13} />
-              <span>
-                {quotaSummary.remainingPct}% {isVi ? "hạn mức AI" : "AI quota"}
-              </span>
-            </div>
-
-            {quotaSummary.resetCountdown && (
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#f7f8f4] border border-[#e2e6db] text-[11px] font-medium text-[#5a6452]">
-                <Clock size={12} className="text-[#b83811]" />
-                <span>{quotaSummary.resetCountdown}</span>
-              </span>
-            )}
-
-            {quotaSummary.isDegraded && (
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#fffbeb] border border-[#fde68a] text-[11px] font-bold text-[#b45309]">
-                <Sparkles size={12} />
-                <span>
-                  {quotaState?.mode === "cached_only" ||
-                  quotaState?.mode === "halted"
-                    ? isVi
-                      ? "Chỉ bộ nhớ đệm"
-                      : "Cached Only"
-                    : isVi
-                      ? "Chế độ Eco"
-                      : "Eco Mode"}
-                </span>
-              </span>
-            )}
+          <div
+            className={`inline-flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-bold ${quotaToneClasses}`}
+            title={`${quotaSummary.quotaLabel} (${limits.rollingQuota.primaryWindowHours}h)`}
+          >
+            <Zap size={13} />
+            <span className="w-8 h-1.5 rounded-full bg-black/10 overflow-hidden inline-block" aria-hidden="true">
+              <span
+                className={`block h-full rounded-full ${
+                  quotaSummary.statusTone === "healthy"
+                    ? "bg-[#2e6320]"
+                    : quotaSummary.statusTone === "caution"
+                      ? "bg-[#d97706]"
+                      : "bg-red-600"
+                }`}
+                style={{ width: `${quotaSummary.remainingPct}%` }}
+              />
+            </span>
+            <span>
+              {quotaSummary.remainingPct}% AI ({limits.rollingQuota.primaryWindowHours}h)
+            </span>
           </div>
+          {quotaSummary.resetCountdown && (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#f7f8f4] border border-[#e2e6db] text-[11px] font-medium text-[#5a6452]">
+              <Clock size={12} className="text-[#b83811]" />
+              <span>{quotaSummary.resetCountdown}</span>
+            </span>
+          )}
+          {quotaSummary.isDegraded && (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#fffbeb] border border-[#fde68a] text-[11px] font-bold text-[#b45309]">
+              <Sparkles size={12} />
+              <span>
+                {quotaState?.mode === "cached_only" ||
+                quotaState?.mode === "halted"
+                  ? isVi
+                    ? "Chỉ bộ nhớ đệm"
+                    : "Cached Only"
+                  : isVi
+                    ? "Chế độ Eco"
+                    : "Eco Mode"}
+              </span>
+            </span>
+          )}
         </div>
 
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1a2118] tracking-tight mb-2">
-          {t.notes.title}
-        </h1>
-        <p className="text-xs sm:text-sm text-[#67705f] max-w-2xl leading-relaxed">
-          {t.notes.subtitle}
-        </p>
-
         {user && !isPaidTier && (
-          <div className="mt-4 pt-3.5 border-t border-[#ebeee5] flex flex-wrap items-center justify-between gap-3 text-xs">
-            <span className="text-[#5a6452]">
-              {isVi
-                ? "Gói Miễn phí: tổng hợp ghi chú tóm tắt 1 phần cô đọng trong hạn mức AI luân phiên. Nâng cấp để mở khóa đầy đủ nhiều phần & xuất PDF."
-                : "Free Contender: synthesize a concise 1-section study note inside your rolling AI quota. Upgrade for full multi-section notes & PDF export."}
-            </span>
-            <button
-              type="button"
-              onClick={() => setPricingOpen(true)}
-              className="inline-flex items-center gap-1 font-bold text-[#b83811] hover:text-[#9e2e0a] cursor-pointer shrink-0"
-            >
-              <span>{isVi ? "Nâng cấp Pro" : "Upgrade to Pro"}</span>
-              <ArrowRight size={13} />
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setPricingOpen(true)}
+            className="inline-flex items-center gap-1 text-xs font-bold text-[#b83811] hover:text-[#9e2e0a] cursor-pointer shrink-0"
+          >
+            <span>{isVi ? "Nâng cấp Pro" : "Upgrade to Pro"}</span>
+            <ArrowRight size={13} />
+          </button>
         )}
       </div>
 
       {/* Upload Dropzone Container */}
-      <div className="bg-white border border-[#e2e6db] rounded-2xl p-6 sm:p-7 space-y-5 shadow-sm">
+      <div className="bg-white border border-[#e2e6db] rounded-2xl p-5 sm:p-6 space-y-4 shadow-sm">
         <div className="flex items-center justify-between">
           <div className="text-sm font-bold text-[#1e251a] flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg bg-[#fbede5] text-[#e46d47] flex items-center justify-center">
@@ -738,24 +731,8 @@ export function ClutchNotesPanel({
         >
           <input {...getInputProps()} />
 
-          {/* Tier / Access Badge on Dropzone */}
-          <div className="absolute top-3.5 right-3.5 flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#fef3c7] border border-[#fde68a] text-[#b45309] text-[11px] font-black tracking-wider uppercase">
-            <Zap size={12} className="text-[#b45309]" />
-            <span>
-              {!user
-                ? isVi
-                  ? "ĐĂNG NHẬP MIỄN PHÍ"
-                  : "FREE SIGN-IN"
-                : !isPaidTier
-                  ? isVi
-                    ? "MIỄN PHÍ · 1 PHẦN"
-                    : "FREE · 1-SECTION"
-                  : quotaSummary.tierLabel}
-            </span>
-          </div>
-
-          <div className="w-14 h-14 mx-auto rounded-xl bg-[#fbede5] text-[#e46d47] flex items-center justify-center mb-3.5 shadow-xs">
-            <UploadCloud size={28} />
+          <div className="w-12 h-12 mx-auto rounded-xl bg-[#fbede5] text-[#e46d47] flex items-center justify-center mb-3 shadow-xs">
+            <UploadCloud size={24} />
           </div>
 
           {selectedFile ? (
@@ -766,23 +743,21 @@ export function ClutchNotesPanel({
               </div>
             </div>
           ) : (
-            <div className="space-y-1.5 max-w-md mx-auto">
+            <div className="space-y-1 max-w-md mx-auto">
               <div className="text-sm font-bold text-[#1f261b]">
                 {t.notes.dropTitle}
               </div>
-              <p className="text-xs text-[#788270] leading-relaxed">
+              <p className="text-xs text-[#788270]">
                 {t.notes.dropDesc}
               </p>
             </div>
           )}
 
           {!user && (
-            <div className="mt-4 pt-3.5 border-t border-[#ebeee5] flex items-center justify-center gap-1.5 text-xs text-[#b45309] font-medium">
+            <div className="mt-3 pt-3 border-t border-[#ebeee5] flex items-center justify-center gap-1.5 text-xs text-[#b45309] font-medium">
               <Lock size={13} className="text-[#b45309]" />
               <span>
-                {isVi
-                  ? "Đăng nhập miễn phí để tổng hợp Clutch Notes AI trong hạn mức luân phiên"
-                  : "Sign in free to synthesize Clutch Notes AI inside your rolling quota"}
+                {isVi ? "Đăng nhập miễn phí để tạo tóm tắt" : "Sign in free to generate notes"}
               </span>
             </div>
           )}
@@ -883,19 +858,15 @@ export function ClutchNotesPanel({
       </div>
 
       {/* Before / After Preview Card CTA */}
-      <div className="bg-[#fafbf8] border border-[#e2e6db] rounded-2xl p-6 sm:p-7 flex flex-col md:flex-row items-center justify-between gap-5 shadow-2xs">
-        <div className="space-y-1.5 text-center md:text-left">
-          <h3 className="text-base sm:text-lg font-extrabold text-[#1f261b]">
-            {t.notes.showcaseTitle}
-          </h3>
-          <p className="text-xs text-[#6e7766] max-w-lg leading-relaxed">
-            {t.notes.showcaseDesc}
-          </p>
+      <div className="bg-[#fafbf8] border border-[#e2e6db] rounded-2xl px-5 py-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-2xs">
+        <div className="flex items-center gap-2 text-center sm:text-left">
+          <span className="text-sm font-bold text-[#1f261b]">{t.notes.showcaseTitle}</span>
+          <span className="text-xs text-[#6e7766]">· {t.notes.showcaseDesc}</span>
         </div>
 
         <Button
           onClick={() => setBeforeAfterOpen(true)}
-          className="w-full md:w-auto px-5 py-2.5 bg-white hover:bg-[#f5f6f1] border border-[#d6dbcf] hover:border-[#c3cbb8] text-[#2c3525] text-xs font-bold rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-2xs"
+          className="w-full sm:w-auto px-4 py-2 bg-white hover:bg-[#f5f6f1] border border-[#d6dbcf] hover:border-[#c3cbb8] text-[#2c3525] text-xs font-bold rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-2xs shrink-0"
         >
           <span>{t.notes.showcaseBtn}</span>
           <ArrowRight size={14} />
