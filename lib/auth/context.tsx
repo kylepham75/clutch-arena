@@ -54,6 +54,20 @@ export interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const ACTIVE_USER_MARKER_KEY = "clutch:active_user_id:v1";
+
+function clearAllClientSessionData(): void {
+  clearSessionLibrary();
+  clearSessionHistory();
+  clearSessionMastery();
+  clearStoredUserTier();
+  try {
+    localStorage.removeItem(ACTIVE_USER_MARKER_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -91,8 +105,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Handles smart deck migration vs existing account cloud sync
     const handleAuthLibrarySync = async (currentUser: User | null) => {
       if (!currentUser) {
-        clearSessionLibrary();
+        clearAllClientSessionData();
         return;
+      }
+
+      let previousUserId: string | null = null;
+      try {
+        previousUserId = localStorage.getItem(ACTIVE_USER_MARKER_KEY);
+        if (previousUserId && previousUserId !== currentUser.id) {
+          // Different account signed in after an expired/unclean session: purge prior user data
+          clearSessionLibrary();
+          clearSessionHistory();
+          clearSessionMastery();
+          clearStoredUserTier();
+        }
+        localStorage.setItem(ACTIVE_USER_MARKER_KEY, currentUser.id);
+      } catch {
+        // localStorage unavailable
       }
 
       // Check if this is a newly created account vs an existing account
@@ -151,6 +180,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         cleanAuthUrlFromBrowserHistory();
         if (currentUser) {
           await handleAuthLibrarySync(currentUser);
+        } else {
+          let hadSignedInSession = false;
+          try {
+            hadSignedInSession = Boolean(localStorage.getItem(ACTIVE_USER_MARKER_KEY));
+            if (!hadSignedInSession) {
+              for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.startsWith("clutch:library:") && k !== "clutch:library:v1") {
+                  hadSignedInSession = true;
+                  break;
+                }
+              }
+            }
+          } catch {
+            // ignore
+          }
+          if (hadSignedInSession) {
+            clearAllClientSessionData();
+          }
         }
       })
       .catch(() => {
@@ -172,10 +220,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await handleAuthLibrarySync(currentUser);
       } else if (event === "SIGNED_OUT") {
         cleanAuthUrlFromBrowserHistory();
-        clearSessionLibrary();
-        clearSessionHistory();
-        clearSessionMastery();
-        clearStoredUserTier();
+        clearAllClientSessionData();
       }
     });
 
@@ -252,10 +297,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (supabase) {
       await supabase.auth.signOut();
     }
-    clearSessionLibrary();
-    clearSessionHistory();
-    clearSessionMastery();
-    clearStoredUserTier();
+    clearAllClientSessionData();
     setUser(null);
     setSession(null);
   }, []);

@@ -7,7 +7,7 @@ import {
 import {
   extractSlideXmlText,
   detectSlideEquationCandidates,
-} from "@/lib/ingestion/parse-pptx";
+} from "@/lib/ingestion/pptx-xml";
 
 export interface ExtractedSlideDeck {
   fileName: string;

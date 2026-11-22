@@ -832,9 +832,21 @@ export function clearStoredUserTier(): void {
   try {
     localStorage.setItem(USER_TIER_STORAGE_KEY, "contender");
     localStorage.removeItem(USER_TIER_EXPIRES_KEY);
+    localStorage.removeItem(REFERRAL_STORAGE_KEY);
+    localStorage.removeItem("clutch-solo-active-session-v1");
     window.dispatchEvent(
       new CustomEvent("clutch:tier_updated", {
         detail: { tier: "contender", expiresAt: null },
+      }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("clutch:referrals_updated", {
+        detail: {
+          unlockedRemixRuns: 0,
+          friendsInvited: 0,
+          roomsHostedWith4Players: 0,
+          packsImportedByClassmates: 0,
+        },
       }),
     );
   } catch {
@@ -937,25 +949,44 @@ export async function fetchCloudUserTier(): Promise<{
 
     let cloudTier: string | null = null;
     let cloudExpiresAt: string | null = null;
+    let hasAuthoritativeProfile = false;
+    let isRevokedSubscription = false;
+    let revokedAtMs: number | null = null;
 
-    // 1. Check active `user_subscriptions` first
+    // 1. Check latest `user_subscriptions` across statuses
     const { data: subData, error: subErr } = await supabase
       .from("user_subscriptions")
-      .select("tier, expires_at, status")
+      .select("tier, expires_at, status, created_at, updated_at")
       .eq("user_id", user.id)
-      .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (!subErr && subData?.tier) {
-      const isSubExpired = isTierExpired(subData.expires_at);
-
-      if (!isSubExpired) {
-        cloudTier = subData.tier;
-        cloudExpiresAt = subData.expires_at;
+    if (!subErr && subData) {
+      const subStatus =
+        typeof subData.status === "string"
+          ? subData.status.toLowerCase().trim()
+          : "active";
+      if (
+        subStatus === "revoked" ||
+        subStatus === "refunded" ||
+        subStatus === "cancelled"
+      ) {
+        isRevokedSubscription = true;
+        const revIso =
+          (subData as { updated_at?: string; created_at?: string }).updated_at ||
+          (subData as { created_at?: string }).created_at;
+        const parsedRev = revIso ? Date.parse(revIso) : NaN;
+        if (Number.isFinite(parsedRev)) {
+          revokedAtMs = parsedRev;
+        }
+      } else if (subData.tier) {
+        const isSubExpired = isTierExpired(subData.expires_at);
+        if (!isSubExpired) {
+          cloudTier = subData.tier;
+          cloudExpiresAt = subData.expires_at;
+        }
       }
-      // If subscription has expired, do not stop; fall through to profiles table!
     }
 
     if (!cloudTier) {
@@ -966,16 +997,29 @@ export async function fetchCloudUserTier(): Promise<{
         .eq("id", user.id)
         .maybeSingle();
 
-      if (!profileErr && profileData) {
-        const resolved = resolveTierFromProfileRecord(profileData);
-        if (resolved) {
-          cloudTier = resolved.tier;
-          cloudExpiresAt = resolved.expiresAt;
+      if (profileErr && (profileErr as { code?: string }).code !== "PGRST116") {
+        hasAuthoritativeProfile = true;
+      } else if (!profileErr && profileData) {
+        hasAuthoritativeProfile = true;
+        const profileUpdatedMs = profileData.updated_at
+          ? Date.parse(profileData.updated_at)
+          : NaN;
+        const allowProfileAfterRevocation =
+          !isRevokedSubscription ||
+          (revokedAtMs !== null &&
+            Number.isFinite(profileUpdatedMs) &&
+            profileUpdatedMs > revokedAtMs);
+        if (allowProfileAfterRevocation) {
+          const resolved = resolveTierFromProfileRecord(profileData);
+          if (resolved) {
+            cloudTier = resolved.tier;
+            cloudExpiresAt = resolved.expiresAt;
+          }
         }
       }
     }
 
-    if (!cloudTier) {
+    if (!cloudTier && !hasAuthoritativeProfile && !isRevokedSubscription) {
       // 3. Fallback to `user_profiles` table
       const { data: userProfileData, error: userProfileErr } = await supabase
         .from("user_profiles")

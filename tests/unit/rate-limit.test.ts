@@ -557,6 +557,29 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
       // 6. Default fallback to 127.0.0.1 when no proxy headers exist
       const localReq = new Request("http://localhost:3000");
       expect(getClientIp(localReq)).toBe("127.0.0.1");
+
+      // 7. Rejects cf-connecting-ip even WITH cf-ray when running on Vercel without TRUST_CLOUDFLARE_HEADERS=true
+      try {
+        process.env.VERCEL = "1";
+        delete process.env.TRUST_CLOUDFLARE_HEADERS;
+        const cfSpoofWithRayOnVercel = new Request("http://localhost:3000", {
+          headers: {
+            "cf-connecting-ip": "103.21.244.99",
+            "cf-ray": "spoofed-ray-header",
+          },
+        });
+        expect(getClientIp(cfSpoofWithRayOnVercel)).toBe("127.0.0.1");
+      } finally {
+        process.env.VERCEL = origVercel;
+      }
+
+      // 8. Rejects non-IP strings injected into forwarded headers
+      const nonIpReq = new Request("http://localhost:3000", {
+        headers: {
+          "x-forwarded-for": "spoofed-bucket-key, 198.51.100.1",
+        },
+      });
+      expect(getClientIp(nonIpReq)).toBe("127.0.0.1");
     });
   });
 
@@ -1185,6 +1208,103 @@ describe("Rate Limiting & Server-Side Tier Enforcement", () => {
         const thirdRegen = await checkAndReserveDeckQuota(userId, "pro", contentHash);
         expect(thirdRegen.allowed).toBe(true);
         expect(thirdRegen.ledger.unlockedDecks[contentHash].regenerationsUsed).toBe(3);
+      });
+
+      it("enforces halted rolling quota when bypassCache is true even if cache entry exists (Finding #23)", async () => {
+        const userId = `halt-bypass-${Date.now()}`;
+        await setSharedDeckCache({
+          contentHash: "hash-halt-bypass",
+          language: "en",
+          mode: "variants",
+          focusHash: "",
+          pipelineVersion: "v2",
+          questionPool: [{ id: "q-1" }],
+        });
+
+        const ledger = await getUserQuotaLedger(userId, "contender", "ROW");
+        ledger.windowSpentUsd = 0.08;
+        ledger.cogsSpentUsd = 0.08;
+        await saveUserQuotaLedger(ledger);
+
+        const res = await checkAndReserveDeckQuota(userId, "contender", "hash-halt-bypass", {
+          language: "en",
+          mode: "variants",
+          focusHash: "",
+          pipelineVersion: "v2",
+          bypassCache: true,
+        });
+        expect(res.allowed).toBe(false);
+        expect(res.reason).toBe("COGS_CEILING_EXCEEDED");
+      });
+
+      it("repairs zero or stale lower-tier cogsCeilingUsd on rollover without disturbing $0.05 sandbox caps (Finding #27)", async () => {
+        const userId = `repair-ceiling-${Date.now()}`;
+        const nowIso = new Date().toISOString();
+        await saveUserQuotaLedger({
+          userId,
+          tier: "pro",
+          cogsSpentUsd: 0,
+          cogsReservedUsd: 0,
+          cogsCeilingUsd: 0,
+          windowStartedAt: nowIso,
+          windowSpentUsd: 0,
+          windowReservedUsd: 0,
+          weeklyStartedAt: nowIso,
+          weeklySpentUsd: 0,
+          weeklyReservedUsd: 0,
+          deckCreditsUsed: 0,
+          deckCreditsLimit: 0,
+          dailyBurstUsed: 0,
+          dailyBurstDate: nowIso.slice(0, 10),
+          unlockedDecks: {},
+        });
+
+        const repairedPro = await getUserQuotaLedger(userId, "pro", "VN");
+        expect(repairedPro.cogsCeilingUsd).toBe(3.8);
+
+        const staleUser = `stale-ceiling-${Date.now()}`;
+        await saveUserQuotaLedger({
+          userId: staleUser,
+          tier: "pro_monthly",
+          cogsSpentUsd: 0,
+          cogsReservedUsd: 0,
+          cogsCeilingUsd: 0.08,
+          windowStartedAt: nowIso,
+          windowSpentUsd: 0,
+          windowReservedUsd: 0,
+          weeklyStartedAt: nowIso,
+          weeklySpentUsd: 0,
+          weeklyReservedUsd: 0,
+          deckCreditsUsed: 0,
+          deckCreditsLimit: 0,
+          dailyBurstUsed: 0,
+          dailyBurstDate: nowIso.slice(0, 10),
+          unlockedDecks: {},
+        });
+        const repairedMonthly = await getUserQuotaLedger(staleUser, "pro_monthly", "VN");
+        expect(repairedMonthly.cogsCeilingUsd).toBe(1.5);
+
+        const sandboxUser = `sandbox-ceiling-${Date.now()}`;
+        await saveUserQuotaLedger({
+          userId: sandboxUser,
+          tier: "contender",
+          cogsSpentUsd: 0,
+          cogsReservedUsd: 0,
+          cogsCeilingUsd: 0.05,
+          windowStartedAt: nowIso,
+          windowSpentUsd: 0,
+          windowReservedUsd: 0,
+          weeklyStartedAt: nowIso,
+          weeklySpentUsd: 0,
+          weeklyReservedUsd: 0,
+          deckCreditsUsed: 0,
+          deckCreditsLimit: 0,
+          dailyBurstUsed: 0,
+          dailyBurstDate: nowIso.slice(0, 10),
+          unlockedDecks: {},
+        });
+        const sandboxLoaded = await getUserQuotaLedger(sandboxUser, "contender", "VN");
+        expect(sandboxLoaded.cogsCeilingUsd).toBe(0.05);
       });
     });
   });

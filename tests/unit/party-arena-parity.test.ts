@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import ArenaServer, {
   CORS_HEADERS,
   STALE_LOBBY_TIMEOUT_MS,
+  STALE_MATCH_TIMEOUT_MS,
   type PartyRoomData,
 } from "../../party/arena";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
@@ -1442,6 +1443,72 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
       });
       const bearerRes = await server.onRequest(bearerReq as unknown as Party.Request);
       expect(bearerRes.status).toBe(200);
+    });
+
+    it("fails closed when PARTYKIT_INTERNAL_SECRET is unset outside NODE_ENV=test and blocks unauthorized WS INIT_ROOM", async () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevSecret = process.env.PARTYKIT_INTERNAL_SECRET;
+      delete process.env.PARTYKIT_INTERNAL_SECRET;
+      vi.stubEnv("NODE_ENV", "production");
+
+      try {
+        const mock = createMockPartyRoom("__lobby__");
+        const server = new ArenaServer(mock.room);
+        const postReq = new Request("http://localhost:1999/party/__lobby__", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-party-internal": "1",
+          },
+          body: JSON.stringify({ code: "NO_SECRET", status: "lobby" }),
+        });
+        const postRes = await server.onRequest(postReq as unknown as Party.Request);
+        expect(postRes.status).toBe(403);
+
+        const roomMock = createMockPartyRoom("PROD-WS-BLOCK");
+        const roomServer = new ArenaServer(roomMock.room);
+        const conn = createMockConnection("prod_attacker");
+        await roomServer.onMessage(
+          JSON.stringify({
+            type: "INIT_ROOM",
+            payload: { hostNickname: "Attacker", hostTier: "contender" },
+          }),
+          conn as unknown as Party.Connection,
+        );
+        const wsMsg = JSON.parse(conn.sentMessages[0]);
+        expect(wsMsg.type).toBe("ERROR");
+        expect(wsMsg.code).toBe("UNAUTHORIZED");
+      } finally {
+        vi.stubEnv("NODE_ENV", prevNodeEnv ?? "test");
+        if (prevSecret !== undefined) {
+          process.env.PARTYKIT_INTERNAL_SECRET = prevSecret;
+        }
+      }
+    });
+
+    it("pins CORS_HEADERS origin away from wildcard and cleans up non-lobby stale rooms past STALE_MATCH_TIMEOUT_MS", async () => {
+      expect(CORS_HEADERS["Access-Control-Allow-Origin"]).not.toBe("*");
+
+      const mock = createMockPartyRoom("STALE-MATCH-1");
+      const server = new ArenaServer(mock.room);
+      const hostConn = createMockConnection("host_c");
+      mock.connections.set("host_c", hostConn);
+
+      await server.onMessage(
+        JSON.stringify({
+          type: "INIT_ROOM",
+          payload: { hostNickname: "Host", hostTier: "contender" },
+        }),
+        hostConn as unknown as Party.Connection,
+      );
+
+      (server as any).state.status = "answering";
+      (server as any).state.lastActiveAt = Date.now() - STALE_MATCH_TIMEOUT_MS - 60_000;
+
+      await server.onAlarm();
+      expect((server as any).state).toBeNull();
+      expect(mock.storageData.size).toBe(0);
+      expect(hostConn.isClosed).toBe(true);
     });
   });
 });

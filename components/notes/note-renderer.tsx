@@ -17,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { MathText } from "@/components/ui/math-text";
 import { exportClutchNotePdf } from "@/lib/notes/export-pdf";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
   translations,
   type TranslationDict,
@@ -1094,9 +1095,16 @@ export function NoteRenderer({
         ...(sourceText ? { sourceText } : {}),
       };
 
+      const supabase = getSupabaseBrowserClient();
+      const sessionRes = supabase ? await supabase.auth.getSession() : null;
+      const accessToken = sessionRes?.data?.session?.access_token;
+
       const res = await fetch("/api/repair", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify(payload),
       });
 

@@ -77,7 +77,7 @@ import {
   slicePackForPreview,
   FREE_SHARED_PACK_PREVIEW_LIMIT,
 } from "@/lib/game/pack-transfer";
-import { getStoredUserTier, isPaidTier } from "@/lib/pricing/tiers";
+import { fetchCloudUserTier, isPaidTier } from "@/lib/pricing/tiers";
 import {
   readMasteryStore,
   recordRunMastery,
@@ -91,6 +91,7 @@ import { mockMicroeconomicsDoc, mockMicroeconomics } from "@/data/mock-microecon
 import { TutorialDialog, isTutorialCompleted } from "@/components/tutorial/tutorial-dialog";
 import { useUserTier } from "@/hooks/use-user-tier";
 import { useAuth } from "@/lib/auth/context";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { PricingModal } from "@/components/pricing/pricing-modal";
 import { FeedbackDialog } from "@/components/workspace/feedback-dialog";
 import type { FeedbackCategory } from "@/lib/schemas/telemetry";
@@ -108,7 +109,7 @@ export function SoloEngine({
   initialDoc?: ParsedDocument;
 } = {}) {
   const { language, t } = useLanguage();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const { tier, limits, unlockedRemixRuns, consumeRemixRun } = useUserTier();
   const [pricingOpen, setPricingOpen] = useState(false);
   const [pricingReason, setPricingReason] = useState<string | null>(null);
@@ -223,16 +224,24 @@ export function SoloEngine({
   }, [libraryItems, pack, document]);
 
   // Auto-load pack if URL contains #pack=<token> or ?pack=<token>
+  // Wait for auth/cloud tier validation so stale cached tiers never bypass preview gating.
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || authLoading) return;
     const token = readShareToken(window.location.hash, window.location.search);
     if (!token) return;
 
+    let cancelled = false;
     const existingIds = new Set(readLibrary().map((i) => i.id));
-    void decodeSharedPack(token, { existingIds })
-      .then((decodedPack) => {
+    void Promise.all([
+      decodeSharedPack(token, { existingIds }),
+      user
+        ? fetchCloudUserTier().catch(() => ({ tier: "contender" as const }))
+        : Promise.resolve({ tier: "contender" as const }),
+    ])
+      .then(([decodedPack, cloudTierRes]) => {
+        if (cancelled) return;
         const totalQuestions = decodedPack.questions.length;
-        const recipientIsPaid = isPaidTier(getStoredUserTier());
+        const recipientIsPaid = isPaidTier(cloudTierRes.tier);
         const effectivePack = slicePackForPreview(
           decodedPack,
           FREE_SHARED_PACK_PREVIEW_LIMIT,
@@ -276,7 +285,10 @@ export function SoloEngine({
       .catch((err) => {
         console.warn("Could not load shared pack from URL:", err);
       });
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, user]);
 
   const { state, dispatch, answer, next, toggleUntimed } = useSoloGame(pack ? pack.questions : []);
   const audio = useGameAudio();
@@ -585,9 +597,16 @@ export function SoloEngine({
       meta?.rule || canonicalQuestion.question,
     );
 
+    const supabase = getSupabaseBrowserClient();
+    const sessionRes = supabase ? await supabase.auth.getSession() : null;
+    const accessToken = sessionRes?.data?.session?.access_token;
+
     const res = await fetch("/api/repair", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
       body: JSON.stringify({
         kind: "question",
         question: canonicalQuestion,

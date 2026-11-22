@@ -6,15 +6,68 @@ import {
   SANDBOX_TEST_AMOUNT_VND,
   verifyPayosWebhookSignature,
 } from "@/lib/payments/payos";
-import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { getSupabaseAdminOrServerClient } from "@/lib/supabase/server-helpers";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
+const MAX_PAYOS_WEBHOOK_BYTES = 131_072; // 128 KB
+
+async function readBoundedWebhookText(request: Request, maxBytes: number): Promise<string | null> {
+  const cl = Number(request.headers.get("content-length"));
+  if (Number.isFinite(cl) && cl > maxBytes) {
+    return null;
+  }
+  if (!request.body) {
+    const txt = await request.text();
+    return Buffer.byteLength(txt, "utf8") <= maxBytes ? txt : null;
+  }
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 export async function POST(request: Request) {
   try {
+    if (
+      process.env.NODE_ENV !== "test" ||
+      request.headers.get("x-enforce-rate-limit") === "true"
+    ) {
+      const rl = await checkRateLimit(`ip:${getClientIp(request)}`, "arena", "guest");
+      if (!rl.allowed) {
+        return NextResponse.json(
+          { error: -1, message: "Too many webhook requests", data: null },
+          { status: 429 },
+        );
+      }
+    }
+
+    const rawText = await readBoundedWebhookText(request, MAX_PAYOS_WEBHOOK_BYTES);
+    if (rawText === null) {
+      return NextResponse.json(
+        { error: -1, message: "Webhook payload too large", data: null },
+        { status: 413 },
+      );
+    }
+
     let body: Record<string, unknown> = {};
     try {
-      body = (await request.json()) as Record<string, unknown>;
+      body = JSON.parse(rawText) as Record<string, unknown>;
     } catch {
       return NextResponse.json(
         { error: -1, message: "Invalid JSON body", data: null },
@@ -63,7 +116,7 @@ export async function POST(request: Request) {
       }
       const orderCode = Number(webhookData.orderCode);
       const amount = Number(webhookData.amount);
-      const supabase = getSupabaseServerClient();
+      const supabase = getSupabaseAdminOrServerClient();
 
       let pendingOrder: {
         id?: string;
@@ -205,8 +258,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error: -1,
-        message:
-          err instanceof Error ? err.message : "Webhook processing failed",
+        message: "Webhook processing failed",
         data: null,
       },
       { status: 500 },

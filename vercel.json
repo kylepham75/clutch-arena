@@ -1,7 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "app/api/**/*": {
+    "app/api/ingest/**/*": {
+      "maxDuration": 300,
+      "memory": 1024
+    },
+    "app/api/notes/generate/**/*": {
       "maxDuration": 300,
       "memory": 1024
     }

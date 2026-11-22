@@ -1,6 +1,6 @@
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
 import { pointsForStreak } from "@/lib/game/scoring";
-import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { getSupabaseAdminOrServerClient } from "@/lib/supabase/server-helpers";
 import {
   BOT_ARCHETYPES,
   generateBotDecision,
@@ -20,6 +20,34 @@ import { getMaxArenaPlayersForTier, type UserTier } from "@/lib/pricing/tiers";
 
 export const IDLE_ROOM_TIMEOUT_MS = 90_000; // Auto-close idle rooms after 90 seconds
 export const MAX_ACTIVE_ROOMS = 200;
+export const MAX_SSE_CONNECTIONS_PER_IP = 12;
+
+const globalForArenaSse = globalThis as unknown as {
+  __arenaSseByIp?: Map<string, number>;
+};
+const activeSseByIp = (globalForArenaSse.__arenaSseByIp ??= new Map<string, number>());
+
+export function acquireSseIpSlot(ip: string): boolean {
+  const current = activeSseByIp.get(ip) ?? 0;
+  if (current >= MAX_SSE_CONNECTIONS_PER_IP) {
+    return false;
+  }
+  activeSseByIp.set(ip, current + 1);
+  return true;
+}
+
+export function releaseSseIpSlot(ip: string): void {
+  const prev = activeSseByIp.get(ip) ?? 0;
+  if (prev <= 1) {
+    activeSseByIp.delete(ip);
+  } else {
+    activeSseByIp.set(ip, prev - 1);
+  }
+}
+
+export function resetArenaSseIpCountsForTests(): void {
+  activeSseByIp.clear();
+}
 
 export type ServerRoom = {
   code: string;
@@ -146,7 +174,7 @@ function broadcastRoom(room: ServerRoom) {
     }
   });
 
-  const supabase = getSupabaseServerClient();
+  const supabase = getSupabaseAdminOrServerClient();
   if (supabase) {
     void supabase
       .channel(`arena:${room.code}`)
@@ -233,7 +261,20 @@ export function getClientState(
                 break;
               }
             }
+            let preBestStreak = 0;
+            let runningBest = 0;
+            for (let q = 0; q < room.currentQuestionIndex; q++) {
+              if (room.roundHistory?.[q]?.[p.id]?.correct) {
+                runningBest++;
+                if (runningBest > preBestStreak) {
+                  preBestStreak = runningBest;
+                }
+              } else {
+                runningBest = 0;
+              }
+            }
             const maskedStreak = preStreak;
+            const maskedBestStreak = preBestStreak;
             const maskedStatus = p.status === "eliminated" ? "submitted" : p.status;
 
             return [
@@ -243,6 +284,7 @@ export function getClientState(
                 score: isSelf ? p.score : maskedScore,
                 lives: isSelf ? p.lives : maskedLives,
                 streak: isSelf ? p.streak : maskedStreak,
+                bestStreak: isSelf ? p.bestStreak : maskedBestStreak,
                 status: isSelf ? p.status : maskedStatus,
                 lastAnswer: {
                   selected: isSelf ? p.lastAnswer.selected : null,
@@ -316,16 +358,27 @@ export function createRoom(params: {
         continue;
       }
 
-      let oldestCode: string | null = null;
-      let oldestTime = Infinity;
+      // Evict only stale in-flight rooms (idle >= 45s) rather than disrupting active matches
+      let oldestStaleCode: string | null = null;
+      let oldestStaleTime = Infinity;
+      const staleInFlightThresholdMs = 45_000;
       for (const [existingCode, existingRoom] of rooms.entries()) {
-        if (existingRoom.lastActiveAt < oldestTime) {
-          oldestTime = existingRoom.lastActiveAt;
-          oldestCode = existingCode;
+        if (
+          now - existingRoom.lastActiveAt >= staleInFlightThresholdMs &&
+          existingRoom.lastActiveAt < oldestStaleTime
+        ) {
+          oldestStaleTime = existingRoom.lastActiveAt;
+          oldestStaleCode = existingCode;
         }
       }
-      if (!oldestCode) break;
-      deleteRoom(oldestCode);
+      if (!oldestStaleCode) {
+        const capError = new Error(
+          "Arena server capacity reached. Please retry in a moment.",
+        );
+        (capError as Error & { code?: string }).code = "ARENA_CAPACITY_EXCEEDED";
+        throw capError;
+      }
+      deleteRoom(oldestStaleCode);
     }
   }
 

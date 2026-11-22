@@ -278,4 +278,73 @@ describe("Shared Ingestion Cache Bridge (Clutch Notes <-> Quiz Arena)", () => {
       }),
     );
   });
+
+  it("blocks cross-user cache poisoning when attacker submits unverified JSON fileSha256 (Finding #28)", async () => {
+    vi.mocked(generateClutchNote).mockResolvedValueOnce(sampleNote);
+    const victimPdfBytes = Buffer.from(makePdf(["Victim authentic lecture text about option pricing."]));
+    const targetSha256 = computeFileSha256(victimPdfBytes);
+
+    const attackerReq = new NextRequest("http://localhost:3000/api/notes/generate", {
+      method: "POST",
+      headers: {
+        "x-test-tier": "pro",
+        "x-test-user-id": "attacker-user",
+        "x-enforce-quota": "true",
+        origin: "http://localhost:3000",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: "Poisoned.pdf",
+        slideCount: 1,
+        fileSha256: targetSha256,
+        sources: [{ id: "slide-1", label: "Slide 1", text: "Attacker poisoned prompt injection text." }],
+      }),
+    });
+
+    const attackRes = await notesPOST(attackerReq);
+    expect(attackRes.status).toBe(200);
+
+    // Other user / unattributed lookup must NOT receive attacker's unverified sources
+    const victimCachedDoc = await getCachedParsedDocument(targetSha256, "victim-user");
+    expect(victimCachedDoc).toBeNull();
+
+    // Same attacker actor lookup IS isolated to attacker only
+    const attackerOwnDoc = await getCachedParsedDocument(targetSha256, "attacker-user");
+    expect(attackerOwnDoc?.sources[0].text).toContain("Attacker poisoned");
+  });
+
+  it("deep-clones cached shared deck entries so free-tier stripping never mutates paid cache hits (Finding #26)", async () => {
+    const contentHash = "clone-isolation-hash";
+    await setSharedDeckCache({
+      contentHash,
+      language: "en",
+      mode: "variants",
+      focusHash: "",
+      pipelineVersion: "v2",
+      questionPool: sampleQuizResult.pack.questions,
+      studyMetadata: {
+        pack: sampleQuizResult.pack,
+      },
+    });
+
+    const { getSharedDeckCache } = await import("@/lib/rate-limit");
+    const first = await getSharedDeckCache({
+      contentHash,
+      language: "en",
+      mode: "variants",
+      focusHash: "",
+      pipelineVersion: "v2",
+    });
+    expect(first).not.toBeNull();
+    first!.questionPool.length = 0;
+
+    const second = await getSharedDeckCache({
+      contentHash,
+      language: "en",
+      mode: "variants",
+      focusHash: "",
+      pipelineVersion: "v2",
+    });
+    expect(second!.questionPool.length).toBe(sampleQuizResult.pack.questions.length);
+  });
 });

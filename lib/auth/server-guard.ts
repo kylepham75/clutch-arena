@@ -1,12 +1,20 @@
 import "server-only";
-import { getSupabaseServerClient, isSupabaseServerConfigured } from "@/lib/supabase/server";
-import type { User } from "@supabase/supabase-js";
+import {
+  getSupabaseServerClient,
+  isSupabaseServerConfigured,
+} from "@/lib/supabase/server";
+import { getSupabaseAdminOrServerClient } from "@/lib/supabase/server-helpers";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 import {
   isTierExpired,
   normalizeTier,
   resolveTierFromProfileRecord,
   type UserTier,
 } from "@/lib/pricing/tiers";
+
+function resolveAuthLookupAdminClient(fallbackUserClient: SupabaseClient): SupabaseClient {
+  return getSupabaseAdminOrServerClient() ?? fallbackUserClient;
+}
 
 export { normalizeTier } from "@/lib/pricing/tiers";
 
@@ -68,7 +76,16 @@ export function extractAuthToken(request: Request): string | null {
   return null;
 }
 
-export function isTestTierAllowed(): boolean {
+export function isTestTierAllowed(request?: Request): boolean {
+  if (process.env.VERCEL_ENV === "production") {
+    return false;
+  }
+  const secret = process.env.TEST_TIER_OVERRIDE_SECRET?.trim();
+  if (secret) {
+    if (!request || request.headers.get("x-test-tier-secret") !== secret) {
+      return false;
+    }
+  }
   return (
     process.env.NODE_ENV === "development" ||
     process.env.NODE_ENV === "test" ||
@@ -78,7 +95,7 @@ export function isTestTierAllowed(): boolean {
 
 export async function verifyAuthToken(request: Request): Promise<AuthVerificationResult> {
   const isConfigured = isSupabaseServerConfigured();
-  const testTierAllowed = isTestTierAllowed();
+  const testTierAllowed = isTestTierAllowed(request);
   const testTierHeader = testTierAllowed ? request.headers.get("x-test-tier") : null;
   const normalizedTestTier = testTierHeader ? normalizeTier(testTierHeader) : null;
   const isAuthorizedTestTier = Boolean(normalizedTestTier && normalizedTestTier !== "contender");
@@ -129,60 +146,97 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
       };
     }
 
+    const dbClient = resolveAuthLookupAdminClient(supabase);
     let resolvedTier: UserTier = "contender";
     let resolvedExpiresAt: string | null = null;
+    let isRevokedSubscription = false;
+    let revokedAtMs: number | null = null;
 
-    // 1. Check active subscriptions table
-    const { data: subData } = await supabase
+    // 1. Check latest subscription record across all statuses so revocations/refunds
+    // prevent stale derived copies (profiles/user_profiles/app_metadata) from re-elevating.
+    const { data: subData } = await dbClient
       .from("user_subscriptions")
-      .select("tier, expires_at, status")
+      .select("tier, expires_at, status, created_at, updated_at")
       .eq("user_id", user.id)
-      .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (subData?.tier) {
-      const isSubExpired = isTierExpired(subData.expires_at);
-
-      if (!isSubExpired) {
-        resolvedTier = normalizeTier(subData.tier);
-        resolvedExpiresAt = subData.expires_at ?? null;
+    if (subData) {
+      const statusStr =
+        typeof subData.status === "string"
+          ? subData.status.toLowerCase().trim()
+          : "active";
+      if (
+        statusStr === "revoked" ||
+        statusStr === "refunded" ||
+        statusStr === "cancelled"
+      ) {
+        isRevokedSubscription = true;
+        const revIso =
+          (subData as { updated_at?: string; created_at?: string }).updated_at ||
+          (subData as { created_at?: string }).created_at;
+        if (revIso) {
+          const parsedRev = Date.parse(revIso);
+          if (Number.isFinite(parsedRev)) {
+            revokedAtMs = parsedRev;
+          }
+        }
+      } else if (subData.tier) {
+        const isSubExpired = isTierExpired(subData.expires_at);
+        if (!isSubExpired) {
+          resolvedTier = normalizeTier(subData.tier);
+          resolvedExpiresAt = subData.expires_at ?? null;
+        }
+        // If status === "active" has elapsed/expired, allow fallback to profiles so an
+        // admin grant on profiles is not shadowed by an old expired subscription.
       }
-      // If elapsed/expired, do not resolve tier to 'contender' immediately.
-      // Instead, allow fallback to step 2 (profiles table) so an active tier set on profiles
-      // by an admin is not shadowed by an old expired subscription!
     }
 
     let hasDbProfile = false;
 
     if (resolvedTier === "contender") {
       // 2. Fallback to profiles table
-      const { data: profileData } = await supabase
+      const { data: profileData, error: profileError } = await dbClient
         .from("profiles")
         .select("tier, tier_expires_at, updated_at")
         .eq("id", user.id)
         .maybeSingle();
 
-      if (profileData) {
+      if (profileError && (profileError as { code?: string }).code !== "PGRST116") {
+        // Transient DB errors must not fall through to stale derived copies
         hasDbProfile = true;
-        const profileResolved = resolveTierFromProfileRecord(profileData);
-        if (profileResolved) {
-          resolvedTier = profileResolved.tier;
-          resolvedExpiresAt = profileResolved.expiresAt;
+      } else if (profileData) {
+        hasDbProfile = true;
+        const profileUpdatedMs = profileData.updated_at
+          ? Date.parse(profileData.updated_at)
+          : NaN;
+        const allowProfileAfterRevocation =
+          !isRevokedSubscription ||
+          (revokedAtMs !== null &&
+            Number.isFinite(profileUpdatedMs) &&
+            profileUpdatedMs > revokedAtMs);
+        if (allowProfileAfterRevocation) {
+          const profileResolved = resolveTierFromProfileRecord(profileData);
+          if (profileResolved) {
+            resolvedTier = profileResolved.tier;
+            resolvedExpiresAt = profileResolved.expiresAt;
+          }
         }
       }
     }
 
-    if (resolvedTier === "contender" && !hasDbProfile) {
+    if (resolvedTier === "contender" && !hasDbProfile && !isRevokedSubscription) {
       // 3. Fallback to user_profiles table
-      const { data: userProfileData } = await supabase
+      const { data: userProfileData, error: userProfileError } = await dbClient
         .from("user_profiles")
         .select("tier, tier_expires_at, updated_at")
         .eq("id", user.id)
         .maybeSingle();
 
-      if (userProfileData) {
+      if (userProfileError && (userProfileError as { code?: string }).code !== "PGRST116") {
+        hasDbProfile = true;
+      } else if (userProfileData) {
         hasDbProfile = true;
         const userProfileResolved = resolveTierFromProfileRecord(userProfileData);
         if (userProfileResolved) {
@@ -193,7 +247,7 @@ export async function verifyAuthToken(request: Request): Promise<AuthVerificatio
     }
 
     // 4. Fallback to app_metadata (never user_metadata, which is client-writable)
-    if (resolvedTier === "contender" && !hasDbProfile) {
+    if (resolvedTier === "contender" && !hasDbProfile && !isRevokedSubscription) {
       const appMetaTier = (user.app_metadata as Record<string, unknown>)?.tier;
       const appMetaExpiresAt = (user.app_metadata as Record<string, unknown>)?.tier_expires_at;
 

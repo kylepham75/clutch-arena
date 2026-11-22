@@ -777,12 +777,12 @@ describe("ingestion HTTP handler", () => {
     expect(body.pack.questions[0].distractorRationale).toBeUndefined();
     expect(body.pack.questions[0].conceptVariant.distractorRationale).toBeUndefined();
 
-    // Verify distractorRationale stripped from studyMetadata.pack.questions if present
-    if (body.studyMetadata?.pack?.questions) {
-      expect(body.studyMetadata.pack.questions[0].distractorRationale).toBeUndefined();
-    }
-    // Also verify underlying cachedDeck studyMetadata was sanitized
-    expect(cachedDeck.studyMetadata.pack.questions[0].distractorRationale).toBeUndefined();
+    // Verify distractorRationale stripped from studyMetadata.pack.questions in client response
+    expect(body.studyMetadata?.pack?.questions?.[0]?.distractorRationale).toBeUndefined();
+    // Underlying cachedDeck studyMetadata must NOT be mutated in-place (Finding #24)
+    expect(cachedDeck.studyMetadata.pack.questions[0].distractorRationale).toBe(
+      "Distractor rationale: Option B is wrong because it ignores sunk costs.",
+    );
 
     // Verify distractorRationale stripped from metadata
     if (body.pack.metadata?.["q-1"]) {

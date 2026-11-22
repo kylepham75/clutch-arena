@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import {
   fulfillPayosOrder,
   getPayosPaymentInfo,
@@ -6,13 +7,22 @@ import {
   isPayosConfigured,
   SANDBOX_TEST_AMOUNT_VND,
 } from "@/lib/payments/payos";
-import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { getSupabaseAdminOrServerClient } from "@/lib/supabase/server-helpers";
 import { extractAuthToken, verifyAuthToken } from "@/lib/auth/server-guard";
+import { checkRateLimit } from "@/lib/rate-limit";
+import { isAllowedOrigin } from "@/lib/utils";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
+    if (!isAllowedOrigin(request.headers.get("origin"), request)) {
+      return NextResponse.json(
+        { ok: false, error: "Cross-origin verification requests are not allowed." },
+        { status: 403 },
+      );
+    }
+
     if (!isPayosConfigured()) {
       return NextResponse.json(
         { ok: false, error: "PayOS is not configured on the server." },
@@ -51,8 +61,21 @@ export async function POST(request: Request) {
       );
     }
 
+    if (
+      process.env.NODE_ENV !== "test" ||
+      request.headers.get("x-enforce-rate-limit") === "true"
+    ) {
+      const rl = await checkRateLimit(`user:${auth.user.id}`, "arena", auth.tier);
+      if (!rl.allowed) {
+        return NextResponse.json(
+          { ok: false, error: "Too many verification requests" },
+          { status: 429 },
+        );
+      }
+    }
+
     const userToken = auth.token ?? (extractAuthToken(request) ?? undefined);
-    const supabase = getSupabaseServerClient(userToken);
+    const supabase = getSupabaseAdminOrServerClient(userToken);
 
     let pendingOrder: {
       id?: string;
@@ -237,11 +260,14 @@ export async function POST(request: Request) {
       amount: info.amount,
     });
   } catch (err) {
+    Sentry.captureException(err, {
+      tags: { route: "api/payments/payos/verify" },
+    });
+    console.error("[PayOS Verify] Failed to verify payment:", err);
     return NextResponse.json(
       {
         ok: false,
-        error:
-          err instanceof Error ? err.message : "Failed to verify payment",
+        error: "Failed to verify payment",
       },
       { status: 500 },
     );

@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { getSupabaseAdminOrServerClient } from "@/lib/supabase/server-helpers";
+import { checkRateLimit, getRedisClient } from "@/lib/rate-limit";
 import type { TelemetryEvent } from "@/lib/schemas/telemetry";
 
 export type TimestampedTelemetryEvent = TelemetryEvent & {
@@ -87,6 +88,23 @@ export function checkTelemetryRateLimit(
 
 export function resetTelemetryRateLimits(): void {
   rateLimitStore.clear();
+}
+
+/**
+ * Distributed-capable telemetry rate limit check backed by Upstash Redis
+ * when configured, falling back to `checkTelemetryRateLimit` in local dev/tests.
+ */
+export async function checkTelemetryRateLimitAsync(
+  ip: string,
+): Promise<{ allowed: boolean; retryAfter: number }> {
+  if (getRedisClient()) {
+    const res = await checkRateLimit(`ip:${ip || "unknown"}`, "telemetry", "guest");
+    return {
+      allowed: res.allowed,
+      retryAfter: res.retryAfter,
+    };
+  }
+  return checkTelemetryRateLimit(ip);
 }
 
 /**
@@ -255,7 +273,7 @@ export async function recordTelemetryEvent(
     const supabase =
       meta?.supabaseClient !== undefined
         ? meta.supabaseClient
-        : getSupabaseServerClient(meta?.token);
+        : getSupabaseAdminOrServerClient(meta?.token);
 
     if (supabase) {
       const category =

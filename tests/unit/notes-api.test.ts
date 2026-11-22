@@ -1143,7 +1143,13 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
     const response = await POST(request);
     expect(response.status).toBe(200);
 
-    expect(parseSpy).toHaveBeenCalledWith(expect.any(File), { maxAutoOcrBudgetUsd: 0 });
+    expect(parseSpy).toHaveBeenCalledWith(
+      expect.any(File),
+      expect.objectContaining({
+        maxAutoOcrBudgetUsd: 0,
+        signal: expect.any(AbortSignal),
+      }),
+    );
     expect(reserveSpy).toHaveBeenCalledWith(
       userId,
       "cram_pass",
@@ -1606,6 +1612,107 @@ describe("Clutch Notes AI API Endpoint (/api/notes/generate)", () => {
           "ROW",
         );
         spyRecordCogs.mockRestore();
+      });
+    });
+
+    describe("Bounded stream limits and error sanitization", () => {
+      it("rejects chunked oversized JSON and multipart payloads without Content-Length with 413 FILE_TOO_LARGE before AI/parser runs", async () => {
+        const parseSpy = vi.spyOn(parseSlidesModule, "parseSlideDeck");
+
+        const oversizedJsonStream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (let i = 0; i < 3; i++) {
+              controller.enqueue(new Uint8Array(900 * 1024).fill(97));
+            }
+            controller.close();
+          },
+        });
+        const jsonReq = new NextRequest("http://localhost:3000/api/notes/generate", {
+          method: "POST",
+          headers: {
+            "x-test-tier": "pro",
+            "x-user-id": "user-stream-limit-json",
+            origin: "http://localhost:3000",
+            "content-type": "application/json",
+          },
+          body: oversizedJsonStream,
+          duplex: "half",
+        } as unknown as ConstructorParameters<typeof NextRequest>[1]);
+
+        const jsonRes = await POST(jsonReq);
+        expect(jsonRes.status).toBe(413);
+        const jsonData = await jsonRes.json();
+        expect(jsonData.ok).toBe(false);
+        expect(jsonData.error.code).toBe("FILE_TOO_LARGE");
+
+        const oversizedMultipartStream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (let i = 0; i < 27; i++) {
+              controller.enqueue(new Uint8Array(1024 * 1024).fill(98));
+            }
+            controller.close();
+          },
+        });
+        const multipartReq = new NextRequest("http://localhost:3000/api/notes/generate", {
+          method: "POST",
+          headers: {
+            "x-test-tier": "pro",
+            "x-user-id": "user-stream-limit-mp",
+            origin: "http://localhost:3000",
+            "content-type": "multipart/form-data; boundary=----ClutchBoundary",
+          },
+          body: oversizedMultipartStream,
+          duplex: "half",
+        } as unknown as ConstructorParameters<typeof NextRequest>[1]);
+
+        const multipartRes = await POST(multipartReq);
+        expect(multipartRes.status).toBe(413);
+        const multipartData = await multipartRes.json();
+        expect(multipartData.ok).toBe(false);
+        expect(multipartData.error.code).toBe("FILE_TOO_LARGE");
+
+        expect(parseSpy).not.toHaveBeenCalled();
+        expect(generateClutchNote).not.toHaveBeenCalled();
+        parseSpy.mockRestore();
+      });
+
+      it("sanitizes 5xx IngestionError messages in client responses", async () => {
+        const sensitiveInternalMessage =
+          "OpenRouter upstream failure with internal host 10.42.0.9 and key fragment sk-leak-xyz";
+        vi.mocked(generateClutchNote).mockRejectedValueOnce(
+          new IngestionError("AI_UPSTREAM_FAILED", sensitiveInternalMessage, 502),
+        );
+
+        const req = new NextRequest("http://localhost:3000/api/notes/generate", {
+          method: "POST",
+          headers: {
+            "x-test-tier": "pro",
+            "x-user-id": "user-sanitized-500",
+            origin: "http://localhost:3000",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            fileName: "Sanitize_Test.pptx",
+            sources: [
+              {
+                id: "slide-1",
+                label: "Slide 1",
+                text: "Detailed lecture notes content for sanitization check.",
+              },
+            ],
+          }),
+        });
+
+        const res = await POST(req);
+        expect(res.status).toBe(502);
+        const data = await res.json();
+        expect(data.ok).toBe(false);
+        expect(data.error.code).toBe("AI_UPSTREAM_FAILED");
+        expect(data.error.message).toBe(
+          "Failed to synthesize lecture slides into notes. Please try again.",
+        );
+        expect(JSON.stringify(data)).not.toContain("sk-leak-xyz");
+        expect(JSON.stringify(data)).not.toContain("10.42.0.9");
       });
     });
   });

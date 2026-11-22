@@ -144,8 +144,16 @@ export function createMultiIngestionHandler(
     let reservedCost = 0.02;
     let reservedIsRegeneration = false;
     let reservedBillingRegion: BillingRegion = "VN";
+    let ocrReserved = false;
+    let ocrReservedCost = 0;
+    let ocrSettled = false;
     let useCheaperGenerator = false;
     let clientQuota: ClientQuotaSummary | undefined;
+    let slotAcquired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new AbortController();
+    const signal = AbortSignal.any([request.signal, timeout.signal]);
+
     const json = (body: unknown, status = 200) =>
       Response.json(body, {
         status,
@@ -155,29 +163,6 @@ export function createMultiIngestionHandler(
           ...(status === 429 ? { "Retry-After": "30" } : {}),
         },
       });
-
-    if (active >= 2) {
-      return json(
-        {
-          ok: false,
-          requestId,
-          error: {
-            code: "INGESTION_BUSY",
-            message: "Two ingestion batches are already processing. Try again shortly.",
-          },
-        },
-        429,
-      );
-    }
-
-    active++;
-    const timeout = new AbortController();
-    const timer = setTimeout(
-      () =>
-        timeout.abort(new DOMException("Request timed out", "TimeoutError")),
-      REQUEST_TIMEOUT_MS * 2.5,
-    );
-    const signal = AbortSignal.any([request.signal, timeout.signal]);
 
     try {
       const origin = request.headers.get("origin");
@@ -190,7 +175,6 @@ export function createMultiIngestionHandler(
       }
 
       const auth = await verifyAuth(request);
-      const { files, options } = await readMultiUpload(request, signal);
       const clientIp = getClientIp(request);
       const billingRegion = getAuthoritativeBillingRegion(request);
       reservedBillingRegion = billingRegion;
@@ -247,6 +231,30 @@ export function createMultiIngestionHandler(
         }
       }
 
+      if (active >= 2) {
+        return json(
+          {
+            ok: false,
+            requestId,
+            error: {
+              code: "INGESTION_BUSY",
+              message: "Two ingestion batches are already processing. Try again shortly.",
+            },
+          },
+          429,
+        );
+      }
+
+      active++;
+      slotAcquired = true;
+      timer = setTimeout(
+        () =>
+          timeout.abort(new DOMException("Request timed out", "TimeoutError")),
+        REQUEST_TIMEOUT_MS * 2.5,
+      );
+
+      const { files, options } = await readMultiUpload(request, signal);
+
       if (options.operation === "generate") {
         checkConfiguration();
       }
@@ -271,6 +279,33 @@ export function createMultiIngestionHandler(
                 maxAutoOcrBudgetUsd: 0,
               },
             };
+          } else if (
+            preSnapshot?.allowVisionOcr &&
+            dependencies.quotaReservation === undefined &&
+            dependencies.recordCogs === undefined
+          ) {
+            const totalSize = files.reduce((s, f) => s + f.size, 0);
+            const ocrReserve = await quotaReservation(
+              rateLimitKey,
+              auth.tier,
+              `ocr:multi:${files.length}:${totalSize}`,
+              {
+                actionKind: "ocr",
+                estimatedCostUsd: 0.005,
+                region: billingRegion,
+                bypassCache: true,
+              },
+            );
+            if (!ocrReserve.allowed) {
+              parseMultiDocOptions = {
+                parsePdfOptions: {
+                  maxAutoOcrBudgetUsd: 0,
+                },
+              };
+            } else if (ocrReserve.reserved) {
+              ocrReserved = true;
+              ocrReservedCost = ocrReserve.reservedCostUsd ?? 0.005;
+            }
           }
         } catch {
           // Ignore if rolling quota snapshot cannot be resolved in mocked tests
@@ -282,6 +317,38 @@ export function createMultiIngestionHandler(
         signal,
         parseMultiDocOptions,
       );
+
+      if (ocrReserved && !ocrSettled) {
+        const parsedVisionCost = [compositeDocument, ...documents].reduce((total, doc) => {
+          if (!doc.pageVisionStatus) return total;
+          return (
+            total +
+            Object.values(doc.pageVisionStatus).reduce(
+              (sum, info) => sum + (info.costUsd || 0),
+              0,
+            )
+          );
+        }, 0);
+        if (parsedVisionCost > 0) {
+          await recordCogs(
+            rateLimitKey,
+            auth.tier,
+            parsedVisionCost,
+            ocrReservedCost,
+            billingRegion,
+          );
+        } else {
+          await rollbackQuota({
+            userId: rateLimitKey,
+            tier: auth.tier,
+            actionKind: "ocr",
+            reservedCostUsd: ocrReservedCost,
+            region: billingRegion,
+          });
+        }
+        ocrSettled = true;
+        ocrReserved = false;
+      }
 
       if (options.operation === "preview") {
         return json({
@@ -333,9 +400,11 @@ export function createMultiIngestionHandler(
           focusHash,
           pipelineVersion: MULTI_SHARED_CACHE_PIPELINE_VERSION,
           fileSha256: compositeDocument.fileSha256 ?? null,
+          actorKey: rateLimitKey,
         };
 
         let cachedDeck = await getDeckCache(cacheLookupKey);
+        let rejectedUnusableCache = false;
         if (
           cachedDeck &&
           (!Array.isArray(cachedDeck.questionPool) ||
@@ -343,15 +412,17 @@ export function createMultiIngestionHandler(
             (isPaid && isDegradedCachedDeck(cachedDeck, options.questionCount)))
         ) {
           cachedDeck = null;
+          rejectedUnusableCache = true;
         }
 
         if (!cachedDeck || dependencies.quotaReservation !== undefined) {
-          const quotaResult = await quotaReservation(
+          let quotaResult = await quotaReservation(
             rateLimitKey,
             auth.tier,
             contentHash,
             {
               ...cacheLookupKey,
+              bypassCache: rejectedUnusableCache,
               estimatedCostUsd: reservedCostUsd,
               allowHaikuOverflow: isPaid,
               actionKind: "deck",
@@ -375,6 +446,45 @@ export function createMultiIngestionHandler(
             );
           }
 
+          if (!cachedDeck && quotaResult.cachedDeck) {
+            if (
+              Array.isArray(quotaResult.cachedDeck.questionPool) &&
+              (options.questionCount <= 10 || quotaResult.cachedDeck.questionPool.length >= options.questionCount) &&
+              (!isPaid || !isDegradedCachedDeck(quotaResult.cachedDeck, options.questionCount))
+            ) {
+              cachedDeck = quotaResult.cachedDeck;
+            } else if (!quotaResult.reserved && !quotaResult.creditConsumed && !quotaResult.isRegeneration) {
+              quotaResult = await quotaReservation(
+                rateLimitKey,
+                auth.tier,
+                contentHash,
+                {
+                  ...cacheLookupKey,
+                  bypassCache: true,
+                  estimatedCostUsd: reservedCostUsd,
+                  allowHaikuOverflow: isPaid,
+                  actionKind: "deck",
+                  region: billingRegion,
+                },
+              );
+              clientQuota = quotaResult?.quota ? toClientQuota(quotaResult.quota) : clientQuota;
+              if (!quotaResult.allowed) {
+                return json(
+                  {
+                    ok: false,
+                    requestId,
+                    error: {
+                      code: quotaResult.reason ?? "QUOTA_EXCEEDED",
+                      message: getQuotaExceededMessage(quotaResult.reason),
+                    },
+                    ...(clientQuota ? { quota: clientQuota } : {}),
+                  },
+                  429,
+                );
+              }
+            }
+          }
+
           if (quotaResult.isHaikuOverflow || quotaResult.cogsStatus?.useCheaperGeneratorSlug) {
             useCheaperGenerator = true;
           }
@@ -391,16 +501,6 @@ export function createMultiIngestionHandler(
                 : reservedCostUsd);
             reservedIsRegeneration = Boolean(quotaResult.isRegeneration);
             reservedBillingRegion = billingRegion;
-          }
-
-          if (!cachedDeck && quotaResult.cachedDeck) {
-            if (
-              Array.isArray(quotaResult.cachedDeck.questionPool) &&
-              (options.questionCount <= 10 || quotaResult.cachedDeck.questionPool.length >= options.questionCount) &&
-              (!isPaid || !isDegradedCachedDeck(quotaResult.cachedDeck, options.questionCount))
-            ) {
-              cachedDeck = quotaResult.cachedDeck;
-            }
           }
         }
 
@@ -453,27 +553,12 @@ export function createMultiIngestionHandler(
                 ...(cleanMetadata ? { metadata: cleanMetadata } : {}),
               };
             }
-
-            if (cachedDeck.studyMetadata?.pack) {
-              cachedDeck.studyMetadata.pack.questions = sampledQuestions;
-              if (cachedDeck.studyMetadata.pack.metadata) {
-                cachedDeck.studyMetadata.pack.metadata = Object.fromEntries(
-                  Object.entries(cachedDeck.studyMetadata.pack.metadata).map(([k, v]) => {
-                    const { distractorRationale: _d, ...cleanMeta } = (v as any) || {};
-                    return [k, cleanMeta];
-                  }),
-                );
-              }
-            }
           } else {
             if (sanitizedStudyMetadata?.pack) {
               sanitizedStudyMetadata.pack = {
                 ...sanitizedStudyMetadata.pack,
                 questions: sampledQuestions,
               };
-            }
-            if (cachedDeck.studyMetadata?.pack) {
-              cachedDeck.studyMetadata.pack.questions = sampledQuestions;
             }
           }
 
@@ -545,16 +630,18 @@ export function createMultiIngestionHandler(
 
       if (!isQuotaTestBypass) {
         const allDocs = [compositeDocument, ...documents];
-        const visionCostUsd = allDocs.reduce((total, doc) => {
-          if (!doc.pageVisionStatus) return total;
-          return (
-            total +
-            Object.values(doc.pageVisionStatus).reduce(
-              (sum, info) => sum + (info.costUsd || 0),
-              0,
-            )
-          );
-        }, 0);
+        const visionCostUsd = ocrSettled
+          ? 0
+          : allDocs.reduce((total, doc) => {
+              if (!doc.pageVisionStatus) return total;
+              return (
+                total +
+                Object.values(doc.pageVisionStatus).reduce(
+                  (sum, info) => sum + (info.costUsd || 0),
+                  0,
+                )
+              );
+            }, 0);
         const tokenCostUsd =
           typeof result.costUsd === "number" && result.costUsd > 0
             ? result.costUsd
@@ -598,6 +685,7 @@ export function createMultiIngestionHandler(
           pipelineVersion: MULTI_SHARED_CACHE_PIPELINE_VERSION,
           questionPool: questionsToStore,
           studyMetadata: {
+            fileSha256Verified: true,
             pack: {
               ...result.pack,
               questions: questionsToStore,
@@ -624,6 +712,19 @@ export function createMultiIngestionHandler(
         ...result,
       });
     } catch (error) {
+      if (ocrReserved && !ocrSettled && reservedActor) {
+        try {
+          await rollbackQuota({
+            userId: reservedActor,
+            tier: reservedTier,
+            actionKind: "ocr",
+            reservedCostUsd: ocrReservedCost,
+            region: reservedBillingRegion,
+          });
+        } catch {
+          // ignore OCR rollback failure
+        }
+      }
       if (quotaReserved && reservedActor && reservedContentHash) {
         try {
           if (reservedIsRegeneration) {
@@ -696,8 +797,8 @@ export function createMultiIngestionHandler(
         safeError.status,
       );
     } finally {
-      clearTimeout(timer);
-      active = Math.max(0, active - 1);
+      if (timer) clearTimeout(timer);
+      if (slotAcquired) active = Math.max(0, active - 1);
     }
   };
 }

@@ -548,6 +548,37 @@ export function createCoachHandler(
       }
     };
 
+    const streamAbortController = new AbortController();
+    const forwardAbort = () => {
+      streamAbortController.abort();
+    };
+    if (request.signal.aborted) {
+      streamAbortController.abort();
+    } else {
+      request.signal.addEventListener("abort", forwardAbort, { once: true });
+    }
+
+    let hasEmittedOutput = false;
+
+    const settlePartialOnAbort = async () => {
+      if (hasEmittedOutput && quotaReserved && !quotaSettled && !quotaRolledBack && !isQuotaBypass) {
+        quotaSettled = true;
+        try {
+          await recordCogs(
+            rateLimitKey,
+            auth.tier,
+            reservedCostUsd,
+            reservedCostUsd,
+            billingRegion,
+          );
+        } catch (cogsErr) {
+          console.error("[Coach] Failed to settle partial stream COGS:", cogsErr);
+        }
+        return;
+      }
+      await rollbackReservedQuota();
+    };
+
     try {
       const recentMessages = messages.slice(-MAX_COACH_HISTORY);
       const lastMessage = recentMessages.at(-1);
@@ -585,16 +616,25 @@ export function createCoachHandler(
         model,
         system,
         messages: modelMessages,
-        abortSignal: request.signal,
+        abortSignal: streamAbortController.signal,
         maxRetries: 0,
+        onChunk: ({ chunk }) => {
+          if (chunk.type === "text-delta" || chunk.type === "reasoning-delta") {
+            hasEmittedOutput = true;
+          }
+        },
+        onAbort: () => {
+          void settlePartialOnAbort();
+        },
         onError: (event) => {
           console.error(
             "[Coach Stream Error]",
             event.error instanceof Error ? event.error.message : event.error,
           );
-          void rollbackReservedQuota();
+          void settlePartialOnAbort();
         },
         onFinish: async (event) => {
+          request.signal.removeEventListener("abort", forwardAbort);
           if (isQuotaBypass && dependencies.recordCogs === undefined) {
             return;
           }
@@ -624,14 +664,53 @@ export function createCoachHandler(
         },
       });
 
-      return result.toUIMessageStreamResponse({
+      const uiResponse = result.toUIMessageStreamResponse({
         headers: {
           "Cache-Control": "no-store",
         },
         onError: (err: unknown) => sanitizeCoachStreamError(err),
       });
+
+      if (!uiResponse.body) {
+        return uiResponse;
+      }
+
+      const upstreamReader = uiResponse.body.getReader();
+      const wrappedBody = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const { value, done } = await upstreamReader.read();
+            if (done) {
+              controller.close();
+              request.signal.removeEventListener("abort", forwardAbort);
+              return;
+            }
+            controller.enqueue(value);
+          } catch (streamErr) {
+            request.signal.removeEventListener("abort", forwardAbort);
+            controller.error(streamErr);
+          }
+        },
+        async cancel(reason) {
+          request.signal.removeEventListener("abort", forwardAbort);
+          streamAbortController.abort();
+          try {
+            await upstreamReader.cancel(reason);
+          } catch {
+            // ignore reader cancel errors
+          }
+          void settlePartialOnAbort();
+        },
+      });
+
+      return new Response(wrappedBody, {
+        status: uiResponse.status,
+        statusText: uiResponse.statusText,
+        headers: uiResponse.headers,
+      });
     } catch (error) {
-      await rollbackReservedQuota();
+      request.signal.removeEventListener("abort", forwardAbort);
+      await settlePartialOnAbort();
       if (request.signal.aborted) {
         return Response.json(
           {

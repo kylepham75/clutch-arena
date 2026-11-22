@@ -1928,7 +1928,8 @@ describe("PayOS Gateway Utilities", () => {
 
       expect(res.status).toBe(500);
       expect(json.ok).toBe(false);
-      expect(json.error).toContain("Failed to persist pending subscription");
+      expect(json.error).toBe("Failed to create payment link");
+      expect(json.error).not.toContain("Database connection refused");
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
@@ -2117,6 +2118,42 @@ describe("PayOS Gateway Utilities", () => {
         "Sandbox test unauthorized; skipped fulfillment",
       );
       expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
+    });
+
+    it("blocks replay of expired/revoked/refunded PayOS orderCode without re-extending or mutating DB", async () => {
+      for (const terminalStatus of ["expired", "revoked", "refunded", "cancelled"] as const) {
+        mockSubRecord = {
+          user_id: "user_terminal_1",
+          tier: "pro",
+          amount: 149000,
+          status: terminalStatus,
+          expires_at: "2025-01-01T00:00:00.000Z",
+        };
+
+        const res = await fulfillPayosOrder({
+          orderCode: 17300000099999,
+          amount: 149000,
+          expectedAmount: 149000,
+        });
+
+        expect(res.fulfilled).toBe(false);
+        expect(res.alreadyFulfilled).toBe(true);
+        expect(res.status).toBe(terminalStatus);
+        expect(mockUpsertProfileSpy).not.toHaveBeenCalled();
+        expect(mockUpsertQuotaLedgerSpy).not.toHaveBeenCalled();
+      }
+    });
+
+    it("rejects oversized PayOS webhook bodies > 128 KB with 413", async () => {
+      const oversized = JSON.stringify({ code: "00", padding: "x".repeat(140_000) });
+      const req = new Request("http://localhost:3000/api/webhooks/payos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: oversized,
+      });
+
+      const res = await webhookPostRoute(req);
+      expect(res.status).toBe(413);
     });
   });
 });

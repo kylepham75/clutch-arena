@@ -607,6 +607,72 @@ describe("Cloud Tier Sync & Admin Profile Overrides", () => {
       expect(authResult.tier).toBe("contender");
     }
   });
+
+  it("verifyAuthToken blocks stale profiles tier elevation after subscription revocation", async () => {
+    const revokedAt = new Date(Date.now() - 60_000).toISOString();
+    const olderProfileUpdatedAt = new Date(Date.now() - 3600_000).toISOString();
+    const futureExpiry = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString();
+
+    mockServerSupabase = {
+      auth: {
+        getUser: vi.fn().mockResolvedValue({
+          data: {
+            user: {
+              id: "revoked-user-id",
+              email: "revoked@clutcharena.com",
+              app_metadata: { tier: "pro" },
+              user_metadata: {},
+            },
+          },
+          error: null,
+        }),
+      },
+      from: vi.fn((table: string) => {
+        let rowData: any = null;
+        if (table === "user_subscriptions") {
+          rowData = {
+            tier: "pro",
+            status: "revoked",
+            expires_at: futureExpiry,
+            updated_at: revokedAt,
+            created_at: revokedAt,
+          };
+        } else if (table === "profiles" || table === "user_profiles") {
+          rowData = {
+            tier: "pro",
+            tier_expires_at: futureExpiry,
+            updated_at: olderProfileUpdatedAt,
+          };
+        }
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          order: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockReturnThis(),
+          maybeSingle: vi.fn().mockResolvedValue({ data: rowData, error: null }),
+        };
+      }),
+    };
+
+    const req = new Request("https://clutcharena.com/api/test", {
+      headers: { authorization: "Bearer valid-token-123" },
+    });
+
+    const authResult = await verifyAuthToken(req);
+    expect(authResult.authenticated).toBe(true);
+    if (authResult.authenticated) {
+      expect(authResult.tier).toBe("contender");
+    }
+  });
+
+  it("clearStoredUserTier clears REFERRAL_STORAGE_KEY alongside tier keys", () => {
+    awardReferralPass("pack_imports_3");
+    expect(getStoredReferralState().unlockedRemixRuns).toBe(3);
+
+    clearStoredUserTier();
+    expect(getStoredReferralState().unlockedRemixRuns).toBe(0);
+    expect(getStoredUserTier()).toBe("contender");
+  });
 });
 
 describe("Earn-Your-Pass Referral Unlock Mechanics", () => {

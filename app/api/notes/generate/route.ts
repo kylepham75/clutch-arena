@@ -6,6 +6,8 @@ import { getAuthoritativeBillingRegion } from "@/lib/pricing/region";
 import { isPaidTier } from "@/lib/pricing/tiers";
 import {
   checkRateLimit,
+  withActorQuotaLock,
+  resolveActorKey,
   getClientIp,
   computeContentHash,
   computeFileSha256,
@@ -42,6 +44,59 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 // Typed as `never` so Next.js .next/types App Router route-export validation allows importing it in unit tests
 export const NOTES_SHARED_CACHE_PIPELINE_VERSION: never = "notes-v2" as never;
+
+const MAX_NOTES_MULTIPART_BYTES = MAX_FILE_BYTES + 512 * 1024;
+const MAX_NOTES_JSON_BYTES = 2 * 1024 * 1024;
+const NOTES_REQUEST_TIMEOUT_MS = 240_000;
+let activeNotesRequests = 0;
+
+async function readBoundedRequestBuffer(
+  request: NextRequest,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<Buffer> {
+  if (!request.body) {
+    const ab = await request.arrayBuffer();
+    if (ab.byteLength > maxBytes) {
+      throw new IngestionError(
+        "FILE_TOO_LARGE",
+        `Request payload exceeds maximum allowed size (${Math.round(maxBytes / (1024 * 1024))}MB).`,
+        413,
+      );
+    }
+    return Buffer.from(ab);
+  }
+
+  const reader = request.body.getReader();
+  const abort = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const { value, done } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new IngestionError(
+          "FILE_TOO_LARGE",
+          `Request payload exceeds maximum allowed size (${Math.round(maxBytes / (1024 * 1024))}MB).`,
+          413,
+        );
+      }
+      chunks.push(value);
+    }
+    signal.throwIfAborted();
+  } finally {
+    signal.removeEventListener("abort", abort);
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks);
+}
 
 function getQuotaExceededMessage(reason?: string): string {
   switch (reason) {
@@ -93,6 +148,15 @@ export async function POST(request: NextRequest) {
   let reservedContentHash: string | null = null;
   let reservedCost = 0.02;
   let reservedIsRegeneration = false;
+  let ocrReserved = false;
+  let ocrReservedCost = 0;
+  let ocrSettled = false;
+  let ocrActor: string | null = null;
+  let ocrTier: any = null;
+  let slotAcquired = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new AbortController();
+  const signal = AbortSignal.any([request.signal, timeout.signal]);
   let latestQuotaSummary: ClientQuotaSummary | undefined;
   const jsonResponse = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
     Response.json(body, {
@@ -140,11 +204,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 3. User identity & burst rate-limit config
+    // 3. User identity, Content-Type & locked burst rate-limit BEFORE reading/buffering body
     const userIdentifier =
       (process.env.NODE_ENV === "test" && request.headers.get("x-test-user-id")) ||
       proAuth.user?.id ||
       `ip:${getClientIp(request)}`;
+    const actorKey = resolveActorKey(userIdentifier);
     const isTest = process.env.NODE_ENV === "test" && !request.headers.get("x-enforce-rate-limit");
     const effectiveTier = (proAuth.tier as any) || "pro";
     const notesPipelineVersion: string = isPaidTier(effectiveTier)
@@ -153,11 +218,27 @@ export async function POST(request: NextRequest) {
     const enforceQuota =
       !isTest || Boolean(request.headers.get("x-enforce-quota"));
 
-    // 4. Content-length pre-check & parse incoming payload (multipart file or JSON)
+    const contentType = request.headers.get("content-type") || "";
+    const isMultipart = contentType.includes("multipart/form-data");
+    const isJson = contentType.includes("application/json");
+    if (!isMultipart && !isJson) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: {
+            code: "UNSUPPORTED_CONTENT_TYPE",
+            message: "Request must be multipart/form-data or application/json.",
+          },
+        },
+        415,
+      );
+    }
+
+    const maxBodyBytes = isMultipart ? MAX_NOTES_MULTIPART_BYTES : MAX_NOTES_JSON_BYTES;
     const rawContentLength = request.headers.get("content-length");
     if (rawContentLength) {
       const parsedLength = parseInt(rawContentLength, 10);
-      if (!isNaN(parsedLength) && parsedLength > MAX_FILE_BYTES) {
+      if (!isNaN(parsedLength) && parsedLength > maxBodyBytes) {
         return jsonResponse(
           {
             ok: false,
@@ -171,19 +252,36 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const contentType = request.headers.get("content-type") || "";
-    const isMultipart = contentType.includes("multipart/form-data");
-
-    if (!isMultipart && !isTest) {
-      const rateResult = await checkRateLimit(
-        userIdentifier,
-        "notes",
-        effectiveTier,
+    // Enforce actor-locked rate limit prior to allocating concurrency slot or reading request streams
+    if (isMultipart || !isTest) {
+      const rateResult = await withActorQuotaLock(actorKey, () =>
+        checkRateLimit(userIdentifier, "notes", effectiveTier),
       );
       if (!rateResult.allowed) {
         return createNotesRateLimitResponse(requestId, rateResult);
       }
     }
+
+    // Per-instance 2-slot concurrency cap + timeout propagation
+    if (activeNotesRequests >= 2) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: {
+            code: "NOTES_BUSY",
+            message: "Two slide decks are already being synthesized. Please try again shortly.",
+          },
+        },
+        429,
+        { "Retry-After": "15" },
+      );
+    }
+    activeNotesRequests++;
+    slotAcquired = true;
+    timer = setTimeout(
+      () => timeout.abort(new DOMException("Request timed out", "TimeoutError")),
+      NOTES_REQUEST_TIMEOUT_MS,
+    );
 
     let fileName = "lecture-slides.pptx";
     let slideCount = 1;
@@ -191,12 +289,31 @@ export async function POST(request: NextRequest) {
     let warnings: string[] = [];
     let focus: string | undefined;
     let parsedDeck: Awaited<ReturnType<typeof parseSlideDeck>> | undefined;
+    let verifiedFileSha256: string | null = null;
     let clientProvidedFileSha256: string | null = null;
     let cachedImageHashes: string[] | undefined;
     let cachedFormulaInventory: any[] | undefined;
 
-    if (contentType.includes("multipart/form-data")) {
-      const formData = await request.formData();
+    if (isMultipart) {
+      const bodyBuffer = await readBoundedRequestBuffer(request, MAX_NOTES_MULTIPART_BYTES, signal);
+      let formData: FormData;
+      try {
+        formData = await new Response(new Uint8Array(bodyBuffer), {
+          headers: { "content-type": contentType },
+        }).formData();
+      } catch {
+        return jsonResponse(
+          {
+            ok: false,
+            error: {
+              code: "INVALID_SLIDES_PAYLOAD",
+              message: "Invalid multipart form upload.",
+            },
+          },
+          400,
+        );
+      }
+
       const file = formData.get("file");
       const rawFocus = formData.get("focus");
       if (typeof rawFocus === "string" && rawFocus.trim()) {
@@ -229,20 +346,10 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // a. Pre-check rate limit / burst eligibility before expensive slide parsing
-      const rateResult = await checkRateLimit(
-        userIdentifier,
-        "notes",
-        effectiveTier,
-      );
-      if (!rateResult.allowed) {
-        return createNotesRateLimitResponse(requestId, rateResult);
-      }
-
-      // b. Pre-check shared deck cache using fileSha256 before parsing slides
+      // Pre-check shared deck cache using server-verified binary SHA-256
       const fileBytes = Buffer.from(await file.arrayBuffer());
       const fileSha256 = computeFileSha256(fileBytes);
-      clientProvidedFileSha256 = fileSha256;
+      verifiedFileSha256 = fileSha256;
       const normalizedFocus = (focus || "").trim().toLowerCase();
       const focusHash = normalizedFocus
         ? createHash("sha256").update(normalizedFocus).digest("hex").slice(0, 16)
@@ -255,6 +362,7 @@ export async function POST(request: NextRequest) {
         focusHash,
         pipelineVersion: notesPipelineVersion,
         fileSha256,
+        actorKey,
       });
 
       if (cachedFromStore?.clutchNote) {
@@ -275,7 +383,7 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const cachedParsedDoc = await getCachedParsedDocument(fileSha256);
+      const cachedParsedDoc = await getCachedParsedDocument(fileSha256, actorKey);
       if (cachedParsedDoc) {
         fileName = file.name || cachedParsedDoc.fileName;
         slideCount = cachedParsedDoc.pageCount ?? cachedParsedDoc.sources.length;
@@ -290,19 +398,92 @@ export async function POST(request: NextRequest) {
             effectiveTier,
             billingRegion,
           );
-          parsedDeck = !preSnapshot.allowVisionOcr
-            ? await parseSlideDeck(file, { maxAutoOcrBudgetUsd: 0 })
-            : await parseSlideDeck(file);
+          if (!preSnapshot.allowVisionOcr) {
+            parsedDeck = await parseSlideDeck(file, {
+              maxAutoOcrBudgetUsd: 0,
+              signal,
+            });
+          } else {
+            const ocrHold = await checkAndReserveDeckQuota(
+              userIdentifier,
+              effectiveTier,
+              `ocr:${fileSha256}`,
+              {
+                actionKind: "ocr",
+                estimatedCostUsd: 0.005,
+                region: billingRegion,
+                bypassCache: true,
+              },
+            );
+            if (!ocrHold.allowed) {
+              parsedDeck = await parseSlideDeck(file, {
+                maxAutoOcrBudgetUsd: 0,
+                signal,
+              });
+            } else {
+              if (ocrHold.reserved) {
+                ocrReserved = true;
+                ocrReservedCost = ocrHold.reservedCostUsd ?? 0.005;
+                ocrActor = userIdentifier;
+                ocrTier = effectiveTier;
+              }
+              parsedDeck = await parseSlideDeck(file, { signal });
+            }
+          }
         } else {
-          parsedDeck = await parseSlideDeck(file);
+          parsedDeck = await parseSlideDeck(file, { signal });
         }
+
+        if (ocrReserved && !ocrSettled && ocrActor) {
+          const parsedVisionCost = Object.values(parsedDeck?.pageVisionStatus ?? {}).reduce(
+            (sum, entry) =>
+              sum + (typeof entry?.costUsd === "number" && Number.isFinite(entry.costUsd) ? entry.costUsd : 0),
+            0,
+          );
+          if (parsedVisionCost > 0) {
+            await recordDeckGenerationCogs(
+              ocrActor,
+              ocrTier,
+              parsedVisionCost,
+              ocrReservedCost,
+              billingRegion,
+            );
+          } else {
+            await rollbackDeckQuotaReservation({
+              userId: ocrActor,
+              tier: ocrTier,
+              actionKind: "ocr",
+              reservedCostUsd: ocrReservedCost,
+              region: billingRegion,
+            });
+          }
+          ocrSettled = true;
+          ocrReserved = false;
+        }
+
         fileName = parsedDeck.fileName;
         slideCount = parsedDeck.slideCount;
         sources = parsedDeck.sources;
         warnings = parsedDeck.warnings || [];
       }
-    } else if (contentType.includes("application/json")) {
-      const jsonBody = await request.json();
+    } else {
+      const jsonBuffer = await readBoundedRequestBuffer(request, MAX_NOTES_JSON_BYTES, signal);
+      let jsonBody: Record<string, any> = {};
+      try {
+        jsonBody = JSON.parse(jsonBuffer.toString("utf8")) as Record<string, any>;
+      } catch {
+        return jsonResponse(
+          {
+            ok: false,
+            error: {
+              code: "INVALID_SLIDES_PAYLOAD",
+              message: "Request body is not valid JSON.",
+            },
+          },
+          400,
+        );
+      }
+
       fileName =
         typeof jsonBody?.fileName === "string" && jsonBody.fileName.trim()
           ? jsonBody.fileName.trim()
@@ -482,17 +663,6 @@ export async function POST(request: NextRequest) {
           400,
         );
       }
-    } else {
-      return jsonResponse(
-        {
-          ok: false,
-          error: {
-            code: "UNSUPPORTED_CONTENT_TYPE",
-            message: "Request must be multipart/form-data or application/json.",
-          },
-        },
-        415,
-      );
     }
 
     // 5. Shared deck cache lookup & durable quota reservation
@@ -508,6 +678,10 @@ export async function POST(request: NextRequest) {
     const reservedCostUsd =
       effectiveTier === "contender" || effectiveTier === "free" ? 0.015 : 0.02;
 
+    const effectiveFileSha256 =
+      verifiedFileSha256 ?? parsedDeck?.fileSha256 ?? clientProvidedFileSha256;
+    const isFileSha256Verified = Boolean(verifiedFileSha256 || parsedDeck);
+
     if (enforceQuota) {
       const cacheLookupKey = {
         contentHash,
@@ -515,7 +689,8 @@ export async function POST(request: NextRequest) {
         mode: "notes",
         focusHash,
         pipelineVersion: notesPipelineVersion,
-        fileSha256: parsedDeck?.fileSha256 ?? clientProvidedFileSha256 ?? null,
+        fileSha256: isFileSha256Verified ? effectiveFileSha256 : null,
+        actorKey,
       };
 
       const cachedFromStore = await getSharedDeckCache(cacheLookupKey);
@@ -529,7 +704,7 @@ export async function POST(request: NextRequest) {
           warnings,
           cached: true,
           contentHash: cachedFromStore.contentHash || contentHash,
-          fileSha256: cachedFromStore.fileSha256 || cacheLookupKey.fileSha256,
+          fileSha256: cachedFromStore.fileSha256 || effectiveFileSha256,
           sources: cachedFromStore.studyMetadata?.sources || sources,
           quota: latestQuotaSummary,
         });
@@ -558,7 +733,7 @@ export async function POST(request: NextRequest) {
           warnings,
           cached: true,
           contentHash: quotaResult.cachedDeck.contentHash || contentHash,
-          fileSha256: quotaResult.cachedDeck.fileSha256 || cacheLookupKey.fileSha256,
+          fileSha256: quotaResult.cachedDeck.fileSha256 || effectiveFileSha256,
           sources: quotaResult.cachedDeck.studyMetadata?.sources || sources,
           quota: latestQuotaSummary,
         });
@@ -604,6 +779,7 @@ export async function POST(request: NextRequest) {
       sources,
       focus,
       tier: effectiveTier,
+      signal,
       useCompilerV2: true,
       modelOverride: notesRoutingBundle.writer.model,
       verifierModel: notesRoutingBundle.critic.model,
@@ -633,11 +809,13 @@ export async function POST(request: NextRequest) {
             : {}),
     });
 
-    const visionCostUsd = Object.values(parsedDeck?.pageVisionStatus ?? {}).reduce(
-      (sum, entry) =>
-        sum + (typeof entry?.costUsd === "number" && Number.isFinite(entry.costUsd) ? entry.costUsd : 0),
-      0,
-    );
+    const visionCostUsd = ocrSettled
+      ? 0
+      : Object.values(parsedDeck?.pageVisionStatus ?? {}).reduce(
+          (sum, entry) =>
+            sum + (typeof entry?.costUsd === "number" && Number.isFinite(entry.costUsd) ? entry.costUsd : 0),
+          0,
+        );
     const actualCostUsd = computeNotesV2DeckCogsUsd({
       telemetryCostUsd,
       totalTokens: telemetryTotalTokens,
@@ -648,7 +826,7 @@ export async function POST(request: NextRequest) {
     const validFileSha256 =
       typeof parsedDeck?.fileSha256 === "string" && parsedDeck.fileSha256.trim().length > 0
         ? parsedDeck.fileSha256.trim()
-        : clientProvidedFileSha256;
+        : verifiedFileSha256 ?? clientProvidedFileSha256;
 
     if (enforceQuota) {
       const cogsRecord = await recordDeckGenerationCogs(
@@ -676,6 +854,8 @@ export async function POST(request: NextRequest) {
             slideCount,
             sources,
             format: fileName.toLowerCase().endsWith(".pptx") ? "pptx" : "pdf",
+            fileSha256Verified: isFileSha256Verified,
+            uploadedByUserId: actorKey,
             warnings,
             formulaInventory: parsedDeck?.formulaInventory ?? cachedFormulaInventory ?? [],
             imageHashes: parsedDeck?.imageHashes ?? cachedImageHashes ?? [],
@@ -694,6 +874,20 @@ export async function POST(request: NextRequest) {
       ...(latestQuotaSummary ? { quota: latestQuotaSummary } : {}),
     });
   } catch (error) {
+    if (ocrReserved && !ocrSettled && ocrActor) {
+      try {
+        await rollbackDeckQuotaReservation({
+          userId: ocrActor,
+          tier: ocrTier,
+          actionKind: "ocr",
+          reservedCostUsd: ocrReservedCost,
+          region: billingRegion,
+        });
+      } catch {
+        // Ignore OCR rollback error
+      }
+    }
+
     if (quotaReserved && reservedActor && reservedContentHash) {
       try {
         await rollbackDeckQuotaReservation({
@@ -713,13 +907,48 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (timeout.signal.aborted) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: {
+            code: "NOTES_TIMEOUT",
+            message: "Note synthesis exceeded time limit. Try a smaller slide deck.",
+          },
+        },
+        504,
+      );
+    }
+
+    if (request.signal.aborted) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: {
+            code: "REQUEST_CANCELLED",
+            message: "The synthesis request was cancelled.",
+          },
+        },
+        499,
+      );
+    }
+
     if (error instanceof IngestionError) {
+      if (error.status >= 500) {
+        console.error("[ClutchNotesAPI] Internal ingestion error:", error);
+      }
+      const message =
+        error.code === "AI_NOT_CONFIGURED"
+          ? "Clutch Notes AI is temporarily unavailable (AI provider not configured)."
+          : error.status >= 500
+            ? "Failed to synthesize lecture slides into notes. Please try again."
+            : error.message;
       return jsonResponse(
         {
           ok: false,
           error: {
             code: error.code,
-            message: error.message,
+            message,
           },
         },
         error.status,
@@ -737,5 +966,8 @@ export async function POST(request: NextRequest) {
       },
       500,
     );
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (slotAcquired) activeNotesRequests = Math.max(0, activeNotesRequests - 1);
   }
 }

@@ -1,7 +1,9 @@
 import "server-only";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ServerTier } from "@/lib/auth/server-guard";
 import {
   TIER_LIMITS,
@@ -14,7 +16,15 @@ import {
   type BillingRegion,
 } from "@/lib/pricing/tiers";
 export type { BillingRegion } from "@/lib/pricing/tiers";
-import { getSupabaseServerClient, isSupabaseServerConfigured } from "@/lib/supabase/server";
+import {
+  isSupabaseServerConfigured,
+  getSupabaseServerClient as getBaseSupabaseServerClient,
+} from "@/lib/supabase/server";
+import { getSupabaseAdminOrServerClient } from "@/lib/supabase/server-helpers";
+
+function getSupabaseServerClient(token?: string): SupabaseClient | null {
+  return token ? getBaseSupabaseServerClient(token) : getSupabaseAdminOrServerClient();
+}
 
 // Check if Upstash Redis credentials are present in the environment (supports UPSTASH_* or Vercel KV_* prefixes)
 export function assertProductionRateLimitConfig(): void {
@@ -134,6 +144,24 @@ const paidNotesLimiter = redis
     })
   : null;
 
+const arenaLimiter = redis
+  ? new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(60, "1 m"),
+      analytics: true,
+      prefix: "clutch:ratelimit:arena",
+    })
+  : null;
+
+const telemetryLimiter = redis
+  ? new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(20, "10 m"),
+      analytics: true,
+      prefix: "clutch:ratelimit:telemetry",
+    })
+  : null;
+
 // In-memory sliding window fallback for local testing & dev without Redis
 interface LocalRateRecord {
   timestamps: number[];
@@ -221,7 +249,7 @@ export function checkInMemoryRateLimit(
   };
 }
 
-export type RateLimitType = "ingest" | "coach" | "notes";
+export type RateLimitType = "ingest" | "coach" | "notes" | "arena" | "telemetry";
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -282,19 +310,25 @@ export async function checkRateLimit(
   assertProductionRateLimitConfig();
   const isNotes = type === "notes";
   const isIngest = type === "ingest";
+  const isArena = type === "arena";
+  const isTelemetry = type === "telemetry";
   const normTier = toUserTier(tier);
   const isPaid =
     normTier === "cram_pass" ||
     normTier === "pro_monthly" ||
     normTier === "pro" ||
     normTier === "tutor";
-  const isPro =
-    normTier === "pro_monthly" || normTier === "pro" || normTier === "tutor";
 
   let limit: number;
   let windowMs: number;
 
-  if (isNotes) {
+  if (isArena) {
+    limit = isPaid ? 120 : 60;
+    windowMs = 60 * 1000;
+  } else if (isTelemetry) {
+    limit = 20;
+    windowMs = 10 * 60 * 1000;
+  } else if (isNotes) {
     limit = isPaid ? 30 : 10;
     windowMs = 10 * 60 * 1000; // 10 minutes anti-spam guard
   } else if (isIngest) {
@@ -318,17 +352,21 @@ export async function checkRateLimit(
   }
 
   // 1. Try Upstash Redis if available
-  const limiter = isNotes
-    ? isPaid
-      ? paidNotesLimiter
-      : freeNotesLimiter
-    : isIngest
-      ? isPaid
-        ? paidIngestLimiter
-        : freeIngestLimiter
-      : isPaid
-        ? paidCoachLimiter
-        : freeCoachLimiter;
+  const limiter = isArena
+    ? arenaLimiter
+    : isTelemetry
+      ? telemetryLimiter
+      : isNotes
+        ? isPaid
+          ? paidNotesLimiter
+          : freeNotesLimiter
+        : isIngest
+          ? isPaid
+            ? paidIngestLimiter
+            : freeIngestLimiter
+          : isPaid
+            ? paidCoachLimiter
+            : freeCoachLimiter;
   if (limiter) {
     try {
       const result = await limiter.limit(`${normTier}:${identifier}`);
@@ -376,7 +414,7 @@ export async function checkRateLimit(
 function parseFirstIpToken(headerValue: string | null): string | null {
   if (!headerValue) return null;
   const first = headerValue.split(",")[0].trim();
-  if (first.length >= 3 && first.length <= 45 && !/[<>\s"']/.test(first)) {
+  if (first.length >= 3 && first.length <= 45 && !/[<>\s"']/.test(first) && isIP(first) !== 0) {
     return first;
   }
   return null;
@@ -384,24 +422,33 @@ function parseFirstIpToken(headerValue: string | null): string | null {
 
 /**
  * Resolves a reliable client IP address from proxy headers.
- * Hardened against rotating spoofed Cloudflare headers on Vercel deployments (SA-15, SA2-06):
+ * Hardened against spoofed proxy & Cloudflare headers (SA-15, SA2-06, F-11):
  * 1. Platform-verified 'x-vercel-forwarded-for' takes strict priority over 'cf-connecting-ip'.
- * 2. Verified 'cf-connecting-ip' (only when verified with 'cf-ray' header or TRUST_CLOUDFLARE_HEADERS === "true").
+ * 2. Verified 'cf-connecting-ip' (when TRUST_CLOUDFLARE_HEADERS === "true", or non-Vercel deployment with cf-ray).
  * 3. Reverse proxy / Nginx real IP header ('x-real-ip').
- * 4. Fallback to 'x-forwarded-for' (sanitized first token).
- * 5. Unverified 'cf-connecting-ip' (only when not on Vercel).
+ * 4. Fallback to 'x-forwarded-for' (strictly IP-validated via net.isIP).
+ * 5. Unverified 'cf-connecting-ip' (only when not on Vercel and TRUST_CLOUDFLARE_HEADERS !== "false").
  * 6. Default fallback to '127.0.0.1'.
  */
 export function getClientIp(request: Request): string {
-  // 1. Vercel platform-verified header takes strict priority
+  const isOnVercel =
+    Boolean(process.env.VERCEL) ||
+    Boolean(request.headers.get("x-vercel-id"));
+  const isProd = process.env.NODE_ENV === "production";
+
+  // 1. Vercel platform-verified header takes strict priority (only trust in prod when running on Vercel)
   const vercel = parseFirstIpToken(request.headers.get("x-vercel-forwarded-for"));
-  if (vercel) return vercel;
+  if (vercel && (!isProd || isOnVercel)) return vercel;
 
   const cf = parseFirstIpToken(request.headers.get("cf-connecting-ip"));
   const hasCfRay = Boolean(request.headers.get("cf-ray")?.trim());
-  const isCfVerified = hasCfRay || process.env.TRUST_CLOUDFLARE_HEADERS === "true";
+  const trustCfExplicit = process.env.TRUST_CLOUDFLARE_HEADERS === "true";
+  const blockCfExplicit = process.env.TRUST_CLOUDFLARE_HEADERS === "false";
+  const isCfVerified =
+    !blockCfExplicit &&
+    (trustCfExplicit || (!isProd && !isOnVercel && hasCfRay));
 
-  // 2. Verified Cloudflare header (accompanied by cf-ray or TRUST_CLOUDFLARE_HEADERS)
+  // 2. Verified Cloudflare header (explicitly trusted, or non-prod non-Vercel CF proxy with cf-ray)
   if (cf && isCfVerified) {
     return cf;
   }
@@ -410,15 +457,12 @@ export function getClientIp(request: Request): string {
   const realIp = parseFirstIpToken(request.headers.get("x-real-ip"));
   if (realIp) return realIp;
 
-  // 4. Fallback to X-Forwarded-For (sanitized first token)
+  // 4. Fallback to X-Forwarded-For (validated IPv4/IPv6 token)
   const forwarded = parseFirstIpToken(request.headers.get("x-forwarded-for"));
   if (forwarded) return forwarded;
 
-  // 5. Unverified cf-connecting-ip (only when not on Vercel)
-  const isOnVercel =
-    Boolean(process.env.VERCEL) ||
-    Boolean(request.headers.get("x-vercel-id"));
-  if (cf && !isOnVercel) {
+  // 5. Unverified cf-connecting-ip (only outside production, not on Vercel, and not explicitly blocked)
+  if (cf && !isProd && !isOnVercel && !blockCfExplicit) {
     return cf;
   }
 
@@ -473,7 +517,7 @@ export function resolveActorKey(
 
   if (actor.userId && actor.userId.trim()) {
     const u = actor.userId.trim();
-    return u.startsWith("user:") ? u : `user:${u}`;
+    return u.startsWith("user:") || u.startsWith("ip:") ? u : `user:${u}`;
   }
 
   if (actor.ip && actor.ip.trim()) {
@@ -489,15 +533,15 @@ export function resolveActorKey(
 /* -------------------------------------------------------------------------- */
 
 const actorLockMap = new Map<string, Promise<unknown>>();
+const activeLockActors = new Set<string>();
 
 export function getActorLockMapSize(): number {
   return actorLockMap.size;
 }
 
 /**
- * Serializes async quota mutations per actorKey using an in-process promise queue.
- * Closes TOCTOU race conditions where concurrent calls read the same snapshot before writing.
- * Automatically cleans up settled promises from the map once the queue drains to prevent memory leaks.
+ * Serializes async quota mutations per actorKey using an in-process promise queue
+ * and (when Redis is configured) a short-TTL distributed lock to close TOCTOU races across instances.
  */
 export async function withActorQuotaLock<T>(
   actorKey: string,
@@ -515,7 +559,43 @@ export async function withActorQuotaLock<T>(
   const task = previousLock
     .catch(() => {})
     .then(async () => {
-      return await fn();
+      const lockKey = `clutch:quota:lock:${actorKey}`;
+      const lockToken = randomUUID();
+      let acquiredDistributedLock = false;
+
+      if (redis) {
+        const deadline = Date.now() + 3_000;
+        while (Date.now() < deadline) {
+          try {
+            const res = await redis.set(lockKey, lockToken, { nx: true, px: 10_000 });
+            if (res === "OK") {
+              acquiredDistributedLock = true;
+              break;
+            }
+          } catch {
+            // Transient Redis lock failure: fall back to process lock + Supabase
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 40 + Math.floor(Math.random() * 40)));
+        }
+      }
+
+      activeLockActors.add(actorKey);
+      try {
+        return await fn();
+      } finally {
+        activeLockActors.delete(actorKey);
+        if (acquiredDistributedLock && redis) {
+          try {
+            const currentOwner = await redis.get<string>(lockKey);
+            if (currentOwner === lockToken) {
+              await redis.del(lockKey);
+            }
+          } catch {
+            // Lock expires automatically after 10s TTL
+          }
+        }
+      }
     });
 
   try {
@@ -586,10 +666,20 @@ export interface SharedDeckLookupKey {
   focusHash?: string;
   pipelineVersion: string;
   fileSha256?: string | null;
+  actorKey?: string | null;
+}
+
+function cloneCacheValue<T>(value: T): T {
+  try {
+    return structuredClone(value);
+  } catch {
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
 }
 
 const sharedDeckMemoryStore = new Map<string, SharedDeckCacheEntry>();
-const fileSha256ToCompositeMap = new Map<string, string>();
+const fileSha256ToCompositeMap = new Map<string, Set<string>>();
+const userScopedFileSha256Map = new Map<string, Set<string>>();
 
 export function getSharedDeckMemoryCacheSize(): number {
   return sharedDeckMemoryStore.size;
@@ -597,6 +687,29 @@ export function getSharedDeckMemoryCacheSize(): number {
 
 export function getFileSha256ToCompositeMapSize(): number {
   return fileSha256ToCompositeMap.size;
+}
+
+function removeKeyFromShaIndex(
+  indexMap: Map<string, Set<string>>,
+  shaKey: string,
+  compositeKey: string,
+): void {
+  const existing = indexMap.get(shaKey);
+  if (!existing) return;
+  existing.delete(compositeKey);
+  if (existing.size === 0) {
+    indexMap.delete(shaKey);
+  }
+}
+
+function addKeyToShaIndex(
+  indexMap: Map<string, Set<string>>,
+  shaKey: string,
+  compositeKey: string,
+): void {
+  const existing = indexMap.get(shaKey) ?? new Set<string>();
+  existing.add(compositeKey);
+  setBoundedMapEntry(indexMap, shaKey, existing, MAX_SHARED_DECK_CACHE_ENTRIES);
 }
 
 function setSharedDeckMemoryEntry(
@@ -609,21 +722,33 @@ function setSharedDeckMemoryEntry(
     entry,
     MAX_SHARED_DECK_CACHE_ENTRIES,
     (evictedKey, evictedValue) => {
-      if (
-        evictedValue?.fileSha256 &&
-        fileSha256ToCompositeMap.get(evictedValue.fileSha256) === evictedKey
-      ) {
-        fileSha256ToCompositeMap.delete(evictedValue.fileSha256);
+      if (evictedValue?.fileSha256) {
+        removeKeyFromShaIndex(fileSha256ToCompositeMap, evictedValue.fileSha256, evictedKey);
+        const owner = evictedValue.studyMetadata?.uploadedByUserId;
+        if (typeof owner === "string" && owner.trim()) {
+          removeKeyFromShaIndex(
+            userScopedFileSha256Map,
+            `${resolveActorKey(owner)}:${evictedValue.fileSha256}`,
+            evictedKey,
+          );
+        }
       }
     },
   );
   if (entry.fileSha256) {
-    setBoundedMapEntry(
-      fileSha256ToCompositeMap,
-      entry.fileSha256,
-      compositeKey,
-      MAX_SHARED_DECK_CACHE_ENTRIES,
-    );
+    const isUnverifiedSha = entry.studyMetadata?.fileSha256Verified === false;
+    if (isUnverifiedSha) {
+      const owner = entry.studyMetadata?.uploadedByUserId;
+      if (typeof owner === "string" && owner.trim()) {
+        addKeyToShaIndex(
+          userScopedFileSha256Map,
+          `${resolveActorKey(owner)}:${entry.fileSha256}`,
+          compositeKey,
+        );
+      }
+    } else {
+      addKeyToShaIndex(fileSha256ToCompositeMap, entry.fileSha256, compositeKey);
+    }
   }
 }
 
@@ -635,6 +760,22 @@ function makeCacheCompositeKey(
   pipelineVersion = "v1",
 ): string {
   return `${contentHash}:${language}:${mode}:${focusHash}:${pipelineVersion}`;
+}
+
+function matchesLookupMetadata(
+  match: SharedDeckCacheEntry | undefined,
+  lang: string,
+  mode: string,
+  focus: string,
+  pipelineVersion: string,
+): match is SharedDeckCacheEntry {
+  return Boolean(
+    match &&
+      match.language === lang &&
+      match.mode === mode &&
+      match.focusHash === focus &&
+      match.pipelineVersion === pipelineVersion,
+  );
 }
 
 export async function getSharedDeckCache(
@@ -651,29 +792,49 @@ export async function getSharedDeckCache(
     key.pipelineVersion,
   );
 
-  // 1. Direct composite lookup in memory
-  let cached = sharedDeckMemoryStore.get(compositeKey);
+  // 1. Direct composite lookup in memory (contentHash matched)
+  let cached = key.contentHash ? sharedDeckMemoryStore.get(compositeKey) : undefined;
   let matchedCompositeKey = compositeKey;
 
-  // 2. Fast-path lookup by fileSha256 in memory
+  // 2a. Fast-path verified lookup by global fileSha256 in memory
   if (!cached && key.fileSha256) {
-    const linkedCompositeKey = fileSha256ToCompositeMap.get(key.fileSha256);
-    if (linkedCompositeKey) {
-      const match = sharedDeckMemoryStore.get(linkedCompositeKey);
-      if (
-        match &&
-        match.language === lang &&
-        match.mode === mode &&
-        match.focusHash === focus &&
-        match.pipelineVersion === key.pipelineVersion
-      ) {
-        cached = match;
-        matchedCompositeKey = linkedCompositeKey;
+    const linkedCompositeKeys = fileSha256ToCompositeMap.get(key.fileSha256);
+    if (linkedCompositeKeys) {
+      for (const candidateKey of linkedCompositeKeys) {
+        const match = sharedDeckMemoryStore.get(candidateKey);
+        if (
+          matchesLookupMetadata(match, lang, mode, focus, key.pipelineVersion) &&
+          match.studyMetadata?.fileSha256Verified !== false
+        ) {
+          cached = match;
+          matchedCompositeKey = candidateKey;
+          break;
+        }
       }
     }
   }
 
-  // 3. If found in memory, bump hit count, refresh LRU and return
+  // 2b. User-scoped unverified JSON fileSha256 fast-path (isolated strictly to owning actor)
+  if (!cached && key.fileSha256 && key.actorKey) {
+    const actorScopedKey = `${resolveActorKey(key.actorKey)}:${key.fileSha256}`;
+    const userLinkedKeys = userScopedFileSha256Map.get(actorScopedKey);
+    if (userLinkedKeys) {
+      for (const candidateKey of userLinkedKeys) {
+        const match = sharedDeckMemoryStore.get(candidateKey);
+        if (
+          matchesLookupMetadata(match, lang, mode, focus, key.pipelineVersion) &&
+          typeof match.studyMetadata?.uploadedByUserId === "string" &&
+          resolveActorKey(match.studyMetadata.uploadedByUserId) === resolveActorKey(key.actorKey)
+        ) {
+          cached = match;
+          matchedCompositeKey = candidateKey;
+          break;
+        }
+      }
+    }
+  }
+
+  // 3. If found in memory, bump hit count, refresh LRU and return deep clone
   if (cached) {
     cached.hitCount += 1;
     cached.updatedAt = new Date().toISOString();
@@ -691,7 +852,7 @@ export async function getSharedDeckCache(
         // ignore background sync errors
       }
     }
-    return cached;
+    return cloneCacheValue(cached);
   }
 
   // 4. Supabase cloud lookup if configured
@@ -699,15 +860,17 @@ export async function getSharedDeckCache(
     try {
       const supabase = getSupabaseServerClient();
       if (supabase) {
-        let { data } = await supabase
-          .from("shared_deck_cache")
-          .select("*")
-          .eq("content_hash", key.contentHash)
-          .eq("language", lang)
-          .eq("mode", mode)
-          .eq("focus_hash", focus)
-          .eq("pipeline_version", key.pipelineVersion)
-          .maybeSingle();
+        let { data } = key.contentHash
+          ? await supabase
+              .from("shared_deck_cache")
+              .select("*")
+              .eq("content_hash", key.contentHash)
+              .eq("language", lang)
+              .eq("mode", mode)
+              .eq("focus_hash", focus)
+              .eq("pipeline_version", key.pipelineVersion)
+              .maybeSingle()
+          : { data: null };
 
         if (!data && key.fileSha256) {
           const res = await supabase
@@ -718,8 +881,12 @@ export async function getSharedDeckCache(
             .eq("mode", mode)
             .eq("focus_hash", focus)
             .eq("pipeline_version", key.pipelineVersion)
+            .order("updated_at", { ascending: false })
+            .limit(1)
             .maybeSingle();
-          data = res.data;
+          if (res.data && res.data.study_metadata?.fileSha256Verified !== false) {
+            data = res.data;
+          }
         }
 
         if (data) {
@@ -740,12 +907,12 @@ export async function getSharedDeckCache(
             createdAt: data.created_at,
             updatedAt: new Date().toISOString(),
           };
-          setSharedDeckMemoryEntry(compositeKey, entry);
+          setSharedDeckMemoryEntry(compositeKey, cloneCacheValue(entry));
           void supabase
             .from("shared_deck_cache")
             .update({ hit_count: entry.hitCount, updated_at: entry.updatedAt })
             .eq("id", data.id);
-          return entry;
+          return cloneCacheValue(entry);
         }
       }
     } catch {
@@ -771,6 +938,9 @@ export async function setSharedDeckCache(
     entry.pipelineVersion,
   );
 
+  const clonedStudyMeta = entry.studyMetadata ? cloneCacheValue(entry.studyMetadata) : {};
+  const isUnverifiedSha = clonedStudyMeta?.fileSha256Verified === false;
+
   const fullEntry: SharedDeckCacheEntry = {
     id: entry.id ?? `cache-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     contentHash: entry.contentHash,
@@ -781,15 +951,15 @@ export async function setSharedDeckCache(
     pipelineVersion: entry.pipelineVersion,
     servedGeneratorModel: entry.servedGeneratorModel ?? null,
     servedVerifierModel: entry.servedVerifierModel ?? null,
-    questionPool: Array.isArray(entry.questionPool) ? entry.questionPool : [],
-    studyMetadata: entry.studyMetadata ?? {},
-    clutchNote: entry.clutchNote ?? null,
+    questionPool: Array.isArray(entry.questionPool) ? cloneCacheValue(entry.questionPool) : [],
+    studyMetadata: clonedStudyMeta,
+    clutchNote: entry.clutchNote ? cloneCacheValue(entry.clutchNote) : null,
     hitCount,
     createdAt: entry.createdAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 
-  setSharedDeckMemoryEntry(compositeKey, fullEntry);
+  setSharedDeckMemoryEntry(compositeKey, cloneCacheValue(fullEntry));
 
   if (isSupabaseServerConfigured()) {
     try {
@@ -797,7 +967,7 @@ export async function setSharedDeckCache(
       if (supabase) {
         const payload = {
           content_hash: fullEntry.contentHash,
-          file_sha256: fullEntry.fileSha256,
+          file_sha256: isUnverifiedSha ? null : fullEntry.fileSha256,
           language: fullEntry.language,
           mode: fullEntry.mode,
           focus_hash: fullEntry.focusHash,
@@ -827,7 +997,7 @@ export async function setSharedDeckCache(
     }
   }
 
-  return fullEntry;
+  return cloneCacheValue(fullEntry);
 }
 
 export interface CachedParsedDocumentData {
@@ -844,71 +1014,102 @@ export interface CachedParsedDocumentData {
   formulaInventory?: any[];
 }
 
+function toCachedParsedDoc(
+  cleanSha: string,
+  contentHash: string,
+  meta: Record<string, any>,
+): CachedParsedDocumentData {
+  const charCount =
+    typeof meta.characterCount === "number" && meta.characterCount > 0
+      ? meta.characterCount
+      : meta.sources.reduce((sum: number, s: any) => sum + (s.text?.length || 0), 0);
+  return {
+    fileName: meta.fileName || "lecture-slides.pdf",
+    format: meta.format || (meta.fileName?.toLowerCase().endsWith(".pptx") ? "pptx" : "pdf"),
+    sources: cloneCacheValue(meta.sources),
+    pageCount: typeof meta.slideCount === "number" ? meta.slideCount : meta.sources.length,
+    characterCount: charCount,
+    warnings: Array.isArray(meta.warnings) ? cloneCacheValue(meta.warnings) : [],
+    fileSha256: cleanSha,
+    contentHash,
+    imageHashes: Array.isArray(meta.imageHashes) ? cloneCacheValue(meta.imageHashes) : undefined,
+    dedupedSlideCount: typeof meta.dedupedSlideCount === "number" ? meta.dedupedSlideCount : undefined,
+    formulaInventory: Array.isArray(meta.formulaInventory)
+      ? cloneCacheValue(meta.formulaInventory)
+      : undefined,
+  };
+}
+
 /**
  * Retrieves a pre-extracted parsed slide deck from the shared deck cache by file SHA-256.
- * Bridges Clutch Notes AI and Quiz Arena ingestion to prevent redundant re-parsing & OCR.
+ * Rejects unverified client-supplied SHA-256 entries from cross-user poisoning; unverified
+ * entries are only readable by the same authenticated owner when `actorKey` is supplied.
  */
 export async function getCachedParsedDocument(
   fileSha256: string,
+  actorKey?: string | null,
 ): Promise<CachedParsedDocumentData | null> {
   if (!fileSha256 || typeof fileSha256 !== "string" || !fileSha256.trim()) {
     return null;
   }
   const cleanSha = fileSha256.trim();
 
-  // 1. Fast-path memory lookup via linked composite key
-  const linkedKey = fileSha256ToCompositeMap.get(cleanSha);
-  if (linkedKey) {
-    const entry = sharedDeckMemoryStore.get(linkedKey);
-    const meta = entry?.studyMetadata;
-    if (meta && Array.isArray(meta.sources) && meta.sources.length > 0) {
-      const charCount =
-        typeof meta.characterCount === "number" && meta.characterCount > 0
-          ? meta.characterCount
-          : meta.sources.reduce((sum: number, s: any) => sum + (s.text?.length || 0), 0);
-      return {
-        fileName: meta.fileName || "lecture-slides.pdf",
-        format: meta.format || (meta.fileName?.toLowerCase().endsWith(".pptx") ? "pptx" : "pdf"),
-        sources: meta.sources,
-        pageCount: typeof meta.slideCount === "number" ? meta.slideCount : meta.sources.length,
-        characterCount: charCount,
-        warnings: Array.isArray(meta.warnings) ? meta.warnings : [],
-        fileSha256: cleanSha,
-        contentHash: entry!.contentHash,
-        imageHashes: Array.isArray(meta.imageHashes) ? meta.imageHashes : undefined,
-        dedupedSlideCount: typeof meta.dedupedSlideCount === "number" ? meta.dedupedSlideCount : undefined,
-        formulaInventory: Array.isArray(meta.formulaInventory) ? meta.formulaInventory : undefined,
-      };
-    }
-  }
-
-  // 2. Scan all entries in sharedDeckMemoryStore for matching fileSha256
-  for (const entry of sharedDeckMemoryStore.values()) {
-    if (entry.fileSha256 === cleanSha) {
-      const meta = entry.studyMetadata;
-      if (meta && Array.isArray(meta.sources) && meta.sources.length > 0) {
-        const charCount =
-          typeof meta.characterCount === "number" && meta.characterCount > 0
-            ? meta.characterCount
-            : meta.sources.reduce((sum: number, s: any) => sum + (s.text?.length || 0), 0);
-        return {
-          fileName: meta.fileName || "lecture-slides.pdf",
-          format: meta.format || (meta.fileName?.toLowerCase().endsWith(".pptx") ? "pptx" : "pdf"),
-          sources: meta.sources,
-          pageCount: typeof meta.slideCount === "number" ? meta.slideCount : meta.sources.length,
-          characterCount: charCount,
-          warnings: Array.isArray(meta.warnings) ? meta.warnings : [],
-          fileSha256: cleanSha,
-          contentHash: entry.contentHash,
-          imageHashes: Array.isArray(meta.imageHashes) ? meta.imageHashes : undefined,
-          dedupedSlideCount: typeof meta.dedupedSlideCount === "number" ? meta.dedupedSlideCount : undefined,
-          formulaInventory: Array.isArray(meta.formulaInventory) ? meta.formulaInventory : undefined,
-        };
+  // 1. Fast-path verified memory lookup via global composite key set
+  const linkedKeys = fileSha256ToCompositeMap.get(cleanSha);
+  if (linkedKeys) {
+    for (const linkedKey of linkedKeys) {
+      const entry = sharedDeckMemoryStore.get(linkedKey);
+      const meta = entry?.studyMetadata;
+      if (
+        entry &&
+        meta &&
+        meta.fileSha256Verified !== false &&
+        Array.isArray(meta.sources) &&
+        meta.sources.length > 0
+      ) {
+        return toCachedParsedDoc(cleanSha, entry.contentHash, meta);
       }
     }
   }
 
-  // 3. Cloud Supabase lookup if configured
+  // 2. Scan verified entries in sharedDeckMemoryStore for matching fileSha256
+  for (const entry of sharedDeckMemoryStore.values()) {
+    if (entry.fileSha256 === cleanSha) {
+      const meta = entry.studyMetadata;
+      if (
+        meta &&
+        meta.fileSha256Verified !== false &&
+        Array.isArray(meta.sources) &&
+        meta.sources.length > 0
+      ) {
+        return toCachedParsedDoc(cleanSha, entry.contentHash, meta);
+      }
+    }
+  }
+
+  // 3. Same-owner lookup for unverified JSON-bridged parsed sources
+  if (actorKey) {
+    const resolvedActor = resolveActorKey(actorKey);
+    const userKeys = userScopedFileSha256Map.get(`${resolvedActor}:${cleanSha}`);
+    if (userKeys) {
+      for (const uKey of userKeys) {
+        const entry = sharedDeckMemoryStore.get(uKey);
+        const meta = entry?.studyMetadata;
+        if (
+          entry &&
+          meta &&
+          typeof meta.uploadedByUserId === "string" &&
+          resolveActorKey(meta.uploadedByUserId) === resolvedActor &&
+          Array.isArray(meta.sources) &&
+          meta.sources.length > 0
+        ) {
+          return toCachedParsedDoc(cleanSha, entry.contentHash, meta);
+        }
+      }
+    }
+  }
+
+  // 4. Cloud Supabase lookup if configured (skip unverified entries)
   if (isSupabaseServerConfigured()) {
     try {
       const supabase = getSupabaseServerClient();
@@ -922,24 +1123,13 @@ export async function getCachedParsedDocument(
         if (Array.isArray(data)) {
           for (const row of data) {
             const meta = row.study_metadata;
-            if (meta && Array.isArray(meta.sources) && meta.sources.length > 0) {
-              const charCount =
-                typeof meta.characterCount === "number" && meta.characterCount > 0
-                  ? meta.characterCount
-                  : meta.sources.reduce((sum: number, s: any) => sum + (s.text?.length || 0), 0);
-              return {
-                fileName: meta.fileName || "lecture-slides.pdf",
-                format: meta.format || (meta.fileName?.toLowerCase().endsWith(".pptx") ? "pptx" : "pdf"),
-                sources: meta.sources,
-                pageCount: typeof meta.slideCount === "number" ? meta.slideCount : meta.sources.length,
-                characterCount: charCount,
-                warnings: Array.isArray(meta.warnings) ? meta.warnings : [],
-                fileSha256: cleanSha,
-                contentHash: row.content_hash,
-                imageHashes: Array.isArray(meta.imageHashes) ? meta.imageHashes : undefined,
-                dedupedSlideCount: typeof meta.dedupedSlideCount === "number" ? meta.dedupedSlideCount : undefined,
-                formulaInventory: Array.isArray(meta.formulaInventory) ? meta.formulaInventory : undefined,
-              };
+            if (
+              meta &&
+              meta.fileSha256Verified !== false &&
+              Array.isArray(meta.sources) &&
+              meta.sources.length > 0
+            ) {
+              return toCachedParsedDoc(cleanSha, row.content_hash, meta);
             }
           }
         }
@@ -997,6 +1187,7 @@ export function sampleQuestionsFromCachedPool<T = any>(
 export function clearSharedDeckCacheForTests(): void {
   sharedDeckMemoryStore.clear();
   fileSha256ToCompositeMap.clear();
+  userScopedFileSha256Map.clear();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1096,6 +1287,8 @@ export interface CheckDeckQuotaOptions {
   focusHash?: string;
   pipelineVersion?: string;
   fileSha256?: string | null;
+  actorKey?: string | null;
+  bypassCache?: boolean;
   region?: BillingRegion | string | null;
   maxDeckCredits?: number;
   overrideLimit?: number;
@@ -1129,6 +1322,8 @@ export interface DeckQuotaReservationResult {
 }
 
 const userQuotaMemoryStore = new Map<string, UserQuotaLedger>();
+const userQuotaMemoryTimestamps = new Map<string, number>();
+const USER_QUOTA_MEM_TTL_MS = 5_000;
 
 export function getUserQuotaMemoryStoreSize(): number {
   return userQuotaMemoryStore.size;
@@ -1351,6 +1546,30 @@ export function computeRollingQuotaSnapshot(
   };
 }
 
+const SANDBOX_CEILING_EPSILON = 0.001;
+const SANDBOX_COGS_CAP_USD = 0.05;
+const KNOWN_TIER_COGS_CEILINGS = [0.08, 0.25, 0.85, 1.5];
+
+function isStalePriorTierCeiling(
+  rawCeiling: number,
+  expectedCeiling: number,
+): boolean {
+  if (!Number.isFinite(rawCeiling) || rawCeiling <= 0) {
+    return true;
+  }
+  const isExplicitSandboxCap =
+    Math.abs(rawCeiling - SANDBOX_COGS_CAP_USD) <= SANDBOX_CEILING_EPSILON;
+  if (isExplicitSandboxCap) {
+    return false;
+  }
+  if (rawCeiling >= expectedCeiling - SANDBOX_CEILING_EPSILON) {
+    return false;
+  }
+  return KNOWN_TIER_COGS_CEILINGS.some(
+    (c) => Math.abs(rawCeiling - c) <= SANDBOX_CEILING_EPSILON,
+  );
+}
+
 function refreshLedgerRollover(
   ledger: UserQuotaLedger,
   currentTier: UserTier,
@@ -1381,19 +1600,28 @@ function refreshLedgerRollover(
     changed = true;
   }
 
+  let primaryRolled = false;
   const primaryDurationMs = cfg.primaryWindowHours * 3_600_000;
   if (nowMs - Date.parse(ledger.windowStartedAt) >= primaryDurationMs) {
     ledger.windowStartedAt = nowIso;
     ledger.windowSpentUsd = 0;
     ledger.windowReservedUsd = 0;
+    primaryRolled = true;
     changed = true;
   }
 
+  let guardRolled = false;
   const guardDurationMs = cfg.guardWindowHours * 3_600_000;
   if (nowMs - Date.parse(ledger.weeklyStartedAt) >= guardDurationMs) {
     ledger.weeklyStartedAt = nowIso;
     ledger.weeklySpentUsd = 0;
     ledger.weeklyReservedUsd = 0;
+    guardRolled = true;
+    changed = true;
+  }
+
+  if (primaryRolled && guardRolled && (ledger.cogsReservedUsd ?? 0) > 0) {
+    ledger.cogsReservedUsd = 0;
     changed = true;
   }
 
@@ -1406,6 +1634,15 @@ function refreshLedgerRollover(
     ledger.weeklyStartedAt = nowIso;
     ledger.weeklySpentUsd = 0;
     ledger.weeklyReservedUsd = 0;
+    ledger.cogsReservedUsd = 0;
+    changed = true;
+  } else if (
+    isStalePriorTierCeiling(
+      Number(ledger.cogsCeilingUsd),
+      getRegionalCogsCeiling(currentTier, region),
+    )
+  ) {
+    ledger.cogsCeilingUsd = getRegionalCogsCeiling(currentTier, region);
     changed = true;
   }
 
@@ -1431,9 +1668,18 @@ export async function getUserQuotaLedger(
   const userTier = toUserTier(effectiveTier);
   const effectiveCeiling = getRegionalCogsCeiling(userTier, region);
 
-  // 1. Check in-memory store
-  const existing = userQuotaMemoryStore.get(actorKey);
-  if (existing) {
+  // 1. Check in-memory store (bypass during distributed lock or TTL expiry in prod)
+  const bypassLocalForDistributedLock = Boolean(redis) && activeLockActors.has(actorKey);
+  const existing = bypassLocalForDistributedLock
+    ? undefined
+    : userQuotaMemoryStore.get(actorKey);
+  const recordedAt = existing ? userQuotaMemoryTimestamps.get(actorKey) ?? 0 : 0;
+  const isStaleInProd =
+    process.env.NODE_ENV === "production" &&
+    (Boolean(redis) || isSupabaseServerConfigured()) &&
+    nowMs - recordedAt > USER_QUOTA_MEM_TTL_MS;
+
+  if (existing && !isStaleInProd) {
     const refreshed = refreshLedgerRollover(existing, userTier, region, nowMs);
     setBoundedMapEntry(
       userQuotaMemoryStore,
@@ -1441,6 +1687,7 @@ export async function getUserQuotaLedger(
       refreshed,
       MAX_USER_QUOTA_LEDGER_ENTRIES,
     );
+    userQuotaMemoryTimestamps.set(actorKey, nowMs);
     return refreshed;
   }
 
@@ -1450,6 +1697,9 @@ export async function getUserQuotaLedger(
       const raw = await redis.get<string | UserQuotaLedger>(`clutch:quota:ledger:${actorKey}`);
       if (raw) {
         const parsed: UserQuotaLedger = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (isStalePriorTierCeiling(Number(parsed.cogsCeilingUsd), effectiveCeiling)) {
+          parsed.cogsCeilingUsd = effectiveCeiling;
+        }
         const refreshed = refreshLedgerRollover(parsed, userTier, region, nowMs);
         setBoundedMapEntry(
           userQuotaMemoryStore,
@@ -1457,6 +1707,7 @@ export async function getUserQuotaLedger(
           refreshed,
           MAX_USER_QUOTA_LEDGER_ENTRIES,
         );
+        userQuotaMemoryTimestamps.set(actorKey, nowMs);
         return refreshed;
       }
     } catch {
@@ -1487,13 +1738,17 @@ export async function getUserQuotaLedger(
 
         if (data) {
           const fallbackIso = data.updated_at || new Date(nowMs).toISOString();
+          const rawDbCeiling = Number(data.cogs_ceiling_usd ?? effectiveCeiling);
+          const repairedCeiling = isStalePriorTierCeiling(rawDbCeiling, effectiveCeiling)
+            ? effectiveCeiling
+            : rawDbCeiling;
           const parsed: UserQuotaLedger = {
             userId: actorKey,
             tier: (data.tier as UserTier) ?? userTier,
             cogsSpentUsd: Number(data.cogs_spent_usd ?? data.estimated_cogs_usd ?? 0),
             estimatedCogsUsd: Number(data.estimated_cogs_usd ?? data.cogs_spent_usd ?? 0),
             cogsReservedUsd: Number(data.cogs_reserved_usd ?? 0),
-            cogsCeilingUsd: Number(data.cogs_ceiling_usd ?? effectiveCeiling),
+            cogsCeilingUsd: repairedCeiling,
             windowStartedAt: data.window_started_at ?? fallbackIso,
             windowSpentUsd: Number(data.window_spent_usd ?? data.cogs_spent_usd ?? 0),
             windowReservedUsd: Number(data.window_reserved_usd ?? 0),
@@ -1515,6 +1770,7 @@ export async function getUserQuotaLedger(
             refreshed,
             MAX_USER_QUOTA_LEDGER_ENTRIES,
           );
+          userQuotaMemoryTimestamps.set(actorKey, nowMs);
           return refreshed;
         }
       }
@@ -1553,6 +1809,7 @@ export async function getUserQuotaLedger(
     fresh,
     MAX_USER_QUOTA_LEDGER_ENTRIES,
   );
+  userQuotaMemoryTimestamps.set(actorKey, nowMs);
   return fresh;
 }
 
@@ -1585,6 +1842,7 @@ export async function saveUserQuotaLedger(ledger: UserQuotaLedger): Promise<void
     },
     MAX_USER_QUOTA_LEDGER_ENTRIES,
   );
+  userQuotaMemoryTimestamps.set(actorKey, Date.now());
 
   if (redis) {
     try {
@@ -1659,6 +1917,7 @@ export async function invalidateUserQuotaLedgerCache(
 
   for (const key of candidateKeys) {
     userQuotaMemoryStore.delete(key);
+    userQuotaMemoryTimestamps.delete(key);
   }
 
   const client = getRedisClient();
@@ -1706,9 +1965,9 @@ export async function checkAndReserveDeckQuota(
     const ledger = await getUserQuotaLedger(actorKey, userTier, effectiveRegion, nowMs);
     const baseQuota = computeRollingQuotaSnapshot(ledger, userTier, effectiveRegion, nowMs);
 
-    // 1. Check if contentHash exists in shared_deck_cache (for decks and notes)
+    // 1. Check if contentHash exists in shared_deck_cache (unless bypassCache requested)
     let cachedDeck: SharedDeckCacheEntry | null = null;
-    if (actionKind === "deck" || actionKind === "notes") {
+    if (!options?.bypassCache && (actionKind === "deck" || actionKind === "notes")) {
       if (options?.pipelineVersion) {
         cachedDeck = await getSharedDeckCache({
           contentHash,
@@ -1717,11 +1976,12 @@ export async function checkAndReserveDeckQuota(
           focusHash: options.focusHash,
           pipelineVersion: options.pipelineVersion,
           fileSha256: options.fileSha256,
+          actorKey: options.actorKey ?? actorKey,
         });
       } else if (actionKind === "deck") {
         for (const [cKey, entry] of sharedDeckMemoryStore.entries()) {
           if (entry.contentHash === contentHash) {
-            cachedDeck = entry;
+            cachedDeck = cloneCacheValue(entry);
             setSharedDeckMemoryEntry(cKey, entry);
             break;
           }
@@ -1839,7 +2099,7 @@ export async function checkAndReserveDeckQuota(
 
     if (actionKind === "coach") {
       estCost = options?.estimatedCostUsd ?? 0.004;
-      minHeadroom = 0.0005;
+      minHeadroom = 0.002;
     } else if (actionKind === "notes") {
       estCost = options?.estimatedCostUsd ?? (userTier === "contender" ? 0.012 : 0.02);
       minHeadroom = 0.004;
@@ -2117,8 +2377,11 @@ export async function checkNotesRateLimit(
 
 export function resetQuotaLedgersForTests(): void {
   userQuotaMemoryStore.clear();
+  userQuotaMemoryTimestamps.clear();
   localMemoryStore.clear();
   sharedDeckMemoryStore.clear();
   fileSha256ToCompositeMap.clear();
+  userScopedFileSha256Map.clear();
   actorLockMap.clear();
+  activeLockActors.clear();
 }

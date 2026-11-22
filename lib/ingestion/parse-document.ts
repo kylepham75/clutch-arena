@@ -37,12 +37,19 @@ export async function parseDocument(
       }
       data = await parsePdf(bytes, signal, pdfOpts);
     } else if (format === "pptx") {
-      const pptxResult = await parsePptx(bytes, signal);
+      const maxAutoOcrBudgetUsd = options?.parsePdfOptions?.maxAutoOcrBudgetUsd;
+      const pptxResult = await parsePptx(bytes, {
+        signal,
+        ...(typeof maxAutoOcrBudgetUsd === "number" ? { maxAutoOcrBudgetUsd } : {}),
+      });
       data = {
         sources: pptxResult.sources,
         pageCount: pptxResult.pageCount,
         warnings: pptxResult.warnings,
-      };
+        ...(pptxResult.pageVisionStatus
+          ? { pageVisionStatus: pptxResult.pageVisionStatus }
+          : {}),
+      } as Pick<ParsedDocument, "sources" | "warnings" | "pageCount">;
     } else if (format === "docx") {
       data = { ...(await parseDocx(bytes)), pageCount: null };
     } else {

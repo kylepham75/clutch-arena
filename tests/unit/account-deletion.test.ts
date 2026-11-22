@@ -5,7 +5,10 @@ vi.mock("server-only", () => ({}));
 import * as Sentry from "@sentry/nextjs";
 import { DELETE } from "@/app/api/auth/account/route";
 import { verifyAuthToken } from "@/lib/auth/server-guard";
-import { getSupabaseServerClient } from "@/lib/supabase/server";
+import {
+  getSupabaseAdminClient,
+  getSupabaseServerClient,
+} from "@/lib/supabase/server";
 
 vi.mock("@sentry/nextjs", () => ({
   captureException: vi.fn(),
@@ -18,10 +21,26 @@ vi.mock("@/lib/auth/server-guard", () => ({
 const mockDeletePacksEq = vi.fn();
 const mockDeleteRunsEq = vi.fn();
 const mockDeleteProfilesEq = vi.fn();
+const mockDeleteLedgerEq = vi.fn();
+const mockDeleteTelemetryEq = vi.fn();
 const mockAdminDeleteUser = vi.fn();
 
 const mockSupabaseClient = {
   from: vi.fn((table: string) => {
+    if (table === "user_quota_ledgers") {
+      return {
+        delete: vi.fn(() => ({
+          eq: mockDeleteLedgerEq,
+        })),
+      };
+    }
+    if (table === "pilot_telemetry") {
+      return {
+        delete: vi.fn(() => ({
+          eq: mockDeleteTelemetryEq,
+        })),
+      };
+    }
     if (table === "user_study_packs") {
       return {
         delete: vi.fn(() => ({
@@ -57,6 +76,8 @@ const mockSupabaseClient = {
 };
 
 vi.mock("@/lib/supabase/server", () => ({
+  isSupabaseServerConfigured: vi.fn(() => false),
+  getSupabaseAdminClient: vi.fn(() => mockSupabaseClient),
   getSupabaseServerClient: vi.fn(() => mockSupabaseClient),
 }));
 
@@ -71,6 +92,8 @@ describe("DELETE /api/auth/account", () => {
     mockDeletePacksEq.mockResolvedValue({ error: null });
     mockDeleteRunsEq.mockResolvedValue({ error: null });
     mockDeleteProfilesEq.mockResolvedValue({ error: null });
+    mockDeleteLedgerEq.mockResolvedValue({ error: null });
+    mockDeleteTelemetryEq.mockResolvedValue({ error: null });
     mockAdminDeleteUser.mockResolvedValue({ error: null });
   });
 
@@ -129,6 +152,9 @@ describe("DELETE /api/auth/account", () => {
       message: "Account and associated data deleted successfully.",
     });
 
+    expect(mockDeleteLedgerEq).toHaveBeenCalledWith("user_id", "user:user_test_999");
+    expect(mockDeleteLedgerEq).toHaveBeenCalledWith("user_id", "user_test_999");
+    expect(mockDeleteTelemetryEq).toHaveBeenCalledWith("user_id", "user_test_999");
     expect(mockDeletePacksEq).toHaveBeenCalledWith("user_id", "user_test_999");
     expect(mockDeleteRunsEq).toHaveBeenCalledWith("user_id", "user_test_999");
     expect(mockDeleteProfilesEq).toHaveBeenCalledWith("id", "user_test_999");
@@ -183,7 +209,8 @@ describe("DELETE /api/auth/account", () => {
 
     expect(response.status).toBe(500);
     expect(body.ok).toBe(false);
-    expect(body.error).toContain("Database foreign key lock failure");
+    expect(body.error).toBe("Failed to delete account. Please try again later.");
+    expect(body.error).not.toContain("Database foreign key lock failure");
 
     expect(Sentry.captureException).toHaveBeenCalledWith(
       expect.any(Error),
@@ -213,7 +240,8 @@ describe("DELETE /api/auth/account", () => {
 
     expect(response.status).toBe(500);
     expect(body.ok).toBe(false);
-    expect(body.error).toContain("Supabase auth admin error");
+    expect(body.error).toBe("Failed to delete account. Please try again later.");
+    expect(body.error).not.toContain("Supabase auth admin error");
 
     expect(Sentry.captureException).toHaveBeenCalledWith(
       expect.any(Error),
@@ -230,6 +258,7 @@ describe("DELETE /api/auth/account", () => {
       tierExpiresAt: null,
     });
 
+    vi.mocked(getSupabaseAdminClient).mockReturnValueOnce(null);
     vi.mocked(getSupabaseServerClient).mockReturnValueOnce(null);
 
     const request = new Request("http://localhost:3000/api/auth/account", {
@@ -241,7 +270,7 @@ describe("DELETE /api/auth/account", () => {
 
     expect(response.status).toBe(500);
     expect(body.ok).toBe(false);
-    expect(body.error).toBe("Supabase server client unavailable.");
+    expect(body.error).toBe("Failed to delete account. Please try again later.");
     expect(Sentry.captureException).toHaveBeenCalledWith(
       expect.any(Error),
       { tags: { route: "api/auth/account" } }

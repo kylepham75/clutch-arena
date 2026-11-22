@@ -211,6 +211,44 @@ describe("Clutch Notes AI Access Guard (Unified Rolling % Quota)", () => {
       expect(result.authorized).toBe(true);
       expect(result.tier).toBe("pro");
     });
+
+    it("blocks x-test-tier when VERCEL_ENV is production even if ALLOW_TEST_TIER_OVERRIDE is true", async () => {
+      vi.stubEnv("VERCEL_ENV", "production");
+      vi.stubEnv("ALLOW_TEST_TIER_OVERRIDE", "true");
+
+      const req = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "pro",
+        },
+      });
+
+      const result = await verifyNotesAccess(req);
+      expect(result.authorized).toBe(false);
+      expect(result.reason).toBe("UNAUTHENTICATED");
+    });
+
+    it("requires x-test-tier-secret when TEST_TIER_OVERRIDE_SECRET is configured", async () => {
+      vi.stubEnv("ALLOW_TEST_TIER_OVERRIDE", "true");
+      vi.stubEnv("TEST_TIER_OVERRIDE_SECRET", "ci-runner-secret");
+
+      const unauthReq = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: { "x-test-tier": "pro" },
+      });
+      expect((await verifyNotesAccess(unauthReq)).authorized).toBe(false);
+
+      const authReq = new Request("https://clutcharena.com/api/notes/generate", {
+        method: "POST",
+        headers: {
+          "x-test-tier": "pro",
+          "x-test-tier-secret": "ci-runner-secret",
+        },
+      });
+      const ok = await verifyNotesAccess(authReq);
+      expect(ok.authorized).toBe(true);
+      expect(ok.tier).toBe("pro");
+    });
   });
 
   describe("isAuthorizedForNotes tier validation", () => {

@@ -1398,5 +1398,61 @@ describe("Image & OLE Equation Detection and Vision Math Transcription (Roadmap 
         ),
       ).toBe(true);
     });
+
+    it("rejects spoofed bit-3 DEFLATE ZIP bomb before JSZip decompression (Finding #15)", async () => {
+      const zip = new JSZip();
+      // Compress > 20 MB of repeated zeros into a tiny payload (< 30 KB compressed)
+      zip.file(
+        "ppt/slides/slide1.xml",
+        "<p:sp><a:t>" + "A".repeat(21 * 1024 * 1024) + "</a:t></p:sp>",
+        { compression: "DEFLATE", compressionOptions: { level: 9 } },
+      );
+      const realZipBytes = Buffer.from(await zip.generateAsync({ type: "nodebuffer" }));
+      // Forge central directory & local header sizes with bit-3 data descriptor so header check passes
+      const cdIdx = realZipBytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+      const localIdx = realZipBytes.readUInt32LE(cdIdx + 42);
+      realZipBytes.writeUInt32LE(128, cdIdx + 24);
+      realZipBytes.writeUInt16LE(realZipBytes.readUInt16LE(cdIdx + 8) | 8, cdIdx + 8);
+      realZipBytes.writeUInt32LE(0, localIdx + 22);
+      realZipBytes.writeUInt16LE(realZipBytes.readUInt16LE(localIdx + 6) | 8, localIdx + 6);
+
+      expect(() => validatePptxArchive(realZipBytes)).toThrow(
+        expect.objectContaining({ code: "DOCUMENT_TOO_LARGE", status: 413 }),
+      );
+    });
+
+    it("scans adversarial unclosed XML tags and many AlternateContent blocks in linear O(N) time (Finding #17)", () => {
+      const adversarial = "<p:pic>".repeat(20_000) + "<mc:AlternateContent><mc:Choice/></mc:AlternateContent>".repeat(500);
+      const start = performance.now();
+      const candidates = detectSlideEquationCandidates(adversarial, undefined, 1);
+      const elapsedMs = performance.now() - start;
+
+      expect(Array.isArray(candidates)).toBe(true);
+      expect(elapsedMs).toBeLessThan(500);
+    });
+
+    it("skips Vision OCR when maxAutoOcrBudgetUsd is 0 and records PPTX pageVisionStatus when enabled (Finding #14)", async () => {
+      const zip = new JSZip();
+      zip.file("ppt/media/equation1.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]));
+      zip.file(
+        "ppt/slides/slide1.xml",
+        `<p:sp><p:nvSpPr><p:cNvPr id="1" name="Equation 1"/></p:nvSpPr><a:t>Formula Slide Text Enough To Pass Minimum Characters Threshold Here</a:t><a:blip r:embed="rId1"/></p:sp><p:pic><p:nvPicPr><p:cNvPr id="2" name="Equation 2"/></p:nvPicPr><p:blipFill><a:blip r:embed="rId1"/></p:blipFill></p:pic>`,
+      );
+      zip.file(
+        "ppt/slides/_rels/slide1.xml.rels",
+        `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/equation1.png"/></Relationships>`,
+      );
+      const bytes = Buffer.from(await zip.generateAsync({ type: "nodebuffer" }));
+      const transcriber = vi.fn().mockResolvedValue([{ raw: "E=mc^2", latex: "E=mc^2", confidence: 0.99 }]);
+
+      const previewRes = await parsePptx(bytes, { visionTranscriber: transcriber, maxAutoOcrBudgetUsd: 0 });
+      expect(transcriber).not.toHaveBeenCalled();
+      expect(previewRes.visionOcrCostUsd).toBe(0);
+
+      const paidRes = await parsePptx(bytes, { visionTranscriber: transcriber, maxAutoOcrBudgetUsd: 0.03 });
+      expect(transcriber).toHaveBeenCalledTimes(1);
+      expect(paidRes.visionOcrCostUsd).toBeGreaterThan(0);
+      expect(paidRes.pageVisionStatus?.["slide-1"]?.costUsd).toBeCloseTo(paidRes.visionOcrCostUsd, 6);
+    });
   });
 });

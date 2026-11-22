@@ -148,8 +148,16 @@ export function createIngestionHandler(
     let reservedCost = 0.02;
     let reservedIsRegeneration = false;
     let reservedBillingRegion: BillingRegion = "VN";
+    let ocrReserved = false;
+    let ocrReservedCost = 0;
+    let ocrSettled = false;
     let useCheaperGenerator = false;
     let clientQuota: ClientQuotaSummary | undefined;
+    let slotAcquired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new AbortController();
+    const signal = AbortSignal.any([request.signal, timeout.signal]);
+
     const json = (body: unknown, status = 200) =>
       Response.json(body, {
         status,
@@ -159,27 +167,7 @@ export function createIngestionHandler(
           ...(status === 429 ? { "Retry-After": "30" } : {}),
         },
       });
-    if (active >= 2)
-      return json(
-        {
-          ok: false,
-          requestId,
-          error: {
-            code: "INGESTION_BUSY",
-            message: "Two documents are already processing. Try again shortly.",
-          },
-        },
-        429,
-      );
-    // Applies to a single server process, not a distributed quota or auth system.
-    active++;
-    const timeout = new AbortController();
-    const timer = setTimeout(
-      () =>
-        timeout.abort(new DOMException("Request timed out", "TimeoutError")),
-      REQUEST_TIMEOUT_MS,
-    );
-    const signal = AbortSignal.any([request.signal, timeout.signal]);
+
     try {
       const origin = request.headers.get("origin");
       if (!isAllowedOrigin(origin, request))
@@ -189,8 +177,6 @@ export function createIngestionHandler(
           403,
         );
       const auth = await verifyAuth(request);
-      const { file, options } = await readUpload(request, signal);
-      validateFile(file);
       const clientIp = getClientIp(request);
       const billingRegion = getAuthoritativeBillingRegion(request);
       reservedBillingRegion = billingRegion;
@@ -209,7 +195,7 @@ export function createIngestionHandler(
         dependencies.recordCogs === undefined &&
         dependencies.rollbackQuota === undefined;
 
-      // Fail fast without parsing when rate limit is reached or generation cannot be configured.
+      // Fail fast on rate limits before consuming concurrency slot or buffering 25.5MB uploads.
       const isTestBypass = process.env.NODE_ENV === "test" && dependencies.rateLimiter === undefined;
       if (!isTestBypass) {
         const rateResult = await rateLimiter(rateLimitKey, "ingest", auth.tier);
@@ -228,6 +214,30 @@ export function createIngestionHandler(
           );
         }
       }
+
+      if (active >= 2)
+        return json(
+          {
+            ok: false,
+            requestId,
+            error: {
+              code: "INGESTION_BUSY",
+              message: "Two documents are already processing. Try again shortly.",
+            },
+          },
+          429,
+        );
+      // Applies to a single server process, not a distributed quota or auth system.
+      active++;
+      slotAcquired = true;
+      timer = setTimeout(
+        () =>
+          timeout.abort(new DOMException("Request timed out", "TimeoutError")),
+        REQUEST_TIMEOUT_MS,
+      );
+
+      const { file, options } = await readUpload(request, signal);
+      validateFile(file);
 
       if (options.operation === "generate") {
         if (!isPaid && options.questionCount > 15) {
@@ -256,7 +266,7 @@ export function createIngestionHandler(
         try {
           const bytes = Buffer.from(await file.arrayBuffer());
           const fileSha = computeFileSha256(bytes);
-          cachedParsedDoc = await getCachedParsedDoc(fileSha);
+          cachedParsedDoc = await getCachedParsedDoc(fileSha, rateLimitKey);
         } catch {
           // fallback to normal parsing on error
         }
@@ -304,6 +314,33 @@ export function createIngestionHandler(
                     maxAutoOcrBudgetUsd: 0,
                   },
                 };
+              } else if (
+                preSnapshot?.allowVisionOcr &&
+                dependencies.quotaReservation === undefined &&
+                dependencies.recordCogs === undefined
+              ) {
+                const ocrReserve = await quotaReservation(
+                  rateLimitKey,
+                  auth.tier,
+                  `ocr:${file.name}:${file.size}`,
+                  {
+                    actionKind: "ocr",
+                    estimatedCostUsd: 0.005,
+                    region: billingRegion,
+                    bypassCache: true,
+                  },
+                );
+                if (!ocrReserve.allowed) {
+                  parseDocOptions = {
+                    ...parseDocOptions,
+                    parsePdfOptions: {
+                      maxAutoOcrBudgetUsd: 0,
+                    },
+                  };
+                } else if (ocrReserve.reserved) {
+                  ocrReserved = true;
+                  ocrReservedCost = ocrReserve.reservedCostUsd ?? 0.005;
+                }
               }
             } catch {
               // Ignore if rolling quota snapshot cannot be resolved in mocked tests
@@ -311,6 +348,34 @@ export function createIngestionHandler(
           }
         }
         document = await parseDoc(file, signal, parseDocOptions);
+
+        if (ocrReserved && !ocrSettled) {
+          const parsedVisionCost = document.pageVisionStatus
+            ? Object.values(document.pageVisionStatus).reduce(
+                (sum, info) => sum + (info.costUsd || 0),
+                0,
+              )
+            : 0;
+          if (parsedVisionCost > 0) {
+            await recordCogs(
+              rateLimitKey,
+              auth.tier,
+              parsedVisionCost,
+              ocrReservedCost,
+              billingRegion,
+            );
+          } else {
+            await rollbackQuota({
+              userId: rateLimitKey,
+              tier: auth.tier,
+              actionKind: "ocr",
+              reservedCostUsd: ocrReservedCost,
+              region: billingRegion,
+            });
+          }
+          ocrSettled = true;
+          ocrReserved = false;
+        }
       }
       if (options.operation === "preview")
         return json({ ok: true, requestId, operation: "preview", document });
@@ -355,9 +420,11 @@ export function createIngestionHandler(
           focusHash,
           pipelineVersion: SHARED_CACHE_PIPELINE_VERSION,
           fileSha256: document.fileSha256 ?? null,
+          actorKey: rateLimitKey,
         };
 
         let cachedDeck = await getDeckCache(cacheLookupKey);
+        let rejectedUnusableCache = false;
         if (
           cachedDeck &&
           (!Array.isArray(cachedDeck.questionPool) ||
@@ -365,15 +432,17 @@ export function createIngestionHandler(
             (isPaid && isDegradedCachedDeck(cachedDeck, options.questionCount)))
         ) {
           cachedDeck = null;
+          rejectedUnusableCache = true;
         }
 
         if (!cachedDeck || dependencies.quotaReservation !== undefined) {
-          const quotaResult = await quotaReservation(
+          let quotaResult = await quotaReservation(
             rateLimitKey,
             auth.tier,
             contentHash,
             {
               ...cacheLookupKey,
+              bypassCache: rejectedUnusableCache,
               estimatedCostUsd: reservedCostUsd,
               allowHaikuOverflow: isPaid,
               actionKind: "deck",
@@ -397,6 +466,45 @@ export function createIngestionHandler(
             );
           }
 
+          if (!cachedDeck && quotaResult.cachedDeck) {
+            if (
+              Array.isArray(quotaResult.cachedDeck.questionPool) &&
+              (options.questionCount <= 10 || quotaResult.cachedDeck.questionPool.length >= options.questionCount) &&
+              (!isPaid || !isDegradedCachedDeck(quotaResult.cachedDeck, options.questionCount))
+            ) {
+              cachedDeck = quotaResult.cachedDeck;
+            } else if (!quotaResult.reserved && !quotaResult.creditConsumed && !quotaResult.isRegeneration) {
+              quotaResult = await quotaReservation(
+                rateLimitKey,
+                auth.tier,
+                contentHash,
+                {
+                  ...cacheLookupKey,
+                  bypassCache: true,
+                  estimatedCostUsd: reservedCostUsd,
+                  allowHaikuOverflow: isPaid,
+                  actionKind: "deck",
+                  region: billingRegion,
+                },
+              );
+              clientQuota = quotaResult?.quota ? toClientQuota(quotaResult.quota) : clientQuota;
+              if (!quotaResult.allowed) {
+                return json(
+                  {
+                    ok: false,
+                    requestId,
+                    error: {
+                      code: quotaResult.reason ?? "QUOTA_EXCEEDED",
+                      message: getQuotaExceededMessage(quotaResult.reason),
+                    },
+                    ...(clientQuota ? { quota: clientQuota } : {}),
+                  },
+                  429,
+                );
+              }
+            }
+          }
+
           if (quotaResult.isHaikuOverflow || quotaResult.cogsStatus?.useCheaperGeneratorSlug) {
             useCheaperGenerator = true;
           }
@@ -412,16 +520,6 @@ export function createIngestionHandler(
                 ? Math.min(reservedCostUsd, 0.028)
                 : reservedCostUsd);
             reservedIsRegeneration = Boolean(quotaResult.isRegeneration);
-          }
-
-          if (!cachedDeck && quotaResult.cachedDeck) {
-            if (
-              Array.isArray(quotaResult.cachedDeck.questionPool) &&
-              (options.questionCount <= 10 || quotaResult.cachedDeck.questionPool.length >= options.questionCount) &&
-              (!isPaid || !isDegradedCachedDeck(quotaResult.cachedDeck, options.questionCount))
-            ) {
-              cachedDeck = quotaResult.cachedDeck;
-            }
           }
         }
 
@@ -474,27 +572,12 @@ export function createIngestionHandler(
                 ...(cleanMetadata ? { metadata: cleanMetadata } : {}),
               };
             }
-
-            if (cachedDeck.studyMetadata?.pack) {
-              cachedDeck.studyMetadata.pack.questions = sampledQuestions;
-              if (cachedDeck.studyMetadata.pack.metadata) {
-                cachedDeck.studyMetadata.pack.metadata = Object.fromEntries(
-                  Object.entries(cachedDeck.studyMetadata.pack.metadata).map(([k, v]) => {
-                    const { distractorRationale: _d, ...cleanMeta } = (v as any) || {};
-                    return [k, cleanMeta];
-                  }),
-                );
-              }
-            }
           } else {
             if (sanitizedStudyMetadata?.pack) {
               sanitizedStudyMetadata.pack = {
                 ...sanitizedStudyMetadata.pack,
                 questions: sampledQuestions,
               };
-            }
-            if (cachedDeck.studyMetadata?.pack) {
-              cachedDeck.studyMetadata.pack.questions = sampledQuestions;
             }
           }
 
@@ -564,12 +647,14 @@ export function createIngestionHandler(
       signal.throwIfAborted();
 
       if (!isQuotaTestBypass) {
-        const visionCostUsd = document.pageVisionStatus
-          ? Object.values(document.pageVisionStatus).reduce(
-              (sum, info) => sum + (info.costUsd || 0),
-              0,
-            )
-          : 0;
+        const visionCostUsd = ocrSettled
+          ? 0
+          : document.pageVisionStatus
+            ? Object.values(document.pageVisionStatus).reduce(
+                (sum, info) => sum + (info.costUsd || 0),
+                0,
+              )
+            : 0;
         const tokenCostUsd =
           typeof result.costUsd === "number" && result.costUsd > 0
             ? result.costUsd
@@ -618,6 +703,7 @@ export function createIngestionHandler(
             sources: document.sources,
             format: document.format,
             characterCount: document.characterCount,
+            fileSha256Verified: true,
             warnings: document.warnings,
             imageHashes: document.imageHashes,
             dedupedSlideCount: document.dedupedSlideCount,
@@ -648,6 +734,19 @@ export function createIngestionHandler(
       Sentry.captureException(error, {
         tags: { route: "api/ingest" },
       });
+      if (ocrReserved && !ocrSettled && reservedActor) {
+        try {
+          await rollbackQuota({
+            userId: reservedActor,
+            tier: reservedTier,
+            actionKind: "ocr",
+            reservedCostUsd: ocrReservedCost,
+            region: reservedBillingRegion,
+          });
+        } catch {
+          // ignore OCR rollback failure
+        }
+      }
       if (quotaReserved && reservedActor && reservedContentHash) {
         try {
           if (reservedIsRegeneration) {
@@ -719,8 +818,8 @@ export function createIngestionHandler(
         safeError.status,
       );
     } finally {
-      clearTimeout(timer);
-      active--;
+      if (timer) clearTimeout(timer);
+      if (slotAcquired) active = Math.max(0, active - 1);
     }
   };
 }

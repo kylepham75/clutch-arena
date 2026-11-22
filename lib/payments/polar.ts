@@ -4,12 +4,15 @@ import {
   normalizeTier,
   type UserTier,
 } from "@/lib/pricing/tiers";
-import {
-  getSupabaseServerClient,
-  isSupabaseServerConfigured,
-} from "@/lib/supabase/server";
+import { isSupabaseServerConfigured } from "@/lib/supabase/server";
+import { getSupabaseAdminOrServerClient } from "@/lib/supabase/server-helpers";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveTrustedPayosOrigin } from "@/lib/payments/payos";
 import { invalidateUserQuotaLedgerCache } from "@/lib/rate-limit";
+
+function getPolarAdminClient(userToken?: string): SupabaseClient | null {
+  return getSupabaseAdminOrServerClient(userToken);
+}
 
 export type UsdPlanId =
   | "cram_pass"
@@ -61,6 +64,44 @@ export function mapUsdPlanToCycle(
   return "semester";
 }
 
+const TIER_RANK: Record<UserTier, number> = {
+  contender: 0,
+  cram_pass: 1,
+  pro_monthly: 2,
+  pro: 3,
+  tutor: 4,
+};
+
+function shouldPreserveHigherActiveTier(
+  existingTierRaw: string | null | undefined,
+  existingExpiresAt: string | null | undefined,
+  incomingTier: UserTier,
+  incomingExpiresAt: string | null | undefined,
+): boolean {
+  if (!existingTierRaw) return false;
+  const existingTier = normalizeTier(existingTierRaw);
+  const existingRank = TIER_RANK[existingTier] ?? 0;
+  const incomingRank = TIER_RANK[incomingTier] ?? 0;
+  if (existingRank <= 0) return false;
+
+  const nowMs = Date.now();
+  const existingExpMs = existingExpiresAt ? Date.parse(existingExpiresAt) : null;
+  const isExistingActive =
+    existingExpMs === null || (!Number.isNaN(existingExpMs) && existingExpMs > nowMs);
+  if (!isExistingActive) return false;
+
+  if (existingRank > incomingRank) {
+    return true;
+  }
+  if (existingRank === incomingRank && incomingExpiresAt && existingExpMs !== null) {
+    const incomingExpMs = Date.parse(incomingExpiresAt);
+    if (!Number.isNaN(incomingExpMs) && existingExpMs > incomingExpMs) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const fulfilledUsdOrderCache = new Map<
   string,
   {
@@ -70,12 +111,14 @@ const fulfilledUsdOrderCache = new Map<
     amountUsd: number;
   }
 >();
+const checkoutAliasMap = new Map<string, string>();
 
 /**
  * Clears the in-memory fulfilled USD order cache (used primarily in test harnesses).
  */
 export function clearFulfilledUsdOrderCache(): void {
   fulfilledUsdOrderCache.clear();
+  checkoutAliasMap.clear();
 }
 
 /**
@@ -147,7 +190,8 @@ export async function createUsdCheckoutSession(
     !process.env.POLAR_CHECKOUT_BASE_URL?.trim();
   const provider: UsdProvider = hasLemonOnly ? "lemonsqueezy" : "polar";
 
-  let checkoutId = generateUsdCheckoutId(provider);
+  const localCheckoutId = generateUsdCheckoutId(provider);
+  let checkoutId = localCheckoutId;
   let checkoutUrl = "";
 
   // 1. Try Polar API if POLAR_ACCESS_TOKEN is configured
@@ -198,7 +242,9 @@ export async function createUsdCheckoutSession(
           const data = (await res.json()) as { id?: string; url?: string; checkout_url?: string };
           if (data?.url || data?.checkout_url) {
             checkoutUrl = (data.url || data.checkout_url)!;
-            if (data.id) {
+            if (data.id && data.id !== localCheckoutId) {
+              checkoutAliasMap.set(localCheckoutId, data.id);
+              checkoutAliasMap.set(data.id, localCheckoutId);
               checkoutId = data.id;
             }
           }
@@ -259,10 +305,10 @@ export async function createUsdCheckoutSession(
   }
 
   // 4. Persist pending subscription record in Supabase
-  const supabase = getSupabaseServerClient(input.userToken);
+  const supabase = getPolarAdminClient(input.userToken);
   if (supabase) {
     try {
-      await supabase.from("user_subscriptions").upsert({
+      const pendingPayload = {
         id: `usd_${checkoutId}`,
         user_id: input.userId,
         tier: userTier,
@@ -272,7 +318,14 @@ export async function createUsdCheckoutSession(
         payment_method: provider === "polar" ? "polar" : "lemonsqueezy",
         status: "pending",
         expires_at: calculateTierExpiration(input.planId),
-      });
+      };
+      await supabase.from("user_subscriptions").upsert(pendingPayload);
+      if (localCheckoutId !== checkoutId) {
+        await supabase.from("user_subscriptions").upsert({
+          ...pendingPayload,
+          id: `usd_${localCheckoutId}`,
+        });
+      }
     } catch (err) {
       console.warn("[USD Checkout] Failed to persist pending subscription record:", err);
     }
@@ -288,15 +341,67 @@ export async function createUsdCheckoutSession(
   };
 }
 
+export interface UsdWebhookHeaders {
+  id?: string | null;
+  timestamp?: string | null;
+  maxAgeSeconds?: number;
+}
+
+const TERMINAL_SUBSCRIPTION_STATUSES = new Set([
+  "expired",
+  "revoked",
+  "refunded",
+  "cancelled",
+  "canceled",
+]);
+
+function extractSignatureCandidates(signatureHeader: string): string[] {
+  const rawTokens = signatureHeader
+    .split(/\s+/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+
+  const candidates: string[] = [];
+  for (const token of rawTokens) {
+    if (token.startsWith("v1,")) {
+      const afterPrefix = token.slice(3);
+      if (afterPrefix.includes(",v1,")) {
+        for (const sub of token.split(/,(?=v1,)/)) {
+          if (sub.startsWith("v1,") && sub.length > 3) {
+            candidates.push(sub.slice(3));
+          }
+        }
+      } else if (afterPrefix.length > 0) {
+        candidates.push(afterPrefix);
+      }
+      continue;
+    }
+
+    for (const part of token
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)) {
+      if (part.startsWith("sha256=")) {
+        candidates.push(part.slice(7));
+      } else if (part.startsWith("v1=")) {
+        candidates.push(part.slice(3));
+      } else {
+        candidates.push(part);
+      }
+    }
+  }
+  return candidates;
+}
+
 /**
- * Verifies the USD webhook HMAC-SHA256 signature against the raw body text.
- * Supports Polar.sh (Standard Webhooks v1,<base64> and hex), Lemon Squeezy (x-signature hex),
- * and sha256=<hex> headers.
+ * Verifies the USD webhook HMAC-SHA256 signature against the raw body text (and Standard Webhooks
+ * `${webhook-id}.${webhook-timestamp}.${rawBody}` framing with replay-window freshness checks).
  */
 export function verifyUsdWebhookSignature(
   rawBody: string,
   signatureHeader: string | null | undefined,
   secret?: string,
+  webhookHeaders?: UsdWebhookHeaders,
 ): boolean {
   if (!rawBody || typeof rawBody !== "string") return false;
   if (!signatureHeader || typeof signatureHeader !== "string") return false;
@@ -309,42 +414,47 @@ export function verifyUsdWebhookSignature(
 
   if (!webhookSecret.trim()) return false;
 
-  // Compute reference HMAC digests using secret as utf-8 string
-  const computedHex = createHmac("sha256", webhookSecret).update(rawBody).digest("hex");
-  const computedBase64 = createHmac("sha256", webhookSecret).update(rawBody).digest("base64");
+  const rawTs = webhookHeaders?.timestamp?.trim();
+  if (rawTs) {
+    if (!/^\d+$/.test(rawTs)) return false;
+    const tsSeconds = Number(rawTs);
+    const maxAgeSeconds = webhookHeaders?.maxAgeSeconds ?? 300;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (!Number.isFinite(tsSeconds) || Math.abs(nowSeconds - tsSeconds) > maxAgeSeconds) {
+      return false;
+    }
+  }
 
-  // If secret starts with 'whsec_', standard webhooks often base64-decode the secret key
+  const webhookId = webhookHeaders?.id?.trim();
+  const signedPayload =
+    webhookId && rawTs ? `${webhookId}.${rawTs}.${rawBody}` : rawBody;
+
+  const computedHex = createHmac("sha256", webhookSecret)
+    .update(signedPayload)
+    .digest("hex");
+  const computedBase64 = createHmac("sha256", webhookSecret)
+    .update(signedPayload)
+    .digest("base64");
+
   let altHex: string | null = null;
   let altBase64: string | null = null;
   if (webhookSecret.startsWith("whsec_")) {
     try {
       const decodedKey = Buffer.from(webhookSecret.slice(6), "base64");
       if (decodedKey.length > 0) {
-        altHex = createHmac("sha256", decodedKey).update(rawBody).digest("hex");
-        altBase64 = createHmac("sha256", decodedKey).update(rawBody).digest("base64");
+        altHex = createHmac("sha256", decodedKey).update(signedPayload).digest("hex");
+        altBase64 = createHmac("sha256", decodedKey)
+          .update(signedPayload)
+          .digest("base64");
       }
     } catch {
       // Ignore decode error
     }
   }
 
-  // Parse candidate signatures from header (may contain space/comma-separated multiple signatures or prefixes)
-  const candidateParts = signatureHeader
-    .split(/[\s,]+/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
+  const candidateParts = extractSignatureCandidates(signatureHeader);
 
-  for (const part of candidateParts) {
-    let candidate = part;
-    if (candidate.startsWith("sha256=")) {
-      candidate = candidate.slice(7);
-    } else if (candidate.startsWith("v1=")) {
-      candidate = candidate.slice(3);
-    } else if (candidate.startsWith("v1,")) {
-      candidate = candidate.slice(3);
-    }
-
-    // Try hex comparison
+  for (const candidate of candidateParts) {
     const sigBuf = Buffer.from(candidate.toLowerCase(), "utf-8");
     const compHexBuf = Buffer.from(computedHex.toLowerCase(), "utf-8");
     if (sigBuf.length === compHexBuf.length && timingSafeEqual(sigBuf, compHexBuf)) {
@@ -358,7 +468,6 @@ export function verifyUsdWebhookSignature(
       }
     }
 
-    // Try base64 comparison
     const rawSigBuf = Buffer.from(candidate, "utf-8");
     const compB64Buf = Buffer.from(computedBase64, "utf-8");
     if (rawSigBuf.length === compB64Buf.length && timingSafeEqual(rawSigBuf, compB64Buf)) {
@@ -378,9 +487,11 @@ export function verifyUsdWebhookSignature(
 
 export interface FulfillUsdOrderParams {
   checkoutId: string;
+  alternateCheckoutIds?: string[];
   userId: string;
   planId: UsdPlanId;
   amountUsd?: number;
+  requireAmount?: boolean;
   customerEmail?: string;
   userToken?: string;
 }
@@ -395,7 +506,8 @@ export interface FulfillUsdOrderResult {
 
 /**
  * Fulfills a USD order upon payment: validates amount, guards against tampering,
- * calculates expiration, ensures idempotency, and upserts entitlements into Supabase.
+ * calculates expiration, ensures idempotency across canonical/alias IDs and terminal statuses,
+ * prevents lower-tier overwrites, and upserts entitlements into Supabase.
  */
 export async function fulfillUsdOrder(
   params: FulfillUsdOrderParams,
@@ -409,15 +521,64 @@ export async function fulfillUsdOrder(
   const userTier = mapUsdPlanToUserTier(params.planId);
   const cycle = mapUsdPlanToCycle(params.planId);
 
-  // Validate amountUsd against expected plan amount (allowing dollars or cents representation)
+  const candidateIds = Array.from(
+    new Set(
+      [
+        params.checkoutId,
+        checkoutAliasMap.get(params.checkoutId),
+        ...(params.alternateCheckoutIds ?? []).flatMap((alt) => [
+          alt,
+          checkoutAliasMap.get(alt),
+        ]),
+      ]
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        .map((id) => id.trim()),
+    ),
+  );
+
+  // Idempotency Check 1: In-memory cache across all canonical/alternate IDs
+  for (const cid of candidateIds) {
+    const cached = fulfilledUsdOrderCache.get(cid);
+    if (cached) {
+      for (const id of candidateIds) {
+        fulfilledUsdOrderCache.set(id, cached);
+      }
+      return {
+        fulfilled: true,
+        alreadyFulfilled: true,
+        userId: cached.userId,
+        tier: cached.tier,
+        expiresAt: cached.expiresAt,
+      };
+    }
+  }
+
+  // Validate amountUsd against expected plan amount (dollars or cents)
+  if (params.requireAmount && (params.amountUsd === undefined || !Number.isFinite(params.amountUsd))) {
+    console.warn(
+      `[USD Fulfillment] Security Warning: Missing payment amount for checkout "${params.checkoutId}". Fulfillment rejected.`,
+    );
+    return {
+      fulfilled: false,
+      userId: params.userId,
+      tier: userTier,
+      expiresAt: "",
+    };
+  }
+
   if (params.amountUsd !== undefined && Number.isFinite(params.amountUsd)) {
     const isDollarMatch = Math.abs(params.amountUsd - expectedUsd) < 0.05;
     const isCentMatch = Math.abs(params.amountUsd - expectedCents) < 2;
 
     if (!isDollarMatch && !isCentMatch) {
-      if (params.amountUsd < expectedUsd && params.amountUsd < expectedCents) {
+      const isDollarUnderpay = params.amountUsd < expectedUsd - 0.05;
+      const isCentUnderpay =
+        Number.isInteger(params.amountUsd) &&
+        params.amountUsd >= 50 &&
+        params.amountUsd < expectedCents - 2;
+      if (isDollarUnderpay || isCentUnderpay) {
         console.warn(
-          `[USD Fulfillment] Security Warning: Tampered lower amount for checkout "${params.checkoutId}". Received: ${params.amountUsd}, Expected USD: ${expectedUsd}. Fulfillment rejected.`,
+          `[USD Fulfillment] Security Warning: Tampered lower amount for checkout "${params.checkoutId}". Received: ${params.amountUsd}, Expected USD: ${expectedUsd} (${expectedCents} cents). Fulfillment rejected.`,
         );
         return {
           fulfilled: false,
@@ -429,51 +590,121 @@ export async function fulfillUsdOrder(
     }
   }
 
-  // Idempotency Check 1: In-memory cache
-  const cached = fulfilledUsdOrderCache.get(params.checkoutId);
-  if (cached) {
-    return {
-      fulfilled: true,
-      alreadyFulfilled: true,
-      userId: cached.userId,
-      tier: cached.tier,
-      expiresAt: cached.expiresAt,
-    };
-  }
+  // Idempotency Check 2 & Pending cross-check: Database records across candidate IDs
+  const supabase = getPolarAdminClient(params.userToken);
+  const existingRows: Array<{
+    id: string;
+    user_id?: string | null;
+    tier?: string | null;
+    status?: string | null;
+    amount?: number | null;
+    expires_at?: string | null;
+  }> = [];
 
-  // Idempotency Check 2: Database record already active
-  const supabase = getSupabaseServerClient(params.userToken);
   if (supabase) {
-    try {
-      const { data: existingSub } = await supabase
-        .from("user_subscriptions")
-        .select("id, user_id, tier, status, expires_at")
-        .eq("id", `usd_${params.checkoutId}`)
-        .maybeSingle();
+    for (const cid of candidateIds) {
+      try {
+        const { data: existingSub } = await supabase
+          .from("user_subscriptions")
+          .select("id, user_id, tier, status, amount, expires_at")
+          .eq("id", `usd_${cid}`)
+          .maybeSingle();
 
-      if (existingSub?.status === "active") {
-        const resolvedExpiresAt =
-          existingSub.expires_at ||
-          calculateTierExpiration(params.planId) ||
-          new Date().toISOString();
+        if (existingSub) {
+          existingRows.push(existingSub as (typeof existingRows)[number]);
+        }
+      } catch {
+        // Safe ignore DB query error
+      }
+    }
 
-        fulfilledUsdOrderCache.set(params.checkoutId, {
-          userId: existingSub.user_id || params.userId,
-          tier: userTier,
-          expiresAt: resolvedExpiresAt,
-          amountUsd: expectedUsd,
-        });
+    const activeRow = existingRows.find((r) => r.status === "active");
+    if (activeRow) {
+      const resolvedExpiresAt =
+        activeRow.expires_at ||
+        calculateTierExpiration(params.planId) ||
+        new Date().toISOString();
+      const cacheEntry = {
+        userId: activeRow.user_id || params.userId,
+        tier: userTier,
+        expiresAt: resolvedExpiresAt,
+        amountUsd: expectedUsd,
+      };
+      for (const cid of candidateIds) {
+        fulfilledUsdOrderCache.set(cid, cacheEntry);
+      }
+      return {
+        fulfilled: true,
+        alreadyFulfilled: true,
+        userId: activeRow.user_id || params.userId,
+        tier: userTier,
+        expiresAt: resolvedExpiresAt,
+      };
+    }
 
+    const terminalRow = existingRows.find(
+      (r) => typeof r.status === "string" && TERMINAL_SUBSCRIPTION_STATUSES.has(r.status),
+    );
+    if (terminalRow) {
+      return {
+        fulfilled: false,
+        alreadyFulfilled: true,
+        userId: terminalRow.user_id || params.userId,
+        tier: userTier,
+        expiresAt: terminalRow.expires_at || "",
+      };
+    }
+
+    const pendingRow = existingRows.find((r) => r.status === "pending");
+    if (pendingRow) {
+      if (pendingRow.user_id && pendingRow.user_id !== params.userId) {
+        console.warn(
+          `[USD Fulfillment] Security Warning: Pending checkout "${pendingRow.id}" owner mismatch ("${params.userId}" vs "${pendingRow.user_id}"). Fulfillment rejected.`,
+        );
         return {
-          fulfilled: true,
-          alreadyFulfilled: true,
-          userId: existingSub.user_id || params.userId,
+          fulfilled: false,
+          userId: pendingRow.user_id,
           tier: userTier,
-          expiresAt: resolvedExpiresAt,
+          expiresAt: "",
         };
       }
-    } catch {
-      // Safe ignore DB query error
+      if (pendingRow.tier) {
+        const pendingNormTier = normalizeTier(pendingRow.tier);
+        if ((TIER_RANK[pendingNormTier] ?? 0) < (TIER_RANK[userTier] ?? 0)) {
+          console.warn(
+            `[USD Fulfillment] Security Warning: Webhook plan tier "${userTier}" exceeds pending checkout "${pendingRow.id}" tier "${pendingNormTier}". Fulfillment rejected.`,
+          );
+          return {
+            fulfilled: false,
+            userId: params.userId,
+            tier: userTier,
+            expiresAt: "",
+          };
+        }
+      }
+      if (
+        typeof pendingRow.amount === "number" &&
+        Number.isFinite(pendingRow.amount) &&
+        params.amountUsd !== undefined &&
+        Number.isFinite(params.amountUsd)
+      ) {
+        const expectedPendingCents = Math.round(pendingRow.amount * 100);
+        const matchesPendingCents =
+          Number.isInteger(params.amountUsd) &&
+          params.amountUsd >= 50 &&
+          params.amountUsd >= expectedPendingCents - 2;
+        if (params.amountUsd < pendingRow.amount - 0.05 && !matchesPendingCents) {
+          console.warn(
+            `[USD Fulfillment] Security Warning: Amount ${params.amountUsd} below pending checkout "${pendingRow.id}" amount ${pendingRow.amount}. Fulfillment rejected.`,
+          );
+          return {
+            fulfilled: false,
+            userId: params.userId,
+            tier: userTier,
+            expiresAt: "",
+          };
+        }
+      }
     }
   }
 
@@ -482,19 +713,46 @@ export async function fulfillUsdOrder(
     calculateTierExpiration(params.planId) ||
     new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
-  // Populate in-memory cache
-  fulfilledUsdOrderCache.set(params.checkoutId, {
+  // Populate in-memory cache across all candidate IDs
+  const entry = {
     userId: params.userId,
     tier: userTier,
     expiresAt,
     amountUsd: params.amountUsd ?? expectedUsd,
-  });
+  };
+  for (const cid of candidateIds) {
+    fulfilledUsdOrderCache.set(cid, entry);
+  }
 
-  // Upsert active entitlements into Supabase
+  // Check monotonic tier rank before updating derived profile/ledger stores
+  let preserveExistingHigherTier = false;
   if (supabase) {
     try {
-      await supabase.from("user_subscriptions").upsert({
-        id: `usd_${params.checkoutId}`,
+      const { data: existingProfile } = await supabase
+        .from("profiles")
+        .select("tier, tier_expires_at")
+        .eq("id", params.userId)
+        .maybeSingle();
+
+      if (
+        existingProfile &&
+        shouldPreserveHigherActiveTier(
+          (existingProfile as { tier?: string | null }).tier,
+          (existingProfile as { tier_expires_at?: string | null }).tier_expires_at,
+          userTier,
+          expiresAt,
+        )
+      ) {
+        preserveExistingHigherTier = true;
+      }
+    } catch {
+      // Safe ignore profile check error
+    }
+
+    try {
+      const primarySubId = existingRows.find((r) => r.status === "pending")?.id ?? `usd_${params.checkoutId}`;
+      const subPayload = {
+        id: primarySubId,
         user_id: params.userId,
         tier: params.planId,
         cycle,
@@ -504,107 +762,120 @@ export async function fulfillUsdOrder(
         status: "active",
         starts_at: now,
         expires_at: expiresAt,
-      });
+      };
+      await supabase.from("user_subscriptions").upsert(subPayload);
+
+      // Keep canonical/alias rows synchronized
+      for (const cid of candidateIds) {
+        const subId = `usd_${cid}`;
+        if (subId !== primarySubId && existingRows.some((r) => r.id === subId)) {
+          await supabase
+            .from("user_subscriptions")
+            .update({ status: "active", starts_at: now, expires_at: expiresAt })
+            .eq("id", subId);
+        }
+      }
     } catch (err) {
       console.warn("[USD Fulfillment] user_subscriptions upsert warning:", err);
     }
 
-    try {
-      await supabase.from("profiles").upsert({
-        id: params.userId,
-        tier: userTier,
-        tier_expires_at: expiresAt,
-        updated_at: now,
-      });
-    } catch {
+    if (!preserveExistingHigherTier) {
       try {
-        await supabase
-          .from("profiles")
-          .update({
-            tier: userTier,
-            tier_expires_at: expiresAt,
-            updated_at: now,
-          })
-          .eq("id", params.userId);
-      } catch {
-        // ignore
-      }
-    }
-
-    try {
-      await supabase.from("user_profiles").upsert({
-        id: params.userId,
-        tier: userTier,
-        tier_expires_at: expiresAt,
-        updated_at: now,
-      });
-    } catch {
-      try {
-        await supabase
-          .from("user_profiles")
-          .update({
-            tier: userTier,
-            tier_expires_at: expiresAt,
-            updated_at: now,
-          })
-          .eq("id", params.userId);
-      } catch {
-        // ignore
-      }
-    }
-
-    try {
-      const { error: quotaErr } = await supabase.from("user_quota_ledgers").upsert(
-        {
-          user_id: `user:${params.userId}`,
+        await supabase.from("profiles").upsert({
+          id: params.userId,
           tier: userTier,
-          deck_credits_used: 0,
-          cogs_spent_usd: 0,
-          cogs_reserved_usd: 0,
-          daily_burst_used: 0,
-          window_started_at: now,
-          window_spent_usd: 0,
-          window_reserved_usd: 0,
-          weekly_started_at: now,
-          weekly_spent_usd: 0,
-          weekly_reserved_usd: 0,
+          tier_expires_at: expiresAt,
           updated_at: now,
-        },
-        { onConflict: "user_id" },
-      );
-      if (quotaErr) {
-        await supabase.from("user_quota_ledgers").upsert(
+        });
+      } catch {
+        try {
+          await supabase
+            .from("profiles")
+            .update({
+              tier: userTier,
+              tier_expires_at: expiresAt,
+              updated_at: now,
+            })
+            .eq("id", params.userId);
+        } catch {
+          // ignore
+        }
+      }
+
+      try {
+        await supabase.from("user_profiles").upsert({
+          id: params.userId,
+          tier: userTier,
+          tier_expires_at: expiresAt,
+          updated_at: now,
+        });
+      } catch {
+        try {
+          await supabase
+            .from("user_profiles")
+            .update({
+              tier: userTier,
+              tier_expires_at: expiresAt,
+              updated_at: now,
+            })
+            .eq("id", params.userId);
+        } catch {
+          // ignore
+        }
+      }
+
+      try {
+        const { error: quotaErr } = await supabase.from("user_quota_ledgers").upsert(
           {
             user_id: `user:${params.userId}`,
             tier: userTier,
             deck_credits_used: 0,
             cogs_spent_usd: 0,
+            cogs_reserved_usd: 0,
             daily_burst_used: 0,
+            window_started_at: now,
+            window_spent_usd: 0,
+            window_reserved_usd: 0,
+            weekly_started_at: now,
+            weekly_spent_usd: 0,
+            weekly_reserved_usd: 0,
             updated_at: now,
           },
           { onConflict: "user_id" },
         );
-      }
-      await invalidateUserQuotaLedgerCache(params.userId);
-    } catch {
-      // Safe ignore quota ledger update error if table pending migration
-      try {
+        if (quotaErr) {
+          await supabase.from("user_quota_ledgers").upsert(
+            {
+              user_id: `user:${params.userId}`,
+              tier: userTier,
+              deck_credits_used: 0,
+              cogs_spent_usd: 0,
+              daily_burst_used: 0,
+              updated_at: now,
+            },
+            { onConflict: "user_id" },
+          );
+        }
         await invalidateUserQuotaLedgerCache(params.userId);
       } catch {
-        // ignore
+        try {
+          await invalidateUserQuotaLedgerCache(params.userId);
+        } catch {
+          // ignore
+        }
       }
-    }
 
-    try {
-      await supabase.auth.admin.updateUserById(params.userId, {
-        app_metadata: {
-          tier: userTier,
-          plan_id: params.planId,
-          tier_expires_at: expiresAt,
-        },
-      });
-    } catch {
-      // Safe ignore admin auth update error
+      try {
+        await supabase.auth.admin.updateUserById(params.userId, {
+          app_metadata: {
+            tier: userTier,
+            plan_id: params.planId,
+            tier_expires_at: expiresAt,
+          },
+        });
+      } catch {
+        // Safe ignore admin auth update error
+      }
     }
   }
 
@@ -614,5 +885,207 @@ export async function fulfillUsdOrder(
     userId: params.userId,
     tier: userTier,
     expiresAt,
+  };
+}
+
+export interface RevokeUsdSubscriptionParams {
+  checkoutId?: string;
+  alternateCheckoutIds?: string[];
+  userId?: string;
+  reason?: "refunded" | "revoked" | "cancelled";
+}
+
+export interface RevokeUsdSubscriptionResult {
+  revoked: boolean;
+  downgraded: boolean;
+  userId?: string;
+  reason: "refunded" | "revoked" | "cancelled";
+}
+
+/**
+ * Revokes / downgrades a USD subscription upon refund, chargeback, cancellation, or expiration,
+ * clearing cached entitlements and resetting derived tier stores when no other active subscription remains.
+ */
+export async function revokeUsdSubscription(
+  params: RevokeUsdSubscriptionParams,
+): Promise<RevokeUsdSubscriptionResult> {
+  const reason = params.reason ?? "revoked";
+  const candidateIds = Array.from(
+    new Set(
+      [
+        params.checkoutId,
+        params.checkoutId ? checkoutAliasMap.get(params.checkoutId) : undefined,
+        ...(params.alternateCheckoutIds ?? []).flatMap((alt) => [
+          alt,
+          checkoutAliasMap.get(alt),
+        ]),
+      ]
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        .map((id) => id.trim()),
+    ),
+  );
+
+  let resolvedUserId = params.userId;
+
+  for (const cid of candidateIds) {
+    const cached = fulfilledUsdOrderCache.get(cid);
+    if (!resolvedUserId && cached?.userId) {
+      resolvedUserId = cached.userId;
+    }
+    fulfilledUsdOrderCache.delete(cid);
+  }
+
+  if (resolvedUserId) {
+    for (const [key, val] of fulfilledUsdOrderCache.entries()) {
+      if (val.userId === resolvedUserId) {
+        fulfilledUsdOrderCache.delete(key);
+      }
+    }
+  }
+
+  const supabase = getPolarAdminClient();
+  if (!supabase) {
+    return {
+      revoked: candidateIds.length > 0 || Boolean(resolvedUserId),
+      downgraded: Boolean(resolvedUserId),
+      userId: resolvedUserId,
+      reason,
+    };
+  }
+
+  const now = new Date().toISOString();
+  let updatedAnySub = false;
+
+  for (const cid of candidateIds) {
+    try {
+      const { data: subRow } = await supabase
+        .from("user_subscriptions")
+        .select("id, user_id, status")
+        .eq("id", `usd_${cid}`)
+        .maybeSingle();
+
+      if (subRow) {
+        if (!resolvedUserId && subRow.user_id) {
+          resolvedUserId = subRow.user_id as string;
+        }
+        await supabase
+          .from("user_subscriptions")
+          .update({ status: reason, expires_at: now })
+          .eq("id", `usd_${cid}`);
+        updatedAnySub = true;
+      }
+    } catch {
+      // Safe ignore DB lookup/update error
+    }
+  }
+
+  if (resolvedUserId && !updatedAnySub) {
+    try {
+      const { data: userSubs } = await supabase
+        .from("user_subscriptions")
+        .select("id, payment_method, status")
+        .eq("user_id", resolvedUserId)
+        .eq("status", "active");
+
+      if (Array.isArray(userSubs)) {
+        for (const sub of userSubs) {
+          const pm = String((sub as { payment_method?: string }).payment_method || "");
+          if (pm === "usd_card" || pm === "polar" || pm === "lemonsqueezy") {
+            await supabase
+              .from("user_subscriptions")
+              .update({ status: reason, expires_at: now })
+              .eq("id", (sub as { id: string }).id);
+            updatedAnySub = true;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  let hasOtherActiveSub = false;
+  if (resolvedUserId) {
+    try {
+      const { data: remainingActive } = await supabase
+        .from("user_subscriptions")
+        .select("id, expires_at, status")
+        .eq("user_id", resolvedUserId)
+        .eq("status", "active");
+
+      if (Array.isArray(remainingActive)) {
+        const nowMs = Date.now();
+        hasOtherActiveSub = remainingActive.some((r) => {
+          const id = String((r as { id?: string }).id || "");
+          if (candidateIds.some((cid) => `usd_${cid}` === id)) return false;
+          const exp = (r as { expires_at?: string | null }).expires_at;
+          if (!exp) return true;
+          const expMs = Date.parse(exp);
+          return !Number.isNaN(expMs) && expMs > nowMs;
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  let downgraded = false;
+  if (resolvedUserId && !hasOtherActiveSub) {
+    downgraded = true;
+    try {
+      await supabase
+        .from("profiles")
+        .update({ tier: "contender", tier_expires_at: null, updated_at: now })
+        .eq("id", resolvedUserId);
+    } catch {
+      // ignore
+    }
+
+    try {
+      await supabase
+        .from("user_profiles")
+        .update({ tier: "contender", tier_expires_at: null, updated_at: now })
+        .eq("id", resolvedUserId);
+    } catch {
+      // ignore
+    }
+
+    try {
+      await supabase
+        .from("user_quota_ledgers")
+        .update({
+          tier: "contender",
+          cogs_ceiling_usd: 0.08,
+          updated_at: now,
+        })
+        .eq("user_id", `user:${resolvedUserId}`);
+    } catch {
+      // ignore
+    }
+
+    try {
+      await supabase.auth.admin.updateUserById(resolvedUserId, {
+        app_metadata: {
+          tier: "contender",
+          plan_id: "contender",
+          tier_expires_at: null,
+        },
+      });
+    } catch {
+      // ignore
+    }
+
+    try {
+      await invalidateUserQuotaLedgerCache(resolvedUserId);
+    } catch {
+      // ignore
+    }
+  }
+
+  return {
+    revoked: updatedAnySub || candidateIds.length > 0,
+    downgraded,
+    userId: resolvedUserId,
+    reason,
   };
 }

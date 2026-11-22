@@ -6,7 +6,7 @@ import {
   clientTelemetryPayloadSchema,
 } from "@/lib/schemas/telemetry";
 import {
-  checkTelemetryRateLimit,
+  checkTelemetryRateLimitAsync,
   recordTelemetryEvent,
 } from "@/lib/telemetry/recorder";
 import {
@@ -17,13 +17,17 @@ import {
 export interface TelemetryHandlerDependencies {
   verifyAuth?: (request: Request) => Promise<AuthVerificationResult>;
   recordTelemetry?: typeof recordTelemetryEvent;
-  checkRateLimit?: typeof checkTelemetryRateLimit;
+  checkRateLimit?: (
+    ip: string,
+  ) =>
+    | { allowed: boolean; retryAfter: number }
+    | Promise<{ allowed: boolean; retryAfter: number }>;
 }
 
 export function createTelemetryHandler(dependencies?: TelemetryHandlerDependencies) {
   const verifyAuth = dependencies?.verifyAuth ?? verifyAuthToken;
   const recordTelemetry = dependencies?.recordTelemetry ?? recordTelemetryEvent;
-  const checkRateLimit = dependencies?.checkRateLimit ?? checkTelemetryRateLimit;
+  const checkRateLimit = dependencies?.checkRateLimit ?? checkTelemetryRateLimitAsync;
 
   return async function handleTelemetry(request: Request): Promise<Response> {
     try {
@@ -84,7 +88,7 @@ export function createTelemetryHandler(dependencies?: TelemetryHandlerDependenci
 
       // 3. Rate limiting check
       const clientIp = getClientIp(request);
-      const rateLimitResult = checkRateLimit(clientIp);
+      const rateLimitResult = await checkRateLimit(clientIp);
       if (!rateLimitResult.allowed) {
         return Response.json(
           {

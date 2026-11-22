@@ -77,17 +77,27 @@ export const questionMetadataSchema = z.object({
   distractorRationale: z.string().max(5000).optional(),
 });
 
+export const MAX_PACK_METADATA_KEYS = MAX_PACK_QUESTIONS * 2;
+export const MAX_PACK_METADATA_KEY_LENGTH = 128;
+
 export const studyPackMetadataSchema = z
   .any()
   .superRefine((val, ctx) => {
     if (val && typeof val === "object") {
-      for (const k of Object.getOwnPropertyNames(val)) {
+      const ownNames = Object.getOwnPropertyNames(val);
+      for (const k of ownNames) {
         if (isPrototypePollutionKey(k)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: `Metadata key cannot be a prototype pollution key ('${k}').`,
           });
         }
+      }
+      if (Object.keys(val).length > MAX_PACK_METADATA_KEYS) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Metadata cannot exceed ${MAX_PACK_METADATA_KEYS} entries.`,
+        });
       }
     }
   })
@@ -96,6 +106,7 @@ export const studyPackMetadataSchema = z
       .record(
         z
           .string()
+          .max(MAX_PACK_METADATA_KEY_LENGTH)
           .refine(
             (val) => !isPrototypePollutionKey(val),
             "Metadata key cannot be a prototype pollution key ('__proto__', 'constructor', 'prototype').",

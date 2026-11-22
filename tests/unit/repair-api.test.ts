@@ -12,6 +12,11 @@ import {
   deterministicRepairQuestion,
   deterministicRepairFormula,
 } from "@/app/api/repair/helpers";
+import {
+  getUserQuotaLedger,
+  resetQuotaLedgersForTests,
+  saveUserQuotaLedger,
+} from "@/lib/rate-limit";
 import type { QuestionItem, QuestionMetadata } from "@/lib/schemas/question";
 import type { NoteFormula } from "@/lib/schemas/notes";
 
@@ -106,6 +111,7 @@ describe("Deterministic Repair Helpers", () => {
 describe("POST /api/repair route handler", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    resetQuotaLedgersForTests();
     delete process.env.OPENROUTER_API_KEY;
   });
 
@@ -315,5 +321,136 @@ describe("POST /api/repair route handler", () => {
     expect(data.formula.status).toBe("verified");
     expect(data.formula.reviewReason).toBeUndefined();
     expect(data.formula.variables).toHaveLength(3);
+  });
+
+  it("rejects cross-origin requests with 403 ORIGIN_NOT_ALLOWED", async () => {
+    const req = new Request("http://localhost:3000/api/repair", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://evil.example.com",
+      },
+      body: JSON.stringify({
+        kind: "question",
+        question: sampleQuestion,
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.ok).toBe(false);
+    expect(data.error).toBe("ORIGIN_NOT_ALLOWED");
+  });
+
+  it("rejects unauthenticated callers with 401 UNAUTHORIZED when auth is enforced or invalid token is supplied", async () => {
+    const reqEnforced = new Request("http://localhost:3000/api/repair", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-enforce-auth": "true",
+      },
+      body: JSON.stringify({
+        kind: "question",
+        question: sampleQuestion,
+      }),
+    });
+
+    const res1 = await POST(reqEnforced);
+    expect(res1.status).toBe(401);
+    expect(await res1.json()).toEqual({ ok: false, error: "UNAUTHORIZED" });
+
+    const reqInvalidToken = new Request("http://localhost:3000/api/repair", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer invalid-jwt-token",
+      },
+      body: JSON.stringify({
+        kind: "question",
+        question: sampleQuestion,
+      }),
+    });
+
+    const res2 = await POST(reqInvalidToken);
+    expect(res2.status).toBe(401);
+    expect(await res2.json()).toEqual({ ok: false, error: "UNAUTHORIZED" });
+  });
+
+  it("enforces rate limiting with 429 RATE_LIMIT_EXCEEDED when x-enforce-rate-limit is enabled", async () => {
+    let lastRes: Response | null = null;
+    for (let i = 0; i < 16; i++) {
+      const req = new Request("http://localhost:3000/api/repair", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-enforce-rate-limit": "true",
+          "x-real-ip": "198.51.100.42",
+        },
+        body: JSON.stringify({
+          kind: "question",
+          question: sampleQuestion,
+        }),
+      });
+      lastRes = await POST(req);
+    }
+
+    expect(lastRes).not.toBeNull();
+    expect(lastRes!.status).toBe(429);
+    const data = await lastRes!.json();
+    expect(data.ok).toBe(false);
+    expect(data.error).toBe("RATE_LIMIT_EXCEEDED");
+  });
+
+  it("rolls back quota reservation on LLM failure and rejects with 429 when rolling quota is depleted", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-v1-mock-key";
+    mockGenerateObject.mockRejectedValueOnce(new Error("Upstream model timeout"));
+
+    const rollbackReq = new Request("http://localhost:3000/api/repair", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-enforce-quota": "true",
+        "x-real-ip": "203.0.113.77",
+      },
+      body: JSON.stringify({
+        kind: "question",
+        question: sampleQuestion,
+      }),
+    });
+
+    const rollbackRes = await POST(rollbackReq);
+    expect(rollbackRes.status).toBe(200);
+
+    const ledgerAfterRollback = await getUserQuotaLedger("ip:203.0.113.77", "contender", "ROW");
+    expect(ledgerAfterRollback.windowReservedUsd).toBe(0);
+    expect(ledgerAfterRollback.windowSpentUsd).toBe(0);
+
+    const depletedLedger = await getUserQuotaLedger("ip:203.0.113.78", "contender", "ROW");
+    depletedLedger.windowSpentUsd = depletedLedger.cogsCeilingUsd;
+    depletedLedger.cogsSpentUsd = depletedLedger.cogsCeilingUsd;
+    await saveUserQuotaLedger(depletedLedger);
+
+    const quotaReq = new Request("http://localhost:3000/api/repair", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-enforce-quota": "true",
+        "x-real-ip": "203.0.113.78",
+      },
+      body: JSON.stringify({
+        kind: "question",
+        question: sampleQuestion,
+      }),
+    });
+
+    const quotaRes = await POST(quotaReq);
+    expect(quotaRes.status).toBe(429);
+    const quotaData = await quotaRes.json();
+    expect(quotaData.ok).toBe(false);
+    expect(quotaData.error).toBe("COGS_CEILING_EXCEEDED");
+    expect(quotaData.quota).toBeDefined();
+    expect(quotaData.quota.remainingPct).toBe(0);
+    expect(quotaData.quota.windowSpentUsd).toBeUndefined();
   });
 });

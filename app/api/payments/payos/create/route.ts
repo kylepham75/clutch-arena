@@ -93,8 +93,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        error:
-          err instanceof Error ? err.message : "Failed to create payment link",
+        error: "Failed to create payment link",
       },
       { status: 500 },
     );

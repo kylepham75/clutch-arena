@@ -63,6 +63,8 @@ export interface ParsePdfOptions {
   maxAutoOcrBudgetUsd?: number;
   visionTranscriber?: PdfVisionTranscriber;
   mockPages?: MockPdfPage[];
+  slideFastPath?: boolean;
+  corruptedPageDetector?: (sources: SourceBlock[]) => number[];
 }
 
 // Module-level SHA-256 cache: keyed by `${mode}:${computeImageSha256(imageBytes)}`
@@ -234,7 +236,10 @@ export const defaultOpenRouterVisionTranscriber: PdfVisionTranscriber = async ({
       return {
         text,
         confidence: text.length > 0 ? 0.95 : 0.0,
-        costUsd: 0,
+        costUsd:
+          mode === "equation_crop"
+            ? ESTIMATED_EQUATION_CROP_OCR_USD
+            : ESTIMATED_FULL_PAGE_OCR_USD,
       };
     } catch (geminiErr) {
       console.warn("[parsePdf:vision] Direct Google Gemini OCR attempt failed:", geminiErr);
@@ -275,6 +280,19 @@ export async function parsePdf(
   >();
   const mockPageMap = new Map<number, MockPdfPage>();
 
+  const isVisionAvailable = Boolean(
+    options?.visionTranscriber || hasValidVisionKey(),
+  );
+  const visionTranscriber =
+    options?.visionTranscriber ??
+    (hasValidVisionKey()
+      ? defaultOpenRouterVisionTranscriber
+      : undefined);
+
+  const rescanSet = new Set<number>(options?.rescanPages ?? []);
+  let maxBudget =
+    options?.maxAutoOcrBudgetUsd ?? MAX_AUTO_OCR_BUDGET_USD;
+
   try {
     if (isMock) {
       totalPages = options!.mockPages!.length;
@@ -294,7 +312,9 @@ export async function parsePdf(
         data: new Uint8Array(bytes),
         isEvalSupported: false,
         verbosity: 0,
-      });
+        maxImageSize: 4 * 1024 * 1024,
+        canvasMaxAreaInBytes: 16 * 1024 * 1024,
+      } as any);
 
       const info = await parser.getInfo({ parsePageInfo: true });
       totalPages = info.total;
@@ -327,29 +347,61 @@ export async function parsePdf(
         }
       }
 
-      try {
-        const imageResult = await parser.getImage({
-          imageBuffer: true,
-          imageDataUrl: false,
-          imageThreshold: 16,
-        });
-        if (imageResult && Array.isArray(imageResult.pages)) {
-          for (const pImg of imageResult.pages) {
-            if (pImg && pImg.pageNumber && Array.isArray(pImg.images)) {
-              pageImagesMap.set(
-                pImg.pageNumber,
-                pImg.images.map((img: any) => ({
-                  data: img.data,
-                  width: img.width,
-                  height: img.height,
-                  name: img.name,
-                })),
-              );
-            }
+      let imagePartialPages: number[] | undefined;
+      if (options?.slideFastPath && options?.maxAutoOcrBudgetUsd === undefined) {
+        const nativeSources: SourceBlock[] = [];
+        let nativeCharCount = 0;
+        for (let p = 1; p <= totalPages; p++) {
+          const t = (pageTextMap.get(p) ?? "").trim();
+          if (t) {
+            nativeCharCount += t.length;
+            nativeSources.push({ id: `page-${p}`, label: `Page ${p}`, text: t });
           }
         }
-      } catch {
-        // Safe try/catch so malformed XObjects never crash native text parsing
+        const corruptedPages = options.corruptedPageDetector
+          ? options.corruptedPageDetector(nativeSources)
+          : [];
+        if (corruptedPages.length > 0) {
+          for (const cp of corruptedPages) {
+            rescanSet.add(cp);
+          }
+          if (nativeCharCount >= 40) {
+            imagePartialPages = corruptedPages;
+          }
+        } else if (nativeCharCount >= 40 && rescanSet.size === 0) {
+          maxBudget = 0;
+        }
+      }
+
+      const shouldExtractImages =
+        (isVisionAvailable && maxBudget > 0) || rescanSet.size > 0;
+
+      if (shouldExtractImages) {
+        try {
+          const imageResult = await parser.getImage({
+            ...(imagePartialPages ? { partial: imagePartialPages } : {}),
+            imageBuffer: true,
+            imageDataUrl: false,
+            imageThreshold: 16,
+          });
+          if (imageResult && Array.isArray(imageResult.pages)) {
+            for (const pImg of imageResult.pages) {
+              if (pImg && pImg.pageNumber && Array.isArray(pImg.images)) {
+                pageImagesMap.set(
+                  pImg.pageNumber,
+                  pImg.images.map((img: any) => ({
+                    data: img.data,
+                    width: img.width,
+                    height: img.height,
+                    name: img.name,
+                  })),
+                );
+              }
+            }
+          }
+        } catch {
+          // Safe try/catch so malformed XObjects never crash native text parsing
+        }
       }
     }
 
@@ -393,18 +445,6 @@ export async function parsePdf(
       }
     }
 
-    const isVisionAvailable = Boolean(
-      options?.visionTranscriber || hasValidVisionKey(),
-    );
-    const visionTranscriber =
-      options?.visionTranscriber ??
-      (hasValidVisionKey()
-        ? defaultOpenRouterVisionTranscriber
-        : undefined);
-
-    const rescanSet = new Set<number>(options?.rescanPages ?? []);
-    const maxBudget =
-      options?.maxAutoOcrBudgetUsd ?? MAX_AUTO_OCR_BUDGET_USD;
     let deckVisionCostUsd = 0;
 
     const sources: SourceBlock[] = [];
@@ -675,13 +715,17 @@ export async function parsePdf(
           );
           if (large) {
             imageBytes = large.data;
-          } else if (parser) {
+          } else if (parser && maxBudget > 0) {
             try {
+              const targetDesiredWidth =
+                height > width
+                  ? Math.max(256, Math.min(1024, Math.floor((1536 * width) / Math.max(1, height))))
+                  : 1024;
               const screenshotResult = await parser.getScreenshot({
                 partial: [page],
                 imageBuffer: true,
                 imageDataUrl: false,
-                desiredWidth: 1024,
+                desiredWidth: targetDesiredWidth,
               });
               imageBytes = screenshotResult.pages[0]?.data;
             } catch {

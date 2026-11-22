@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+vi.mock("server-only", () => ({}));
 import {
   createRoom,
   deleteRoom,
@@ -20,10 +21,12 @@ import {
   MAX_ACTIVE_ROOMS,
   IDLE_ROOM_TIMEOUT_MS,
   resetRoomIdleTimeout,
+  resetArenaSseIpCountsForTests,
 } from "@/lib/multiplayer/room-manager";
 import {
   GET as streamHandler,
 } from "@/app/api/arena/rooms/[code]/stream/route";
+import { studyPackMetadataSchema, MAX_PACK_METADATA_KEYS } from "@/lib/schemas/question";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
 
 describe("Study Arena - Room Manager & Multiplayer Logic", () => {
@@ -555,5 +558,106 @@ describe("Study Arena - Room Manager & Multiplayer Logic", () => {
         message: "Room subscriber limit exceeded.",
       },
     });
+  });
+
+  it("masks competitor bestStreak during answering phase to prevent live correctness oracle", () => {
+    const { room, hostPlayer } = createRoom({
+      hostNickname: "Jordan",
+      pack: mockMicroeconomics,
+    });
+    const challenger = joinRoom(room.code, {
+      nickname: "Challenger",
+    })!;
+
+    startRound(room, 0);
+    const q0CorrectIdx = room.pack.questions[0].correctIndex;
+    submitAnswer(room.code, hostPlayer.id, q0CorrectIdx);
+    submitAnswer(room.code, challenger.id, (q0CorrectIdx + 1) % 4);
+    endRound(room);
+
+    expect(room.players[hostPlayer.id].bestStreak).toBe(1);
+
+    startRound(room, 1);
+    const q1CorrectIdx = room.pack.questions[1].correctIndex;
+    submitAnswer(room.code, hostPlayer.id, q1CorrectIdx);
+    expect(room.players[hostPlayer.id].bestStreak).toBe(2);
+
+    const competitorView = getClientState(room, challenger.id);
+    expect(competitorView.players[hostPlayer.id].bestStreak).toBe(1);
+
+    const hostSelfView = getClientState(room, hostPlayer.id);
+    expect(hostSelfView.players[hostPlayer.id].bestStreak).toBe(2);
+
+    endRound(room);
+    const feedbackView = getClientState(room, challenger.id);
+    expect(feedbackView.players[hostPlayer.id].bestStreak).toBe(2);
+  });
+
+  it("caps studyPackMetadataSchema key count at MAX_PACK_METADATA_KEYS and rejects oversized keys", () => {
+    const oversized: Record<string, { topic: string }> = {};
+    for (let i = 0; i <= MAX_PACK_METADATA_KEYS; i++) {
+      oversized[`k_${i}`] = { topic: "Econ" };
+    }
+    expect(studyPackMetadataSchema.safeParse(oversized).success).toBe(false);
+
+    const longKey = "x".repeat(129);
+    expect(
+      studyPackMetadataSchema.safeParse({ [longKey]: { topic: "Econ" } }).success,
+    ).toBe(false);
+  });
+
+  it("caps concurrent SSE subscribers per client IP cleanly and preserves active matches from eviction", async () => {
+    resetArenaSseIpCountsForTests();
+    for (const r of getAllRooms()) {
+      deleteRoom(r.code);
+    }
+
+    const { room } = createRoom({
+      hostNickname: "SseHost",
+      pack: mockMicroeconomics,
+    });
+
+    const responses: Response[] = [];
+    for (let i = 0; i < 12; i++) {
+      const req = new Request(`http://localhost:3000/api/arena/rooms/${room.code}/stream`, {
+        headers: { "x-real-ip": "198.51.100.99" },
+      });
+      const res = await streamHandler(req, {
+        params: Promise.resolve({ code: room.code }),
+      });
+      expect(res.status).toBe(200);
+      responses.push(res);
+    }
+
+    const blockedRes = await streamHandler(
+      new Request(`http://localhost:3000/api/arena/rooms/${room.code}/stream`, {
+        headers: { "x-real-ip": "198.51.100.99" },
+      }),
+      { params: Promise.resolve({ code: room.code }) },
+    );
+    expect(blockedRes.status).toBe(429);
+
+    for (const r of responses) {
+      await r.body?.cancel();
+    }
+    resetArenaSseIpCountsForTests();
+
+    // Active in-flight rooms should not be evicted once MAX_ACTIVE_ROOMS are live
+    for (const r of getAllRooms()) {
+      deleteRoom(r.code);
+    }
+    for (let i = 0; i < MAX_ACTIVE_ROOMS; i++) {
+      const { room: activeRoom } = createRoom({
+        hostNickname: `Live_${i}`,
+        pack: mockMicroeconomics,
+      });
+      startRound(activeRoom, 0);
+    }
+    expect(() =>
+      createRoom({
+        hostNickname: "Overflow",
+        pack: mockMicroeconomics,
+      }),
+    ).toThrow(/capacity/i);
   });
 });

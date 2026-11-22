@@ -8,28 +8,24 @@ export function isSupabaseServerConfigured(): boolean {
   );
 }
 
-export function getSupabaseServerClient(token?: string): SupabaseClient | null {
-  if (!process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.NODE_ENV === "production") {
-    console.warn(
-      "[Supabase] Production Warning: SUPABASE_SERVICE_ROLE_KEY is missing. RLS-protected service role operations will fail or fall back to anonymous permissions."
-    );
-  }
-
-  if (!isSupabaseServerConfigured()) {
+/**
+ * Returns a strictly user-scoped Supabase server client initialized with the
+ * public anon key and optional user JWT (`Authorization: Bearer <token>`),
+ * guaranteeing PostgreSQL RLS policies are enforced.
+ */
+export function getSupabaseUserServerClient(token?: string): SupabaseClient | null {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) {
     return null;
   }
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
   const headers: Record<string, string> = {};
-  if (token && !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  return createClient(url, key, {
+  return createClient(url, anonKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
@@ -38,4 +34,46 @@ export function getSupabaseServerClient(token?: string): SupabaseClient | null {
       headers,
     },
   });
+}
+
+/**
+ * Returns an explicit service-role Supabase admin client for privileged
+ * server-only operations (payment webhooks, quota ledger writes, account
+ * deletion, and telemetry persistence). Returns null when SUPABASE_SERVICE_ROLE_KEY
+ * is not configured.
+ */
+export function getSupabaseAdminClient(): SupabaseClient | null {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceRoleKey) {
+    if (!serviceRoleKey && process.env.NODE_ENV === "production") {
+      console.warn(
+        "[Supabase] Production Warning: SUPABASE_SERVICE_ROLE_KEY is missing. Privileged server operations will be unavailable.",
+      );
+    }
+    return null;
+  }
+
+  return createClient(url, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
+
+/**
+ * Returns a user-scoped client whenever `token` is provided (enforcing RLS)
+ * and falls back to the service-role admin client only when `token` is omitted.
+ */
+export function getSupabaseServerClient(token?: string): SupabaseClient | null {
+  if (!isSupabaseServerConfigured()) {
+    return null;
+  }
+
+  if (token) {
+    return getSupabaseUserServerClient(token);
+  }
+
+  return getSupabaseAdminClient() ?? getSupabaseUserServerClient();
 }

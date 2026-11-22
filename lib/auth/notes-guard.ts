@@ -43,7 +43,16 @@ export function isAuthorizedForNotes(tierString?: string | null): boolean {
  * Strictly limited to development, automated test suites, or explicit operator opt-in.
  * In production, client headers can NEVER bypass authentication without explicit opt-in.
  */
-export function isTestTierAllowed(): boolean {
+export function isTestTierAllowed(request?: Request): boolean {
+  if (process.env.VERCEL_ENV === "production") {
+    return false;
+  }
+  const secret = process.env.TEST_TIER_OVERRIDE_SECRET?.trim();
+  if (secret) {
+    if (!request || request.headers.get("x-test-tier-secret") !== secret) {
+      return false;
+    }
+  }
   return (
     process.env.NODE_ENV === "development" ||
     process.env.NODE_ENV === "test" ||
@@ -56,7 +65,7 @@ export function isTestTierAllowed(): boolean {
  * permitted to run Clutch Notes synthesis inside their unified rolling % quota.
  */
 export async function verifyNotesAccess(request: Request): Promise<ProVerificationResult> {
-  const testTierAllowed = isTestTierAllowed();
+  const testTierAllowed = isTestTierAllowed(request);
   const testTierHeader = testTierAllowed ? request.headers.get("x-test-tier") : null;
 
   // 1. If explicit client/test tier header is passed (dev/test identity)

@@ -6,6 +6,7 @@ export const MAX_COACH_HISTORY = 6;
 export const MAX_COACH_CONTEXT_CHARS = 6_000; // ~1,500 tokens max for citation block + surrounding context
 export const MAX_COACH_MESSAGE_CHARACTERS = 12_000;
 export const MAX_COACH_INPUT_CHARACTERS = 2_000;
+export const MAX_COACH_TOTAL_MESSAGE_CHARS = 24_000;
 export const MAX_COACH_EXTRACTED_CHARACTERS = 600_000;
 
 const sourceIdSchema = z.string().min(1).max(100);
@@ -101,7 +102,17 @@ export const coachRequestSchema = z
     const last = body.messages.at(-1);
     const text = last ? messageText(last) : "";
     return text.trim().length > 0 && text.length <= MAX_COACH_INPUT_CHARACTERS;
-  }, "Ask a question of up to 2,000 characters.");
+  }, "Ask a question of up to 2,000 characters.")
+  .refine(
+    (body) => body.messages.every((m) => messageText(m).length <= MAX_COACH_MESSAGE_CHARACTERS),
+    "A single coach message exceeds the maximum character limit.",
+  )
+  .refine((body) => {
+    const total = body.messages
+      .slice(-MAX_COACH_HISTORY)
+      .reduce((sum, m) => sum + messageText(m).length, 0);
+    return total <= MAX_COACH_TOTAL_MESSAGE_CHARS;
+  }, "Combined coach conversation history exceeds the maximum character limit.");
 
 export type CoachRequest = z.infer<typeof coachRequestSchema>;
 export type CoachRequestMessage = CoachRequest["messages"][number];

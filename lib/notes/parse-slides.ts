@@ -185,6 +185,7 @@ export async function parseSlideDeck(
     warnings = parsed.warnings;
     ocrEquations = parsed.ocrEquations;
     ommlEquations = parsed.ommlEquations;
+    pageVisionStatus = parsed.pageVisionStatus;
   } else {
     // format === "pdf"
     const abortSignal = signal ?? new AbortController().signal;
@@ -196,10 +197,8 @@ export async function parseSlideDeck(
           "maxAutoOcrBudgetUsd" in signalOrOptions),
     );
 
-    // Fast-path for digital slide PDFs:
-    // First extract text with maxAutoOcrBudgetUsd = 0.
-    // Digital slides exported from PowerPoint / Keynote already contain full vector text.
-    // This bypasses 40+ seconds of sequential network OCR calls on decorative images or icons.
+    // Single-pass fast-path on real PDFs (avoids parsing & running getImage twice),
+    // while keeping explicit mock/custom test hooks compatible.
     let parsed: Awaited<ReturnType<typeof parsePdf>>;
 
     if (isMockOrCustom) {
@@ -210,7 +209,6 @@ export async function parseSlideDeck(
         "maxAutoOcrBudgetUsd" in customOptions;
 
       if (!hasExplicitBudget) {
-        // Fast-path: try with maxAutoOcrBudgetUsd = 0 first
         parsed = await parsePdf(bytes, abortSignal, {
           ...(customOptions ?? {}),
           maxAutoOcrBudgetUsd: 0,
@@ -226,7 +224,6 @@ export async function parseSlideDeck(
         if (nativeCharCount < 40) {
           parsed = await parsePdf(bytes, abortSignal, customOptions as any);
         } else if (corruptedPages.length > 0) {
-          // Allow controlled Vision OCR fallback on math-corrupted slide pages
           parsed = await parsePdf(bytes, abortSignal, {
             ...(customOptions ?? {}),
             rescanPages: corruptedPages,
@@ -237,26 +234,9 @@ export async function parseSlideDeck(
       }
     } else {
       parsed = await parsePdf(bytes, abortSignal, {
-        maxAutoOcrBudgetUsd: 0,
+        slideFastPath: true,
+        corruptedPageDetector: detectCorruptedMathPages,
       });
-
-      const nativeCharCount = parsed.sources.reduce(
-        (sum, s) => sum + s.text.trim().length,
-        0,
-      );
-
-      const corruptedPages = detectCorruptedMathPages(parsed.sources);
-
-      // If native digital text is insufficient (< 40 characters across the deck),
-      // this is a scanned PDF or image-only deck. Fall back to standard OCR extraction.
-      if (nativeCharCount < 40) {
-        parsed = await parsePdf(bytes, abortSignal);
-      } else if (corruptedPages.length > 0) {
-        // Controlled Vision OCR fallback on math-corrupted slide pages
-        parsed = await parsePdf(bytes, abortSignal, {
-          rescanPages: corruptedPages,
-        });
-      }
     }
 
     imageHashes = (parsed as { imageHashes?: string[] }).imageHashes;

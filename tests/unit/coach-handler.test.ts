@@ -888,5 +888,87 @@ describe("coach HTTP handler", () => {
       expect(res.status).toBe(503);
       expect(reserveSpy).not.toHaveBeenCalled();
     });
+
+    it("rejects oversized multi-part conversation history exceeding MAX_COACH_TOTAL_MESSAGE_CHARS (Finding #22)", async () => {
+      const handler = createCoachHandler({
+        getModel: () => createMockCoachStreamModel(),
+      });
+      const hugeMessages = Array.from({ length: 4 }, (_, idx) => ({
+        id: `m-${idx}`,
+        role: (idx % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+        parts: Array.from({ length: 3 }, () => ({ type: "text", text: "X".repeat(3000) })),
+      }));
+      hugeMessages.push({
+        id: "m-last",
+        role: "user",
+        parts: [{ type: "text", text: "Explain this briefly." }],
+      });
+
+      const res = await handler(
+        coachRequest({
+          messages: hugeMessages,
+          document: { fileName: doc.fileName, sources: doc.sources },
+        }),
+      );
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.error.code).toBe("INVALID_REQUEST");
+    });
+
+    it("releases reserved coach quota when client cancels response stream before text chunks arrive (Finding #20)", async () => {
+      const abortController = new AbortController();
+      const stallingModel: any = {
+        specificationVersion: "v2",
+        provider: "mock",
+        modelId: "mock-model",
+        supportedUrls: {},
+        doStream: vi.fn(async ({ abortSignal }: { abortSignal?: AbortSignal }) => ({
+          stream: new ReadableStream({
+            start(controller) {
+              abortSignal?.addEventListener("abort", () => {
+                controller.close();
+              });
+            },
+          }),
+        })),
+      };
+
+      const rollbackSpy = vi.fn(rollbackDeckQuotaReservation);
+      const userId = "coach-cancel-before-output";
+
+      const handler = createCoachHandler({
+        getModel: () => stallingModel,
+        verifyAuth: vi.fn(async () => ({
+          authenticated: true as const,
+          user: { id: userId, email: "cancel@example.com" } as any,
+          tier: "contender" as const,
+          tierExpiresAt: null,
+        })),
+        quotaReservation: checkAndReserveDeckQuota,
+        rollbackQuota: rollbackSpy,
+      });
+
+      const req = new Request("http://localhost:3000/api/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
+        body: JSON.stringify({
+          runId: "cancel-run-1",
+          messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Explain elasticity" }] }],
+          document: { fileName: doc.fileName, sources: doc.sources },
+        }),
+      });
+
+      const res = await handler(req);
+      expect(res.status).toBe(200);
+      await res.body?.cancel();
+
+      await vi.waitFor(() => {
+        expect(rollbackSpy).toHaveBeenCalledTimes(1);
+      });
+      const ledger = await getUserQuotaLedger(`user:${userId}`, "contender", "ROW");
+      expect(ledger.windowReservedUsd).toBe(0);
+      expect(ledger.cogsReservedUsd).toBe(0);
+    });
   });
 });

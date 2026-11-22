@@ -4,8 +4,11 @@ import {
   getClientState,
   subscribeToRoom,
   subscribeToRoomIdleDisconnect,
+  acquireSseIpSlot,
+  releaseSseIpSlot,
   IDLE_ROOM_TIMEOUT_MS,
 } from "@/lib/multiplayer/room-manager";
+import { getClientIp } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +53,33 @@ export async function GET(
     );
   }
 
+  const hasIpHeader = Boolean(
+    req.headers.get("x-vercel-forwarded-for") ||
+      req.headers.get("cf-connecting-ip") ||
+      req.headers.get("x-real-ip") ||
+      req.headers.get("x-forwarded-for"),
+  );
+  const clientIp = hasIpHeader ? getClientIp(req) : null;
+  if (clientIp && !acquireSseIpSlot(clientIp)) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: {
+          code: "TOO_MANY_SUBSCRIBERS",
+          message: "Too many concurrent stream connections.",
+        },
+      }),
+      { status: 429, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  const releaseIpSlot = () => {
+    if (!clientIp) return;
+    releaseSseIpSlot(clientIp);
+  };
+
   const encoder = new TextEncoder();
+  let streamCleanup = () => {};
 
   const stream = new ReadableStream({
     start(controller) {
@@ -62,6 +91,7 @@ export async function GET(
       const cleanup = () => {
         if (isClosed) return;
         isClosed = true;
+        releaseIpSlot();
         if (heartbeatInterval) {
           clearInterval(heartbeatInterval);
           heartbeatInterval = null;
@@ -124,6 +154,10 @@ export async function GET(
       req.signal.addEventListener("abort", () => {
         cleanup();
       });
+      streamCleanup = cleanup;
+    },
+    cancel() {
+      streamCleanup();
     },
   });
 

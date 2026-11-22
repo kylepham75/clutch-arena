@@ -6,7 +6,7 @@ import {
   type ConnectionContext,
   type WSMessage,
 } from "partyserver";
-import ArenaServer from "./arena";
+import ArenaServer, { CORS_HEADERS } from "./arena";
 
 /**
  * Cloudflare Durable Object entrypoint powered by `partyserver`.
@@ -85,10 +85,62 @@ export class Arena extends Server {
   }
 }
 
+function getWorkerCorsHeaders(
+  request: Request,
+  env: Cloudflare.Env,
+): HeadersInit | false {
+  const reqOrigin = request.headers.get("origin");
+  if (!reqOrigin) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(reqOrigin);
+    const envRecord = env as unknown as Record<string, unknown>;
+    const allowedOrigins = [
+      envRecord.NEXT_PUBLIC_SITE_URL,
+      envRecord.NEXT_PUBLIC_APP_URL,
+      ...(typeof envRecord.ALLOWED_ORIGINS === "string"
+        ? envRecord.ALLOWED_ORIGINS.split(",")
+        : []),
+    ]
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .map((v) => {
+        try {
+          return new URL(v.trim()).origin;
+        } catch {
+          return v.trim();
+        }
+      });
+
+    const isLocalDev =
+      envRecord.NODE_ENV !== "production" &&
+      (parsed.hostname === "localhost" ||
+        parsed.hostname === "127.0.0.1" ||
+        parsed.hostname === "0.0.0.0");
+
+    if (allowedOrigins.includes(parsed.origin) || isLocalDev) {
+      return {
+        ...CORS_HEADERS,
+        "Access-Control-Allow-Origin": parsed.origin,
+        Vary: "Origin",
+      };
+    }
+  } catch {
+    // Ignore malformed Origin
+  }
+
+  return {
+    ...CORS_HEADERS,
+    Vary: "Origin",
+  };
+}
+
 export default {
   async fetch(request: Request, env: Cloudflare.Env): Promise<Response> {
+    const cors = getWorkerCorsHeaders(request, env);
     const response = await routePartykitRequest(request, env, {
-      cors: true,
+      cors,
     });
     if (response) return response;
     return new Response("Not Found", { status: 404 });

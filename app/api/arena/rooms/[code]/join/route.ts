@@ -7,6 +7,8 @@ import {
 } from "@/lib/multiplayer/room-manager";
 import { joinRoomSchema } from "@/lib/schemas/multiplayer";
 import { getPartyHost } from "@/lib/multiplayer/party-config";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { isAllowedOrigin } from "@/lib/utils";
 import PartySocket from "partysocket";
 
 export async function POST(
@@ -14,6 +16,38 @@ export async function POST(
   props: { params: Promise<{ code: string }> },
 ) {
   try {
+    if (!isAllowedOrigin(req.headers.get("origin"), req)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: {
+            code: "ORIGIN_NOT_ALLOWED",
+            message: "Requests must originate from this application.",
+          },
+        },
+        { status: 403 },
+      );
+    }
+
+    if (
+      process.env.NODE_ENV !== "test" ||
+      req.headers.get("x-enforce-rate-limit") === "true"
+    ) {
+      const rl = await checkRateLimit(`ip:${getClientIp(req)}`, "arena", "contender");
+      if (!rl.allowed) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: {
+              code: "RATE_LIMIT_EXCEEDED",
+              message: "Too many join requests. Please wait a moment.",
+            },
+          },
+          { status: 429, headers: { "Retry-After": rl.retryAfter.toString() } },
+        );
+      }
+    }
+
     const { code } = await props.params;
     if (!/^[A-Z0-9]{6}$/i.test(code)) {
       return NextResponse.json(
@@ -112,9 +146,13 @@ export async function POST(
       },
       { status: 200 },
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
+    console.error(
+      "[Arena Join] Failed to join room:",
+      err instanceof Error ? err.message : err,
+    );
     return NextResponse.json(
-      { ok: false, error: { message: err.message || "Failed to join room." } },
+      { ok: false, error: { code: "JOIN_FAILED", message: "Failed to join room." } },
       { status: 500 },
     );
   }

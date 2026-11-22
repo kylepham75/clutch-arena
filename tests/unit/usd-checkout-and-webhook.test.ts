@@ -9,6 +9,7 @@ import {
   createUsdCheckoutSession,
   verifyUsdWebhookSignature,
   fulfillUsdOrder,
+  revokeUsdSubscription,
   clearFulfilledUsdOrderCache,
   mapUsdPlanToUserTier,
   mapUsdPlanToCycle,
@@ -659,6 +660,150 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
       });
       expect(idempotentCheck.alreadyFulfilled).toBe(true);
       expect(idempotentCheck.tier).toBe("tutor");
+    });
+
+    it("verifies Standard Webhooks framing (`webhook-id`.`webhook-timestamp`.`rawBody`) and rejects stale timestamps", () => {
+      const msgId = "msg_std_123";
+      const freshTs = String(Math.floor(Date.now() / 1000));
+      const staleTs = String(Math.floor(Date.now() / 1000) - 600);
+      const rawBody = JSON.stringify({ type: "order.paid", data: { id: "ord_std" } });
+
+      const freshSig = createHmac("sha256", TEST_SECRET)
+        .update(`${msgId}.${freshTs}.${rawBody}`)
+        .digest("base64");
+      expect(
+        verifyUsdWebhookSignature(rawBody, `v1,${freshSig}`, TEST_SECRET, {
+          id: msgId,
+          timestamp: freshTs,
+        }),
+      ).toBe(true);
+
+      const staleSig = createHmac("sha256", TEST_SECRET)
+        .update(`${msgId}.${staleTs}.${rawBody}`)
+        .digest("base64");
+      expect(
+        verifyUsdWebhookSignature(rawBody, `v1,${staleSig}`, TEST_SECRET, {
+          id: msgId,
+          timestamp: staleTs,
+        }),
+      ).toBe(false);
+    });
+
+    it("rejects cent-denominated underpayment (e.g. 399 cents for tutor 1999 cents / $19.99)", async () => {
+      const result = await fulfillUsdOrder({
+        checkoutId: "chk_cent_underpay_1",
+        userId: "user_cent_tamper",
+        planId: "tutor",
+        amountUsd: 399,
+      });
+
+      expect(result.fulfilled).toBe(false);
+    });
+
+    it("deduplicates canonical checkout ID vs order/subscription IDs across Polar webhook events", async () => {
+      process.env.POLAR_WEBHOOK_SECRET = TEST_SECRET;
+
+      const orderPayload = {
+        type: "order.paid",
+        data: {
+          id: "polar_order_canon_1",
+          checkout_id: "polar_canon_chk_1",
+          amount: 19.99,
+          metadata: {
+            userId: "user_canon_1",
+            planId: "tutor",
+            checkoutId: "polar_local_chk_1",
+          },
+        },
+      };
+      const rawOrder = JSON.stringify(orderPayload);
+      const sig = createHmac("sha256", TEST_SECRET).update(rawOrder).digest("hex");
+
+      const res = await polarWebhookRoute(
+        new Request("http://localhost:3000/api/webhooks/polar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "webhook-signature": sig },
+          body: rawOrder,
+        }),
+      );
+      expect(res.status).toBe(200);
+
+      // Replaying using order ID, local metadata checkoutId, or Polar checkout_id all hit idempotency
+      const byLocal = await fulfillUsdOrder({
+        checkoutId: "polar_local_chk_1",
+        userId: "user_canon_1",
+        planId: "tutor",
+      });
+      const byOrder = await fulfillUsdOrder({
+        checkoutId: "polar_order_canon_1",
+        userId: "user_canon_1",
+        planId: "tutor",
+      });
+      expect(byLocal.alreadyFulfilled).toBe(true);
+      expect(byOrder.alreadyFulfilled).toBe(true);
+    });
+
+    it("handles Polar order.refunded and subscription.revoked events by revoking entitlements", async () => {
+      process.env.POLAR_WEBHOOK_SECRET = TEST_SECRET;
+
+      await fulfillUsdOrder({
+        checkoutId: "polar_refund_chk_1",
+        userId: "user_refund_1",
+        planId: "pro",
+        amountUsd: 11.99,
+      });
+
+      const refundPayload = {
+        type: "order.refunded",
+        data: {
+          id: "polar_order_refund_1",
+          checkout_id: "polar_refund_chk_1",
+          metadata: { userId: "user_refund_1" },
+        },
+      };
+      const rawBody = JSON.stringify(refundPayload);
+      const sig = createHmac("sha256", TEST_SECRET).update(rawBody).digest("hex");
+
+      const res = await polarWebhookRoute(
+        new Request("http://localhost:3000/api/webhooks/polar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "webhook-signature": sig },
+          body: rawBody,
+        }),
+      );
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.revoked).toBe(true);
+      expect(json.reason).toBe("refunded");
+
+      const revokeRes = await revokeUsdSubscription({
+        checkoutId: "polar_refund_chk_1",
+        userId: "user_refund_1",
+        reason: "revoked",
+      });
+      expect(revokeRes.revoked).toBe(true);
+    });
+
+    it("rejects cross-origin POST /api/payments/usd/create with 403 and oversized webhook bodies with 413", async () => {
+      process.env.NEXT_PUBLIC_USD_CHECKOUT_ENABLED = "true";
+      const badOriginReq = new Request("http://localhost:3000/api/payments/usd/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://evil-attacker.example",
+        },
+        body: JSON.stringify({ planId: "pro" }),
+      });
+      const originRes = await createUsdRoute(badOriginReq);
+      expect(originRes.status).toBe(403);
+
+      const bigReq = new Request("http://localhost:3000/api/webhooks/polar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "order.paid", pad: "a".repeat(140_000) }),
+      });
+      const bigRes = await polarWebhookRoute(bigReq);
+      expect(bigRes.status).toBe(413);
     });
   });
 });

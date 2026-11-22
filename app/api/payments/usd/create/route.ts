@@ -7,6 +7,7 @@ import {
 } from "@/lib/payments/polar";
 import { resolveTrustedPayosOrigin } from "@/lib/payments/payos";
 import { extractAuthToken, verifyAuthToken } from "@/lib/auth/server-guard";
+import { isAllowedOrigin } from "@/lib/utils";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,13 @@ const VALID_USD_PLANS = new Set<UsdPlanId>([
 
 export async function POST(request: Request) {
   try {
+    if (!isAllowedOrigin(request.headers.get("origin"), request)) {
+      return NextResponse.json(
+        { ok: false, error: "Cross-origin checkout requests are not allowed." },
+        { status: 403 },
+      );
+    }
+
     if (!isUsdCheckoutConfigured()) {
       return NextResponse.json(
         { ok: false, error: "USD checkout is not configured on the server." },
@@ -86,10 +94,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        error:
-          err instanceof Error
-            ? err.message
-            : "Failed to create USD checkout session",
+        error: "Failed to create USD checkout session",
       },
       { status: 500 },
     );

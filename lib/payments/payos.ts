@@ -3,11 +3,15 @@ import {
   calculateTierExpiration,
   normalizeTier,
   PRICING_PLANS,
+  type UserTier,
 } from "@/lib/pricing/tiers";
-import {
-  getSupabaseServerClient,
-  isSupabaseServerConfigured,
-} from "@/lib/supabase/server";
+import { isSupabaseServerConfigured } from "@/lib/supabase/server";
+import { getSupabaseAdminOrServerClient } from "@/lib/supabase/server-helpers";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+function getPayosAdminClient(userToken?: string): SupabaseClient | null {
+  return getSupabaseAdminOrServerClient(userToken);
+}
 import { invalidateUserQuotaLedgerCache } from "@/lib/rate-limit";
 
 export type PayosPlanId =
@@ -22,6 +26,52 @@ export type PayosPlanId =
 
 export const SANDBOX_TEST_AMOUNT_VND = 5000;
 export const SANDBOX_COGS_CAP_USD = 0.05;
+
+const PAYOS_TERMINAL_STATUSES = new Set([
+  "expired",
+  "revoked",
+  "refunded",
+  "cancelled",
+  "canceled",
+]);
+
+const PAYOS_TIER_RANK: Record<UserTier, number> = {
+  contender: 0,
+  cram_pass: 1,
+  pro_monthly: 2,
+  pro: 3,
+  tutor: 4,
+};
+
+function shouldPreserveHigherActivePayosTier(
+  existingTierRaw: string | null | undefined,
+  existingExpiresAt: string | null | undefined,
+  incomingTier: UserTier,
+  incomingExpiresAt: string | null | undefined,
+): boolean {
+  if (!existingTierRaw) return false;
+  const existingTier = normalizeTier(existingTierRaw);
+  const existingRank = PAYOS_TIER_RANK[existingTier] ?? 0;
+  const incomingRank = PAYOS_TIER_RANK[incomingTier] ?? 0;
+  if (existingRank <= 0) return false;
+
+  const nowMs = Date.now();
+  const existingExpMs = existingExpiresAt ? Date.parse(existingExpiresAt) : null;
+  const isExistingActive =
+    existingExpMs === null || (!Number.isNaN(existingExpMs) && existingExpMs > nowMs);
+  if (!isExistingActive) return false;
+
+  if (existingRank > incomingRank) {
+    return true;
+  }
+  if (existingRank === incomingRank && incomingExpiresAt && existingExpMs !== null) {
+    const incomingExpMs = Date.parse(incomingExpiresAt);
+    if (!Number.isNaN(incomingExpMs) && existingExpMs > incomingExpMs) {
+      return true;
+    }
+  }
+  return false;
+}
 
 const fulfilledOrderCache = new Map<
   number,
@@ -535,7 +585,7 @@ export async function createPayosPaymentLink(
 
   if (isSandbox) {
     let userEmail: string | null = input.userEmail ?? null;
-    const supabase = getSupabaseServerClient(input.userToken);
+    const supabase = getPayosAdminClient(input.userToken);
 
     if (supabase) {
       if (!userEmail && input.userToken) {
@@ -613,7 +663,7 @@ export async function createPayosPaymentLink(
   });
 
   if (input.userId) {
-    const supabase = getSupabaseServerClient(input.userToken);
+    const supabase = getPayosAdminClient(input.userToken);
     if (!supabase && isSupabaseServerConfigured()) {
       throw new Error("Failed to initialize database client for pending order persistence");
     }
@@ -777,7 +827,7 @@ export async function fulfillPayosOrder(
   let recordedExpiresAt: string | null = null;
   let recordedCogsCeilingUsd: number | undefined = undefined;
 
-  const supabase = getSupabaseServerClient(params.userToken);
+  const supabase = getPayosAdminClient(params.userToken);
   if (supabase) {
     try {
       const { data: sub } = await supabase
@@ -885,6 +935,21 @@ export async function fulfillPayosOrder(
       expiresAt: idempotentExpiresAt,
       expires_at: idempotentExpiresAt,
       ...(cogsUsd !== undefined ? { cogsCeilingUsd: cogsUsd } : {}),
+    };
+  }
+
+  // Idempotency Check 1b: Terminal status replay prevention (expired / revoked / refunded / cancelled)
+  if (recordedStatus && PAYOS_TERMINAL_STATUSES.has(recordedStatus)) {
+    fulfilledOrderCache.delete(params.orderCode);
+    return {
+      fulfilled: false,
+      alreadyFulfilled: true,
+      status: recordedStatus,
+      userId: resolvedUserId ?? null,
+      tier: resolvedTier ?? null,
+      planId: resolvedTier ?? null,
+      expiresAt: recordedExpiresAt ?? null,
+      expires_at: recordedExpiresAt ?? null,
     };
   }
 
@@ -1082,136 +1147,161 @@ export async function fulfillPayosOrder(
         // Safe fallback
       }
 
+      let preserveExistingHigherTier = false;
       try {
-        const quotaPayload: Record<string, unknown> = {
-          user_id: `user:${resolvedUserId}`,
-          tier: profileTier,
-          deck_credits_used: 0,
-          cogs_spent_usd: 0,
-          cogs_reserved_usd: 0,
-          daily_burst_used: 0,
-          window_started_at: now,
-          window_spent_usd: 0,
-          window_reserved_usd: 0,
-          weekly_started_at: now,
-          weekly_spent_usd: 0,
-          weekly_reserved_usd: 0,
-          updated_at: now,
-        };
-        if (isSandbox) {
-          quotaPayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
+        const { data: existingProfile } = await supabase
+          .from("profiles")
+          .select("tier, tier_expires_at")
+          .eq("id", resolvedUserId)
+          .maybeSingle();
+
+        if (
+          existingProfile &&
+          shouldPreserveHigherActivePayosTier(
+            (existingProfile as { tier?: string | null }).tier,
+            (existingProfile as { tier_expires_at?: string | null }).tier_expires_at,
+            profileTier,
+            expiresAt,
+          )
+        ) {
+          preserveExistingHigherTier = true;
         }
-        const { error: quotaErr } = await supabase.from("user_quota_ledgers").upsert(
-          quotaPayload,
-          { onConflict: "user_id" },
-        );
-        if (quotaErr) {
-          const fallbackPayload: Record<string, unknown> = {
+      } catch {
+        // Safe ignore profile check error
+      }
+
+      if (!preserveExistingHigherTier) {
+        try {
+          const quotaPayload: Record<string, unknown> = {
             user_id: `user:${resolvedUserId}`,
             tier: profileTier,
             deck_credits_used: 0,
             cogs_spent_usd: 0,
+            cogs_reserved_usd: 0,
             daily_burst_used: 0,
+            window_started_at: now,
+            window_spent_usd: 0,
+            window_reserved_usd: 0,
+            weekly_started_at: now,
+            weekly_spent_usd: 0,
+            weekly_reserved_usd: 0,
             updated_at: now,
           };
           if (isSandbox) {
-            fallbackPayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
+            quotaPayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
           }
-          await supabase.from("user_quota_ledgers").upsert(
-            fallbackPayload,
+          const { error: quotaErr } = await supabase.from("user_quota_ledgers").upsert(
+            quotaPayload,
             { onConflict: "user_id" },
           );
-        }
-        await invalidateUserQuotaLedgerCache(resolvedUserId);
-      } catch {
-        // Safe fallback if user_quota_ledgers table is pending migration
-        try {
+          if (quotaErr) {
+            const fallbackPayload: Record<string, unknown> = {
+              user_id: `user:${resolvedUserId}`,
+              tier: profileTier,
+              deck_credits_used: 0,
+              cogs_spent_usd: 0,
+              daily_burst_used: 0,
+              updated_at: now,
+            };
+            if (isSandbox) {
+              fallbackPayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
+            }
+            await supabase.from("user_quota_ledgers").upsert(
+              fallbackPayload,
+              { onConflict: "user_id" },
+            );
+          }
           await invalidateUserQuotaLedgerCache(resolvedUserId);
         } catch {
-          // ignore
+          // Safe fallback if user_quota_ledgers table is pending migration
+          try {
+            await invalidateUserQuotaLedgerCache(resolvedUserId);
+          } catch {
+            // ignore
+          }
         }
-      }
 
-      try {
-        const profilePayload: Record<string, unknown> = {
-          id: resolvedUserId,
-          tier: profileTier,
-          tier_expires_at: expiresAt,
-          updated_at: now,
-        };
-        if (isSandbox) {
-          profilePayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
-        }
-        const { error: profErr } = await supabase
-          .from("profiles")
-          .upsert(profilePayload);
-        if (profErr && isSandbox) {
-          delete profilePayload.cogs_ceiling_usd;
-          await supabase.from("profiles").upsert(profilePayload);
-        }
-      } catch {
         try {
-          await supabase
+          const profilePayload: Record<string, unknown> = {
+            id: resolvedUserId,
+            tier: profileTier,
+            tier_expires_at: expiresAt,
+            updated_at: now,
+          };
+          if (isSandbox) {
+            profilePayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
+          }
+          const { error: profErr } = await supabase
             .from("profiles")
-            .update({
-              tier: profileTier,
-              tier_expires_at: expiresAt,
-              updated_at: now,
-            })
-            .eq("id", resolvedUserId);
+            .upsert(profilePayload);
+          if (profErr && isSandbox) {
+            delete profilePayload.cogs_ceiling_usd;
+            await supabase.from("profiles").upsert(profilePayload);
+          }
         } catch {
-          // ignore
+          try {
+            await supabase
+              .from("profiles")
+              .update({
+                tier: profileTier,
+                tier_expires_at: expiresAt,
+                updated_at: now,
+              })
+              .eq("id", resolvedUserId);
+          } catch {
+            // ignore
+          }
         }
-      }
 
-      try {
-        const userProfilePayload: Record<string, unknown> = {
-          id: resolvedUserId,
-          tier: profileTier,
-          tier_expires_at: expiresAt,
-          updated_at: now,
-        };
-        if (isSandbox) {
-          userProfilePayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
-        }
-        const { error: uProfErr } = await supabase
-          .from("user_profiles")
-          .upsert(userProfilePayload);
-        if (uProfErr && isSandbox) {
-          delete userProfilePayload.cogs_ceiling_usd;
-          await supabase.from("user_profiles").upsert(userProfilePayload);
-        }
-      } catch {
         try {
-          await supabase
+          const userProfilePayload: Record<string, unknown> = {
+            id: resolvedUserId,
+            tier: profileTier,
+            tier_expires_at: expiresAt,
+            updated_at: now,
+          };
+          if (isSandbox) {
+            userProfilePayload.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
+          }
+          const { error: uProfErr } = await supabase
             .from("user_profiles")
-            .update({
-              tier: profileTier,
-              tier_expires_at: expiresAt,
-              updated_at: now,
-            })
-            .eq("id", resolvedUserId);
+            .upsert(userProfilePayload);
+          if (uProfErr && isSandbox) {
+            delete userProfilePayload.cogs_ceiling_usd;
+            await supabase.from("user_profiles").upsert(userProfilePayload);
+          }
         } catch {
-          // ignore
+          try {
+            await supabase
+              .from("user_profiles")
+              .update({
+                tier: profileTier,
+                tier_expires_at: expiresAt,
+                updated_at: now,
+              })
+              .eq("id", resolvedUserId);
+          } catch {
+            // ignore
+          }
         }
-      }
 
-      try {
-        const appMetadata: Record<string, unknown> = {
-          tier: profileTier,
-          plan_id: resolvedTier,
-          tier_expires_at: expiresAt,
-        };
-        if (isSandbox) {
-          appMetadata.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
-          appMetadata.cogs_limit_usd = SANDBOX_COGS_CAP_USD;
-          appMetadata.is_sandbox = true;
+        try {
+          const appMetadata: Record<string, unknown> = {
+            tier: profileTier,
+            plan_id: resolvedTier,
+            tier_expires_at: expiresAt,
+          };
+          if (isSandbox) {
+            appMetadata.cogs_ceiling_usd = SANDBOX_COGS_CAP_USD;
+            appMetadata.cogs_limit_usd = SANDBOX_COGS_CAP_USD;
+            appMetadata.is_sandbox = true;
+          }
+          await supabase.auth.admin.updateUserById(resolvedUserId, {
+            app_metadata: appMetadata,
+          });
+        } catch {
+          // ignore admin auth failure
         }
-        await supabase.auth.admin.updateUserById(resolvedUserId, {
-          app_metadata: appMetadata,
-        });
-      } catch {
-        // ignore admin auth failure
       }
     }
   }
