@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
 import { encodePackForShare } from "../../lib/game/pack-transfer";
+import {
+  mockMicroeconomics,
+  mockMicroeconomicsDoc,
+} from "../../data/mock-microeconomics";
 import type { StudyPack } from "../../lib/schemas/question";
 
 const customPack: StudyPack = {
@@ -56,16 +60,28 @@ const customPack: StudyPack = {
 };
 
 test.describe("Cross-Module Synergies & Workflows", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("clutch:tutorial_completed:v1", "true");
+    });
+  });
+
   test("Flashcard review mode flips cards and records self-ratings", async ({
     page,
   }) => {
     await page.goto("/solo");
     await expect(
-      page.getByRole("heading", { name: "Less panic. More practice." }),
+      page.getByRole("heading", { name: "Welcome to Clutch Arena" }),
     ).toBeVisible();
 
-    // Click Flashcards button on ready screen
-    await page.getByRole("button", { name: "Flashcards" }).click();
+    // Load sample Microeconomics deck
+    await page.getByRole("button", { name: "Start Clutch Run" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Microeconomics essentials" }),
+    ).toBeVisible();
+
+    // Click Review Flashcards button on ready screen
+    await page.getByRole("button", { name: "Review Flashcards" }).click();
 
     // Verify Flashcard Review UI opens
     await expect(page.getByText("Card 1 of 5")).toBeVisible();
@@ -76,7 +92,7 @@ test.describe("Cross-Module Synergies & Workflows", () => {
     await page.keyboard.press("Space");
     await expect(page.getByText("ANSWER", { exact: true })).toBeVisible();
 
-    // Rate card as "Got it down" with keyboard shortcut '2'
+    // Rate card as "Got it" with keyboard shortcut '2'
     await page.keyboard.press("2");
     await expect(page.getByText("Card 2 of 5")).toBeVisible();
 
@@ -88,7 +104,7 @@ test.describe("Cross-Module Synergies & Workflows", () => {
     // Exit back to Solo ready screen
     await page.getByRole("button", { name: "Exit" }).click();
     await expect(
-      page.getByRole("heading", { name: "Less panic. More practice." }),
+      page.getByRole("heading", { name: "Microeconomics essentials" }),
     ).toBeVisible();
   });
 
@@ -97,7 +113,13 @@ test.describe("Cross-Module Synergies & Workflows", () => {
   }) => {
     await page.goto("/solo");
     await expect(
-      page.getByRole("heading", { name: "Less panic. More practice." }),
+      page.getByRole("heading", { name: "Welcome to Clutch Arena" }),
+    ).toBeVisible();
+
+    // Load sample Microeconomics deck
+    await page.getByRole("button", { name: "Start Clutch Run" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Microeconomics essentials" }),
     ).toBeVisible();
 
     // Click Share button in pack preview
@@ -105,7 +127,7 @@ test.describe("Cross-Module Synergies & Workflows", () => {
 
     // Verify dialog appears
     await expect(
-      page.getByRole("heading", { name: /Share & export/i }),
+      page.getByRole("heading", { name: /Share & Export/i }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Copy", exact: true })).toBeVisible();
 
@@ -123,7 +145,7 @@ test.describe("Cross-Module Synergies & Workflows", () => {
     // Close with Escape
     await page.keyboard.press("Escape");
     await expect(
-      page.getByRole("heading", { name: /Share & export/i }),
+      page.getByRole("heading", { name: /Share & Export/i }),
     ).not.toBeVisible();
   });
 
@@ -132,8 +154,30 @@ test.describe("Cross-Module Synergies & Workflows", () => {
   }) => {
     await page.goto("/solo");
     await expect(
-      page.getByRole("heading", { name: "Less panic. More practice." }),
+      page.getByRole("heading", { name: "Welcome to Clutch Arena" }),
     ).toBeVisible();
+
+    // Seed local library with a saved pack so LibraryDialog lists it
+    await page.evaluate(
+      ({ pack, doc }) => {
+        localStorage.setItem(
+          "clutch:library:v1",
+          JSON.stringify([
+            {
+              id: pack.id,
+              title: pack.title,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              questionCount: pack.questions.length,
+              format: doc.format,
+              fileName: doc.fileName,
+              pack,
+              document: doc,
+            },
+          ]),
+        );
+      },
+      { pack: mockMicroeconomics, doc: mockMicroeconomicsDoc },
+    );
 
     // Open Study Library
     await page.getByRole("button", { name: "Study library" }).click();
@@ -141,19 +185,17 @@ test.describe("Cross-Module Synergies & Workflows", () => {
       page.getByRole("heading", { name: "Study Library" }),
     ).toBeVisible();
 
-    // Click "Arena" host button on the sample pack inside library
-    const sampleArenaBtn = page.getByTestId("library-host-arena");
+    // Click "Arena" host button on the saved pack inside library
+    const sampleArenaBtn = page.locator(".library-action-arena").first();
     await expect(sampleArenaBtn).toBeVisible();
     await sampleArenaBtn.click();
 
-    // Verify tab switched to Arena and Entrance is visible
+    // Verify tab switched to Arena and Entrance is visible with preset pack selected
     await expect(
-      page.getByRole("heading", { name: "Study Arena — Multiplayer" }),
+      page.getByRole("heading", { name: "Study Arena" }),
     ).toBeVisible();
-    await expect(page.getByText("REAL-TIME STUDY ARENA")).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: /Compete live/ }),
-    ).toBeVisible();
+    await expect(page.getByText("Arena live")).toBeVisible();
+    await expect(page.getByTestId("arena-preset-pack")).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Launch Arena Room" }),
     ).toBeVisible();
@@ -165,8 +207,10 @@ test.describe("Cross-Module Synergies & Workflows", () => {
     const token = await encodePackForShare(customPack);
     await page.goto(`/solo#pack=${token}`);
 
-    // Verify shared pack is loaded and title is visible
-    await expect(page.getByText("Quantum Physics Quick Drill")).toBeVisible();
+    // Verify shared pack is loaded and title heading is visible
+    await expect(
+      page.getByRole("heading", { name: "Quantum Physics Quick Drill" }),
+    ).toBeVisible();
     await expect(page.getByText(/wave-particle duality/).first()).toBeVisible();
   });
 });

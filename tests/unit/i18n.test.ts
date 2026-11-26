@@ -123,7 +123,7 @@ describe("i18n Vietnamese & English translations", () => {
     expect(translations.en.coach.backToResults).toBe("Return to Results");
   });
 
-  it("verifies all 19 expected top-level namespaces exist on both translations.en and translations.vi", () => {
+  it("verifies all 21 expected top-level namespaces exist on both translations.en and translations.vi", () => {
     const expectedNamespaces: Array<keyof TranslationDict> = [
       "brand",
       "nav",
@@ -142,11 +142,13 @@ describe("i18n Vietnamese & English translations", () => {
       "notes",
       "auth",
       "pricing",
+      "pricingPage",
+      "paymentReturn",
       "tutorial",
       "common",
     ];
 
-    expect(expectedNamespaces).toHaveLength(19);
+    expect(expectedNamespaces).toHaveLength(21);
 
     for (const ns of expectedNamespaces) {
       expect(translations.en[ns]).toBeDefined();
@@ -579,6 +581,13 @@ describe("i18n Vietnamese & English translations", () => {
         expect(value).not.toContain("$3.99");
         expect(value).not.toContain("USD");
       }
+    });
+
+    it("references Polar.sh Merchant of Record and contains zero LemonSqueezy references in globalSecurityNote", () => {
+      expect(translations.en.pricing.globalSecurityNote).toContain("Polar.sh Merchant of Record");
+      expect(translations.vi.pricing.globalSecurityNote).toContain("Polar.sh Merchant of Record");
+      expect(translations.en.pricing.globalSecurityNote).not.toMatch(/lemonsqueezy/i);
+      expect(translations.vi.pricing.globalSecurityNote).not.toMatch(/lemonsqueezy/i);
     });
   });
 });

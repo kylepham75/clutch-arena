@@ -1,11 +1,17 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("clutch:tutorial_completed:v1", "true");
+  });
+});
+
 test("Enter activates a focused toolbar control without advancing the quiz", async ({
   page,
 }) => {
   await start(page);
   await page.keyboard.press("b");
-  await expect(page.getByText("That’s a clutch answer.")).toBeVisible();
+  await expect(page.getByRole("status").getByText("Correct!")).toBeVisible();
   await page.getByRole("button", { name: "Mute sound" }).focus();
   await page.keyboard.press("Enter");
   await expect(
@@ -21,6 +27,18 @@ test("Enter activates a focused toolbar control without advancing the quiz", asy
   ).toBeVisible();
 });
 
+async function loadSampleDeck(page: Page) {
+  await page.getByRole("button", { name: "Start Clutch Run" }).click();
+  try {
+    await page.clock.runFor(50);
+  } catch {
+    // Clock is not installed in un-mocked tests.
+  }
+  await expect(
+    page.getByRole("heading", { name: "Microeconomics essentials" }),
+  ).toBeVisible();
+}
+
 async function start(page: Page) {
   await page.goto("/");
   try {
@@ -28,16 +46,23 @@ async function start(page: Page) {
   } catch {
     // Clock is not installed in un-mocked tests.
   }
-  await page.getByRole("button", { name: "Start Clutch Run" }).click();
+  await loadSampleDeck(page);
+  await page.getByRole("button", { name: /Start Clutch Run/ }).click();
+  try {
+    await page.clock.runFor(50);
+  } catch {
+    // Clock is not installed in un-mocked tests.
+  }
   await expect(
     page.getByRole("heading", { name: /A café raises/ }),
   ).toBeVisible();
 }
+
 async function answerAndAdvance(page: Page, key: string, last = false) {
   await page.keyboard.press(key);
-  await expect(page.getByText("That’s a clutch answer.")).toBeVisible();
+  await expect(page.getByRole("status").getByText("Correct!")).toBeVisible();
   await page
-    .getByRole("button", { name: last ? "See results" : "Next question" })
+    .getByRole("button", { name: last ? "View results" : "Next question" })
     .focus();
   await page.keyboard.press("Enter");
 }
@@ -77,8 +102,8 @@ test("a perfect keyboard run scores 700 XP, saves once, and restarts cleanly", a
       ),
     )
     .toBe(1);
-  await page.getByRole("button", { name: "Set up another run" }).click();
-  await page.getByRole("button", { name: "Start Clutch Run" }).click();
+  await page.getByRole("button", { name: "Play Again" }).click();
+  await page.getByRole("button", { name: /Start Clutch Run/ }).click();
   await expect(page.getByTestId("score")).toHaveText("0 XP");
   await expect(page.getByTestId("lives")).toHaveAttribute(
     "aria-label",
@@ -94,7 +119,7 @@ test("timeout loses one life and enforces four seconds of feedback", async ({
   await start(page);
   await page.clock.runFor(15_100);
   await expect(
-    page.getByText("Time’s up. Take this one with you."),
+    page.getByRole("status").getByText("Time's up!"),
   ).toBeVisible();
   await expect(page.getByTestId("lives")).toHaveAttribute(
     "aria-label",
@@ -125,7 +150,7 @@ test("pausing blocks keyboard answers and preserves the timer", async ({
   await page.getByRole("button", { name: "Resume run" }).click();
   await expect(page.getByTestId("timer")).toContainText("12");
   await page.keyboard.press("b");
-  await expect(page.getByText("That’s a clutch answer.")).toBeVisible();
+  await expect(page.getByRole("status").getByText("Correct!")).toBeVisible();
 });
 
 test("a missed concept returns in alternate forms until two successes", async ({
@@ -134,7 +159,7 @@ test("a missed concept returns in alternate forms until two successes", async ({
   await page.clock.install();
   await start(page);
   await page.keyboard.press("1");
-  await expect(page.getByText("A miss is a chance to learn.")).toBeVisible();
+  await expect(page.getByRole("status").getByText("Missed")).toBeVisible();
   await page.clock.runFor(4_100);
   await page.getByRole("button", { name: "Next question" }).click();
   for (const key of ["a", "b", "c", "d"]) {
@@ -150,7 +175,9 @@ test("a missed concept returns in alternate forms until two successes", async ({
     page.getByRole("heading", { name: /A café raises/ }),
   ).toBeVisible();
   await answerAndAdvance(page, "b", true);
-  await expect(page.getByText("Reinforced · 2 correct in a row")).toBeVisible();
+  await expect(
+    page.locator(".summary-review").getByText("Mastered"),
+  ).toBeVisible();
 });
 
 test("variant mode, help, sound preference, and mobile layout work", async ({
@@ -159,7 +186,7 @@ test("variant mode, help, sound preference, and mobile layout work", async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/solo");
   await expect(
-    page.getByRole("heading", { name: "Less panic. More practice." }),
+    page.getByRole("heading", { name: "Welcome to Clutch Arena" }),
   ).toBeVisible();
   expect(
     await page.evaluate(
@@ -175,16 +202,29 @@ test("variant mode, help, sound preference, and mobile layout work", async ({
   await expect(
     page.getByRole("button", { name: "Turn sound on" }),
   ).toBeVisible();
+  await loadSampleDeck(page);
   await page
     .getByRole("button", { name: "How to play", exact: true })
     .last()
     .click();
-  await expect(
-    page.getByRole("dialog", { name: "Your Clutch Run playbook" }),
-  ).toBeVisible();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByText("Quick Tour · Step 1 of 6")).toBeVisible();
   await page.keyboard.press("Escape");
+  await page.evaluate(() => {
+    const referralState = {
+      unlockedRemixRuns: 1,
+      friendsInvited: 0,
+      roomsHostedWith4Players: 0,
+      packsImportedByClassmates: 0,
+    };
+    localStorage.setItem("clutch:referrals:v1", JSON.stringify(referralState));
+    window.dispatchEvent(
+      new CustomEvent("clutch:referrals_updated", { detail: referralState }),
+    );
+  });
+  await expect(page.getByText("1 Pass")).toBeVisible();
   await page.getByRole("button", { name: /Concept remix/ }).click();
-  await page.getByRole("button", { name: "Start Clutch Run" }).click();
+  await page.getByRole("button", { name: /Start Clutch Run/ }).click();
   await expect(
     page.getByRole("heading", { name: /A cinema lowers/ }),
   ).toBeVisible();

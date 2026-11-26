@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("Concept Mastery & Weak Spot Sprints", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("clutch:tutorial_completed:v1", "true");
+    });
+  });
+
   test("displays concept mastery badges and launches Comeback Sprint when weak spots exist", async ({
     page,
   }) => {
@@ -22,9 +28,16 @@ test.describe("Concept Mastery & Weak Spot Sprints", () => {
 
     await page.reload();
 
+    // Load the sample Microeconomics deck from the welcome launchpad
+    await page.getByRole("button", { name: "Start Clutch Run" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Microeconomics essentials" }),
+    ).toBeVisible();
+
     // Verify Deck Concepts aside shows mastery badges
-    await expect(page.getByText("DECK CONCEPTS")).toBeVisible();
-    await expect(page.getByText("33% Needs Review").first()).toBeVisible();
+    const deckIntelCard = page.locator(".deck-intel-card");
+    await expect(deckIntelCard.getByText("Khái niệm trong bộ đề")).toBeVisible();
+    await expect(deckIntelCard.getByText("33% Ôn lại").first()).toBeVisible();
 
     // Verify Comeback Sprint Ready card is visible
     await expect(page.getByText("Comeback Sprint Ready")).toBeVisible();
@@ -44,7 +57,8 @@ test.describe("Concept Mastery & Weak Spot Sprints", () => {
     await expect(
       progressDialog.getByText("Price elasticity"),
     ).toBeVisible();
-    await expect(progressDialog.getByText("33% Needs Review")).toBeVisible();
+    await expect(progressDialog.getByText(/1\/3 correct \(33%\)/)).toBeVisible();
+    await expect(progressDialog.getByText("Needs Review")).toBeVisible();
 
     // Close progress modal
     await progressDialog.getByRole("button", { name: "Back to practice" }).click();
@@ -58,16 +72,24 @@ test.describe("Concept Mastery & Weak Spot Sprints", () => {
     ).toBeVisible();
   });
 
-  test("untested concepts show New badges by default", async ({ page }) => {
+  test("untested concepts show question-count badges by default", async ({
+    page,
+  }) => {
     await page.goto("/");
     await page.evaluate(() => {
       localStorage.removeItem("clutch:mastery:v1");
     });
     await page.reload();
 
-    // Badges in deck concept list should show "New"
-    const newBadges = page.locator(".badge-untested");
-    await expect(newBadges.first()).toBeVisible();
-    await expect(newBadges.first()).toHaveText("New");
+    // Load the sample Microeconomics deck from the welcome launchpad
+    await page.getByRole("button", { name: "Start Clutch Run" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Microeconomics essentials" }),
+    ).toBeVisible();
+
+    // Badges in deck concept list show question counts ("1 câu") when untested
+    const deckConceptList = page.locator(".deck-intel-card .topic-list");
+    await expect(deckConceptList.getByText("1 câu").first()).toBeVisible();
+    await expect(page.getByText("Comeback Sprint Ready")).not.toBeVisible();
   });
 });

@@ -6,6 +6,7 @@ node_modules/
 *.bak
 test-results/
 playwright-report/
+graphify-out/
 *.md
 !README.md
 !docs/**/*.md

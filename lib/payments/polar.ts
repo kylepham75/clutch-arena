@@ -9,6 +9,11 @@ import { getSupabaseAdminOrServerClient } from "@/lib/supabase/server-helpers";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveTrustedPayosOrigin } from "@/lib/payments/payos";
 import { invalidateUserQuotaLedgerCache } from "@/lib/rate-limit";
+import {
+  clearSquadInvitesCache,
+  mintSquadInvitesForOrder,
+  revokeSquadInvitesForSubscription,
+} from "@/lib/payments/squad-invites";
 
 function getPolarAdminClient(userToken?: string): SupabaseClient | null {
   return getSupabaseAdminOrServerClient(userToken);
@@ -109,6 +114,8 @@ const fulfilledUsdOrderCache = new Map<
     tier: "cram_pass" | "pro_monthly" | "pro" | "tutor";
     expiresAt: string;
     amountUsd: number;
+    subscriptionId?: string;
+    squadCodes?: string[];
   }
 >();
 const checkoutAliasMap = new Map<string, string>();
@@ -119,6 +126,7 @@ const checkoutAliasMap = new Map<string, string>();
 export function clearFulfilledUsdOrderCache(): void {
   fulfilledUsdOrderCache.clear();
   checkoutAliasMap.clear();
+  clearSquadInvitesCache();
 }
 
 /**
@@ -200,15 +208,13 @@ export async function createUsdCheckoutSession(
     const planKey = input.planId.toUpperCase();
     let productId = process.env[`POLAR_PRODUCT_ID_${planKey}`]?.trim();
     if (!productId) {
-      if (input.planId === "cram_squad_3") {
-        productId = process.env.POLAR_PRODUCT_ID_CRAM_PASS?.trim();
-      } else if (input.planId === "pro_semester") {
+      if (input.planId === "pro_semester") {
         productId = process.env.POLAR_PRODUCT_ID_PRO?.trim();
       } else if (input.planId === "tutor_guild") {
         productId = process.env.POLAR_PRODUCT_ID_TUTOR?.trim();
       }
     }
-    if (!productId) {
+    if (!productId && input.planId !== "cram_squad_3") {
       productId = process.env.POLAR_PRODUCT_ID?.trim();
     }
 
@@ -319,12 +325,31 @@ export async function createUsdCheckoutSession(
         status: "pending",
         expires_at: calculateTierExpiration(input.planId),
       };
-      await supabase.from("user_subscriptions").upsert(pendingPayload);
-      if (localCheckoutId !== checkoutId) {
-        await supabase.from("user_subscriptions").upsert({
-          ...pendingPayload,
-          id: `usd_${localCheckoutId}`,
+      const upsertRes = (await supabase
+        .from("user_subscriptions")
+        .upsert(pendingPayload)) as { error?: unknown } | undefined;
+      if (upsertRes?.error) {
+        console.error("[USD Checkout] user_subscriptions upsert failed:", {
+          subscriptionId: pendingPayload.id,
+          userId: input.userId,
+          planId: input.planId,
+          error: upsertRes.error,
         });
+      }
+      if (localCheckoutId !== checkoutId) {
+        const aliasSubId = `usd_${localCheckoutId}`;
+        const aliasRes = (await supabase.from("user_subscriptions").upsert({
+          ...pendingPayload,
+          id: aliasSubId,
+        })) as { error?: unknown } | undefined;
+        if (aliasRes?.error) {
+          console.error("[USD Checkout] user_subscriptions upsert failed:", {
+            subscriptionId: aliasSubId,
+            userId: input.userId,
+            planId: input.planId,
+            error: aliasRes.error,
+          });
+        }
       }
     } catch (err) {
       console.warn("[USD Checkout] Failed to persist pending subscription record:", err);
@@ -502,6 +527,54 @@ export interface FulfillUsdOrderResult {
   userId: string;
   tier: "cram_pass" | "pro_monthly" | "pro" | "tutor";
   expiresAt: string;
+  subscriptionId?: string;
+  squadCodes?: string[];
+}
+
+async function maybeMintPolarSquadInvites(params: {
+  planId: UsdPlanId;
+  subscriptionId: string;
+  buyerUserId: string;
+  expiresAt: string;
+  userToken?: string;
+}): Promise<string[] | undefined> {
+  if (params.planId !== "cram_squad_3" || !params.buyerUserId.trim()) {
+    return undefined;
+  }
+  try {
+    const invites = await mintSquadInvitesForOrder({
+      subscriptionId: params.subscriptionId,
+      buyerUserId: params.buyerUserId,
+      expiresAt: params.expiresAt,
+      userToken: params.userToken,
+    });
+    return invites.map((invite) => invite.code);
+  } catch (err) {
+    console.error("[USD Fulfillment] Failed to mint squad invites:", err);
+    return undefined;
+  }
+}
+
+async function safeRevokePolarSquadInvites(
+  subscriptionId: string,
+  reason: "refunded" | "revoked" | "cancelled",
+  revokedSet: Set<string>,
+): Promise<void> {
+  const normalizedId = subscriptionId.trim();
+  if (!normalizedId || revokedSet.has(normalizedId)) return;
+  revokedSet.add(normalizedId);
+  try {
+    await revokeSquadInvitesForSubscription({
+      subscriptionId: normalizedId,
+      reason,
+    });
+  } catch (err) {
+    console.error("[USD Revocation] Failed to revoke squad invites:", {
+      subscriptionId: normalizedId,
+      reason,
+      error: err,
+    });
+  }
 }
 
 /**
@@ -540,8 +613,22 @@ export async function fulfillUsdOrder(
   for (const cid of candidateIds) {
     const cached = fulfilledUsdOrderCache.get(cid);
     if (cached) {
+      const subscriptionId = cached.subscriptionId ?? `usd_${params.checkoutId}`;
+      const squadCodes =
+        (await maybeMintPolarSquadInvites({
+          planId: params.planId,
+          subscriptionId,
+          buyerUserId: cached.userId,
+          expiresAt: cached.expiresAt,
+          userToken: params.userToken,
+        })) ?? cached.squadCodes;
+      const updatedEntry = {
+        ...cached,
+        subscriptionId,
+        ...(squadCodes ? { squadCodes } : {}),
+      };
       for (const id of candidateIds) {
-        fulfilledUsdOrderCache.set(id, cached);
+        fulfilledUsdOrderCache.set(id, updatedEntry);
       }
       return {
         fulfilled: true,
@@ -549,6 +636,8 @@ export async function fulfillUsdOrder(
         userId: cached.userId,
         tier: cached.tier,
         expiresAt: cached.expiresAt,
+        subscriptionId,
+        ...(squadCodes ? { squadCodes } : {}),
       };
     }
   }
@@ -620,15 +709,26 @@ export async function fulfillUsdOrder(
 
     const activeRow = existingRows.find((r) => r.status === "active");
     if (activeRow) {
+      const resolvedOwnerId = activeRow.user_id || params.userId;
       const resolvedExpiresAt =
         activeRow.expires_at ||
         calculateTierExpiration(params.planId) ||
         new Date().toISOString();
+      const primarySubId = activeRow.id || `usd_${params.checkoutId}`;
+      const squadCodes = await maybeMintPolarSquadInvites({
+        planId: params.planId,
+        subscriptionId: primarySubId,
+        buyerUserId: resolvedOwnerId,
+        expiresAt: resolvedExpiresAt,
+        userToken: params.userToken,
+      });
       const cacheEntry = {
-        userId: activeRow.user_id || params.userId,
+        userId: resolvedOwnerId,
         tier: userTier,
         expiresAt: resolvedExpiresAt,
         amountUsd: expectedUsd,
+        subscriptionId: primarySubId,
+        ...(squadCodes ? { squadCodes } : {}),
       };
       for (const cid of candidateIds) {
         fulfilledUsdOrderCache.set(cid, cacheEntry);
@@ -636,9 +736,11 @@ export async function fulfillUsdOrder(
       return {
         fulfilled: true,
         alreadyFulfilled: true,
-        userId: activeRow.user_id || params.userId,
+        userId: resolvedOwnerId,
         tier: userTier,
         expiresAt: resolvedExpiresAt,
+        subscriptionId: primarySubId,
+        ...(squadCodes ? { squadCodes } : {}),
       };
     }
 
@@ -712,13 +814,23 @@ export async function fulfillUsdOrder(
   const expiresAt =
     calculateTierExpiration(params.planId) ||
     new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const primarySubId =
+    existingRows.find((r) => r.status === "pending")?.id ?? `usd_${params.checkoutId}`;
 
   // Populate in-memory cache across all candidate IDs
-  const entry = {
+  const entry: {
+    userId: string;
+    tier: "cram_pass" | "pro_monthly" | "pro" | "tutor";
+    expiresAt: string;
+    amountUsd: number;
+    subscriptionId?: string;
+    squadCodes?: string[];
+  } = {
     userId: params.userId,
     tier: userTier,
     expiresAt,
     amountUsd: params.amountUsd ?? expectedUsd,
+    subscriptionId: primarySubId,
   };
   for (const cid of candidateIds) {
     fulfilledUsdOrderCache.set(cid, entry);
@@ -750,7 +862,6 @@ export async function fulfillUsdOrder(
     }
 
     try {
-      const primarySubId = existingRows.find((r) => r.status === "pending")?.id ?? `usd_${params.checkoutId}`;
       const subPayload = {
         id: primarySubId,
         user_id: params.userId,
@@ -763,16 +874,34 @@ export async function fulfillUsdOrder(
         starts_at: now,
         expires_at: expiresAt,
       };
-      await supabase.from("user_subscriptions").upsert(subPayload);
+      const upsertRes = (await supabase
+        .from("user_subscriptions")
+        .upsert(subPayload)) as { error?: unknown } | undefined;
+      if (upsertRes?.error) {
+        console.error("[USD Fulfillment] user_subscriptions upsert failed:", {
+          subscriptionId: primarySubId,
+          userId: params.userId,
+          planId: params.planId,
+          error: upsertRes.error,
+        });
+      }
 
       // Keep canonical/alias rows synchronized
       for (const cid of candidateIds) {
         const subId = `usd_${cid}`;
         if (subId !== primarySubId && existingRows.some((r) => r.id === subId)) {
-          await supabase
+          const updateRes = (await supabase
             .from("user_subscriptions")
             .update({ status: "active", starts_at: now, expires_at: expiresAt })
-            .eq("id", subId);
+            .eq("id", subId)) as { error?: unknown } | undefined;
+          if (updateRes?.error) {
+            console.error("[USD Fulfillment] user_subscriptions update failed:", {
+              subscriptionId: subId,
+              userId: params.userId,
+              planId: params.planId,
+              error: updateRes.error,
+            });
+          }
         }
       }
     } catch (err) {
@@ -879,12 +1008,28 @@ export async function fulfillUsdOrder(
     }
   }
 
+  const squadCodes = await maybeMintPolarSquadInvites({
+    planId: params.planId,
+    subscriptionId: primarySubId,
+    buyerUserId: params.userId,
+    expiresAt,
+    userToken: params.userToken,
+  });
+  if (squadCodes) {
+    const updatedEntry = { ...entry, squadCodes };
+    for (const cid of candidateIds) {
+      fulfilledUsdOrderCache.set(cid, updatedEntry);
+    }
+  }
+
   return {
     fulfilled: true,
     alreadyFulfilled: false,
     userId: params.userId,
     tier: userTier,
     expiresAt,
+    subscriptionId: primarySubId,
+    ...(squadCodes ? { squadCodes } : {}),
   };
 }
 
@@ -926,18 +1071,27 @@ export async function revokeUsdSubscription(
   );
 
   let resolvedUserId = params.userId;
+  const cachedSubscriptionIds = new Set<string>();
+  const revokedSquadSubIds = new Set<string>();
 
   for (const cid of candidateIds) {
     const cached = fulfilledUsdOrderCache.get(cid);
     if (!resolvedUserId && cached?.userId) {
       resolvedUserId = cached.userId;
     }
+    if (cached?.subscriptionId) {
+      cachedSubscriptionIds.add(cached.subscriptionId);
+    }
+    cachedSubscriptionIds.add(`usd_${cid}`);
     fulfilledUsdOrderCache.delete(cid);
   }
 
   if (resolvedUserId) {
     for (const [key, val] of fulfilledUsdOrderCache.entries()) {
       if (val.userId === resolvedUserId) {
+        if (val.subscriptionId) {
+          cachedSubscriptionIds.add(val.subscriptionId);
+        }
         fulfilledUsdOrderCache.delete(key);
       }
     }
@@ -945,6 +1099,9 @@ export async function revokeUsdSubscription(
 
   const supabase = getPolarAdminClient();
   if (!supabase) {
+    for (const subId of cachedSubscriptionIds) {
+      await safeRevokePolarSquadInvites(subId, reason, revokedSquadSubIds);
+    }
     return {
       revoked: candidateIds.length > 0 || Boolean(resolvedUserId),
       downgraded: Boolean(resolvedUserId),
@@ -968,11 +1125,23 @@ export async function revokeUsdSubscription(
         if (!resolvedUserId && subRow.user_id) {
           resolvedUserId = subRow.user_id as string;
         }
-        await supabase
+        const updateRes = (await supabase
           .from("user_subscriptions")
           .update({ status: reason, expires_at: now })
-          .eq("id", `usd_${cid}`);
+          .eq("id", `usd_${cid}`)) as { error?: unknown } | undefined;
+        if (updateRes?.error) {
+          console.error("[USD Revocation] user_subscriptions update failed:", {
+            subscriptionId: `usd_${cid}`,
+            reason,
+            error: updateRes.error,
+          });
+        }
         updatedAnySub = true;
+        await safeRevokePolarSquadInvites(
+          (subRow as { id?: string }).id || `usd_${cid}`,
+          reason,
+          revokedSquadSubIds,
+        );
       }
     } catch {
       // Safe ignore DB lookup/update error
@@ -991,16 +1160,31 @@ export async function revokeUsdSubscription(
         for (const sub of userSubs) {
           const pm = String((sub as { payment_method?: string }).payment_method || "");
           if (pm === "usd_card" || pm === "polar" || pm === "lemonsqueezy") {
-            await supabase
+            const subId = (sub as { id: string }).id;
+            const updateRes = (await supabase
               .from("user_subscriptions")
               .update({ status: reason, expires_at: now })
-              .eq("id", (sub as { id: string }).id);
+              .eq("id", subId)) as { error?: unknown } | undefined;
+            if (updateRes?.error) {
+              console.error("[USD Revocation] user_subscriptions update failed:", {
+                subscriptionId: subId,
+                reason,
+                error: updateRes.error,
+              });
+            }
             updatedAnySub = true;
+            await safeRevokePolarSquadInvites(subId, reason, revokedSquadSubIds);
           }
         }
       }
     } catch {
       // ignore
+    }
+  }
+
+  if (revokedSquadSubIds.size === 0 && cachedSubscriptionIds.size > 0) {
+    for (const subId of cachedSubscriptionIds) {
+      await safeRevokePolarSquadInvites(subId, reason, revokedSquadSubIds);
     }
   }
 

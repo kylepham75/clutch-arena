@@ -1,4 +1,3 @@
-import type * as Party from "partykit/server";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
 import { pointsForStreak } from "@/lib/game/scoring";
 import {
@@ -74,6 +73,48 @@ export type PartyRoomData = {
   podium: ArenaRoomState["podium"];
 };
 
+export interface PartyConnection {
+  id: string;
+  send(message: string): void;
+  close(code?: number, reason?: string): void;
+}
+
+export interface PartyStorage {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  put<T = unknown>(key: string, value: T): Promise<void>;
+  delete(key: string): Promise<boolean | void>;
+  deleteAll(): Promise<void>;
+  setAlarm(scheduledTime: number | Date): Promise<void>;
+  getAlarm?: () => Promise<number | null>;
+  deleteAlarm?: () => Promise<void>;
+}
+
+export interface PartyRoom {
+  id: string;
+  env: Record<string, unknown>;
+  storage: PartyStorage;
+  broadcast(msg: string, without?: string[]): void;
+  getConnections(): Iterable<PartyConnection>;
+  context: {
+    parties: {
+      arena: {
+        get(name: string): { fetch(init: RequestInit): Promise<Response> };
+      };
+    };
+  };
+}
+
+export type PartyRequest = Request;
+
+export interface PartyServer {
+  onStart?(): Promise<void> | void;
+  onAlarm?(): Promise<void> | void;
+  onConnect?(conn: PartyConnection): Promise<void> | void;
+  onClose?(conn: PartyConnection): Promise<void> | void;
+  onMessage?(message: string, sender: PartyConnection): Promise<void> | void;
+  onRequest?(req: PartyRequest): Promise<Response> | Response;
+}
+
 export type OpenRoomSummary = {
   code: string;
   title: string;
@@ -84,7 +125,7 @@ export type OpenRoomSummary = {
   createdAt: string;
 };
 
-export default class ArenaServer implements Party.Server {
+export default class ArenaServer implements PartyServer {
   private state: PartyRoomData | null = null;
   private botTimeouts: any[] = [];
   private roundTimeout: any = null;
@@ -95,7 +136,7 @@ export default class ArenaServer implements Party.Server {
   // Directory state if this instance is running as the "__lobby__" room
   private directory: Map<string, OpenRoomSummary> = new Map();
 
-  constructor(readonly room: Party.Room) {}
+  constructor(readonly room: PartyRoom) {}
 
   async onStart() {
     // Restore persistent state if available
@@ -142,7 +183,7 @@ export default class ArenaServer implements Party.Server {
     return trimmed.length > 0 ? trimmed : null;
   }
 
-  private getCorsHeaders(req?: Party.Request): Record<string, string> {
+  private getCorsHeaders(req?: PartyRequest): Record<string, string> {
     const reqOrigin = req?.headers.get("origin");
     if (reqOrigin) {
       try {
@@ -231,7 +272,7 @@ export default class ArenaServer implements Party.Server {
   // -------------------------------------------------------------
   // WebSocket Handlers
   // -------------------------------------------------------------
-  onConnect(conn: Party.Connection) {
+  onConnect(conn: PartyConnection) {
     if (this.room.id === "__lobby__") {
       conn.send(
         JSON.stringify({
@@ -252,11 +293,11 @@ export default class ArenaServer implements Party.Server {
     }
   }
 
-  onClose(conn: Party.Connection) {
+  onClose(conn: PartyConnection) {
     this.connectionPlayers.delete(conn.id);
   }
 
-  async onMessage(message: string, sender: Party.Connection) {
+  async onMessage(message: string, sender: PartyConnection) {
     try {
       const parsed = JSON.parse(message);
 
@@ -480,7 +521,7 @@ export default class ArenaServer implements Party.Server {
     }
   }
 
-  private isInternalAuthorized(req: Party.Request): boolean {
+  private isInternalAuthorized(req: PartyRequest): boolean {
     const configuredSecret = this.getConfiguredInternalSecret();
     const providedSecret =
       req.headers.get("x-party-internal") ||
@@ -500,7 +541,7 @@ export default class ArenaServer implements Party.Server {
   // -------------------------------------------------------------
   // HTTP REST API Handlers (Supports Vercel & CORS)
   // -------------------------------------------------------------
-  async onRequest(req: Party.Request): Promise<Response> {
+  async onRequest(req: PartyRequest): Promise<Response> {
     const corsHeaders = this.getCorsHeaders(req);
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders });

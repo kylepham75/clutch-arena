@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 import { createHmac } from "node:crypto";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   EXPECTED_PLAN_AMOUNTS_USD,
   EXPECTED_PLAN_AMOUNTS_CENTS,
@@ -15,9 +16,14 @@ import {
   mapUsdPlanToCycle,
   type UsdPlanId,
 } from "@/lib/payments/polar";
+import {
+  getUserSquadInvites,
+  redeemSquadInviteCode,
+} from "@/lib/payments/squad-invites";
 import { POST as createUsdRoute } from "@/app/api/payments/usd/create/route";
 import { POST as polarWebhookRoute } from "@/app/api/webhooks/polar/route";
 import * as serverGuard from "@/lib/auth/server-guard";
+import * as serverHelpers from "@/lib/supabase/server-helpers";
 
 describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
   const originalEnv = { ...process.env };
@@ -152,6 +158,42 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
       expect(result.currency).toBe("USD");
       expect(result.checkoutUrl).toContain("plan_id=cram_squad_3");
       expect(result.checkoutUrl).toContain("amount=8.99");
+    });
+
+    it("does not fall back to POLAR_PRODUCT_ID_CRAM_PASS or POLAR_PRODUCT_ID for cram_squad_3 when POLAR_PRODUCT_ID_CRAM_SQUAD_3 is unset", async () => {
+      process.env.POLAR_ACCESS_TOKEN = "polar_at_test_123";
+      process.env.POLAR_PRODUCT_ID_CRAM_PASS = "prod_cram_pass_only";
+      process.env.POLAR_PRODUCT_ID = "prod_generic_fallback";
+      delete process.env.POLAR_PRODUCT_ID_CRAM_SQUAD_3;
+      delete process.env.POLAR_CHECKOUT_URL_CRAM_SQUAD_3;
+      delete process.env.POLAR_CHECKOUT_BASE_URL;
+
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+      // Without direct checkout URL, uses sandbox/polar fallback URL instead of wrong product ID
+      process.env.POLAR_SANDBOX = "true";
+      const fallbackResult = await createUsdCheckoutSession({
+        planId: "cram_squad_3",
+        userId: "user_squad_no_prod",
+        origin: "http://localhost:3000",
+      });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(fallbackResult.checkoutUrl).toContain("https://sandbox.polar.sh/checkout/");
+      expect(fallbackResult.checkoutUrl).toContain("plan_id=cram_squad_3");
+      expect(fallbackResult.checkoutUrl).toContain("amount=8.99");
+
+      // With POLAR_CHECKOUT_URL_CRAM_SQUAD_3 configured, uses that checkout URL directly
+      process.env.POLAR_CHECKOUT_URL_CRAM_SQUAD_3 = "https://buy.polar.sh/cram-squad-3";
+      const directUrlResult = await createUsdCheckoutSession({
+        planId: "cram_squad_3",
+        userId: "user_squad_direct_url",
+        origin: "http://localhost:3000",
+      });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(directUrlResult.checkoutUrl).toContain("https://buy.polar.sh/cram-squad-3");
+      expect(directUrlResult.checkoutUrl).toContain("checkout%5Bcustom%5D%5Bplan_id%5D=cram_squad_3");
     });
 
     it("creates a checkout session using configured direct checkout URL", async () => {
@@ -382,6 +424,231 @@ describe("USD Checkout & Polar/LemonSqueezy Webhook Engine", () => {
       });
 
       expect(fresh.alreadyFulfilled).toBe(false);
+    });
+
+    it("persists decimal 8.99, returns 2 squadCodes (including on repeat calls), logs user_subscriptions upsert errors, and cascades revocation to squad invites", async () => {
+      const subStore = new Map<string, Record<string, unknown>>();
+      const inviteStore = new Map<string, Record<string, unknown>>();
+      const profileStore = new Map<string, Record<string, unknown>>();
+      const userProfileStore = new Map<string, Record<string, unknown>>();
+      const ledgerStore = new Map<string, Record<string, unknown>>();
+      const upsertSubSpy = vi.fn();
+      let injectSubUpsertError: { message: string } | null = null;
+
+      const makeSelect = (rowsFn: () => Array<Record<string, unknown>>) => {
+        const filters: Array<{ col: string; val: unknown }> = [];
+        const builder: Record<string, unknown> = {
+          eq(col: string, val: unknown) {
+            filters.push({ col, val });
+            return builder;
+          },
+          async maybeSingle() {
+            const matched = rowsFn().filter((r) => filters.every((f) => r[f.col] === f.val));
+            return { data: matched[0] ?? null, error: null };
+          },
+          then(
+            onFulfilled?: (v: { data: Array<Record<string, unknown>>; error: null }) => unknown,
+            onRejected?: (e: unknown) => unknown,
+          ) {
+            const matched = rowsFn().filter((r) => filters.every((f) => r[f.col] === f.val));
+            return Promise.resolve({ data: matched, error: null }).then(onFulfilled, onRejected);
+          },
+        };
+        return builder;
+      };
+
+      const makeUpdate = (store: Map<string, Record<string, unknown>>, patch: Record<string, unknown>) => {
+        const filters: Array<{ col: string; val: unknown }> = [];
+        const apply = () => {
+          const updated: Array<Record<string, unknown>> = [];
+          for (const [k, row] of store.entries()) {
+            if (filters.every((f) => row[f.col] === f.val)) {
+              const next = { ...row, ...patch };
+              store.set(k, next);
+              updated.push(next);
+            }
+          }
+          return updated;
+        };
+        const builder: Record<string, unknown> = {
+          eq(col: string, val: unknown) {
+            filters.push({ col, val });
+            return builder;
+          },
+          async select() {
+            return { data: apply(), error: null };
+          },
+          then(
+            onFulfilled?: (v: { data: Array<Record<string, unknown>>; error: null }) => unknown,
+            onRejected?: (e: unknown) => unknown,
+          ) {
+            return Promise.resolve({ data: apply(), error: null }).then(onFulfilled, onRejected);
+          },
+        };
+        return builder;
+      };
+
+      const mockSupabase = {
+        from(table: string) {
+          if (table === "user_subscriptions") {
+            return {
+              select: () => makeSelect(() => Array.from(subStore.values())),
+              upsert: async (payload: Record<string, unknown>) => {
+                upsertSubSpy(payload);
+                if (injectSubUpsertError) {
+                  return { error: injectSubUpsertError };
+                }
+                subStore.set(String(payload.id), { ...payload });
+                return { error: null };
+              },
+              update: (patch: Record<string, unknown>) => makeUpdate(subStore, patch),
+            };
+          }
+          if (table === "squad_invites") {
+            return {
+              select: () => makeSelect(() => Array.from(inviteStore.values())),
+              upsert: async (rows: Array<Record<string, unknown>> | Record<string, unknown>) => {
+                const list = Array.isArray(rows) ? rows : [rows];
+                for (const row of list) {
+                  inviteStore.set(String(row.id), { ...row });
+                }
+                return { error: null };
+              },
+              update: (patch: Record<string, unknown>) => makeUpdate(inviteStore, patch),
+            };
+          }
+          if (table === "profiles") {
+            return {
+              select: () => makeSelect(() => Array.from(profileStore.values())),
+              upsert: async (payload: Record<string, unknown>) => {
+                profileStore.set(String(payload.id), { ...payload });
+                return { error: null };
+              },
+              update: (patch: Record<string, unknown>) => makeUpdate(profileStore, patch),
+            };
+          }
+          if (table === "user_profiles") {
+            return {
+              select: () => makeSelect(() => Array.from(userProfileStore.values())),
+              upsert: async (payload: Record<string, unknown>) => {
+                userProfileStore.set(String(payload.id), { ...payload });
+                return { error: null };
+              },
+              update: (patch: Record<string, unknown>) => makeUpdate(userProfileStore, patch),
+            };
+          }
+          if (table === "user_quota_ledgers") {
+            return {
+              select: () => makeSelect(() => Array.from(ledgerStore.values())),
+              upsert: async (payload: Record<string, unknown>) => {
+                ledgerStore.set(String(payload.user_id), { ...payload });
+                return { error: null };
+              },
+              update: (patch: Record<string, unknown>) => makeUpdate(ledgerStore, patch),
+            };
+          }
+          return {
+            select: () => makeSelect(() => []),
+            upsert: async () => ({ error: null }),
+            update: () => makeUpdate(new Map(), {}),
+          };
+        },
+        auth: {
+          admin: {
+            updateUserById: vi.fn(async () => ({ data: {}, error: null })),
+          },
+        },
+      } as unknown as SupabaseClient;
+
+      vi.spyOn(serverHelpers, "getSupabaseAdminOrServerClient").mockReturnValue(mockSupabase);
+
+      // 1. Fresh cram_squad_3 fulfillment persists decimal 8.99 and returns 2 unique squadCodes
+      const first = await fulfillUsdOrder({
+        checkoutId: "chk_squad_db_1",
+        userId: "user_squad_buyer_db",
+        planId: "cram_squad_3",
+        amountUsd: 8.99,
+      });
+
+      expect(first.fulfilled).toBe(true);
+      expect(first.alreadyFulfilled).toBe(false);
+      expect(first.tier).toBe("cram_pass");
+      expect(first.squadCodes).toHaveLength(2);
+      expect(new Set(first.squadCodes).size).toBe(2);
+      for (const code of first.squadCodes ?? []) {
+        expect(code).toMatch(/^CLUTCH-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+      }
+      expect(upsertSubSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "usd_chk_squad_db_1",
+          user_id: "user_squad_buyer_db",
+          tier: "cram_squad_3",
+          amount: 8.99,
+          currency: "USD",
+          status: "active",
+        }),
+      );
+
+      // 2. Repeated/idempotent call returns the exact same 2 squadCodes
+      const second = await fulfillUsdOrder({
+        checkoutId: "chk_squad_db_1",
+        userId: "user_squad_buyer_db",
+        planId: "cram_squad_3",
+      });
+      expect(second.fulfilled).toBe(true);
+      expect(second.alreadyFulfilled).toBe(true);
+      expect(second.squadCodes).toEqual(first.squadCodes);
+
+      // 3. Partner redeems seat 1; then revokeUsdSubscription cascades revocation to both invites and downgrades partner
+      const [code1, code2] = first.squadCodes!;
+      const redeemRes = await redeemSquadInviteCode({
+        code: code1,
+        redeemerUserId: "partner_usd_1",
+      });
+      expect(redeemRes.ok).toBe(true);
+
+      const revokeRes = await revokeUsdSubscription({
+        checkoutId: "chk_squad_db_1",
+        userId: "user_squad_buyer_db",
+        reason: "refunded",
+      });
+      expect(revokeRes.revoked).toBe(true);
+      expect(revokeRes.reason).toBe("refunded");
+
+      const buyerInvites = await getUserSquadInvites({ userId: "user_squad_buyer_db" });
+      expect(buyerInvites.purchased).toHaveLength(2);
+      expect(buyerInvites.purchased.every((i) => i.status === "revoked")).toBe(true);
+
+      const revokedRedeemAttempt = await redeemSquadInviteCode({
+        code: code2,
+        redeemerUserId: "partner_usd_2",
+      });
+      expect(revokedRedeemAttempt.ok).toBe(false);
+      if (!revokedRedeemAttempt.ok) {
+        expect(revokedRedeemAttempt.code).toBe("INVITE_REVOKED");
+      }
+      expect(profileStore.get("partner_usd_1")?.tier).toBe("contender");
+
+      // 4. Surfaces/logs { error } if user_subscriptions upsert returns an error
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      injectSubUpsertError = { message: 'invalid input syntax for type integer: "8.99"' };
+
+      await fulfillUsdOrder({
+        checkoutId: "chk_squad_err_1",
+        userId: "user_squad_err",
+        planId: "cram_squad_3",
+        amountUsd: 8.99,
+      });
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "[USD Fulfillment] user_subscriptions upsert failed:",
+        expect.objectContaining({
+          subscriptionId: "usd_chk_squad_err_1",
+          userId: "user_squad_err",
+          planId: "cram_squad_3",
+          error: { message: 'invalid input syntax for type integer: "8.99"' },
+        }),
+      );
     });
   });
 

@@ -13,6 +13,10 @@ function getPayosAdminClient(userToken?: string): SupabaseClient | null {
   return getSupabaseAdminOrServerClient(userToken);
 }
 import { invalidateUserQuotaLedgerCache } from "@/lib/rate-limit";
+import {
+  clearSquadInvitesCache,
+  mintSquadInvitesForOrder,
+} from "@/lib/payments/squad-invites";
 
 export type PayosPlanId =
   | "trial_24h"
@@ -81,6 +85,7 @@ const fulfilledOrderCache = new Map<
     expiresAt: string;
     amount: number;
     cogsCeilingUsd?: number;
+    squadCodes?: string[];
   }
 >();
 
@@ -89,6 +94,7 @@ const fulfilledOrderCache = new Map<
  */
 export function clearFulfilledOrderCache(): void {
   fulfilledOrderCache.clear();
+  clearSquadInvitesCache();
 }
 
 /**
@@ -316,6 +322,35 @@ export interface FulfillPayosOrderResult {
   expiresAt: string | null;
   expires_at?: string | null;
   cogsCeilingUsd?: number;
+  squadCodes?: string[];
+}
+
+async function maybeMintPayosSquadInvites(params: {
+  planId: PayosPlanId | null | undefined;
+  orderCode: number;
+  buyerUserId: string | null | undefined;
+  expiresAt: string | null | undefined;
+  userToken?: string;
+}): Promise<string[] | undefined> {
+  if (params.planId !== "cram_squad_3" || !params.buyerUserId?.trim()) {
+    return undefined;
+  }
+  try {
+    const effectiveExpiresAt =
+      params.expiresAt?.trim() ||
+      resolvePayosTierExpiration("cram_squad_3") ||
+      new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const invites = await mintSquadInvitesForOrder({
+      subscriptionId: `payos_${params.orderCode}`,
+      buyerUserId: params.buyerUserId,
+      expiresAt: effectiveExpiresAt,
+      userToken: params.userToken,
+    });
+    return invites.map((invite) => invite.code);
+  } catch (err) {
+    console.error("[PayOS] Failed to mint squad invites:", err);
+    return undefined;
+  }
 }
 
 /**
@@ -925,6 +960,18 @@ export async function fulfillPayosOrder(
       cached?.cogsCeilingUsd ??
       (isSandboxExisting ? SANDBOX_COGS_CAP_USD : undefined);
 
+    const squadCodes =
+      (await maybeMintPayosSquadInvites({
+        planId: idempotentTier,
+        orderCode: params.orderCode,
+        buyerUserId: idempotentUserId,
+        expiresAt: idempotentExpiresAt,
+        userToken: params.userToken,
+      })) ?? cached?.squadCodes;
+    if (cached && squadCodes) {
+      fulfilledOrderCache.set(params.orderCode, { ...cached, squadCodes });
+    }
+
     return {
       fulfilled: true,
       alreadyFulfilled: true,
@@ -935,6 +982,7 @@ export async function fulfillPayosOrder(
       expiresAt: idempotentExpiresAt,
       expires_at: idempotentExpiresAt,
       ...(cogsUsd !== undefined ? { cogsCeilingUsd: cogsUsd } : {}),
+      ...(squadCodes ? { squadCodes } : {}),
     };
   }
 
@@ -960,6 +1008,18 @@ export async function fulfillPayosOrder(
     recordedStatus !== "pending" &&
     (!recordedUserId || recordedUserId === cachedFulfillment.userId)
   ) {
+    const squadCodes =
+      (await maybeMintPayosSquadInvites({
+        planId: cachedFulfillment.tier,
+        orderCode: params.orderCode,
+        buyerUserId: cachedFulfillment.userId,
+        expiresAt: cachedFulfillment.expiresAt,
+        userToken: params.userToken,
+      })) ?? cachedFulfillment.squadCodes;
+    if (squadCodes) {
+      fulfilledOrderCache.set(params.orderCode, { ...cachedFulfillment, squadCodes });
+    }
+
     return {
       fulfilled: true,
       alreadyFulfilled: true,
@@ -972,6 +1032,7 @@ export async function fulfillPayosOrder(
       ...(cachedFulfillment.cogsCeilingUsd !== undefined
         ? { cogsCeilingUsd: cachedFulfillment.cogsCeilingUsd }
         : {}),
+      ...(squadCodes ? { squadCodes } : {}),
     };
   }
 
@@ -1103,6 +1164,7 @@ export async function fulfillPayosOrder(
     }
   }
 
+  let squadCodes: string[] | undefined = undefined;
   if (fulfilled && resolvedUserId && resolvedTier) {
     expiresAt = resolvePayosTierExpiration(resolvedTier);
     const now = new Date().toISOString();
@@ -1304,6 +1366,24 @@ export async function fulfillPayosOrder(
         }
       }
     }
+
+    squadCodes = await maybeMintPayosSquadInvites({
+      planId: resolvedTier,
+      orderCode: params.orderCode,
+      buyerUserId: resolvedUserId,
+      expiresAt,
+      userToken: params.userToken,
+    });
+    if (squadCodes) {
+      fulfilledOrderCache.set(params.orderCode, {
+        userId: resolvedUserId,
+        tier: resolvedTier,
+        expiresAt: expiresAt ?? now,
+        amount: finalAmount,
+        ...(cogsCeilingUsd !== undefined ? { cogsCeilingUsd } : {}),
+        squadCodes,
+      });
+    }
   }
 
   return {
@@ -1316,5 +1396,6 @@ export async function fulfillPayosOrder(
     expiresAt,
     expires_at: expiresAt,
     ...(isSandbox ? { cogsCeilingUsd: SANDBOX_COGS_CAP_USD } : {}),
+    ...(squadCodes ? { squadCodes } : {}),
   };
 }

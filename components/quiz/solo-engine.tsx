@@ -93,6 +93,7 @@ import { useUserTier } from "@/hooks/use-user-tier";
 import { useAuth } from "@/lib/auth/context";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { PricingModal } from "@/components/pricing/pricing-modal";
+import { PaymentReturnBanner } from "@/components/pricing/payment-return-banner";
 import { FeedbackDialog } from "@/components/workspace/feedback-dialog";
 import type { FeedbackCategory } from "@/lib/schemas/telemetry";
 import type { ParsedDocument } from "@/lib/schemas/ingestion";
@@ -1024,6 +1025,8 @@ export function SoloEngine({
           </header>
 
           <main id="main-content" className="main-content">
+            <PaymentReturnBanner />
+
             {!inRun && (
               <div className="page-heading">
                 <div>

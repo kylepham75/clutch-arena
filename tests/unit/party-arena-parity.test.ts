@@ -4,10 +4,12 @@ import ArenaServer, {
   STALE_LOBBY_TIMEOUT_MS,
   STALE_MATCH_TIMEOUT_MS,
   type PartyRoomData,
+  type PartyRoom,
+  type PartyConnection,
+  type PartyRequest,
 } from "../../party/arena";
 import { mockMicroeconomics } from "@/data/mock-microeconomics";
 import type { ArenaRoomState } from "@/lib/schemas/multiplayer";
-import type * as Party from "partykit/server";
 
 interface MockConnection {
   id: string;
@@ -33,7 +35,7 @@ function createMockConnection(id = `conn_${Math.random().toString(36).slice(2, 8
 }
 
 function createMockPartyRoom(roomId = "TEST-ROOM"): {
-  room: Party.Room;
+  room: PartyRoom;
   storageData: Map<string, any>;
   alarmTime: { current: number | null };
   connections: Map<string, MockConnection>;
@@ -65,8 +67,8 @@ function createMockPartyRoom(roomId = "TEST-ROOM"): {
         return alarmTime.current;
       }),
     },
-    getConnections: vi.fn((): Iterable<Party.Connection> => {
-      return Array.from(connections.values()) as unknown as Iterable<Party.Connection>;
+    getConnections: vi.fn((): Iterable<PartyConnection> => {
+      return Array.from(connections.values()) as unknown as Iterable<PartyConnection>;
     }),
     broadcast: broadcastSpy,
     context: {
@@ -78,7 +80,7 @@ function createMockPartyRoom(roomId = "TEST-ROOM"): {
         },
       },
     },
-  } as unknown as Party.Room;
+  } as unknown as PartyRoom;
 
   return {
     room: fakeRoom,
@@ -118,7 +120,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
             maxPlayers: 30, // Request 30, should be clamped to 8
           },
         }),
-        conn1 as unknown as Party.Connection,
+        conn1 as unknown as PartyConnection,
       );
 
       const res1 = JSON.parse(conn1.sentMessages[0]);
@@ -138,7 +140,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           hostTier: "cram_pass",
         }),
       });
-      const res2 = await (await server2.onRequest(req2 as unknown as Party.Request)).json();
+      const res2 = await (await server2.onRequest(req2 as unknown as PartyRequest)).json();
       expect(res2.room.maxPlayers).toBe(15);
 
       // Pro: maxPlayers capped at 15
@@ -154,7 +156,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           maxPlayers: 25, // Request 25, clamped to 15
         }),
       });
-      const res3 = await (await server3.onRequest(req3 as unknown as Party.Request)).json();
+      const res3 = await (await server3.onRequest(req3 as unknown as PartyRequest)).json();
       expect(res3.room.maxPlayers).toBe(15);
       expect(res3.room.mode).toBe("variants");
 
@@ -170,7 +172,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           maxPlayers: 10,
         }),
       });
-      const res4 = await (await server4.onRequest(req4 as unknown as Party.Request)).json();
+      const res4 = await (await server4.onRequest(req4 as unknown as PartyRequest)).json();
       expect(res4.room.maxPlayers).toBe(10);
     });
 
@@ -184,7 +186,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "ContenderHost", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       // Room has 1 host player. Join 7 more players to reach maxPlayers = 8.
@@ -195,7 +197,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
             type: "JOIN_ROOM",
             payload: { nickname: `Player${i}` },
           }),
-          clientConn as unknown as Party.Connection,
+          clientConn as unknown as PartyConnection,
         );
         const lastMsg = JSON.parse(clientConn.sentMessages[clientConn.sentMessages.length - 1]);
         expect(lastMsg.type).toBe("JOIN_SUCCESS");
@@ -211,7 +213,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "JOIN_ROOM",
           payload: { nickname: "Player9" },
         }),
-        overflowConn as unknown as Party.Connection,
+        overflowConn as unknown as PartyConnection,
       );
 
       expect(overflowConn.sentMessages.length).toBe(1);
@@ -240,7 +242,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           maxPlayers: 2,
         }),
       });
-      const initRes = await server.onRequest(initReq as unknown as Party.Request);
+      const initRes = await server.onRequest(initReq as unknown as PartyRequest);
       expect(initRes.status).toBe(201);
 
       // 2nd player joins via HTTP POST
@@ -249,7 +251,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nickname: "Player2" }),
       });
-      const joinRes2 = await server.onRequest(joinReq2 as unknown as Party.Request);
+      const joinRes2 = await server.onRequest(joinReq2 as unknown as PartyRequest);
       expect(joinRes2.status).toBe(200);
       const joinData2 = await joinRes2.json();
       expect(joinData2.ok).toBe(true);
@@ -261,7 +263,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nickname: "Player3" }),
       });
-      const joinRes3 = await server.onRequest(joinReq3 as unknown as Party.Request);
+      const joinRes3 = await server.onRequest(joinReq3 as unknown as PartyRequest);
       expect(joinRes3.status).toBe(403);
       const joinData3 = await joinRes3.json();
       expect(joinData3.ok).toBe(false);
@@ -280,7 +282,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender", maxPlayers: 3 },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       const hostId = (JSON.parse(hostConn.sentMessages[0]) as any).hostPlayer.id;
@@ -311,7 +313,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "pro" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       const hostId = (JSON.parse(hostConn.sentMessages[0]) as any).hostPlayer.id;
@@ -327,7 +329,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "JOIN_ROOM",
           payload: { nickname: "LateJoiner" },
         }),
-        joinConn as unknown as Party.Connection,
+        joinConn as unknown as PartyConnection,
       );
 
       const err = JSON.parse(joinConn.sentMessages[0]);
@@ -355,7 +357,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       expect((server as any).state).not.toBeNull();
@@ -394,7 +396,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       // Room active 5 minutes ago (< 15 mins)
@@ -422,7 +424,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       // Transition to answering
@@ -561,7 +563,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       // Verify that setAlarm was called with lastActiveAt + 15m
@@ -583,7 +585,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       const state = (server as any).getClientState() as ArenaRoomState;
@@ -607,7 +609,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       await server.onMessage(
@@ -615,7 +617,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "JOIN_ROOM",
           payload: { nickname: "Guest" },
         }),
-        guestConn as unknown as Party.Connection,
+        guestConn as unknown as PartyConnection,
       );
 
       const hostId = (JSON.parse(hostConn.sentMessages[0]) as any).hostPlayer.id;
@@ -669,7 +671,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "SurvivorHost", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       await server.onMessage(
@@ -677,7 +679,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "JOIN_ROOM",
           payload: { nickname: "FallenStudent" },
         }),
-        fallenConn as unknown as Party.Connection,
+        fallenConn as unknown as PartyConnection,
       );
 
       const hostId = (JSON.parse(hostConn.sentMessages[0]) as any).hostPlayer.id;
@@ -716,7 +718,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "ProHost", hostTier: "pro" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       await server.onMessage(
@@ -724,7 +726,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "JOIN_ROOM",
           payload: { nickname: "GuestPlayer" },
         }),
-        guestConn as unknown as Party.Connection,
+        guestConn as unknown as PartyConnection,
       );
 
       const hostId = (JSON.parse(hostConn.sentMessages[0]) as any).hostPlayer.id;
@@ -781,7 +783,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "OriginalHost", hostTier: "pro", title: "Original Title" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       const initRes = JSON.parse(hostConn.sentMessages[0]);
@@ -796,7 +798,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "AttackerHost", title: "Hacked Title" },
         }),
-        attackerConn as unknown as Party.Connection,
+        attackerConn as unknown as PartyConnection,
       );
 
       const wsErr = JSON.parse(attackerConn.sentMessages[0]);
@@ -811,7 +813,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         headers: { "Content-Type": "application/json", "x-party-internal": "1" },
         body: JSON.stringify({ hostNickname: "HttpAttacker", title: "Http Hacked" }),
       });
-      const httpRes = await server.onRequest(httpInitReq as unknown as Party.Request);
+      const httpRes = await server.onRequest(httpInitReq as unknown as PartyRequest);
       expect(httpRes.status).toBe(409);
       const httpBody = await httpRes.json();
       expect(httpBody.ok).toBe(false);
@@ -831,7 +833,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "RealHost", hostTier: "pro" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
       const hostId = JSON.parse(hostConn.sentMessages[0]).hostPlayer.id;
 
@@ -840,7 +842,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "JOIN_ROOM",
           payload: { nickname: "GuestSpoofer" },
         }),
-        guestConn as unknown as Party.Connection,
+        guestConn as unknown as PartyConnection,
       );
       const joinMsg = JSON.parse(guestConn.sentMessages[0]);
       expect(joinMsg.type).toBe("JOIN_SUCCESS");
@@ -853,7 +855,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           playerId: hostId,
           action: { type: "START_MATCH" },
         }),
-        guestConn as unknown as Party.Connection,
+        guestConn as unknown as PartyConnection,
       );
 
       const lastGuestMsg = JSON.parse(guestConn.sentMessages[guestConn.sentMessages.length - 1]);
@@ -869,7 +871,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           playerId: hostId,
           action: { type: "SUBMIT_ANSWER", selected: 0 },
         }),
-        guestConn as unknown as Party.Connection,
+        guestConn as unknown as PartyConnection,
       );
 
       const errAfterSubmit = JSON.parse(guestConn.sentMessages[guestConn.sentMessages.length - 1]);
@@ -888,7 +890,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         headers: { "Content-Type": "application/json", "x-party-internal": "1" },
         body: JSON.stringify({ hostNickname: "RealHost", hostTier: "pro" }),
       });
-      const initRes = await server.onRequest(httpInitReq as unknown as Party.Request);
+      const initRes = await server.onRequest(httpInitReq as unknown as PartyRequest);
       const initData = await initRes.json();
       const hostId = initData.hostPlayer.id;
       const hostToken = initData.playerToken;
@@ -906,7 +908,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           playerId: hostId,
           action: { type: "START_MATCH" },
         }),
-        attackerConn as unknown as Party.Connection,
+        attackerConn as unknown as PartyConnection,
       );
 
       const errWithoutToken = JSON.parse(attackerConn.sentMessages[0]);
@@ -923,7 +925,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           token: "tok_invalid_attacker_guess",
           action: { type: "START_MATCH" },
         }),
-        attackerConn as unknown as Party.Connection,
+        attackerConn as unknown as PartyConnection,
       );
 
       const errWithWrongToken = JSON.parse(attackerConn.sentMessages[1]);
@@ -940,7 +942,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           token: hostToken,
           action: { type: "TOGGLE_READY" },
         }),
-        realHostConn as unknown as Party.Connection,
+        realHostConn as unknown as PartyConnection,
       );
 
       // Real host connection binds successfully
@@ -955,7 +957,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           action: { type: "START_MATCH" },
         }),
       });
-      const httpBadRes = await server.onRequest(httpBadAction as unknown as Party.Request);
+      const httpBadRes = await server.onRequest(httpBadAction as unknown as PartyRequest);
       expect(httpBadRes.status).toBe(403);
       const httpBadData = await httpBadRes.json();
       expect(httpBadData.ok).toBe(false);
@@ -970,7 +972,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           action: { type: "START_MATCH" },
         }),
       });
-      const httpGoodRes = await server.onRequest(httpGoodAction as unknown as Party.Request);
+      const httpGoodRes = await server.onRequest(httpGoodAction as unknown as PartyRequest);
       expect(httpGoodRes.status).toBe(200);
       const httpGoodData = await httpGoodRes.json();
       expect(httpGoodData.ok).toBe(true);
@@ -994,7 +996,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           createdAt: new Date().toISOString(),
         }),
       });
-      const postRes = await server.onRequest(postReq as unknown as Party.Request);
+      const postRes = await server.onRequest(postReq as unknown as PartyRequest);
       expect(postRes.status).toBe(403);
       const postData = await postRes.json();
       expect(postData.ok).toBe(false);
@@ -1005,7 +1007,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: "FAKE01" }),
       });
-      const delRes = await server.onRequest(delReq as unknown as Party.Request);
+      const delRes = await server.onRequest(delReq as unknown as PartyRequest);
       expect(delRes.status).toBe(403);
 
       // Internal call with x-party-internal: 1 succeeds
@@ -1025,7 +1027,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           createdAt: new Date().toISOString(),
         }),
       });
-      const internalRes = await server.onRequest(internalPostReq as unknown as Party.Request);
+      const internalRes = await server.onRequest(internalPostReq as unknown as PartyRequest);
       expect(internalRes.status).toBe(200);
     });
 
@@ -1040,14 +1042,14 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
       await server.onMessage(
         JSON.stringify({
           type: "JOIN_ROOM",
           payload: { nickname: "Guest" },
         }),
-        guestConn as unknown as Party.Connection,
+        guestConn as unknown as PartyConnection,
       );
 
       const hostId = JSON.parse(hostConn.sentMessages[0]).hostPlayer.id;
@@ -1079,14 +1081,14 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
       await server.onMessage(
         JSON.stringify({
           type: "JOIN_ROOM",
           payload: { nickname: "Guest" },
         }),
-        guestConn as unknown as Party.Connection,
+        guestConn as unknown as PartyConnection,
       );
 
       const hostId = JSON.parse(hostConn.sentMessages[0]).hostPlayer.id;
@@ -1186,7 +1188,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
       const hostId = JSON.parse(hostConn.sentMessages[0]).hostPlayer.id;
       const hostToken = JSON.parse(hostConn.sentMessages[0]).playerToken;
@@ -1197,7 +1199,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "JOIN_ROOM",
           payload: { nickname: "" },
         }),
-        guestConn as unknown as Party.Connection,
+        guestConn as unknown as PartyConnection,
       );
 
       const joinErr = JSON.parse(guestConn.sentMessages[0]);
@@ -1214,7 +1216,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           token: hostToken,
           action: { type: "NOT_A_REAL_ACTION" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       const actionErr = JSON.parse(hostConn.sentMessages[hostConn.sentMessages.length - 1]);
@@ -1231,7 +1233,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           token: hostToken,
           action: { type: "SUBMIT_ANSWER", selected: 5 },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       const submitErr = JSON.parse(hostConn.sentMessages[hostConn.sentMessages.length - 1]);
@@ -1246,7 +1248,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nickname: "   " }),
       });
-      const httpJoinRes = await server.onRequest(httpJoinBad as unknown as Party.Request);
+      const httpJoinRes = await server.onRequest(httpJoinBad as unknown as PartyRequest);
       expect(httpJoinRes.status).toBe(400);
       const httpJoinData = await httpJoinRes.json();
       expect(httpJoinData.ok).toBe(false);
@@ -1262,7 +1264,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           action: { type: "INVALID_ACTION" },
         }),
       });
-      const httpActionRes = await server.onRequest(httpActionBad as unknown as Party.Request);
+      const httpActionRes = await server.onRequest(httpActionBad as unknown as PartyRequest);
       expect(httpActionRes.status).toBe(400);
       const httpActionData = await httpActionRes.json();
       expect(httpActionData.ok).toBe(false);
@@ -1278,7 +1280,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           action: { type: "SUBMIT_ANSWER", selected: -1 },
         }),
       });
-      const httpActionNegRes = await server.onRequest(httpActionNegative as unknown as Party.Request);
+      const httpActionNegRes = await server.onRequest(httpActionNegative as unknown as PartyRequest);
       expect(httpActionNegRes.status).toBe(400);
       const httpActionNegData = await httpActionNegRes.json();
       expect(httpActionNegData.ok).toBe(false);
@@ -1305,7 +1307,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         }),
       });
 
-      const res = await server.onRequest(initReq as unknown as Party.Request);
+      const res = await server.onRequest(initReq as unknown as PartyRequest);
       expect(res.status).toBe(401);
       const data = await res.json();
       expect(data.ok).toBe(false);
@@ -1328,7 +1330,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
             mode: "variants",
           },
         }),
-        conn as unknown as Party.Connection,
+        conn as unknown as PartyConnection,
       );
 
       const msg = JSON.parse(conn.sentMessages[0]);
@@ -1350,7 +1352,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
             title: "No Nickname Provided",
           },
         }),
-        conn as unknown as Party.Connection,
+        conn as unknown as PartyConnection,
       );
 
       const msg = JSON.parse(conn.sentMessages[0]);
@@ -1368,7 +1370,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: "FORBIDDEN_ROOM", status: "lobby" }),
       });
-      const postRes = await server.onRequest(postReq as unknown as Party.Request);
+      const postRes = await server.onRequest(postReq as unknown as PartyRequest);
       expect(postRes.status).toBe(403);
       const postData = await postRes.json();
       expect(postData.ok).toBe(false);
@@ -1380,7 +1382,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: "FORBIDDEN_ROOM" }),
       });
-      const delRes = await server.onRequest(delReq as unknown as Party.Request);
+      const delRes = await server.onRequest(delReq as unknown as PartyRequest);
       expect(delRes.status).toBe(403);
       const delData = await delRes.json();
       expect(delData.ok).toBe(false);
@@ -1401,7 +1403,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
         },
         body: JSON.stringify({ code: "CUSTOM_ROOM", status: "lobby" }),
       });
-      const fallbackRes = await server.onRequest(fallbackReq as unknown as Party.Request);
+      const fallbackRes = await server.onRequest(fallbackReq as unknown as PartyRequest);
       expect(fallbackRes.status).toBe(403);
 
       // Attempt with matching x-party-internal should succeed
@@ -1421,7 +1423,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           createdAt: new Date().toISOString(),
         }),
       });
-      const validRes = await server.onRequest(validReq as unknown as Party.Request);
+      const validRes = await server.onRequest(validReq as unknown as PartyRequest);
       expect(validRes.status).toBe(200);
 
       // Attempt with Authorization Bearer header should succeed
@@ -1441,7 +1443,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           createdAt: new Date().toISOString(),
         }),
       });
-      const bearerRes = await server.onRequest(bearerReq as unknown as Party.Request);
+      const bearerRes = await server.onRequest(bearerReq as unknown as PartyRequest);
       expect(bearerRes.status).toBe(200);
     });
 
@@ -1462,7 +1464,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           },
           body: JSON.stringify({ code: "NO_SECRET", status: "lobby" }),
         });
-        const postRes = await server.onRequest(postReq as unknown as Party.Request);
+        const postRes = await server.onRequest(postReq as unknown as PartyRequest);
         expect(postRes.status).toBe(403);
 
         const roomMock = createMockPartyRoom("PROD-WS-BLOCK");
@@ -1473,7 +1475,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
             type: "INIT_ROOM",
             payload: { hostNickname: "Attacker", hostTier: "contender" },
           }),
-          conn as unknown as Party.Connection,
+          conn as unknown as PartyConnection,
         );
         const wsMsg = JSON.parse(conn.sentMessages[0]);
         expect(wsMsg.type).toBe("ERROR");
@@ -1499,7 +1501,7 @@ describe("PartyKit ArenaServer Parity & Lifecycle Tests", () => {
           type: "INIT_ROOM",
           payload: { hostNickname: "Host", hostTier: "contender" },
         }),
-        hostConn as unknown as Party.Connection,
+        hostConn as unknown as PartyConnection,
       );
 
       (server as any).state.status = "answering";

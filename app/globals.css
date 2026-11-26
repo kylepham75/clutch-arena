@@ -2587,10 +2587,20 @@ svg {
   .main-shell {
     margin-left: 59px;
     width: calc(100% - 59px);
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
   }
   .topbar {
     height: 64px;
     padding: 0 15px;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .topbar::-webkit-scrollbar {
+    display: none;
   }
   .breadcrumb {
     font-size: 12px;
@@ -2604,6 +2614,8 @@ svg {
   }
   .topbar-actions {
     gap: 5px;
+    min-width: 0;
+    flex-shrink: 1;
   }
   .top-avatar {
     width: 28px;
@@ -4316,6 +4328,34 @@ svg {
 }
 
 @media (max-width: 768px) {
+  .main-shell {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
+  }
+  .workspace-full,
+  .workspace-main-pane,
+  .setup-grid,
+  .setup-card,
+  .empty-study-card,
+  .hero-quick-start,
+  .welcome-actions-grid {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .topbar {
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .topbar::-webkit-scrollbar {
+    display: none;
+  }
+  .topbar-actions {
+    min-width: 0;
+    flex-shrink: 1;
+  }
   .topbar-nav-tabs .topbar-tab span {
     display: none;
   }
@@ -4328,6 +4368,29 @@ svg {
 }
 
 @media (max-width: 480px) {
+  .main-shell {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
+  }
+  .workspace-full,
+  .workspace-main-pane,
+  .setup-grid,
+  .setup-card,
+  .empty-study-card,
+  .hero-quick-start,
+  .welcome-actions-grid {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .hero-quick-start .flex {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .welcome-actions-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .topbar {
     padding: 0 10px;
     gap: 6px;
@@ -6585,10 +6648,39 @@ svg {
 
 @media (max-width: 980px) {
   .setup-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .mode-cards-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .setup-grid {
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+    max-width: 100%;
+  }
+  .hero-quick-start .flex {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .welcome-actions-grid {
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+    max-width: 100%;
+  }
+  .deck-hero-banner > div {
+    flex-wrap: wrap;
+  }
+  .deck-hero-banner .truncate {
+    white-space: normal;
+    overflow: visible;
+  }
+  .deck-hero-actions {
+    flex-wrap: wrap;
+    max-width: 100%;
   }
 }
 

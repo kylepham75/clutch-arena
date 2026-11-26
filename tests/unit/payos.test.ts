@@ -906,6 +906,21 @@ describe("PayOS Gateway Utilities", () => {
           tier: "cram_pass",
         }),
       );
+      expect(result.squadCodes).toHaveLength(2);
+      expect(new Set(result.squadCodes).size).toBe(2);
+      for (const code of result.squadCodes ?? []) {
+        expect(code).toMatch(/^CLUTCH-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+      }
+
+      // Repeat call hits idempotency and preserves identical squadCodes
+      const repeatResult = await fulfillPayosOrder({
+        orderCode: 17300000077776,
+        amount: 119000,
+      });
+      expect(repeatResult.fulfilled).toBe(true);
+      expect(repeatResult.alreadyFulfilled).toBe(true);
+      expect(repeatResult.tier).toBe("cram_squad_3");
+      expect(repeatResult.squadCodes).toEqual(result.squadCodes);
     });
 
     it("refuses fulfillment for underpaid non-sandbox order even if recorded DB amount matches underpayment", async () => {
@@ -1234,6 +1249,97 @@ describe("PayOS Gateway Utilities", () => {
       expect(mockUpsertProfileSpy).toHaveBeenCalledWith(
         expect.objectContaining({ id: "recorded_owner_123" }),
       );
+    });
+
+    it("returns 2 identical squadCodes on initial and alreadyFulfilled repeat verify calls for cram_squad_3 (119000 VND)", async () => {
+      const squadOrderCode = 17300000077776;
+      mockSubRecord = {
+        user_id: "squad_verify_buyer_1",
+        tier: "cram_squad_3",
+        amount: 119000,
+        status: "pending",
+      };
+      mockAuthUser = {
+        id: "squad_verify_buyer_1",
+        email: "squad_verify@example.com",
+      };
+
+      global.fetch = vi.fn(async (url: string | URL | Request) => {
+        const urlStr = String(url);
+        if (urlStr.includes("api-merchant.payos.vn/v2/payment-requests")) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            json: async () => ({
+              code: "00",
+              desc: "success",
+              data: {
+                orderCode: squadOrderCode,
+                status: "PAID",
+                amount: 119000,
+                amountPaid: 119000,
+                transactions: [],
+              },
+            }),
+          } as Response;
+        }
+        return originalFetch(url);
+      });
+
+      const makeVerifyReq = () =>
+        new Request("http://localhost:3000/api/payments/payos/verify", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer valid_token",
+          },
+          body: JSON.stringify({ orderCode: squadOrderCode }),
+        });
+
+      const firstRes = await verifyPostRoute(makeVerifyReq());
+      const firstJson = await firstRes.json();
+
+      expect(firstRes.status).toBe(200);
+      expect(firstJson.ok).toBe(true);
+      expect(firstJson.paid).toBe(true);
+      expect(firstJson.fulfilled).toBe(true);
+      expect(firstJson.alreadyFulfilled).toBe(false);
+      expect(firstJson.tier).toBe("cram_squad_3");
+      expect(firstJson.squadCodes).toHaveLength(2);
+      expect(new Set(firstJson.squadCodes).size).toBe(2);
+      for (const code of firstJson.squadCodes as string[]) {
+        expect(code).toMatch(/^CLUTCH-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+      }
+
+      // Repeat verify call (in-memory fulfilledOrderCache hit when DB status is not pending)
+      mockSubRecord = {
+        user_id: "squad_verify_buyer_1",
+        tier: "cram_squad_3",
+        amount: 119000,
+      };
+      const repeatCacheRes = await verifyPostRoute(makeVerifyReq());
+      const repeatCacheJson = await repeatCacheRes.json();
+
+      expect(repeatCacheRes.status).toBe(200);
+      expect(repeatCacheJson.fulfilled).toBe(true);
+      expect(repeatCacheJson.alreadyFulfilled).toBe(true);
+      expect(repeatCacheJson.tier).toBe("cram_squad_3");
+      expect(repeatCacheJson.squadCodes).toEqual(firstJson.squadCodes);
+
+      // Repeat verify call when DB record is already marked active
+      mockSubRecord = {
+        ...mockSubRecord,
+        status: "active",
+      };
+      const repeatDbRes = await verifyPostRoute(makeVerifyReq());
+      const repeatDbJson = await repeatDbRes.json();
+
+      expect(repeatDbRes.status).toBe(200);
+      expect(repeatDbJson.fulfilled).toBe(true);
+      expect(repeatDbJson.alreadyFulfilled).toBe(true);
+      expect(repeatDbJson.tier).toBe("cram_squad_3");
+      expect(repeatDbJson.squadCodes).toEqual(firstJson.squadCodes);
     });
   });
 

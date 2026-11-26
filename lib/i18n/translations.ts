@@ -799,6 +799,136 @@ export interface TranslationDict {
     payosLinkedBank: string;
     termsOfService: string;
     privacyPolicy: string;
+    payosInitError: string;
+    payosNetworkError: string;
+    payosVerifyNotConfirmed: string;
+    usdCheckoutUnavailable: string;
+    usdInitError: string;
+    usdNetworkError: string;
+    authBannerText: string;
+    authDialogPrompt: string;
+    authBannerCta: string;
+    paymentSuccessTitle: string;
+    paymentSuccessDesc: string;
+    creatingVietQr: string;
+    pleaseWait: string;
+    signInRequiredTitle: string;
+    signInRequiredQrDesc: string;
+    signInNowBtn: string;
+    vietQrLoadFailed: string;
+    retryBtn: string;
+    connectingUsdCheckout: string;
+    proceedUsdCheckout: string;
+    polarPciNote: string;
+    oneTimeNoSub: string;
+    billedAutomatically: string;
+  };
+  pricingPage: {
+    headerBadge: string;
+    title: string;
+    subtitle: string;
+    tabPersonal: string;
+    tabTeam: string;
+    currencyVn: string;
+    currencyGlobal: string;
+    signInPromptTitle: string;
+    signInPromptDesc: string;
+    signInBtn: string;
+    proToggleMonthly: string;
+    proToggleSemester: string;
+    proSemesterBadge: string;
+    proSemesterSubtext: string;
+    proMonthlySubtext: string;
+    ctaCurrentPlan: string;
+    ctaBuyNow: string;
+    ctaBuyNowStar: string;
+    ctaUpgradeSemester: string;
+    ctaIncluded: string;
+    ctaComingSoon: string;
+    periodForever: string;
+    periodMonth: string;
+    periodSevenDays: string;
+    periodSemester: string;
+    statusActive: string;
+    statusDaysLeft: string;
+    freeTitle: string;
+    freeHeadline: string;
+    freeSubtitle: string;
+    freeBullet1: string;
+    freeBullet2: string;
+    freeBullet3: string;
+    freeBullet4: string;
+    freeBullet5: string;
+    cramBadge: string;
+    cramTitle: string;
+    cramHeadline: string;
+    cramSubtitle: string;
+    cramBullet1: string;
+    cramBullet2: string;
+    cramBullet3: string;
+    cramBullet4: string;
+    cramBullet5: string;
+    cramBullet6: string;
+    proBadge: string;
+    proTitle: string;
+    proSemesterHeadline: string;
+    proMonthlyHeadline: string;
+    proBullet1: string;
+    proBullet2: string;
+    proBullet3: string;
+    proBullet4: string;
+    proBullet5: string;
+    squadBadge: string;
+    squadTitle: string;
+    squadHeadline: string;
+    squadSubtitle: string;
+    squadBoxedCallout: string;
+    squadBullet1: string;
+    squadBullet2: string;
+    squadBullet3: string;
+    squadBullet4: string;
+    tutorBanner: string;
+    tutorTitle: string;
+    tutorHeadline: string;
+    tutorSubtitle: string;
+    tutorBoxedItem1: string;
+    tutorBoxedItem2: string;
+    tutorBoxedItem3: string;
+    tutorBullet1: string;
+    tutorBullet2: string;
+    tutorBullet3: string;
+    tutorBullet4: string;
+    squadRedeemTrigger: string;
+    squadRedeemPlaceholder: string;
+    squadRedeemBtn: string;
+    squadRedeemingBtn: string;
+    squadRedeemSignInPrompt: string;
+    squadRedeemSuccess: string;
+    squadRedeemError: string;
+    squadCodesHeading: string;
+    squadCodesSubheading: string;
+    squadCodeCopy: string;
+    squadCodeCopied: string;
+    squadCodeAvailable: string;
+    squadCodeRedeemed: string;
+    guaranteeTitle: string;
+    noSurpriseRenewals: string;
+    legalCompliance: string;
+    earnRemixTitle: string;
+    earnRemixUnlocked: string;
+    earnRemixDesc: string;
+  };
+  paymentReturn: {
+    verifyingTitle: string;
+    verifyingDesc: string;
+    successTitle: string;
+    successDesc: string;
+    squadCodesLabel: string;
+    cancelledTitle: string;
+    cancelledDesc: string;
+    dismissBtn: string;
+    errorTitle: string;
+    errorDesc: string;
   };
   tutorial: {
     quickTourBadge: string;
@@ -1683,12 +1813,142 @@ export const translations: Record<Language, TranslationDict> = {
       copyAccountTitle: "Copy account number",
       copyNoteTitle: "Copy transfer note",
       globalCardsLabel: "Apple Pay · Google Pay · Credit & Debit Cards",
-      globalSecurityNote: "Processed securely by LemonSqueezy Merchant of Record. Tax compliant.",
+      globalSecurityNote: "Processed securely by Polar.sh Merchant of Record. Tax compliant.",
       backToPlans: "Back to all plans",
       autoVerifiedIn3s: "Auto-verified in 3 seconds",
       payosLinkedBank: "PayOS Linked Bank",
       termsOfService: "Terms of Service",
       privacyPolicy: "Privacy Policy",
+      payosInitError: "Failed to initialize PayOS payment. Please try again later.",
+      payosNetworkError: "Network error when creating payment. Please try again.",
+      payosVerifyNotConfirmed: "Payment not yet confirmed by the server. Please ensure you are signed in and have completed checkout.",
+      usdCheckoutUnavailable: "Global USD card checkout is finalizing setup. Please leave your email below to receive priority access.",
+      usdInitError: "Failed to initialize USD checkout session. Please try again later.",
+      usdNetworkError: "Network error when creating USD checkout session. Please try again.",
+      authBannerText: "Please sign in or create an account to automatically link this purchase to your profile.",
+      authDialogPrompt: "Sign in to complete checkout and activate pass",
+      authBannerCta: "Sign in / Create Account",
+      paymentSuccessTitle: "Pass Activated Successfully!",
+      paymentSuccessDesc: "Your {planName} is now active across all devices.",
+      creatingVietQr: "Creating identified PayOS VietQR...",
+      pleaseWait: "Please wait a moment",
+      signInRequiredTitle: "Sign in required",
+      signInRequiredQrDesc: "Sign in to generate your personal payment QR",
+      signInNowBtn: "Sign in now",
+      vietQrLoadFailed: "Could not load VietQR",
+      retryBtn: "Retry",
+      connectingUsdCheckout: "Connecting to Secure USD Checkout...",
+      proceedUsdCheckout: "Proceed to Secure USD Card Checkout (Polar.sh)",
+      polarPciNote: "Powered by Polar.sh · PCI-DSS Compliant Merchant of Record",
+      oneTimeNoSub: "One-time purchase · No subscription",
+      billedAutomatically: "Billed automatically",
+    },
+    pricingPage: {
+      headerBadge: "Student Pricing",
+      title: "Upgrade your plan",
+      subtitle: "Choose the plan that fits your exam prep. Switch currency anytime.",
+      tabPersonal: "Personal",
+      tabTeam: "Team",
+      currencyVn: "VN (VND)",
+      currencyGlobal: "Global (USD)",
+      signInPromptTitle: "Sign in to activate your pass",
+      signInPromptDesc: "Please sign in or create an account so your purchase and quota are linked automatically.",
+      signInBtn: "Sign in / Create Account",
+      proToggleMonthly: "Monthly",
+      proToggleSemester: "Semester",
+      proSemesterBadge: "Save 62% · Full 4-Month Semester",
+      proSemesterSubtext: "4-month semester subscription ({monthlyEquiv}/mo · Save 62% vs Monthly)",
+      proMonthlySubtext: "1-month subscription · Switch to Semester (4 months) to save 62%",
+      ctaCurrentPlan: "Your current plan",
+      ctaBuyNow: "Buy now",
+      ctaBuyNowStar: "✦ Buy now",
+      ctaUpgradeSemester: "✦ Upgrade to Semester",
+      ctaIncluded: "Included in your plan",
+      ctaComingSoon: "Coming soon",
+      periodForever: "/ forever",
+      periodMonth: "/ month",
+      periodSevenDays: "/ 7 days",
+      periodSemester: "/ semester",
+      statusActive: "Active",
+      statusDaysLeft: "{days} days left",
+      freeTitle: "Free",
+      freeHeadline: "Try Clutch Arena",
+      freeSubtitle: "No credit card required · Rolling 3-day starter quota",
+      freeBullet1: "1 PDF upload (≤40 slides)",
+      freeBullet2: "5Q Proof Preview with source citations",
+      freeBullet3: "Concise 1-section Clutch Notes",
+      freeBullet4: "Join friend /arena lobbies 100% free",
+      freeBullet5: "Rolling 3d starter AI quota (0% on shared cache)",
+      cramBadge: "Exam Sprint",
+      cramTitle: "7-Day Cram Pass",
+      cramHeadline: "Exam-week sprint",
+      cramSubtitle: "One-time pass · No auto-renew",
+      cramBullet1: "30Q mock exams + full distractor rationale",
+      cramBullet2: "Full Clutch Notes + 1-Click PDF Cheat Sheet",
+      cramBullet3: "Multi-file upload up to 5 files (15MB)",
+      cramBullet4: "AI Study Coach deep debriefs",
+      cramBullet5: "3 free regenerations per deck",
+      cramBullet6: "One-time pass (no auto-renew)",
+      proBadge: "Most Popular",
+      proTitle: "Clutch Pro",
+      proSemesterHeadline: "Full-term exam mastery",
+      proMonthlyHeadline: "Sustained active study",
+      proBullet1: "Multi-file upload up to 10 files (25MB)",
+      proBullet2: "5 free regenerations per deck",
+      proBullet3: "Host 30Q Concept Remix /arena rooms (friends join free)",
+      proBullet4: "Highest 24h / 7d rolling AI quota & shared cache",
+      proBullet5: "30Q mocks, full Clutch Notes, PDF Cheat Sheet & AI Coach",
+      squadBadge: "3-Pack",
+      squadTitle: "Exam Squad (3-Pack)",
+      squadHeadline: "For 3 study partners",
+      squadSubtitle: "One-time purchase · Zero auto-renew",
+      squadBoxedCallout: "3 independent 7-day seats · {perStudent} / student",
+      squadBullet1: "Instant 7-day Cram Pass for buyer + 2 shareable partner invite codes",
+      squadBullet2: "Shared course deck cache across your squad",
+      squadBullet3: "Full 30Q mocks, Clutch Notes, PDF Cheat Sheet & AI Coach",
+      squadBullet4: "Zero auto-renew",
+      tutorBanner: "Host up to 50 students live — classmates join /arena free",
+      tutorTitle: "Tutor & Guild",
+      tutorHeadline: "For TAs, clubs & growing classes",
+      tutorSubtitle: "Monthly subscription · Cancel anytime",
+      tutorBoxedItem1: "50 live /arena players",
+      tutorBoxedItem2: "Custom PDF Cheat Sheet watermarks",
+      tutorBoxedItem3: "Post-match Class Analytics & Gradebook CSV",
+      tutorBullet1: "Maximum 24h & 7d rolling AI quota across Decks, Notes, OCR & Coach",
+      tutorBullet2: "Priority Sonnet 5.5 + automatic Eco fallback",
+      tutorBullet3: "Unlimited students join your /arena rooms for free",
+      tutorBullet4: "Priority API queue for high-concurrency match starts",
+      squadRedeemTrigger: "Have a Squad code?",
+      squadRedeemPlaceholder: "CLUTCH-XXXX-XXXX",
+      squadRedeemBtn: "Redeem",
+      squadRedeemingBtn: "Redeeming...",
+      squadRedeemSignInPrompt: "Please sign in to redeem your Squad invite code.",
+      squadRedeemSuccess: "Squad pass activated! Your 7-day Cram Pass is now active.",
+      squadRedeemError: "Invalid or already redeemed Squad code. Please check and try again.",
+      squadCodesHeading: "Your Squad Invite Codes",
+      squadCodesSubheading: "Share these 2 codes with your study partners. Each unlocks an independent 7-day Cram Pass.",
+      squadCodeCopy: "Copy",
+      squadCodeCopied: "Copied",
+      squadCodeAvailable: "Available",
+      squadCodeRedeemed: "Redeemed",
+      guaranteeTitle: "100% Grounded Citation Guarantee — Every question & formula links directly to your uploaded slides and pages.",
+      noSurpriseRenewals: "No surprise renewals on 7-Day Cram Passes. Cancel subscriptions anytime.",
+      legalCompliance: "Decree 13/2023/ND-CP & SBV Compliant",
+      earnRemixTitle: "Earn Free Concept Remix Runs",
+      earnRemixUnlocked: "{count} runs unlocked",
+      earnRemixDesc: "Host a 4-player /arena match or have 3 classmates import your shared pack to unlock 3 free Concept Remix runs.",
+    },
+    paymentReturn: {
+      verifyingTitle: "Verifying your payment...",
+      verifyingDesc: "Please wait while we confirm your transaction and activate your plan.",
+      successTitle: "Payment Confirmed!",
+      successDesc: "Your plan is now active. Enjoy full access to Clutch Arena.",
+      squadCodesLabel: "Your Squad Invite Codes",
+      cancelledTitle: "Payment Cancelled",
+      cancelledDesc: "No charges were made. You can resume checkout or switch plans anytime.",
+      dismissBtn: "Continue",
+      errorTitle: "Could not verify payment",
+      errorDesc: "We couldn't confirm your payment status yet. Please refresh or contact support if you were charged.",
     },
     tutorial: {
       quickTourBadge: "Quick Tour",
@@ -2571,12 +2831,142 @@ export const translations: Record<Language, TranslationDict> = {
       copyAccountTitle: "Sao chép số tài khoản",
       copyNoteTitle: "Sao chép nội dung",
       globalCardsLabel: "Apple Pay · Google Pay · Thẻ tín dụng & Thẻ ghi nợ",
-      globalSecurityNote: "Thanh toán an toàn qua cổng LemonSqueezy Merchant of Record. Đảm bảo tuân thủ thuế quốc tế.",
+      globalSecurityNote: "Thanh toán an toàn qua cổng Polar.sh Merchant of Record. Đảm bảo tuân thủ thuế quốc tế.",
       backToPlans: "Quay lại danh sách gói",
       autoVerifiedIn3s: "Xác nhận tự động trong 3 giây",
       payosLinkedBank: "Ngân hàng liên kết PayOS",
       termsOfService: "Điều khoản dịch vụ",
       privacyPolicy: "Chính sách bảo mật",
+      payosInitError: "Không thể khởi tạo thanh toán PayOS. Vui lòng thử lại sau.",
+      payosNetworkError: "Lỗi kết nối khi khởi tạo thanh toán. Vui lòng thử lại.",
+      payosVerifyNotConfirmed: "Hệ thống chưa ghi nhận giao dịch của bạn. Vui lòng hoàn tất chuyển khoản đúng nội dung, hoặc liên hệ hỗ trợ.",
+      usdCheckoutUnavailable: "Cổng thanh toán thẻ quốc tế USD đang hoàn tất cấu hình. Bạn có thể để lại email bên dưới để nhận thông báo ngay khi mở cổng.",
+      usdInitError: "Không thể khởi tạo cổng thanh toán USD. Vui lòng thử lại sau.",
+      usdNetworkError: "Lỗi kết nối khi khởi tạo thanh toán USD. Vui lòng thử lại.",
+      authBannerText: "Vui lòng đăng nhập hoặc tạo tài khoản để kích hoạt gói học tự động vào tài khoản của bạn.",
+      authDialogPrompt: "Đăng nhập để tiến hành thanh toán và kích hoạt gói học",
+      authBannerCta: "Đăng nhập / Tạo tài khoản ngay",
+      paymentSuccessTitle: "Thanh toán thành công!",
+      paymentSuccessDesc: "Bạn đã mở khóa toàn quyền {planName}. Đang tải lại...",
+      creatingVietQr: "Đang khởi tạo mã VietQR định danh từ PayOS...",
+      pleaseWait: "Vui lòng đợi giây lát",
+      signInRequiredTitle: "Yêu cầu đăng nhập",
+      signInRequiredQrDesc: "Đăng nhập để tạo mã QR gắn liền tài khoản của bạn",
+      signInNowBtn: "Đăng nhập ngay",
+      vietQrLoadFailed: "Chưa tải được mã VietQR",
+      retryBtn: "Tải lại mã",
+      connectingUsdCheckout: "Đang chuyển tiếp cổng thanh toán USD...",
+      proceedUsdCheckout: "Thanh toán Thẻ Quốc tế USD (Visa / Mastercard / Apple Pay)",
+      polarPciNote: "Bảo mật chuẩn PCI-DSS · Polar.sh Merchant of Record",
+      oneTimeNoSub: "Mua 1 lần · Không gia hạn",
+      billedAutomatically: "Gia hạn tự động định kỳ",
+    },
+    pricingPage: {
+      headerBadge: "Bảng giá sinh viên",
+      title: "Nâng cấp gói học",
+      subtitle: "Chọn gói phù hợp với lộ trình ôn thi của bạn. Chuyển đổi tiền tệ bất cứ lúc nào.",
+      tabPersonal: "Cá nhân",
+      tabTeam: "Nhóm & Giảng dạy",
+      currencyVn: "VN (VND)",
+      currencyGlobal: "Quốc tế (USD)",
+      signInPromptTitle: "Đăng nhập để kích hoạt gói học",
+      signInPromptDesc: "Vui lòng đăng nhập hoặc tạo tài khoản để gói học và hạn mức được gắn tự động vào hồ sơ của bạn.",
+      signInBtn: "Đăng nhập / Tạo tài khoản",
+      proToggleMonthly: "Hàng tháng",
+      proToggleSemester: "Học kỳ",
+      proSemesterBadge: "Tiết kiệm 62% · Trọn học kỳ 4 tháng",
+      proSemesterSubtext: "Gói đăng ký học kỳ 4 tháng ({monthlyEquiv}/tháng · Tiết kiệm 62% so với gói tháng)",
+      proMonthlySubtext: "Gói đăng ký 1 tháng · Chọn Học kỳ (4 tháng) để tiết kiệm 62%",
+      ctaCurrentPlan: "Gói hiện tại của bạn",
+      ctaBuyNow: "Mua ngay",
+      ctaBuyNowStar: "✦ Mua ngay",
+      ctaUpgradeSemester: "✦ Nâng cấp lên Học kỳ",
+      ctaIncluded: "Đã bao gồm trong gói",
+      ctaComingSoon: "Sắp ra mắt",
+      periodForever: "/ vĩnh viễn",
+      periodMonth: "/ tháng",
+      periodSevenDays: "/ 7 ngày",
+      periodSemester: "/ học kỳ",
+      statusActive: "Đang hoạt động",
+      statusDaysLeft: "Còn {days} ngày",
+      freeTitle: "Miễn phí",
+      freeHeadline: "Trải nghiệm Clutch Arena",
+      freeSubtitle: "Không cần thẻ · Hạn mức khởi đầu tự làm mới mỗi 3 ngày",
+      freeBullet1: "Tải lên 1 tệp PDF (≤40 slide)",
+      freeBullet2: "Xem trước 5 câu hỏi kiểm chứng kèm trích dẫn gốc",
+      freeBullet3: "Tóm tắt Clutch Notes 1 phần ngắn gọn",
+      freeBullet4: "Tham gia phòng đấu /arena của bạn bè miễn phí 100%",
+      freeBullet5: "Hạn mức AI khởi đầu xoay vòng 3 ngày (0% với kho đề chung)",
+      cramBadge: "Nước rút thi cử",
+      cramTitle: "Vé Ôn Thi 7 Ngày",
+      cramHeadline: "Tăng tốc tuần thi",
+      cramSubtitle: "Mua 1 lần · Không tự động gia hạn",
+      cramBullet1: "Đề thi thử 30 câu + giải thích bẫy đáp án nhiễu",
+      cramBullet2: "Clutch Notes đầy đủ + Xuất PDF Cheat Sheet 1 chạm",
+      cramBullet3: "Tổng hợp đa tài liệu tối đa 5 tệp (15MB)",
+      cramBullet4: "Gia sư AI phân tích chuyên sâu lỗi sai",
+      cramBullet5: "3 lần tạo lại miễn phí cho mỗi bộ đề",
+      cramBullet6: "Thanh toán 1 lần (không gia hạn tự động)",
+      proBadge: "Phổ biến nhất",
+      proTitle: "Clutch Pro",
+      proSemesterHeadline: "Làm chủ kỳ thi trọn học kỳ",
+      proMonthlyHeadline: "Ôn tập chủ động bền bỉ",
+      proBullet1: "Tổng hợp đa tài liệu tối đa 10 tệp (25MB)",
+      proBullet2: "5 lần tạo lại miễn phí cho mỗi bộ đề",
+      proBullet3: "Mở phòng đấu 30 câu Concept Remix /arena (bạn bè vào miễn phí)",
+      proBullet4: "Hạn mức AI xoay vòng 24h / 7 ngày cao nhất & kho đề chung",
+      proBullet5: "Đề 30 câu, Clutch Notes đầy đủ, PDF Cheat Sheet & Gia sư AI",
+      squadBadge: "Gói 3 người",
+      squadTitle: "Nhóm Ôn Thi (3 Vé)",
+      squadHeadline: "Dành cho 3 bạn cùng ôn thi",
+      squadSubtitle: "Mua 1 lần · Không tự động gia hạn",
+      squadBoxedCallout: "3 suất 7 ngày độc lập · {perStudent} / sinh viên",
+      squadBullet1: "Kích hoạt ngay Vé 7 ngày cho người mua + 2 mã mời chia sẻ cho bạn học",
+      squadBullet2: "Dùng chung bộ nhớ đệm kho đề môn học cho cả nhóm",
+      squadBullet3: "Đầy đủ đề 30 câu, Clutch Notes, PDF Cheat Sheet & Gia sư AI",
+      squadBullet4: "Không tự động gia hạn",
+      tutorBanner: "Tổ chức phòng thi trực tiếp tới 50 học viên — bạn học vào /arena miễn phí",
+      tutorTitle: "Giảng Viên & CLB",
+      tutorHeadline: "Dành cho trợ giảng, CLB & lớp học",
+      tutorSubtitle: "Đăng ký hàng tháng · Hủy bất cứ lúc nào",
+      tutorBoxedItem1: "50 người chơi /arena trực tiếp",
+      tutorBoxedItem2: "Tùy chỉnh watermark trên PDF Cheat Sheet",
+      tutorBoxedItem3: "Phân tích lớp học sau trận & xuất bảng điểm CSV",
+      tutorBullet1: "Hạn mức AI xoay vòng 24h & 7 ngày tối đa cho Bộ đề, Notes, OCR & Gia sư",
+      tutorBullet2: "Ưu tiên Sonnet 5.5 + tự động chuyển Eco khi cần",
+      tutorBullet3: "Học viên tham gia phòng /arena của bạn hoàn toàn miễn phí",
+      tutorBullet4: "Ưu tiên hàng đợi máy chủ khi khởi tạo trận đấu đông người",
+      squadRedeemTrigger: "Bạn có mã Nhóm (Squad code)?",
+      squadRedeemPlaceholder: "CLUTCH-XXXX-XXXX",
+      squadRedeemBtn: "Kích hoạt",
+      squadRedeemingBtn: "Đang kích hoạt...",
+      squadRedeemSignInPrompt: "Vui lòng đăng nhập để kích hoạt mã mời Nhóm.",
+      squadRedeemSuccess: "Kích hoạt thành công! Vé Ôn Thi 7 Ngày của bạn đã sẵn sàng.",
+      squadRedeemError: "Mã mời không hợp lệ hoặc đã được sử dụng. Vui lòng kiểm tra lại.",
+      squadCodesHeading: "Mã mời Nhóm của bạn",
+      squadCodesSubheading: "Chia sẻ 2 mã này cho bạn học của bạn. Mỗi mã mở khóa 1 suất Vé 7 Ngày độc lập.",
+      squadCodeCopy: "Sao chép",
+      squadCodeCopied: "Đã sao chép",
+      squadCodeAvailable: "Chưa sử dụng",
+      squadCodeRedeemed: "Đã sử dụng",
+      guaranteeTitle: "Cam kết trích dẫn chuẩn xác 100% — Mọi câu hỏi và công thức đều liên kết trực tiếp tới slide và trang tài liệu của bạn.",
+      noSurpriseRenewals: "Không tự động gia hạn với Vé 7 Ngày. Hủy gói định kỳ bất cứ lúc nào.",
+      legalCompliance: "Tuân thủ NĐ 13/2023/NĐ-CP & Quy định NHNN",
+      earnRemixTitle: "Nhận lượt Concept Remix miễn phí",
+      earnRemixUnlocked: "{count} lượt khả dụng",
+      earnRemixDesc: "Mở phòng đấu 4 người hoặc mời 3 bạn cùng lớp nhập bộ đề chia sẻ của bạn để nhận ngay 3 lượt Concept Remix miễn phí.",
+    },
+    paymentReturn: {
+      verifyingTitle: "Đang xác thực thanh toán...",
+      verifyingDesc: "Vui lòng đợi trong giây lát để hệ thống xác nhận giao dịch và kích hoạt gói học của bạn.",
+      successTitle: "Thanh toán thành công!",
+      successDesc: "Gói học của bạn đã được kích hoạt. Chúc bạn ôn thi hiệu quả cùng Clutch Arena.",
+      squadCodesLabel: "Mã mời Nhóm của bạn",
+      cancelledTitle: "Đã hủy thanh toán",
+      cancelledDesc: "Bạn chưa bị trừ tiền. Bạn có thể quay lại thanh toán hoặc đổi gói bất cứ lúc nào.",
+      dismissBtn: "Tiếp tục",
+      errorTitle: "Không thể xác thực thanh toán",
+      errorDesc: "Hệ thống chưa thể xác nhận trạng thái thanh toán. Vui lòng tải lại trang hoặc liên hệ hỗ trợ nếu bạn đã chuyển khoản.",
     },
     tutorial: {
       quickTourBadge: "Hướng dẫn nhanh",

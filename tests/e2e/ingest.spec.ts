@@ -74,7 +74,7 @@ test("HTTP rejects malformed files and invalid generation options", async ({
   expect(options.status()).toBe(400);
 });
 
-test("HTTP /api/ingest/multi extracts multiple mixed files simultaneously into composite deck", async ({
+test("HTTP /api/ingest/multi rejects unauthenticated/free callers with TIER_UPGRADE_REQUIRED (403)", async ({
   request,
 }) => {
   const fileTxt = {
@@ -104,14 +104,9 @@ test("HTTP /api/ingest/multi extracts multiple mixed files simultaneously into c
   });
 
   const body = await response.json();
-  expect(response.status(), JSON.stringify(body)).toBe(200);
-  expect(body.ok).toBe(true);
-  expect(body.operation).toBe("preview");
-  expect(body.documents.length).toBe(3);
-  expect(body.document.sources.length).toBe(4);
-  expect(body.document.format).toBe("mixed");
-  expect(body.document.sources[0].label).toContain("Lecture1_Notes");
-  expect(body.document.sources[1].label).toContain("Lecture2_Summary");
-  expect(body.document.sources[3].label).toContain("Lecture3_Slides");
+  expect(response.status(), JSON.stringify(body)).toBe(403);
+  expect(body.ok).toBe(false);
+  expect(body.error?.code).toBe("TIER_UPGRADE_REQUIRED");
+  expect(response.headers()["cache-control"]).toBe("no-store");
 });
 

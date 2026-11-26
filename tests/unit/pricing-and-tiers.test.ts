@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import React from "react";
+import fs from "node:fs";
+import path from "node:path";
+import ts from "typescript";
 
 vi.mock("server-only", () => ({}));
 
@@ -41,6 +45,10 @@ import {
   getRegionalGuardBudget,
 } from "@/lib/pricing/tiers";
 import { verifyAndClampClientTier } from "@/hooks/use-user-tier";
+import * as pricingTiersModule from "@/lib/pricing/tiers";
+import * as pricingRegionModule from "@/lib/pricing/region";
+import { translations, type Language } from "@/lib/i18n/translations";
+import type { PricingViewProps } from "@/components/pricing/pricing-view";
 import {
   checkAndReserveDeckQuota,
   recordDeckGenerationCogs,
@@ -1578,6 +1586,564 @@ describe("Eco-Mode (<=30% Remaining) Step-Down & Rolling Budget Exhaustion", () 
     expect(blocked.allowed).toBe(false);
     expect(blocked.reason).toBe("COGS_CEILING_EXCEEDED");
     expect(blocked.quota.remainingPct).toBe(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  PricingView Component, Interactive Toggles & Pure Helpers                 */
+/* -------------------------------------------------------------------------- */
+
+type HookRunner = {
+  useState: <S>(init: S | (() => S)) => [S, (v: S | ((prev: S) => S)) => void];
+  useEffect: (fn: () => void | (() => void), deps?: unknown[]) => void;
+  useCallback: <T extends (...args: any[]) => any>(fn: T, deps?: unknown[]) => T;
+  useRef: <T>(init: T) => { current: T };
+};
+
+let activeHookRunner: HookRunner | null = null;
+let mockLanguage: Language = "en";
+const mockSetLanguage = vi.fn((next: Language) => {
+  mockLanguage = next;
+});
+
+let mockAuthState: { user: any; session: any; openAuthModal: ReturnType<typeof vi.fn> } = {
+  user: null,
+  session: null,
+  openAuthModal: vi.fn(),
+};
+
+let mockUserTierState: {
+  tier: "contender" | "cram_pass" | "pro_monthly" | "pro" | "tutor";
+  daysRemaining: number | null;
+  referrals: {
+    unlockedRemixRuns: number;
+    friendsInvited: number;
+    roomsHostedWith4Players: number;
+    packsImportedByClassmates: number;
+  };
+  refreshTier: ReturnType<typeof vi.fn>;
+  refreshQuota: ReturnType<typeof vi.fn>;
+} = {
+  tier: "contender",
+  daysRemaining: null,
+  referrals: {
+    unlockedRemixRuns: 0,
+    friendsInvited: 0,
+    roomsHostedWith4Players: 0,
+    packsImportedByClassmates: 0,
+  },
+  refreshTier: vi.fn().mockResolvedValue("contender"),
+  refreshQuota: vi.fn().mockResolvedValue(undefined),
+};
+
+function loadPricingViewModule() {
+  const fullPath = path.resolve("components/pricing/pricing-view.tsx");
+  const sourceCode = fs.readFileSync(fullPath, "utf8");
+  const transpiled = ts.transpileModule(sourceCode, {
+    compilerOptions: {
+      jsx: ts.JsxEmit.React,
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+      esModuleInterop: true,
+    },
+  });
+  const mod = { exports: {} as typeof import("@/components/pricing/pricing-view") };
+  const reactProxy = Object.assign(
+    {
+      default: React,
+    },
+    React,
+    {
+      useState: (init: any) =>
+        activeHookRunner ? activeHookRunner.useState(init) : React.useState(init),
+      useEffect: (fn: any, deps?: any[]) =>
+        activeHookRunner ? activeHookRunner.useEffect(fn, deps) : React.useEffect(fn, deps),
+      useCallback: (fn: any, deps: React.DependencyList = []) =>
+        activeHookRunner ? activeHookRunner.useCallback(fn, [...deps]) : React.useCallback(fn, deps),
+      useRef: (init: any) =>
+        activeHookRunner ? activeHookRunner.useRef(init) : React.useRef(init),
+    },
+  );
+  const customRequire = (id: string) => {
+    if (id === "react") return reactProxy;
+    if (id === "next/link") {
+      return {
+        default: ({ children, href, ...props }: any) =>
+          React.createElement("a", { href, ...props }, children),
+      };
+    }
+    if (id === "@/lib/i18n/context") {
+      return {
+        useLanguage: () => ({
+          t: translations[mockLanguage],
+          language: mockLanguage,
+          setLanguage: mockSetLanguage,
+        }),
+      };
+    }
+    if (id === "@/lib/pricing/tiers") return pricingTiersModule;
+    if (id === "@/lib/pricing/region") return pricingRegionModule;
+    if (id === "@/hooks/use-user-tier") {
+      return { useUserTier: () => mockUserTierState };
+    }
+    if (id === "@/lib/auth/context") {
+      return { useAuth: () => mockAuthState };
+    }
+    if (id === "@/lib/supabase/client") {
+      return { getSupabaseBrowserClient: () => mockBrowserSupabase };
+    }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require(id);
+  };
+  (globalThis as any).React = reactProxy;
+  const fn = new Function("require", "module", "exports", transpiled.outputText);
+  fn(customRequire, mod, mod.exports);
+  return mod.exports;
+}
+
+const {
+  PricingView,
+  resolveClutchProPlanId,
+  getProMonthlyEquivalent,
+  getSquadPerStudentPrice,
+  getPlanDisplayPrice,
+  isPlanIncludedForTier,
+} = loadPricingViewModule();
+
+interface RenderedElement {
+  type: unknown;
+  props: Record<string, any>;
+}
+
+function expandElementTree(node: unknown): unknown {
+  if (node === null || node === undefined || typeof node === "boolean") return null;
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(expandElementTree);
+  if (typeof node === "object" && "type" in (node as any) && "props" in (node as any)) {
+    const el = node as RenderedElement;
+    if (typeof el.type === "function") {
+      return expandElementTree((el.type as (props: Record<string, any>) => unknown)(el.props));
+    }
+    const children = el.props?.children !== undefined ? expandElementTree(el.props.children) : undefined;
+    return {
+      type: el.type,
+      props: { ...el.props, children },
+    };
+  }
+  return node;
+}
+
+function collectNodes(
+  node: unknown,
+  predicate: (el: RenderedElement) => boolean,
+  acc: RenderedElement[] = [],
+): RenderedElement[] {
+  if (!node || typeof node !== "object") return acc;
+  if (Array.isArray(node)) {
+    for (const item of node) collectNodes(item, predicate, acc);
+    return acc;
+  }
+  if ("type" in node && "props" in node) {
+    const el = node as RenderedElement;
+    if (predicate(el)) acc.push(el);
+    if (el.props?.children !== undefined) collectNodes(el.props.children, predicate, acc);
+  }
+  return acc;
+}
+
+function extractNodeText(node: unknown): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractNodeText).join(" ");
+  if (typeof node === "object" && "props" in node) {
+    return extractNodeText((node as RenderedElement).props?.children);
+  }
+  return "";
+}
+
+function depsChanged(prev?: unknown[], next?: unknown[]): boolean {
+  if (!prev || !next) return true;
+  if (prev.length !== next.length) return true;
+  return prev.some((v, i) => !Object.is(v, next[i]));
+}
+
+function mountComponent<P extends Record<string, any>>(
+  Component: (props: P) => unknown,
+  initialProps: P,
+) {
+  const states: unknown[] = [];
+  const refs: { current: unknown }[] = [];
+  const callbacks: { fn: (...args: any[]) => any; deps?: unknown[] }[] = [];
+  const effects: {
+    fn: () => void | (() => void);
+    deps?: unknown[];
+    cleanup?: (() => void) | void;
+    initialized: boolean;
+  }[] = [];
+
+  let currentProps = initialProps;
+  let tree: unknown = null;
+  let dirty = false;
+
+  const renderOnce = () => {
+    let stateIdx = 0;
+    let refIdx = 0;
+    let cbIdx = 0;
+    let effIdx = 0;
+    const pendingEffects: number[] = [];
+
+    const runner: HookRunner = {
+      useState: (init) => {
+        const idx = stateIdx++;
+        if (!(idx in states)) {
+          states[idx] = typeof init === "function" ? (init as () => unknown)() : init;
+        }
+        const setState = (next: any) => {
+          const prev = states[idx];
+          const resolved = typeof next === "function" ? next(prev) : next;
+          if (!Object.is(prev, resolved)) {
+            states[idx] = resolved;
+            dirty = true;
+          }
+        };
+        return [states[idx] as any, setState];
+      },
+      useRef: (init) => {
+        const idx = refIdx++;
+        if (!(idx in refs)) {
+          refs[idx] = { current: init };
+        }
+        return refs[idx] as any;
+      },
+      useCallback: (fn, deps) => {
+        const idx = cbIdx++;
+        const prev = callbacks[idx];
+        if (!prev || depsChanged(prev.deps, deps)) {
+          callbacks[idx] = { fn, deps };
+        }
+        return callbacks[idx].fn as any;
+      },
+      useEffect: (fn, deps) => {
+        const idx = effIdx++;
+        const prev = effects[idx];
+        if (!prev || !prev.initialized || depsChanged(prev.deps, deps)) {
+          effects[idx] = {
+            fn,
+            deps,
+            cleanup: prev?.cleanup,
+            initialized: true,
+          };
+          pendingEffects.push(idx);
+        }
+      },
+    };
+
+    dirty = false;
+    activeHookRunner = runner;
+    try {
+      tree = expandElementTree(Component(currentProps));
+    } finally {
+      activeHookRunner = null;
+    }
+
+    for (const idx of pendingEffects) {
+      const eff = effects[idx];
+      if (typeof eff.cleanup === "function") {
+        eff.cleanup();
+      }
+      eff.cleanup = eff.fn();
+    }
+  };
+
+  const settle = () => {
+    for (let guard = 0; guard < 12; guard++) {
+      renderOnce();
+      if (!dirty) break;
+    }
+  };
+
+  settle();
+
+  return {
+    getTree: () => tree,
+    getText: () => extractNodeText(tree).replace(/\s+/g, " ").trim(),
+    getArticles: () => collectNodes(tree, (el) => el.type === "article"),
+    findTab: (label: string) =>
+      collectNodes(
+        tree,
+        (el) =>
+          el.type === "button" &&
+          el.props?.role === "tab" &&
+          extractNodeText(el.props.children).trim() === label,
+      )[0],
+    findButtonByText: (text: string) =>
+      collectNodes(
+        tree,
+        (el) => el.type === "button" && extractNodeText(el.props.children).trim() === text,
+      )[0],
+    click: (el: RenderedElement | undefined) => {
+      if (!el?.props?.onClick) {
+        throw new Error("Target element has no onClick handler");
+      }
+      el.props.onClick();
+      settle();
+    },
+    rerender: (nextProps: P) => {
+      currentProps = nextProps;
+      settle();
+    },
+    unmount: () => {
+      for (const eff of effects) {
+        if (typeof eff.cleanup === "function") {
+          eff.cleanup();
+        }
+      }
+    },
+  };
+}
+
+describe("PricingView Pure Helpers & Interactive UI", () => {
+  const originalDocument = (globalThis as any).document;
+  const originalWindow = (globalThis as any).window;
+  const originalFetch = globalThis.fetch;
+
+  let cookieJar: Record<string, string> = {};
+
+  beforeEach(() => {
+    cookieJar = {};
+    mockLanguage = "en";
+    mockSetLanguage.mockClear();
+    mockAuthState = {
+      user: null,
+      session: null,
+      openAuthModal: vi.fn(),
+    };
+    mockUserTierState = {
+      tier: "contender",
+      daysRemaining: null,
+      referrals: {
+        unlockedRemixRuns: 0,
+        friendsInvited: 0,
+        roomsHostedWith4Players: 0,
+        packsImportedByClassmates: 0,
+      },
+      refreshTier: vi.fn().mockResolvedValue("contender"),
+      refreshQuota: vi.fn().mockResolvedValue(undefined),
+    };
+
+    (globalThis as any).document = {
+      get cookie() {
+        return Object.entries(cookieJar)
+          .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+          .join("; ");
+      },
+      set cookie(raw: string) {
+        const [pair] = raw.split(";");
+        const eqIdx = pair.indexOf("=");
+        if (eqIdx > 0) {
+          const key = pair.slice(0, eqIdx).trim();
+          const val = pair.slice(eqIdx + 1).trim();
+          cookieJar[key] = decodeURIComponent(val);
+        }
+      },
+    };
+    (globalThis as any).window = {
+      dispatchEvent: vi.fn(),
+    };
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    }) as any;
+  });
+
+  afterEach(() => {
+    activeHookRunner = null;
+    (globalThis as any).document = originalDocument;
+    (globalThis as any).window = originalWindow;
+    globalThis.fetch = originalFetch;
+  });
+
+  it("exports pure helpers with accurate regional calculations and tier inclusion logic", () => {
+    expect(resolveClutchProPlanId("semester")).toBe("pro");
+    expect(resolveClutchProPlanId("monthly")).toBe("pro_monthly");
+
+    expect(getProMonthlyEquivalent("VN")).toBe("~37.250đ");
+    expect(getProMonthlyEquivalent("ROW")).toBe("~$3.00");
+
+    expect(getSquadPerStudentPrice("VN")).toBe("~39.700đ");
+    expect(getSquadPerStudentPrice("ROW")).toBe("~$3.00");
+
+    expect(getPlanDisplayPrice("contender", "VN")).toBe("0đ");
+    expect(getPlanDisplayPrice("contender", "ROW")).toBe("$0");
+    expect(getPlanDisplayPrice("cram_pass", "VN")).toBe("49.000đ");
+    expect(getPlanDisplayPrice("cram_pass", "ROW")).toBe("$3.99");
+    expect(getPlanDisplayPrice("cram_squad_3", "VN")).toBe("119.000đ");
+    expect(getPlanDisplayPrice("cram_squad_3", "ROW")).toBe("$8.99");
+    expect(getPlanDisplayPrice("pro_monthly", "VN")).toBe("99.000đ");
+    expect(getPlanDisplayPrice("pro_monthly", "ROW")).toBe("$7.99");
+    expect(getPlanDisplayPrice("pro", "VN")).toBe("149.000đ");
+    expect(getPlanDisplayPrice("pro", "ROW")).toBe("$11.99");
+    expect(getPlanDisplayPrice("tutor", "VN")).toBe("349.000đ");
+    expect(getPlanDisplayPrice("tutor", "ROW")).toBe("$19.99");
+
+    // isPlanIncludedForTier
+    expect(isPlanIncludedForTier("contender", "contender")).toBe(false);
+    expect(isPlanIncludedForTier("contender", "cram_pass")).toBe(true);
+    expect(isPlanIncludedForTier("cram_pass", "pro_monthly")).toBe(false);
+    expect(isPlanIncludedForTier("cram_pass", "pro")).toBe(true);
+    expect(isPlanIncludedForTier("cram_squad_3", "pro")).toBe(true);
+    expect(isPlanIncludedForTier("pro_monthly", "pro")).toBe(true);
+    expect(isPlanIncludedForTier("pro", "pro")).toBe(false);
+    expect(isPlanIncludedForTier("pro", "pro_monthly")).toBe(false);
+    expect(isPlanIncludedForTier("pro", "tutor")).toBe(true);
+    expect(isPlanIncludedForTier("tutor", "tutor")).toBe(false);
+  });
+
+  it("renders Personal 3-card split by default and switches to Team 2-card split", () => {
+    cookieJar.clutch_region = "ROW";
+    const view = mountComponent<PricingViewProps>(PricingView, { variant: "page" });
+
+    try {
+      const personalTab = view.findTab("Personal");
+      const teamTab = view.findTab("Team");
+      expect(personalTab?.props["aria-selected"]).toBe(true);
+      expect(teamTab?.props["aria-selected"]).toBe(false);
+
+      const personalArticles = view.getArticles();
+      expect(personalArticles).toHaveLength(3);
+      const personalText = view.getText();
+      expect(personalText).toContain("Free");
+      expect(personalText).toContain("7-Day Cram Pass");
+      expect(personalText).toContain("Clutch Pro");
+      expect(personalText).not.toContain("Exam Squad (3-Pack)");
+      expect(personalText).not.toContain("Tutor & Guild");
+
+      // Switch to Team tab
+      view.click(teamTab);
+      expect(view.findTab("Team")?.props["aria-selected"]).toBe(true);
+      expect(view.findTab("Personal")?.props["aria-selected"]).toBe(false);
+
+      const teamArticles = view.getArticles();
+      expect(teamArticles).toHaveLength(2);
+      const teamCardsText = teamArticles.map(extractNodeText).join(" ");
+      expect(teamCardsText).toContain("Exam Squad (3-Pack)");
+      expect(teamCardsText).toContain("Tutor & Guild");
+      expect(teamCardsText).toContain("~$3.00 / student");
+      expect(teamCardsText).not.toContain("Clutch Pro");
+      expect(teamCardsText).not.toContain("Try Clutch Arena");
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("defaults Clutch Pro toggle to Semester and toggles cleanly to Monthly in both VN and ROW", () => {
+    // 1. ROW ($)
+    cookieJar.clutch_region = "ROW";
+    const rowView = mountComponent<PricingViewProps>(PricingView, { variant: "modal" });
+    try {
+      const semesterTab = rowView.findTab("Semester");
+      const monthlyTab = rowView.findTab("Monthly");
+      expect(semesterTab?.props["aria-selected"]).toBe(true);
+      expect(monthlyTab?.props["aria-selected"]).toBe(false);
+
+      const semesterText = rowView.getText();
+      expect(semesterText).toContain("$11.99");
+      expect(semesterText).toContain("Save 62%");
+      expect(semesterText).toContain("4-month semester subscription (~$3.00/mo");
+
+      rowView.click(monthlyTab);
+      expect(rowView.findTab("Monthly")?.props["aria-selected"]).toBe(true);
+      expect(rowView.findTab("Semester")?.props["aria-selected"]).toBe(false);
+
+      const monthlyText = rowView.getText();
+      expect(monthlyText).toContain("$7.99");
+      expect(monthlyText).toContain("1-month subscription · Switch to Semester (4 months) to save 62%");
+    } finally {
+      rowView.unmount();
+    }
+
+    // 2. VN (VND)
+    cookieJar.clutch_region = "VN";
+    const vnView = mountComponent<PricingViewProps>(PricingView, { variant: "modal" });
+    try {
+      const vnSemesterText = vnView.getText();
+      expect(vnSemesterText).toContain("149.000đ");
+      expect(vnSemesterText).toContain("Save 62%");
+      expect(vnSemesterText).toContain("4-month semester subscription (~37.250đ/mo");
+
+      vnView.click(vnView.findTab("Monthly"));
+      const vnMonthlyText = vnView.getText();
+      expect(vnMonthlyText).toContain("99.000đ");
+      expect(vnMonthlyText).toContain("1-month subscription · Switch to Semester (4 months) to save 62%");
+    } finally {
+      vnView.unmount();
+    }
+  });
+
+  it("shows 'Upgrade to Semester' for pro_monthly users on Semester view and 'Your current plan' on Monthly view", () => {
+    cookieJar.clutch_region = "ROW";
+    mockUserTierState.tier = "pro_monthly";
+
+    const view = mountComponent<PricingViewProps>(PricingView, { variant: "modal" });
+    try {
+      // Default cycle is "semester": pro_monthly user sees Upgrade to Semester (enabled)
+      const upgradeBtn = view.findButtonByText("✦ Upgrade to Semester");
+      expect(upgradeBtn).toBeDefined();
+      expect(upgradeBtn?.props.disabled).toBe(false);
+
+      // Toggle to "monthly": pro_monthly user sees Your current plan (disabled)
+      view.click(view.findTab("Monthly"));
+      const currentBtn = view.findButtonByText("Your current plan");
+      expect(currentBtn).toBeDefined();
+      expect(currentBtn?.props.disabled).toBe(true);
+      expect(view.findButtonByText("✦ Upgrade to Semester")).toBeUndefined();
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("strictly decouples EN / VI UI language from VN / ROW billing currency", () => {
+    // Vietnamese UI + ROW ($) billing region (e.g., Vietnamese student abroad)
+    mockLanguage = "vi";
+    cookieJar.clutch_region = "ROW";
+    const viRowView = mountComponent<PricingViewProps>(PricingView, { variant: "page" });
+    try {
+      const text = viRowView.getText();
+      expect(text).toContain("Nâng cấp gói học");
+      expect(text).toContain("Vé Ôn Thi 7 Ngày");
+      expect(text).toContain("$3.99");
+      expect(text).toContain("$11.99");
+      expect(text).not.toContain("49.000đ");
+      expect(text).not.toContain("149.000đ");
+      expect(mockSetLanguage).not.toHaveBeenCalled();
+
+      // Switching billing region to VN updates prices to VND without altering UI language
+      viRowView.click(viRowView.findTab("VN (VND)"));
+      const afterSwitchText = viRowView.getText();
+      expect(afterSwitchText).toContain("Nâng cấp gói học");
+      expect(afterSwitchText).toContain("49.000đ");
+      expect(afterSwitchText).toContain("149.000đ");
+      expect(mockSetLanguage).not.toHaveBeenCalled();
+    } finally {
+      viRowView.unmount();
+    }
+
+    // English UI + VN (VND) billing region (e.g., international student in Vietnam)
+    mockLanguage = "en";
+    cookieJar.clutch_region = "VN";
+    const enVnView = mountComponent<PricingViewProps>(PricingView, { variant: "page" });
+    try {
+      const text = enVnView.getText();
+      expect(text).toContain("Upgrade your plan");
+      expect(text).toContain("7-Day Cram Pass");
+      expect(text).toContain("49.000đ");
+      expect(text).toContain("149.000đ");
+      expect(text).not.toContain("$3.99");
+      expect(text).not.toContain("$11.99");
+      expect(mockSetLanguage).not.toHaveBeenCalled();
+    } finally {
+      enVnView.unmount();
+    }
   });
 });
 

@@ -250,6 +250,7 @@ export async function POST(request: Request) {
         expiresAt: result.expiresAt,
         fulfilled: result.fulfilled,
         alreadyFulfilled: Boolean(result.alreadyFulfilled),
+        ...(result.squadCodes ? { squadCodes: result.squadCodes } : {}),
       });
     }
 
