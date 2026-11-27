@@ -141,10 +141,14 @@ const config: NextConfig = {
 };
 
 const sentryOptions = {
-  silent: true,
+  org: "clutch-arena",
+  project: "clutch-arena",
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  silent: !process.env.CI,
   widenClientFileUpload: true,
-  hideSourceMaps: true,
-  disableLogger: true,
+  sourcemaps: {
+    deleteSourcemapsAfterUpload: true,
+  },
 };
 
 export default withSentryConfig(config, sentryOptions as any);
